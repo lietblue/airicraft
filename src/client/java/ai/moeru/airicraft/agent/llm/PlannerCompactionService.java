@@ -1,9 +1,13 @@
 package ai.moeru.airicraft.agent.llm;
 
+import ai.moeru.airicraft.agent.observability.AgentObservability;
+import ai.moeru.airicraft.agent.observability.NoopObservability;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParseException;
 import com.google.gson.JsonParser;
+import io.opentelemetry.context.Context;
+import io.opentelemetry.context.Scope;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -15,12 +19,19 @@ import java.util.concurrent.Executors;
 
 public final class PlannerCompactionService {
 	private final OpenAiCompatibleChatClient chatClient;
+	private final AgentObservability observability;
 	private final ExecutorService executorService;
 
 	private CompletableFuture<LlmCallResult<CompactionCheckpoint>> inFlight;
+	private Context inFlightContext;
 
 	public PlannerCompactionService(OpenAiCompatibleChatClient chatClient) {
+		this(chatClient, NoopObservability.INSTANCE);
+	}
+
+	public PlannerCompactionService(OpenAiCompatibleChatClient chatClient, AgentObservability observability) {
 		this.chatClient = Objects.requireNonNull(chatClient, "chatClient");
+		this.observability = Objects.requireNonNull(observability, "observability");
 		this.executorService = Executors.newSingleThreadExecutor(runnable -> {
 			Thread thread = new Thread(runnable, "airicraft-compaction");
 			thread.setDaemon(true);
@@ -33,20 +44,32 @@ public final class PlannerCompactionService {
 	}
 
 	public boolean submit(LlmConversation conversation) {
+		return submit(conversation, Context.current());
+	}
+
+	public boolean submit(LlmConversation conversation, Context parentContext) {
 		Objects.requireNonNull(conversation, "conversation");
 		if (inFlight != null) {
 			return false;
 		}
 
+		Context executionContext = parentContext == null ? Context.current() : parentContext;
+		Context compactionContext = observability.startChildSpan(
+			AgentObservability.PLANNER_COMPACTION_SPAN_NAME,
+			executionContext
+		);
 		inFlight = CompletableFuture.supplyAsync(() -> {
-			try {
+			try (Scope scope = compactionContext.makeCurrent()) {
 				LlmCallResult<String> response = chatClient.complete(conversation);
-				return LlmCallResult.of(parseCheckpoint(response.payload()), response.usage());
+				CompactionCheckpoint checkpoint = parseCheckpoint(response.payload());
+				observability.recordLlmResponse(Context.current(), response.statusCode(), response.responseModel(), response.usage(), checkpoint);
+				return LlmCallResult.of(checkpoint, response.usage(), response.statusCode(), response.responseModel());
 			}
 			catch (LlmBackendException exception) {
 				throw new CompletionException(exception);
 			}
 		}, executorService);
+		inFlightContext = compactionContext;
 		return true;
 	}
 
@@ -57,6 +80,10 @@ public final class PlannerCompactionService {
 
 		CompletableFuture<LlmCallResult<CompactionCheckpoint>> future = inFlight;
 		inFlight = null;
+		Context completedContext = inFlightContext;
+		inFlightContext = null;
+		endCurrentFlightSpan(completedContext);
+		Context failureContext = completedContext == null ? Context.current() : completedContext;
 		try {
 			LlmCallResult<CompactionCheckpoint> result = future.join();
 			return new CompactionExecutionResult(result.payload(), result.usage(), null, null);
@@ -64,8 +91,20 @@ public final class PlannerCompactionService {
 		catch (CompletionException exception) {
 			Throwable cause = exception.getCause();
 			if (cause instanceof LlmBackendException backendException) {
+				observability.recordFailure(
+					failureContext,
+					backendException.failureType().name(),
+					backendException.getMessage(),
+					backendException
+				);
 				return new CompactionExecutionResult(null, LlmUsageSnapshot.unknown(), backendException.failureType(), backendException.getMessage());
 			}
+			observability.recordFailure(
+				failureContext,
+				LlmFailureType.PROVIDER_ERROR.name(),
+				cause == null ? exception.getMessage() : cause.getMessage(),
+				cause instanceof Throwable throwable ? throwable : exception
+			);
 			return new CompactionExecutionResult(
 				null,
 				LlmUsageSnapshot.unknown(),
@@ -79,6 +118,8 @@ public final class PlannerCompactionService {
 		if (inFlight != null) {
 			inFlight.cancel(true);
 			inFlight = null;
+			endCurrentFlightSpan(inFlightContext);
+			inFlightContext = null;
 		}
 	}
 
@@ -87,7 +128,13 @@ public final class PlannerCompactionService {
 		executorService.shutdownNow();
 	}
 
-	private static CompactionCheckpoint parseCheckpoint(String responseBody) throws LlmBackendException {
+	private void endCurrentFlightSpan(Context context) {
+		if (context != null) {
+			observability.endSpan(context);
+		}
+	}
+
+	private CompactionCheckpoint parseCheckpoint(String responseBody) throws LlmBackendException {
 		try {
 			JsonObject root = JsonParser.parseString(responseBody).getAsJsonObject();
 			JsonArray choices = root.getAsJsonArray("choices");
@@ -112,6 +159,7 @@ public final class PlannerCompactionService {
 			);
 		}
 		catch (IllegalStateException | JsonParseException exception) {
+			observability.recordFailure(Context.current(), LlmFailureType.PARSE_ERROR.name(), "Failed to parse compaction response", exception);
 			throw new LlmBackendException(LlmFailureType.PARSE_ERROR, "Failed to parse compaction response", exception);
 		}
 	}

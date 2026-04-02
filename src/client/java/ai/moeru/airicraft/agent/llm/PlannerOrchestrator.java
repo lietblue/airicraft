@@ -3,8 +3,12 @@ package ai.moeru.airicraft.agent.llm;
 import ai.moeru.airicraft.Airicraft;
 import ai.moeru.airicraft.BridgeUnavailableException;
 import ai.moeru.airicraft.FirstPersonScreenshotService;
+import ai.moeru.airicraft.agent.observability.AgentObservability;
+import ai.moeru.airicraft.agent.observability.NoopObservability;
 import ai.moeru.airicraft.agent.dialogue.DialogueTurn;
 import ai.moeru.airicraft.agent.events.SemanticEvent;
+import io.opentelemetry.context.Context;
+import io.opentelemetry.context.Scope;
 
 import java.util.Locale;
 import java.util.Objects;
@@ -21,12 +25,14 @@ public final class PlannerOrchestrator {
 	private final CurrentViewVisionTool visionTool;
 	private final PlannerVisionMode visionMode;
 	private final String imageDetail;
+	private final AgentObservability observability;
 
 	private PlannerRequest baseRequest;
 	private boolean toolUsed;
 	private volatile boolean captureInFlight;
 	private CompletableFuture<ToolExecutionOutcome> toolResultFuture;
 	private CompactionExecutionResult lastCompactionResult;
+	private Context turnContext;
 
 	public PlannerOrchestrator(
 		PlannerExecutor plannerExecutor,
@@ -36,12 +42,25 @@ public final class PlannerOrchestrator {
 		PlannerVisionMode visionMode,
 		String imageDetail
 	) {
+		this(plannerExecutor, compactionService, contextAggregator, visionTool, visionMode, imageDetail, NoopObservability.INSTANCE);
+	}
+
+	public PlannerOrchestrator(
+		PlannerExecutor plannerExecutor,
+		PlannerCompactionService compactionService,
+		PlannerContextAggregator contextAggregator,
+		CurrentViewVisionTool visionTool,
+		PlannerVisionMode visionMode,
+		String imageDetail,
+		AgentObservability observability
+	) {
 		this.plannerExecutor = Objects.requireNonNull(plannerExecutor, "plannerExecutor");
 		this.compactionService = Objects.requireNonNull(compactionService, "compactionService");
 		this.contextAggregator = Objects.requireNonNull(contextAggregator, "contextAggregator");
 		this.visionTool = Objects.requireNonNull(visionTool, "visionTool");
 		this.visionMode = Objects.requireNonNull(visionMode, "visionMode");
 		this.imageDetail = Objects.requireNonNull(imageDetail, "imageDetail");
+		this.observability = Objects.requireNonNull(observability, "observability");
 	}
 
 	public boolean isConfigured() {
@@ -76,8 +95,9 @@ public final class PlannerOrchestrator {
 
 		baseRequest = request;
 		toolUsed = false;
+		turnContext = observability.startTurnSpan(request, buildTurnId(request));
 		if (contextAggregator.compactionPending()) {
-			return compactionService.submit(contextAggregator.buildCompactionConversation());
+			return compactionService.submit(contextAggregator.buildCompactionConversation(), turnContext);
 		}
 		return submitPlannerConversation(request);
 	}
@@ -90,7 +110,7 @@ public final class PlannerOrchestrator {
 			}
 			completeCompaction(compactionResult);
 			if (baseRequest == null) {
-				clearState();
+				endTurnSpan();
 				return null;
 			}
 			if (!submitPlannerConversation(baseRequest)) {
@@ -101,6 +121,7 @@ public final class PlannerOrchestrator {
 					LlmFailureType.PROVIDER_ERROR,
 					"Planner request could not be submitted after compaction"
 				);
+				observability.recordFailure(turnContext, LlmFailureType.PROVIDER_ERROR.name(), failure.failureMessage(), null);
 				clearState();
 				return failure;
 			}
@@ -119,6 +140,7 @@ public final class PlannerOrchestrator {
 			return null;
 		}
 		if (!plannerResult.succeeded()) {
+			observability.recordFailure(turnContext, plannerResult.failureType().name(), plannerResult.failureMessage(), null);
 			clearState();
 			return plannerResult;
 		}
@@ -231,10 +253,28 @@ public final class PlannerOrchestrator {
 	}
 
 	private boolean submitPlannerConversation(PlannerRequest request) {
-		return plannerExecutor.submit(request, contextAggregator.buildPlannerConversation(request));
+		try (Scope scope = currentTurnContext().makeCurrent()) {
+			return plannerExecutor.submit(
+				request,
+				contextAggregator.buildPlannerConversation(request),
+				turnContext,
+				AgentObservability.PLANNER_REQUEST_SPAN_NAME
+			);
+		}
 	}
 
 	private PlannerExecutionResult continueAfterTool() {
+		if (turnContext == null) {
+			PlannerExecutionResult failure = new PlannerExecutionResult(
+				baseRequest,
+				null,
+				LlmUsageSnapshot.unknown(),
+				LlmFailureType.PROVIDER_ERROR,
+				"Planner turn context missing"
+			);
+			clearState();
+			return failure;
+		}
 		ToolExecutionOutcome toolOutcome;
 		try {
 			toolOutcome = toolResultFuture.join();
@@ -259,7 +299,16 @@ public final class PlannerOrchestrator {
 			baseRequest.message(),
 			toolResultText
 		);
-		if (!plannerExecutor.submit(followUpRequest, toolOutcome.appendFollowUp(contextAggregator))) {
+		boolean submitted;
+		try (Scope scope = currentTurnContext().makeCurrent()) {
+			submitted = plannerExecutor.submit(
+				followUpRequest,
+				toolOutcome.appendFollowUp(contextAggregator),
+				turnContext,
+				AgentObservability.FOLLOW_UP_SPAN_NAME
+			);
+		}
+		if (!submitted) {
 			PlannerExecutionResult failure = new PlannerExecutionResult(
 				followUpRequest,
 				null,
@@ -267,6 +316,7 @@ public final class PlannerOrchestrator {
 				LlmFailureType.PROVIDER_ERROR,
 				"Planner follow-up request could not be submitted"
 			);
+			observability.recordFailure(turnContext, LlmFailureType.PROVIDER_ERROR.name(), failure.failureMessage(), null);
 			clearState();
 			return failure;
 		}
@@ -274,42 +324,45 @@ public final class PlannerOrchestrator {
 	}
 
 	private CompletableFuture<ToolExecutionOutcome> requestVisionTool(PlannerToolRequest toolRequest) {
-		if (visionMode == PlannerVisionMode.EXTERNAL_SUMMARY) {
-			if (!visionTool.isConfigured()) {
-				return CompletableFuture.completedFuture(new TextToolExecutionOutcome("VISION_UNAVAILABLE: vision_provider_unavailable"));
+		Context parentContext = currentTurnContext();
+		try (Scope scope = parentContext.makeCurrent()) {
+			if (visionMode == PlannerVisionMode.EXTERNAL_SUMMARY) {
+				if (!visionTool.isConfigured()) {
+					return CompletableFuture.completedFuture(new TextToolExecutionOutcome("VISION_UNAVAILABLE: vision_provider_unavailable"));
+				}
+
+				return requestCapture()
+					.handle((capture, throwable) -> {
+						if (throwable != null) {
+							String code = visionFailureCode(throwable);
+							Airicraft.LOGGER.warn("Vision tool capture failed code={}", code, throwable);
+							return CompletableFuture.<ToolExecutionOutcome>completedFuture(new TextToolExecutionOutcome("VISION_UNAVAILABLE: " + code));
+						}
+						return visionTool.requestDescription(capture, toolRequest.prompt())
+							.<ToolExecutionOutcome>handle((description, throwable2) -> {
+								if (throwable2 == null) {
+									return new TextToolExecutionOutcome(description.text());
+								}
+								String code = visionFailureCode(throwable2);
+								Airicraft.LOGGER.warn("Vision tool failed code={}", code, throwable2);
+								return new TextToolExecutionOutcome("VISION_UNAVAILABLE: " + code);
+							});
+					})
+					.thenCompose(future -> future);
 			}
 
-			return requestCapture()
-				.handle((capture, throwable) -> {
-					if (throwable != null) {
-						String code = visionFailureCode(throwable);
-						Airicraft.LOGGER.warn("Vision tool capture failed code={}", code, throwable);
-						return CompletableFuture.<ToolExecutionOutcome>completedFuture(new TextToolExecutionOutcome("VISION_UNAVAILABLE: " + code));
-					}
-					return visionTool.requestDescription(capture, toolRequest.prompt())
-						.<ToolExecutionOutcome>handle((description, throwable2) -> {
-							if (throwable2 == null) {
-								return new TextToolExecutionOutcome(description.text());
-							}
-							String code = visionFailureCode(throwable2);
-							Airicraft.LOGGER.warn("Vision tool failed code={}", code, throwable2);
-							return new TextToolExecutionOutcome("VISION_UNAVAILABLE: " + code);
-						});
-				})
-				.thenCompose(future -> future);
+			return requestCapture().handle((capture, throwable) -> {
+				if (throwable == null) {
+					return new ImageToolExecutionOutcome(
+						NATIVE_TOOL_RESULT_TEXT,
+						new LlmImageAttachment(mimeType(capture), capture.imageBytes(), imageDetail)
+					);
+				}
+				String code = visionFailureCode(throwable);
+				Airicraft.LOGGER.warn("Vision tool capture failed code={}", code, throwable);
+				return new TextToolExecutionOutcome("VISION_UNAVAILABLE: " + code);
+			});
 		}
-
-		return requestCapture().handle((capture, throwable) -> {
-			if (throwable == null) {
-				return new ImageToolExecutionOutcome(
-					NATIVE_TOOL_RESULT_TEXT,
-					new LlmImageAttachment(mimeType(capture), capture.imageBytes(), imageDetail)
-				);
-			}
-			String code = visionFailureCode(throwable);
-			Airicraft.LOGGER.warn("Vision tool capture failed code={}", code, throwable);
-			return new TextToolExecutionOutcome("VISION_UNAVAILABLE: " + code);
-		});
 	}
 
 	private CompletableFuture<FirstPersonScreenshotService.CapturedScreenshot> requestCapture() {
@@ -353,6 +406,26 @@ public final class PlannerOrchestrator {
 		return new PlannerExecutionResult(baseRequest, null, LlmUsageSnapshot.unknown(), LlmFailureType.PARSE_ERROR, message);
 	}
 
+	private static String buildTurnId(PlannerRequest request) {
+		if (request == null) {
+			return "session:none";
+		}
+		String sender = request.senderName() == null || request.senderName().isBlank() ? "unknown" : request.senderName();
+		String mode = request.sessionMode() == null ? "unknown_mode" : request.sessionMode().name();
+		return "session:" + mode + ":sender=" + sender + ":tick=" + request.tick();
+	}
+
+	private Context currentTurnContext() {
+		return turnContext == null ? Context.current() : turnContext;
+	}
+
+	private void endTurnSpan() {
+		if (turnContext != null) {
+			observability.endSpan(turnContext);
+			turnContext = null;
+		}
+	}
+
 	private void completeCompaction(CompactionExecutionResult compactionResult) {
 		lastCompactionResult = compactionResult;
 		if (compactionResult.succeeded()) {
@@ -365,6 +438,7 @@ public final class PlannerOrchestrator {
 	}
 
 	private void clearState() {
+		endTurnSpan();
 		baseRequest = null;
 		toolUsed = false;
 		toolResultFuture = null;

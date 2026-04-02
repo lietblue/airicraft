@@ -102,11 +102,12 @@ public final class ModBridgeServer {
 			httpServer.createContext("/v1/agent/session/open-lan", this::handleAgentOpenLan);
 				httpServer.createContext("/v1/agent/events/recent", exchange -> handleJson(exchange, () -> createRecentAgentEventsResponse(exchange)));
 				httpServer.createContext("/v1/agent/goals", exchange -> handleJson(exchange, this::createAgentGoalsResponse));
-				httpServer.createContext("/v1/agent/tree", exchange -> handleJson(exchange, this::createAgentTreeResponse));
-				httpServer.createContext("/v1/agent/dialogue", exchange -> handleJson(exchange, this::createAgentDialogueResponse));
-				httpServer.createContext("/v1/agent/context", exchange -> handleJson(exchange, this::createAgentContextResponse));
-				httpServer.createContext("/v1/agent/debug/compact", this::handleAgentDebugCompact);
-				httpServer.createContext("/v1/verification/results", exchange -> handleJson(exchange, this::createVerificationResultsResponse));
+			httpServer.createContext("/v1/agent/tree", exchange -> handleJson(exchange, this::createAgentTreeResponse));
+			httpServer.createContext("/v1/agent/dialogue", exchange -> handleJson(exchange, this::createAgentDialogueResponse));
+			httpServer.createContext("/v1/agent/context", exchange -> handleJson(exchange, this::createAgentContextResponse));
+			httpServer.createContext("/v1/agent/debug/compact", this::handleAgentDebugCompact);
+			httpServer.createContext("/v1/agent/debug/chat", this::handleAgentDebugChat);
+			httpServer.createContext("/v1/verification/results", exchange -> handleJson(exchange, this::createVerificationResultsResponse));
 			httpServer.createContext("/v1/verification/run", this::handleVerificationRun);
 			httpServer.start();
 
@@ -416,6 +417,27 @@ public final class ModBridgeServer {
 		});
 	}
 
+	private void handleAgentDebugChat(HttpExchange exchange) throws IOException {
+		handleJsonBody(exchange, "POST", DebugChatRequest.class, request -> {
+			if (request == null || request.message() == null || request.message().isBlank()) {
+				throw new BridgeUnavailableException("invalid_request", "Missing message");
+			}
+
+			return onClientThread(() -> {
+				MinecraftClient client = getClient();
+				String sender = nonEmpty(request.sender(), defaultDebugSender(client));
+				agentRuntime.onChatReceived(sender, request.message());
+
+				return Map.of(
+					"accepted", true,
+					"sender", sender,
+					"message", request.message(),
+					"sessionMode", agentRuntime.sessionSnapshot().mode().name()
+				);
+			});
+		});
+	}
+
 	private void handleJson(HttpExchange exchange, Supplier<Object> supplier) throws IOException {
 		if (!authorize(exchange)) {
 			writeJson(exchange, 401, Map.of("error", "unauthorized", "message", "Invalid bridge token"));
@@ -545,6 +567,7 @@ public final class ModBridgeServer {
 			response.put("llmAvailable", agentRuntime.llmAvailable());
 			response.put("visionAvailable", agentRuntime.visionAvailable());
 			response.put("plannerVisionMode", plannerSnapshot.plannerVisionMode());
+			response.put("observability", agentRuntime.observabilityDebugSnapshot());
 			response.put("degraded", agentRuntime.isDegraded());
 			response.put("verification", snapshot.verification());
 			return response;
@@ -1043,6 +1066,16 @@ public final class ModBridgeServer {
 		return value != null && Double.isFinite(value);
 	}
 
+	private static String defaultDebugSender(MinecraftClient client) {
+		if (client != null && client.player != null && client.player.getName() != null) {
+			return client.player.getName().getString();
+		}
+		if (client != null && client.getSession() != null && client.getSession().getUsername() != null) {
+			return client.getSession().getUsername();
+		}
+		throw new BridgeUnavailableException("minecraft_unavailable", "Minecraft session is not initialized");
+	}
+
 	private static BlockPos requiredBlockPos(Integer x, Integer y, Integer z, String fields) {
 		if (x == null || y == null || z == null) {
 			throw new BridgeUnavailableException("invalid_request", "Missing coordinates: " + fields);
@@ -1077,6 +1110,9 @@ public final class ModBridgeServer {
 	}
 
 	private record VerificationRunRequest(String scenario) {
+	}
+
+	private record DebugChatRequest(String sender, String message) {
 	}
 
 	private record VisionDescribeRequest(String prompt) {

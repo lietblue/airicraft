@@ -2,10 +2,14 @@ package ai.moeru.airicraft.agent.llm;
 
 import ai.moeru.airicraft.Airicraft;
 import ai.moeru.airicraft.agent.AgentConfig;
+import ai.moeru.airicraft.agent.observability.AgentObservability;
+import ai.moeru.airicraft.agent.observability.NoopObservability;
+import ai.moeru.airicraft.agent.observability.TraceSanitizer;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParseException;
 import com.google.gson.JsonParser;
+import io.opentelemetry.context.Context;
 
 import java.util.ArrayDeque;
 import java.util.Deque;
@@ -17,11 +21,17 @@ import java.util.concurrent.TimeoutException;
 public final class OpenAiCompatibleLlmBackend implements LlmBackend {
 	private final AgentConfig.LlmConfig config;
 	private final OpenAiCompatibleChatClient chatClient;
+	private final AgentObservability observability;
 	private final Deque<Object> injectedOutcomes = new ArrayDeque<>();
 
 	public OpenAiCompatibleLlmBackend(AgentConfig.LlmConfig config) {
+		this(config, NoopObservability.INSTANCE);
+	}
+
+	public OpenAiCompatibleLlmBackend(AgentConfig.LlmConfig config, AgentObservability observability) {
 		this.config = Objects.requireNonNull(config, "config");
-		this.chatClient = new OpenAiCompatibleChatClient(config);
+		this.observability = Objects.requireNonNull(observability, "observability");
+		this.chatClient = new OpenAiCompatibleChatClient(config, observability);
 	}
 
 	@Override
@@ -30,14 +40,18 @@ public final class OpenAiCompatibleLlmBackend implements LlmBackend {
 
 		Object injected = injectedOutcomes.pollFirst();
 		if (injected instanceof PlannerResponse plannerResponse) {
-			return LlmCallResult.of(plannerResponse, LlmUsageSnapshot.unknown());
+			observability.recordLlmResponse(Context.current(), null, config.model(), LlmUsageSnapshot.unknown(), plannerResponse);
+			return LlmCallResult.of(plannerResponse, LlmUsageSnapshot.unknown(), null, config.model());
 		}
 		if (injected instanceof TimeoutException timeoutException) {
+			observability.recordFailure(Context.current(), LlmFailureType.TIMEOUT.name(), timeoutException.getMessage(), timeoutException);
 			throw new LlmBackendException(LlmFailureType.TIMEOUT, timeoutException.getMessage(), timeoutException);
 		}
 
 		LlmCallResult<String> rawResponse = chatClient.complete(conversation);
-		return LlmCallResult.of(parsePlannerResponse(rawResponse.payload()), rawResponse.usage());
+		PlannerResponse plannerResponse = parsePlannerResponse(rawResponse.payload());
+		observability.recordLlmResponse(Context.current(), rawResponse.statusCode(), rawResponse.responseModel(), rawResponse.usage(), plannerResponse);
+		return LlmCallResult.of(plannerResponse, rawResponse.usage(), rawResponse.statusCode(), rawResponse.responseModel());
 	}
 
 	@Override
@@ -103,7 +117,8 @@ public final class OpenAiCompatibleLlmBackend implements LlmBackend {
 			return new PlannerResponse(replyText, intent, toolRequest);
 		}
 		catch (IllegalArgumentException | JsonParseException exception) {
-			Airicraft.LOGGER.warn("Failed to parse planner response body={}", summarizeForLog(responseBody), exception);
+			Airicraft.LOGGER.warn("Failed to parse planner response summary={}", TraceSanitizer.summarizeChatResponseForLog(responseBody), exception);
+			observability.recordFailure(Context.current(), LlmFailureType.PARSE_ERROR.name(), "Failed to parse planner response", exception);
 			throw new LlmBackendException(LlmFailureType.PARSE_ERROR, "Failed to parse planner response", exception);
 		}
 	}

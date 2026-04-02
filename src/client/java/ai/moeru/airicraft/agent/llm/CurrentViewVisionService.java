@@ -2,6 +2,10 @@ package ai.moeru.airicraft.agent.llm;
 
 import ai.moeru.airicraft.BridgeUnavailableException;
 import ai.moeru.airicraft.FirstPersonScreenshotService;
+import ai.moeru.airicraft.agent.observability.AgentObservability;
+import ai.moeru.airicraft.agent.observability.NoopObservability;
+import io.opentelemetry.context.Context;
+import io.opentelemetry.context.Scope;
 import net.minecraft.client.MinecraftClient;
 
 import java.util.Objects;
@@ -20,15 +24,26 @@ public final class CurrentViewVisionService implements CurrentViewVisionTool {
 	private final VisionBackend visionBackend;
 	private final Supplier<MinecraftClient> clientSupplier;
 	private final ExecutorService executorService;
+	private final AgentObservability observability;
 
 	public CurrentViewVisionService(
 		FirstPersonScreenshotService screenshotService,
 		VisionBackend visionBackend,
 		Supplier<MinecraftClient> clientSupplier
 	) {
+		this(screenshotService, visionBackend, clientSupplier, NoopObservability.INSTANCE);
+	}
+
+	public CurrentViewVisionService(
+		FirstPersonScreenshotService screenshotService,
+		VisionBackend visionBackend,
+		Supplier<MinecraftClient> clientSupplier,
+		AgentObservability observability
+	) {
 		this.screenshotService = Objects.requireNonNull(screenshotService, "screenshotService");
 		this.visionBackend = Objects.requireNonNull(visionBackend, "visionBackend");
 		this.clientSupplier = Objects.requireNonNull(clientSupplier, "clientSupplier");
+		this.observability = Objects.requireNonNull(observability, "observability");
 		this.executorService = Executors.newSingleThreadExecutor(runnable -> {
 			Thread thread = new Thread(runnable, "airicraft-vision");
 			thread.setDaemon(true);
@@ -51,9 +66,31 @@ public final class CurrentViewVisionService implements CurrentViewVisionTool {
 		}
 
 		try {
-			return screenshotService.requestCapture(client);
+			Context captureContext = observability.startChildSpan(
+				AgentObservability.TOOL_CAPTURE_SPAN_NAME,
+				Context.current()
+			);
+			return screenshotService.requestCapture(client).whenComplete((capture, throwable) -> {
+				try {
+					if (capture != null) {
+						observability.recordImageCapture(captureContext, capture);
+					}
+					else if (throwable != null) {
+						observability.recordFailure(
+							captureContext,
+							LlmFailureType.PROVIDER_ERROR.name(),
+							"Vision capture failed",
+							Throwable.class.isAssignableFrom(throwable.getClass()) ? throwable : new RuntimeException(throwable)
+						);
+					}
+				}
+				finally {
+					observability.endSpan(captureContext);
+				}
+			});
 		}
 		catch (RuntimeException exception) {
+			observability.recordFailure(Context.current(), LlmFailureType.PROVIDER_ERROR.name(), "Vision capture failed", exception);
 			return CompletableFuture.failedFuture(exception);
 		}
 	}
@@ -67,12 +104,20 @@ public final class CurrentViewVisionService implements CurrentViewVisionTool {
 		}
 
 		try {
+			Context parentContext = Context.current();
 			return CompletableFuture.supplyAsync(() -> {
-				try {
-					return describe(screenshot, prompt);
+				Context describeContext = observability.startChildSpan(
+					AgentObservability.VISION_DESCRIBE_SPAN_NAME,
+					parentContext
+				);
+				try (Scope scope = describeContext.makeCurrent()) {
+					return describeWithinCurrentSpan(screenshot, prompt);
 				}
 				catch (LlmBackendException exception) {
 					throw new CompletionException(exception);
+				}
+				finally {
+					observability.endSpan(describeContext);
 				}
 			}, executorService);
 		}
@@ -87,6 +132,19 @@ public final class CurrentViewVisionService implements CurrentViewVisionTool {
 	}
 
 	public VisionDescription describe(FirstPersonScreenshotService.CapturedScreenshot screenshot, String prompt) throws LlmBackendException {
+		Context describeContext = observability.startChildSpan(
+			AgentObservability.VISION_DESCRIBE_SPAN_NAME,
+			Context.current()
+		);
+		try (Scope scope = describeContext.makeCurrent()) {
+			return describeWithinCurrentSpan(screenshot, prompt);
+		}
+		finally {
+			observability.endSpan(describeContext);
+		}
+	}
+
+	private VisionDescription describeWithinCurrentSpan(FirstPersonScreenshotService.CapturedScreenshot screenshot, String prompt) throws LlmBackendException {
 		Objects.requireNonNull(screenshot, "screenshot");
 		return visionBackend.describe(new VisionRequest(
 			normalizePrompt(prompt),

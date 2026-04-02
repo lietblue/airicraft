@@ -2,10 +2,14 @@ package ai.moeru.airicraft.agent.llm;
 
 import ai.moeru.airicraft.Airicraft;
 import ai.moeru.airicraft.agent.AgentConfig;
+import ai.moeru.airicraft.agent.observability.AgentObservability;
+import ai.moeru.airicraft.agent.observability.NoopObservability;
+import ai.moeru.airicraft.agent.observability.TraceSanitizer;
 import com.google.gson.Gson;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParseException;
 import com.google.gson.JsonParser;
+import io.opentelemetry.context.Context;
 
 import java.io.IOException;
 import java.net.URI;
@@ -14,6 +18,7 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -24,10 +29,16 @@ public final class OpenAiCompatibleChatClient {
 	private static final Gson GSON = new Gson();
 
 	private final AgentConfig.LlmConfig config;
+	private final AgentObservability observability;
 	private final HttpClient httpClient = HttpClient.newHttpClient();
 
 	public OpenAiCompatibleChatClient(AgentConfig.LlmConfig config) {
+		this(config, NoopObservability.INSTANCE);
+	}
+
+	public OpenAiCompatibleChatClient(AgentConfig.LlmConfig config, AgentObservability observability) {
 		this.config = Objects.requireNonNull(config, "config");
+		this.observability = Objects.requireNonNull(observability, "observability");
 	}
 
 	LlmCallResult<String> complete(LlmConversation conversation) throws LlmBackendException {
@@ -37,14 +48,31 @@ public final class OpenAiCompatibleChatClient {
 		}
 
 		String requestBody = GSON.toJson(buildRequestPayload(conversation));
+		URI uri;
+		try {
+			uri = buildUri();
+		}
+		catch (LlmBackendException exception) {
+			observability.recordFailure(Context.current(), exception.failureType().name(), exception.getMessage(), exception);
+			throw exception;
+		}
+		observability.recordLlmRequest(
+			Context.current(),
+			TraceSanitizer.inferProviderName(config.providerBaseUrl()),
+			uri,
+			config.model(),
+			config.requestTimeoutMillis(),
+			conversation,
+			requestBody
+		);
 		Airicraft.LOGGER.info(
 			"LLM request model={} messages={} preview={}",
 			config.model(),
 			conversation.messages().size(),
-			summarizeConversation(conversation)
+			TraceSanitizer.summarizeForLog(TraceSanitizer.sanitizeRequestPayloadForTrace(requestBody))
 		);
 		HttpRequest httpRequest = HttpRequest.newBuilder()
-			.uri(buildUri())
+			.uri(uri)
 			.timeout(Duration.ofMillis(config.requestTimeoutMillis()))
 			.header("Authorization", "Bearer " + config.apiKey())
 			.header("Content-Type", "application/json")
@@ -54,24 +82,38 @@ public final class OpenAiCompatibleChatClient {
 		try {
 			HttpResponse<String> response = httpClient.send(httpRequest, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
 			Airicraft.LOGGER.info(
-				"LLM response model={} status={} body={}",
+				"LLM response model={} status={} summary={}",
 				config.model(),
 				response.statusCode(),
-				summarizeForLog(response.body())
+				TraceSanitizer.summarizeChatResponseForLog(response.body())
 			);
 			if (response.statusCode() >= 400) {
+				observability.recordFailure(
+					Context.current(),
+					LlmFailureType.PROVIDER_ERROR.name(),
+					"Provider returned HTTP " + response.statusCode(),
+					null
+				);
 				throw new LlmBackendException(LlmFailureType.PROVIDER_ERROR, "Provider returned HTTP " + response.statusCode());
 			}
-			return LlmCallResult.of(response.body(), parseUsage(response.body()));
+			return LlmCallResult.of(
+				response.body(),
+				parseUsage(response.body()),
+				response.statusCode(),
+				responseModel(response.body()).orElse(config.model())
+			);
 		}
 		catch (java.net.http.HttpTimeoutException exception) {
+			observability.recordFailure(Context.current(), LlmFailureType.TIMEOUT.name(), "LLM request timed out", exception);
 			throw new LlmBackendException(LlmFailureType.TIMEOUT, "LLM request timed out", exception);
 		}
 		catch (InterruptedException exception) {
 			Thread.currentThread().interrupt();
+			observability.recordFailure(Context.current(), LlmFailureType.TIMEOUT.name(), "LLM request interrupted", exception);
 			throw new LlmBackendException(LlmFailureType.TIMEOUT, "LLM request interrupted", exception);
 		}
 		catch (IOException exception) {
+			observability.recordFailure(Context.current(), LlmFailureType.PROVIDER_ERROR.name(), "LLM request failed", exception);
 			throw new LlmBackendException(LlmFailureType.PROVIDER_ERROR, "LLM request failed", exception);
 		}
 	}
@@ -92,7 +134,7 @@ public final class OpenAiCompatibleChatClient {
 		return Map.of(
 			"model", config.model(),
 			"response_format", Map.of("type", "json_object"),
-			"messages", conversation.messages().stream().map(this::toRequestMessage).toList()
+			"messages", compactRequestMessages(conversation.messages())
 		);
 	}
 
@@ -101,6 +143,65 @@ public final class OpenAiCompatibleChatClient {
 		payload.put("role", message.role());
 		payload.put("content", message.hasImageAttachment() ? multimodalContent(message) : message.content());
 		return payload;
+	}
+
+	private List<Map<String, Object>> compactRequestMessages(List<LlmChatMessage> messages) {
+		ArrayList<Map<String, Object>> compacted = new ArrayList<>();
+		for (LlmChatMessage message : messages) {
+			Map<String, Object> requestMessage = toRequestMessage(message);
+			if (!compacted.isEmpty() && shouldMergeUserMessage(compacted.getLast(), requestMessage)) {
+				compacted.set(compacted.size() - 1, mergeUserMessages(compacted.getLast(), requestMessage));
+				continue;
+			}
+			compacted.add(requestMessage);
+		}
+		return List.copyOf(compacted);
+	}
+
+	private static boolean shouldMergeUserMessage(Map<String, Object> previous, Map<String, Object> current) {
+		return "user".equals(previous.get("role")) && "user".equals(current.get("role"));
+	}
+
+	private static Map<String, Object> mergeUserMessages(Map<String, Object> previous, Map<String, Object> current) {
+		LinkedHashMap<String, Object> merged = new LinkedHashMap<>(previous);
+		merged.put("content", mergeUserContent(previous.get("content"), current.get("content")));
+		return merged;
+	}
+
+	private static Object mergeUserContent(Object previous, Object current) {
+		if (previous instanceof String previousText && current instanceof String currentText) {
+			if (previousText.isBlank()) {
+				return currentText;
+			}
+			if (currentText.isBlank()) {
+				return previousText;
+			}
+			return previousText + "\n\n" + currentText;
+		}
+		ArrayList<Map<String, Object>> parts = new ArrayList<>();
+		appendContentParts(parts, previous);
+		appendContentParts(parts, current);
+		return List.copyOf(parts);
+	}
+
+	@SuppressWarnings("unchecked")
+	private static void appendContentParts(List<Map<String, Object>> parts, Object content) {
+		if (content == null) {
+			return;
+		}
+		if (content instanceof String text) {
+			if (!text.isBlank()) {
+				parts.add(Map.of("type", "text", "text", text));
+			}
+			return;
+		}
+		if (content instanceof List<?> list) {
+			for (Object item : list) {
+				if (item instanceof Map<?, ?> map) {
+					parts.add((Map<String, Object>) map);
+				}
+			}
+		}
 	}
 
 	private static List<Map<String, Object>> multimodalContent(LlmChatMessage message) {
@@ -121,7 +222,7 @@ public final class OpenAiCompatibleChatClient {
 		);
 	}
 
-	private static LlmUsageSnapshot parseUsage(String responseBody) {
+	static LlmUsageSnapshot parseUsage(String responseBody) {
 		try {
 			JsonObject root = JsonParser.parseString(responseBody).getAsJsonObject();
 			if (!root.has("usage") || !root.get("usage").isJsonObject()) {
@@ -151,35 +252,11 @@ public final class OpenAiCompatibleChatClient {
 		return usage.get(fieldName).getAsInt();
 	}
 
-	private static String summarizeConversation(LlmConversation conversation) {
-		StringBuilder builder = new StringBuilder();
-		for (LlmChatMessage message : conversation.messages()) {
-			if (!builder.isEmpty()) {
-				builder.append(" | ");
-			}
-			builder.append(message.role()).append(':').append(summarizeForLog(summarizeMessage(message)));
-		}
-		return summarizeForLog(builder.toString());
-	}
-
-	private static String summarizeMessage(LlmChatMessage message) {
-		if (!message.hasImageAttachment()) {
-			return message.content();
-		}
-		return message.content() + " [image attached detail=" + message.imageAttachment().detail() + "]";
+	static java.util.Optional<String> responseModel(String responseBody) {
+		return TraceSanitizer.responseModel(responseBody);
 	}
 
 	static String summarizeForLog(String text) {
-		if (text == null) {
-			return "";
-		}
-		String normalized = text
-			.replace("\\", "\\\\")
-			.replace("\r", "\\r")
-			.replace("\n", "\\n");
-		if (normalized.length() > 1200) {
-			return normalized.substring(0, 1200) + "...";
-		}
-		return normalized;
+		return TraceSanitizer.summarizeForLog(text);
 	}
 }

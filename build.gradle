@@ -44,6 +44,9 @@ dependencies {
 	// Fabric API. This is technically optional, but you probably want it anyway.
 	modImplementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_api_version}"
 	implementation "org.yaml:snakeyaml:2.4"
+	implementation "io.opentelemetry:opentelemetry-api:1.60.1"
+	implementation "io.opentelemetry:opentelemetry-sdk:1.60.1"
+	implementation "io.opentelemetry:opentelemetry-exporter-otlp:1.60.1"
 
 	testImplementation platform("org.junit:junit-bom:5.11.4")
 	testImplementation "org.junit.jupiter:junit-jupiter"
