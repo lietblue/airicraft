@@ -174,21 +174,37 @@ public final class DialogueRuntime {
 	) {
 		long timestampMs = clock.millis();
 		appendTurn(new DialogueTurn(senderName, plainTextMessage, tick, timestampMs));
-		if (degraded || plannerOrchestrator.hasInFlight()) {
-			return;
-		}
-		plannerOrchestrator.recordEvents(eventBuffer.query(null).events(), timestampMs);
-
-		plannerOrchestrator.submit(new PlannerRequest(
-			tick,
-			timestampMs,
-			sessionSnapshot.mode(),
-			primaryInteractionPlayer,
-			activeGoal.orElse(null),
+		submitPlannerTrigger(
 			senderName,
 			plainTextMessage,
-			null
-		));
+			tick,
+			sessionSnapshot,
+			primaryInteractionPlayer,
+			activeGoal,
+			eventBuffer,
+			timestampMs
+		);
+	}
+
+	public void onContextTrigger(
+		String senderName,
+		String plainTextMessage,
+		long tick,
+		SessionSnapshot sessionSnapshot,
+		String primaryInteractionPlayer,
+		Optional<GoalSnapshot> activeGoal,
+		SemanticEventBuffer eventBuffer
+	) {
+		submitPlannerTrigger(
+			senderName,
+			plainTextMessage,
+			tick,
+			sessionSnapshot,
+			primaryInteractionPlayer,
+			activeGoal,
+			eventBuffer,
+			clock.millis()
+		);
 	}
 
 	public DialogueResponse poll(long tick, SemanticEventBuffer eventBuffer) {
@@ -265,6 +281,32 @@ public final class DialogueRuntime {
 			return false;
 		}
 		return plainTextMessage.stripLeading().equalsIgnoreCase(RESET_COMMAND);
+	}
+
+	private void submitPlannerTrigger(
+		String senderName,
+		String plainTextMessage,
+		long tick,
+		SessionSnapshot sessionSnapshot,
+		String primaryInteractionPlayer,
+		Optional<GoalSnapshot> activeGoal,
+		SemanticEventBuffer eventBuffer,
+		long timestampMs
+	) {
+		if (degraded || plannerOrchestrator.hasInFlight()) {
+			return;
+		}
+		plannerOrchestrator.recordEvents(eventBuffer.query(null).events(), timestampMs);
+		plannerOrchestrator.submit(new PlannerRequest(
+			tick,
+			timestampMs,
+			sessionSnapshot.mode(),
+			primaryInteractionPlayer,
+			activeGoal.orElse(null),
+			senderName,
+			plainTextMessage,
+			null
+		));
 	}
 
 	private void onFailure(LlmFailureType failureType, String failureMessage, long tick, SemanticEventBuffer eventBuffer) {

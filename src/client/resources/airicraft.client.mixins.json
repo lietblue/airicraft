@@ -4,8 +4,10 @@
 	"compatibilityLevel": "JAVA_21",
 	"client": [
 		"ClientPlayNetworkHandlerMixin",
+		"CraftingResultSlotMixin",
 		"GameRendererMixin",
-		"MessageHandlerMixin"
+		"MessageHandlerMixin",
+		"SlotMixin"
 	],
 	"injectors": {
 		"defaultRequire": 1

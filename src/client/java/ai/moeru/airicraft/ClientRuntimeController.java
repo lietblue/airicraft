@@ -53,6 +53,10 @@ public final class ClientRuntimeController {
 		agentRuntime.onSystemChatReceived(plainTextMessage);
 	}
 
+	public void onPlayerCraftedItem(String itemId, int count) {
+		agentRuntime.onPlayerCraftedItem(itemId, count);
+	}
+
 	public void onPlayerJoinedGame(UUID playerUuid, String playerName) {
 		agentRuntime.onPlayerJoinedGame(playerUuid, playerName);
 	}

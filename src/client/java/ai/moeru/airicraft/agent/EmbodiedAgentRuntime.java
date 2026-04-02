@@ -408,6 +408,32 @@ public final class EmbodiedAgentRuntime {
 			);
 		}
 
+	public void onPlayerCraftedItem(String itemId, int count) {
+		if (itemId == null || itemId.isBlank() || count <= 0) {
+			return;
+		}
+
+		eventBuffer.append(tickCount, "crafting.item_crafted", Map.of(
+			"itemId", itemId,
+			"count", count
+		));
+
+		String plannerSender = localPlayerName();
+		if (plannerSender == null || plannerSender.isBlank()) {
+			plannerSender = "player";
+		}
+
+		dialogueRuntime.onContextTrigger(
+			plannerSender,
+			"I crafted " + count + "x " + itemId + ".",
+			tickCount,
+			sessionSnapshot,
+			primaryInteractionResolver.current().map(PrimaryInteractionPlayer::name).orElse(null),
+			goalDirector.activeGoal(),
+			eventBuffer
+		);
+	}
+
 	public void onPlayerJoinedGame(UUID playerUuid, String playerName) {
 		if (playerUuid == null || playerName == null || playerName.isBlank()) {
 			return;
