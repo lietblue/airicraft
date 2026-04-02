@@ -19,6 +19,12 @@ import com.google.gson.JsonParseException;
 import com.google.gson.JsonParser;
 import com.google.gson.JsonPrimitive;
 
+import javax.imageio.ImageIO;
+import java.awt.Graphics2D;
+import java.awt.RenderingHints;
+import java.awt.image.BufferedImage;
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.net.URI;
 import java.util.ArrayList;
 import java.util.Base64;
@@ -33,6 +39,8 @@ public final class TraceSanitizer {
 	private static final int LOG_LIMIT = 512;
 	private static final int TRACE_LIMIT = 16_384;
 	private static final int TRACE_TEXT_LIMIT = 4_096;
+	private static final int TRACE_IMAGE_MAX_WIDTH = 320;
+	private static final int TRACE_IMAGE_MAX_HEIGHT = 320;
 	private static final int MAX_LOG_CONVERSATION_MESSAGES = 4;
 	private static final int MAX_TRACE_CONVERSATION_MESSAGES = 64;
 	private static final Pattern DATA_URL_PATTERN = Pattern.compile("data:[^;]+;base64,[A-Za-z0-9+/=]+");
@@ -373,7 +381,7 @@ public final class TraceSanitizer {
 		if (capture == null) {
 			return "";
 		}
-		String imageDataUrl = imageCaptureDataUrl(capture);
+		String imageDataUrl = imageCaptureDisplayDataUrl(capture);
 		if (imageDataUrl.isBlank()) {
 			return "";
 		}
@@ -395,6 +403,10 @@ public final class TraceSanitizer {
 		JsonArray completion = new JsonArray();
 		completion.add(message);
 		return TRACE_GSON.toJson(completion);
+	}
+
+	public static String imageCaptureDisplayDataUrl(FirstPersonScreenshotService.CapturedScreenshot capture) {
+		return displayImageDataUrl(imageCaptureDataUrl(capture));
 	}
 
 	private static String sanitizeConversation(LlmConversation conversation, boolean captureImages, int maxLength, int maxMessages) {
@@ -664,9 +676,9 @@ public final class TraceSanitizer {
 			return JsonNull.INSTANCE;
 		}
 		if (imageUrl.isJsonObject() && imageUrl.getAsJsonObject().has("url")) {
-			return sanitizeJsonElement(imageUrl.getAsJsonObject().get("url"), captureImages);
+			return sanitizePromptImageUrl(imageUrl.getAsJsonObject().get("url"), captureImages);
 		}
-		return sanitizeJsonElement(imageUrl, captureImages);
+		return sanitizePromptImageUrl(imageUrl, captureImages);
 	}
 
 	private static Optional<String> extractImageDetail(JsonElement imageUrl) {
@@ -701,5 +713,77 @@ public final class TraceSanitizer {
 			return normalized.substring(0, maxLength) + "...";
 		}
 		return normalized;
+	}
+
+	private static JsonElement sanitizePromptImageUrl(JsonElement imageUrl, boolean captureImages) {
+		JsonElement sanitized = sanitizeJsonElement(imageUrl, captureImages);
+		if (!captureImages || !sanitized.isJsonPrimitive() || !sanitized.getAsJsonPrimitive().isString()) {
+			return sanitized;
+		}
+		return new JsonPrimitive(displayImageDataUrl(sanitized.getAsString()));
+	}
+
+	private static String displayImageDataUrl(String dataUrl) {
+		if (dataUrl == null || dataUrl.isBlank()) {
+			return "";
+		}
+		if (!dataUrl.startsWith("data:image/")) {
+			return dataUrl;
+		}
+		int commaIndex = dataUrl.indexOf(',');
+		if (commaIndex <= 0) {
+			return dataUrl;
+		}
+		String metadata = dataUrl.substring(5, commaIndex);
+		if (!metadata.contains(";base64")) {
+			return dataUrl;
+		}
+		String mimeType = metadata.substring(0, metadata.indexOf(';'));
+		try {
+			byte[] decoded = Base64.getDecoder().decode(dataUrl.substring(commaIndex + 1));
+			BufferedImage image = ImageIO.read(new ByteArrayInputStream(decoded));
+			if (image == null) {
+				return dataUrl;
+			}
+			BufferedImage resized = resizeForTrace(image);
+			if (resized.getWidth() == image.getWidth() && resized.getHeight() == image.getHeight()) {
+				return dataUrl;
+			}
+			ByteArrayOutputStream output = new ByteArrayOutputStream();
+			ImageIO.write(resized, "png", output);
+			return "data:%s;base64,%s".formatted(
+				mimeType.isBlank() ? "image/png" : mimeType,
+				Base64.getEncoder().encodeToString(output.toByteArray())
+			);
+		}
+		catch (IllegalArgumentException | java.io.IOException exception) {
+			return dataUrl;
+		}
+	}
+
+	private static BufferedImage resizeForTrace(BufferedImage image) {
+		int width = image.getWidth();
+		int height = image.getHeight();
+		if (width <= TRACE_IMAGE_MAX_WIDTH && height <= TRACE_IMAGE_MAX_HEIGHT) {
+			return image;
+		}
+		double scale = Math.min(
+			(double) TRACE_IMAGE_MAX_WIDTH / width,
+			(double) TRACE_IMAGE_MAX_HEIGHT / height
+		);
+		int targetWidth = Math.max(1, (int) Math.round(width * scale));
+		int targetHeight = Math.max(1, (int) Math.round(height * scale));
+		BufferedImage resized = new BufferedImage(targetWidth, targetHeight, BufferedImage.TYPE_INT_ARGB);
+		Graphics2D graphics = resized.createGraphics();
+		try {
+			graphics.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BILINEAR);
+			graphics.setRenderingHint(RenderingHints.KEY_RENDERING, RenderingHints.VALUE_RENDER_QUALITY);
+			graphics.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+			graphics.drawImage(image, 0, 0, targetWidth, targetHeight, null);
+		}
+		finally {
+			graphics.dispose();
+		}
+		return resized;
 	}
 }

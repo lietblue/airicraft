@@ -49,6 +49,8 @@ final class OtelObservability implements AgentObservability {
 	private static final String WANDB_API_KEY_HEADER = "wandb-api-key";
 	private static final String AUTHORIZATION_HEADER = "Authorization";
 	private static final String PROJECT_ID_HEADER = "project_id";
+	private static final AttributeKey<Boolean> AIRICRAFT_WEAVE_CAPTURE_SIDECAR_EXPORTED =
+		AttributeKey.booleanKey("airicraft.weave.capture_sidecar_exported");
 
 	private static final AttributeKey<String> AIRICRAFT_THREAD_ID = AttributeKey.stringKey("airicraft.thread_id");
 	private static final AttributeKey<Boolean> AIRICRAFT_TURN = AttributeKey.booleanKey("airicraft.turn");
@@ -101,6 +103,7 @@ final class OtelObservability implements AgentObservability {
 
 	private final AgentConfig.ObservabilityConfig config;
 	private final VendorAttributeAdapter vendorAttributeAdapter;
+	private final WeaveCallsCompleteClient weaveCallsCompleteClient;
 	private final SpanProcessor spanProcessor;
 	private final SdkTracerProvider tracerProvider;
 	private final OpenTelemetry openTelemetry;
@@ -140,18 +143,34 @@ final class OtelObservability implements AgentObservability {
 			exporterBuilder.addHeader(entry.getKey(), entry.getValue());
 		}
 		SpanExporter exporter = exporterBuilder.build();
+		WeaveCallsCompleteClient weaveCallsCompleteClient = WeaveCallsCompleteClient.create(safeConfig);
+		if (weaveCallsCompleteClient != null) {
+			exporter = new FilteringSpanExporter(
+				exporter,
+				spanData -> !Boolean.TRUE.equals(spanData.getAttributes().get(AIRICRAFT_WEAVE_CAPTURE_SIDECAR_EXPORTED))
+			);
+		}
 		if (safeConfig.debugLogExports()) {
 			exporter = new DebugLoggingSpanExporter(exporter);
 		}
 		SpanProcessor spanProcessor = safeConfig.debugLogExports()
 			? SimpleSpanProcessor.create(exporter)
 			: BatchSpanProcessor.builder(exporter).build();
-		return new OtelObservability(safeConfig, spanProcessor);
+		return new OtelObservability(safeConfig, spanProcessor, weaveCallsCompleteClient);
 	}
 
 	OtelObservability(AgentConfig.ObservabilityConfig config, SpanProcessor spanProcessor) {
+		this(config, spanProcessor, null);
+	}
+
+	OtelObservability(
+		AgentConfig.ObservabilityConfig config,
+		SpanProcessor spanProcessor,
+		WeaveCallsCompleteClient weaveCallsCompleteClient
+	) {
 		this.config = Objects.requireNonNull(config, "config");
 		this.vendorAttributeAdapter = VendorAttributeAdapter.forProfile(config.vendorProfile());
+		this.weaveCallsCompleteClient = weaveCallsCompleteClient;
 		this.spanProcessor = Objects.requireNonNull(spanProcessor, "spanProcessor");
 		Resource resource = Resource.getDefault().merge(Resource.create(buildResourceAttributes(config)));
 		this.tracerProvider = SdkTracerProvider.builder()
@@ -278,6 +297,11 @@ final class OtelObservability implements AgentObservability {
 		span.setAttribute(AIRICRAFT_IMAGE_SOURCE_WIDTH, (long) capture.sourceWidth());
 		span.setAttribute(AIRICRAFT_IMAGE_SOURCE_HEIGHT, (long) capture.sourceHeight());
 		span.setAttribute(AIRICRAFT_IMAGE_CAPTURED_AT_MS, capture.capturedAtMs());
+		String threadId = context == null ? null : context.get(THREAD_ID_KEY);
+		if (weaveCallsCompleteClient != null && weaveCallsCompleteClient.exportImageCapture(threadId, capture)) {
+			span.setAttribute(AIRICRAFT_WEAVE_CAPTURE_SIDECAR_EXPORTED, true);
+			return;
+		}
 		String imagePayload = TraceSanitizer.imageCapturePayloadForTrace(capture);
 		if (!imagePayload.isBlank()) {
 			span.setAttribute(OUTPUT_VALUE, imagePayload);
