@@ -24,6 +24,7 @@ public final class SemanticEventNoticeFormatter {
 					: "LAN sharing opened " + relativeTime + " on port " + port + ".";
 			}
 			case "crafting.item_crafted" -> craftedActor(event) + " crafted " + craftedItemCount(event) + "x " + craftedItemId(event) + " " + relativeTime + ".";
+			case "pickup.item_picked_up" -> craftedActor(event) + " picked up " + craftedItemCount(event) + "x " + craftedItemId(event) + " " + relativeTime + ".";
 			case "follow.target_acquired" -> "Started following " + playerName(event) + " " + relativeTime + ".";
 			case "follow.target_lost" -> "Lost the follow target " + playerName(event) + " " + relativeTime + ".";
 			case "follow.stuck" -> "Movement got stuck while following " + playerName(event) + " " + relativeTime + ".";

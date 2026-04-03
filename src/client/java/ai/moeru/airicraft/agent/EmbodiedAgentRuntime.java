@@ -434,6 +434,29 @@ public final class EmbodiedAgentRuntime {
 		);
 	}
 
+	public void onPlayerPickedUpItem(String itemId, int count) {
+		if (itemId == null || itemId.isBlank() || count <= 0) {
+			return;
+		}
+
+		eventBuffer.append(tickCount, "pickup.item_picked_up", Map.of(
+			"actor", "self",
+			"itemId", itemId,
+			"count", count
+		));
+
+		dialogueRuntime.onContextTrigger(
+			PlannerTriggerType.PICKUP,
+			"self",
+			"Picked up " + count + "x " + itemId + ".",
+			tickCount,
+			sessionSnapshot,
+			primaryInteractionResolver.current().map(PrimaryInteractionPlayer::name).orElse(null),
+			goalDirector.activeGoal(),
+			eventBuffer
+		);
+	}
+
 	public void onPlayerJoinedGame(UUID playerUuid, String playerName) {
 		if (playerUuid == null || playerName == null || playerName.isBlank()) {
 			return;

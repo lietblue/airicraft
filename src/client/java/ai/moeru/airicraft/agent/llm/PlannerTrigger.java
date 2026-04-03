@@ -28,6 +28,7 @@ public record PlannerTrigger(
 		return switch (type) {
 			case CHAT -> "player";
 			case CRAFT -> "self";
+			case PICKUP -> "self";
 			case SYSTEM -> "server";
 		};
 	}

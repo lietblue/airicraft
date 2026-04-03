@@ -57,6 +57,10 @@ public final class ClientRuntimeController {
 		agentRuntime.onPlayerCraftedItem(itemId, count);
 	}
 
+	public void onPlayerPickedUpItem(String itemId, int count) {
+		agentRuntime.onPlayerPickedUpItem(itemId, count);
+	}
+
 	public void onPlayerJoinedGame(UUID playerUuid, String playerName) {
 		agentRuntime.onPlayerJoinedGame(playerUuid, playerName);
 	}
