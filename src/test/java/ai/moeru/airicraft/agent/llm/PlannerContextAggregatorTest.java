@@ -97,6 +97,35 @@ class PlannerContextAggregatorTest {
 	}
 
 	@Test
+	void coalescesMatchingSemanticUpdatesAcrossMultipleRecordBatchesBeforeFreeze() {
+		Clock clock = Clock.fixed(Instant.ofEpochMilli(10_000L), ZoneId.of("Asia/Taipei"));
+		PlannerContextAggregator aggregator = new PlannerContextAggregator(clock, 65_536, PlannerVisionMode.EXTERNAL_SUMMARY);
+
+		recordEvents(aggregator, 10_000L, List.of(
+			new SemanticEvent(1L, 100L, 8_000L, "pickup.item_picked_up", Map.of("actor", "self", "itemId", "minecraft:sunflower", "count", 1))
+		));
+		recordEvents(aggregator, 10_000L, List.of(
+			new SemanticEvent(2L, 101L, 8_100L, "pickup.item_picked_up", Map.of("actor", "self", "itemId", "minecraft:sunflower", "count", 1))
+		));
+		recordEvents(aggregator, 10_000L, List.of(
+			new SemanticEvent(3L, 102L, 8_200L, "pickup.item_picked_up", Map.of("actor", "self", "itemId", "minecraft:wheat_seeds", "count", 1))
+		));
+		recordEvents(aggregator, 10_000L, List.of(
+			new SemanticEvent(4L, 103L, 8_300L, "pickup.item_picked_up", Map.of("actor", "self", "itemId", "minecraft:sunflower", "count", 1))
+		));
+
+		LlmConversation conversation = aggregator.buildPlannerConversation(requestAt(10_000L, "Alice", "@agent hi"));
+		List<LlmChatMessage> notices = conversation.messages().stream()
+			.filter(message -> message.kind() == LlmMessageKind.NOTICE)
+			.filter(message -> message.content().contains("picked up"))
+			.toList();
+
+		assertEquals(2, notices.size());
+		assertTrue(notices.get(0).content().contains("3x minecraft:sunflower"));
+		assertTrue(notices.get(1).content().contains("1x minecraft:wheat_seeds"));
+	}
+
+	@Test
 	void compactionConversationAppendsTaskInstructionAtTail() {
 		Clock clock = Clock.fixed(Instant.ofEpochMilli(1_000L), ZoneId.of("Asia/Taipei"));
 		PlannerContextAggregator aggregator = new PlannerContextAggregator(clock, 65_536, PlannerVisionMode.EXTERNAL_SUMMARY);

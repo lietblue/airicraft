@@ -40,15 +40,18 @@ final class PlannerDebugOverlay {
 	private static final int CONVERSATION_CARD_PADDING = 6;
 	private static final int CONVERSATION_CARD_GAP = 6;
 	private static final int CONVERSATION_SCROLL_STEP_PX = 24;
+	private static final int CONVERSATION_FOOTER_HEIGHT = 16;
 	private static final int CONVERSATION_BACKGROUND_COLOR = 0x9A0E1117;
 	private static final int CONVERSATION_INNER_COLOR = 0xCC121821;
 	private static final int CONVERSATION_TITLE_COLOR = 0xFFF5E7B8;
 	private static final int CONVERSATION_META_COLOR = 0xFFB8C5D6;
 	private static final int CONVERSATION_IMAGE_MARKER_COLOR = 0xFF98D8AA;
+	private static final int CONVERSATION_FOOTER_COLOR = 0xFFD3DCE9;
 	private static final int SYSTEM_BORDER_COLOR = 0xFFC7A85B;
 	private static final int USER_BORDER_COLOR = 0xFF4FA7D8;
 	private static final int ASSISTANT_BORDER_COLOR = 0xFF8AC9A6;
 	private static final int FAILURE_BORDER_COLOR = 0xFFE06A6A;
+	private static final String[] SPINNER_FRAMES = {"|", "/", "-", "\\"};
 
 	private PlannerDebugOverlayMode mode = PlannerDebugOverlayMode.OFF;
 	private ConversationPaneLayout lastConversationLayout;
@@ -102,7 +105,7 @@ final class PlannerDebugOverlay {
 				return;
 			}
 			case STATES -> renderStates(drawContext, textRenderer, agentRuntime, nowMs);
-			case CONVERSATION -> renderConversation(drawContext, textRenderer, agentRuntime);
+			case CONVERSATION -> renderConversation(drawContext, textRenderer, agentRuntime, nowMs);
 		}
 	}
 
@@ -139,11 +142,13 @@ final class PlannerDebugOverlay {
 		}
 	}
 
-	private void renderConversation(DrawContext drawContext, TextRenderer textRenderer, EmbodiedAgentRuntime agentRuntime) {
+	private void renderConversation(DrawContext drawContext, TextRenderer textRenderer, EmbodiedAgentRuntime agentRuntime, long nowMs) {
+		PlannerOrchestratorDebugSnapshot plannerSnapshot = agentRuntime.plannerDebugSnapshot();
 		PlannerConversationDebugSnapshot snapshot = agentRuntime.plannerConversationDebugSnapshot();
 		if (snapshot == null || snapshot.isEmpty()) {
-			snapshot = placeholderConversationSnapshot(agentRuntime.plannerDebugSnapshot());
+			snapshot = placeholderConversationSnapshot(plannerSnapshot);
 		}
+		String footerLine = formatConversationFooter(plannerSnapshot, nowMs);
 
 		ConversationPaneLayout layout = layoutConversationPane(
 			snapshot,
@@ -152,7 +157,8 @@ final class PlannerDebugOverlay {
 			textRenderer::getWidth,
 			textRenderer.fontHeight + 1,
 			conversationScrollTop,
-			conversationPinnedToBottom
+			conversationPinnedToBottom,
+			footerLine
 		);
 		lastConversationLayout = layout;
 		conversationScrollTop = layout.scrollTop();
@@ -196,6 +202,10 @@ final class PlannerDebugOverlay {
 			}
 		}
 		drawContext.disableScissor();
+		if (layout.footerLine() != null) {
+			int footerY = pane.bottom() - PANEL_PADDING - textRenderer.fontHeight;
+			drawContext.drawText(textRenderer, layout.footerLine(), pane.left() + PANEL_PADDING, footerY, CONVERSATION_FOOTER_COLOR, false);
+		}
 	}
 
 	static List<String> formatStateLines(
@@ -274,7 +284,8 @@ final class PlannerDebugOverlay {
 		TextWidthMeasurer textWidthMeasurer,
 		int lineHeight,
 		int requestedScrollTop,
-		boolean pinnedToBottom
+		boolean pinnedToBottom,
+		String footerLine
 	) {
 		int paneWidth = clamp((int) Math.round(windowWidth * CONVERSATION_WIDTH_RATIO), CONVERSATION_WIDTH_MIN, Math.max(CONVERSATION_WIDTH_MIN, windowWidth - (PANEL_MARGIN * 2)));
 		int paneHeight = clamp((int) Math.round(windowHeight * CONVERSATION_HEIGHT_RATIO), CONVERSATION_HEIGHT_MIN, Math.max(CONVERSATION_HEIGHT_MIN, windowHeight - (PANEL_MARGIN * 2)));
@@ -288,7 +299,7 @@ final class PlannerDebugOverlay {
 			paneBounds.left() + PANEL_PADDING,
 			paneBounds.top() + CONVERSATION_TITLE_HEIGHT + PANEL_PADDING,
 			paneBounds.right() - PANEL_PADDING,
-			paneBounds.bottom() - PANEL_PADDING
+			paneBounds.bottom() - PANEL_PADDING - (footerLine == null ? 0 : CONVERSATION_FOOTER_HEIGHT)
 		);
 
 		int contentWidth = Math.max(48, viewportBounds.width() - (CONVERSATION_CARD_PADDING * 2));
@@ -326,8 +337,28 @@ final class PlannerDebugOverlay {
 			maxScroll,
 			lineHeight,
 			formatConversationTitle(snapshot),
-			List.copyOf(cards)
+			List.copyOf(cards),
+			footerLine
 		);
+	}
+
+	static String formatConversationFooter(PlannerOrchestratorDebugSnapshot plannerSnapshot, long nowMs) {
+		if (plannerSnapshot == null || !plannerSnapshot.inFlight()) {
+			return null;
+		}
+		String spinner = SPINNER_FRAMES[(int) ((Math.max(0L, nowMs) / 200L) % SPINNER_FRAMES.length)];
+		String status = plannerSnapshot.compactionInFlight()
+			? "compacting context"
+			: plannerSnapshot.captureInFlight()
+				? "capturing view"
+				: plannerSnapshot.toolInFlight()
+					? "waiting for tool follow-up"
+					: plannerSnapshot.coalescePending()
+						? "coalescing updates"
+						: plannerSnapshot.plannerInFlight()
+							? "waiting for planner"
+							: "working";
+		return spinner + " " + status;
 	}
 
 	static List<String> wrapText(String text, int maxWidth, TextWidthMeasurer textWidthMeasurer) {
@@ -685,7 +716,8 @@ final class PlannerDebugOverlay {
 		int maxScroll,
 		int lineHeight,
 		String title,
-		List<ConversationCardLayout> cards
+		List<ConversationCardLayout> cards,
+		String footerLine
 	) {
 		boolean atBottom() {
 			return scrollTop >= maxScroll;

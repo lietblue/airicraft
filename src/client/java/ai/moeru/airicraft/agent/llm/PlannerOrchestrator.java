@@ -264,7 +264,7 @@ public final class PlannerOrchestrator {
 		contextAggregator.recordUsage(plannerResult.usage());
 		PlannerToolRequest toolRequest = plannerResult.response().toolRequest();
 		if (toolRequest == null) {
-			appendAssistantReplyCard(plannerResult);
+			appendAssistantOutcomeCard(plannerResult);
 			acceptGeneration(plannerResult);
 			return plannerResult;
 		}
@@ -628,14 +628,18 @@ public final class PlannerOrchestrator {
 		);
 	}
 
-	private void appendAssistantReplyCard(PlannerExecutionResult result) {
-		if (result == null || result.response() == null || result.response().replyText() == null || result.response().replyText().isBlank()) {
+	private void appendAssistantOutcomeCard(PlannerExecutionResult result) {
+		if (result == null || result.response() == null) {
+			return;
+		}
+		String text = assistantOutcomeText(result.response());
+		if (text == null || text.isBlank()) {
 			return;
 		}
 		appendConversationCard(new PlannerConversationDebugMessage(
 			"assistant",
 			PlannerConversationDebugKind.ASSISTANT_TURN,
-			result.response().replyText(),
+			text,
 			result.generation(),
 			result.phase().name(),
 			result.attempt(),
@@ -737,5 +741,34 @@ public final class PlannerOrchestrator {
 
 	private static String summarizeForLog(String text) {
 		return OpenAiCompatibleChatClient.summarizeForLog(text);
+	}
+
+	private static String assistantOutcomeText(PlannerResponse response) {
+		if (response == null) {
+			return null;
+		}
+		if (response.replyText() != null && !response.replyText().isBlank()) {
+			return response.replyText();
+		}
+		PlannerIntent intent = response.intent();
+		if (intent == null || intent.type() == null || intent.type().isBlank()) {
+			return null;
+		}
+		return switch (intent.type()) {
+			case "set_goal" -> {
+				if (intent.goalType() != null && intent.targetPlayer() != null && !intent.targetPlayer().isBlank()) {
+					yield "Set goal: " + intent.goalType().name() + " for " + intent.targetPlayer() + ".";
+				}
+				if (intent.goalType() != null) {
+					yield "Set goal: " + intent.goalType().name() + ".";
+				}
+				yield "Set goal.";
+			}
+			case "clear_goal" -> "Cleared the current goal.";
+			case "ask_clarification" -> "Asked for clarification.";
+			case "acknowledge_failure" -> "Acknowledged failure.";
+			case "reply_only", "none" -> null;
+			default -> "Applied intent: " + intent.type() + ".";
+		};
 	}
 }

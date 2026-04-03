@@ -1,5 +1,8 @@
 package ai.moeru.airicraft.agent.llm;
 
+import ai.moeru.airicraft.agent.semantic.SemanticContextUpdate;
+import ai.moeru.airicraft.agent.semantic.SemanticContextUpdateCoalescer;
+
 import java.util.ArrayList;
 import java.util.List;
 
@@ -33,6 +36,54 @@ final class PlannerContextReducer {
 			next = recordEntry(next, entry);
 		}
 		return next;
+	}
+
+	static PlannerContextState recordSemanticUpdates(PlannerContextState state, List<SemanticContextUpdate> updates, long anchorTimeMs) {
+		if (updates == null || updates.isEmpty()) {
+			return state;
+		}
+
+		ArrayList<PlannerContextEntry> archive = new ArrayList<>(state.rawArchiveTape());
+		ArrayList<PlannerContextEntry> pending = new ArrayList<>(state.pendingEntries());
+		for (SemanticContextUpdate update : updates) {
+			if (update == null || update.text().isBlank()) {
+				continue;
+			}
+			PlannerContextEntry entry = PlannerContextEntry.semanticNotice(update);
+			archive.add(entry);
+			boolean merged = false;
+			for (int index = 0; index < pending.size(); index++) {
+				PlannerContextEntry existingEntry = pending.get(index);
+				SemanticContextUpdate existingUpdate = existingEntry.semanticUpdate();
+				if (existingUpdate == null) {
+					continue;
+				}
+				SemanticContextUpdate coalesced = SemanticContextUpdateCoalescer.mergeIfPossible(existingUpdate, update, anchorTimeMs);
+				if (coalesced == null) {
+					continue;
+				}
+				pending.set(index, PlannerContextEntry.semanticNotice(coalesced));
+				merged = true;
+				break;
+			}
+			if (!merged) {
+				pending.add(entry);
+			}
+		}
+
+		return new PlannerContextState(
+			List.copyOf(archive),
+			state.canonicalTape(),
+			state.activeCheckpoint(),
+			List.copyOf(pending),
+			state.lastObservedEventSeqNo(),
+			state.lastAmbientContext(),
+			state.lastTimeBeaconAtMs(),
+			state.compactionPending(),
+			state.lastObservedUsage(),
+			state.queuedTriggers(),
+			state.nextTriggerSeqNo()
+		);
 	}
 
 	static PlannerContextState commitPending(PlannerContextState state, long anchorTimeMs) {

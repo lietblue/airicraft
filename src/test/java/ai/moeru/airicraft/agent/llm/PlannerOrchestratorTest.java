@@ -539,6 +539,26 @@ class PlannerOrchestratorTest {
 	}
 
 	@Test
+	void conversationSnapshotShowsGoalSetOutcomeWhenReplyTextIsBlank() {
+		RecordingBackend backend = new RecordingBackend();
+		PlannerOrchestrator orchestrator = newOrchestrator(backend, CurrentViewVisionTool.disabled(), PlannerVisionMode.EXTERNAL_SUMMARY);
+
+		orchestrator.submit(requestAt(10L, 1_000L, "Alice", "@agent follow me"));
+		backend.awaitCalls(1, Duration.ofSeconds(1));
+		backend.succeed(0, new PlannerResponse(
+			"",
+			new PlannerIntent("set_goal", GoalType.FOLLOW_PLAYER, "Alice")
+		));
+
+		PlannerExecutionResult result = awaitResult(orchestrator);
+		assertTrue(result.succeeded());
+
+		PlannerConversationDebugMessage outcomeCard = lastConversationMessage(orchestrator.conversationDebugSnapshot());
+		assertEquals(PlannerConversationDebugKind.ASSISTANT_TURN, outcomeCard.kind());
+		assertTrue(outcomeCard.text().contains("Set goal: FOLLOW_PLAYER for Alice."));
+	}
+
+	@Test
 	void conversationSnapshotShowsCoalescedSemanticNoticesInOutboundPrompt() {
 		RecordingBackend backend = new RecordingBackend();
 		PlannerOrchestrator orchestrator = newOrchestrator(backend, CurrentViewVisionTool.disabled(), PlannerVisionMode.EXTERNAL_SUMMARY);
@@ -563,6 +583,49 @@ class PlannerOrchestratorTest {
 			.toList();
 		assertEquals(1, dirtNotices.size());
 		assertTrue(dirtNotices.getFirst().text().contains("3x minecraft:dirt"));
+	}
+
+	@Test
+	void conversationSnapshotCoalescesRepeatedPickupNoticesAcrossMultipleRecordCalls() {
+		RecordingBackend backend = new RecordingBackend();
+		PlannerOrchestrator orchestrator = newOrchestrator(backend, CurrentViewVisionTool.disabled(), PlannerVisionMode.EXTERNAL_SUMMARY);
+
+		orchestrator.recordEvents(new SemanticEventQueryResult(
+			1L,
+			1L,
+			false,
+			List.of(new SemanticEvent(1L, 100L, 1_000L, "pickup.item_picked_up", Map.of("actor", "self", "itemId", "minecraft:sunflower", "count", 1)))
+		), 1_000L);
+		orchestrator.recordEvents(new SemanticEventQueryResult(
+			2L,
+			2L,
+			false,
+			List.of(new SemanticEvent(2L, 101L, 1_010L, "pickup.item_picked_up", Map.of("actor", "self", "itemId", "minecraft:sunflower", "count", 1)))
+		), 1_010L);
+		orchestrator.recordEvents(new SemanticEventQueryResult(
+			3L,
+			3L,
+			false,
+			List.of(new SemanticEvent(3L, 102L, 1_020L, "pickup.item_picked_up", Map.of("actor", "self", "itemId", "minecraft:wheat_seeds", "count", 1)))
+		), 1_020L);
+		orchestrator.recordEvents(new SemanticEventQueryResult(
+			4L,
+			4L,
+			false,
+			List.of(new SemanticEvent(4L, 103L, 1_030L, "pickup.item_picked_up", Map.of("actor", "self", "itemId", "minecraft:sunflower", "count", 1)))
+		), 1_030L);
+
+		orchestrator.submit(requestAt(10L, 1_030L, "Alice", "A"));
+		backend.awaitCalls(1, Duration.ofSeconds(1));
+
+		PlannerConversationDebugSnapshot submitted = orchestrator.conversationDebugSnapshot();
+		List<PlannerConversationDebugMessage> pickupNotices = submitted.messages().stream()
+			.filter(message -> message.kind() == PlannerConversationDebugKind.NOTICE)
+			.filter(message -> message.text().contains("picked up"))
+			.toList();
+		assertEquals(2, pickupNotices.size());
+		assertTrue(pickupNotices.get(0).text().contains("3x minecraft:sunflower"));
+		assertTrue(pickupNotices.get(1).text().contains("1x minecraft:wheat_seeds"));
 	}
 
 	@Test

@@ -68,20 +68,14 @@ public final class PlannerContextAggregator {
 		if (projection == null) {
 			return;
 		}
-		ArrayList<PlannerContextEntry> entries = new ArrayList<>();
+		ArrayList<SemanticContextUpdate> updates = new ArrayList<>();
 		for (SemanticContextUpdate update : projection.updates()) {
 			if (update.kind() != SemanticContextUpdateKind.NOTICE || update.text().isBlank()) {
 				continue;
 			}
-			entries.add(new PlannerContextEntry(
-				PlannerContextEntryType.NOTICE,
-				null,
-				update.text(),
-				update.tick(),
-				update.timestampMs()
-			));
+			updates.add(update);
 		}
-		state = PlannerContextReducer.recordEntries(state, entries);
+		state = PlannerContextReducer.recordSemanticUpdates(state, updates, clock.millis());
 		state = PlannerContextReducer.updateObservedEventSeqNo(state, projection.latestObservedSeqNo());
 	}
 

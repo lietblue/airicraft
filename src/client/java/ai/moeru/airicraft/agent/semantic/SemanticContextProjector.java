@@ -29,7 +29,10 @@ public final class SemanticContextProjector {
 				firstEvent.timestampMs(),
 				0,
 				firstEvent.seqNo(),
-				firstEvent.seqNo()
+				firstEvent.seqNo(),
+				null,
+				Map.of(),
+				null
 			));
 		}
 
@@ -63,7 +66,10 @@ public final class SemanticContextProjector {
 				aggregatedEvent.timestampMs(),
 				aggregatedEvent.sourceEventCount(),
 				aggregatedEvent.firstSourceSeqNo(),
-				aggregatedEvent.lastSourceSeqNo()
+				aggregatedEvent.lastSourceSeqNo(),
+				aggregatedEvent.type(),
+				aggregatedEvent.payload(),
+				accumulator.key()
 			));
 		}
 
@@ -207,6 +213,10 @@ public final class SemanticContextProjector {
 				firstSourceSeqNo,
 				lastSourceSeqNo
 			);
+		}
+
+		private String key() {
+			return key;
 		}
 
 		private static int countValue(Object value) {

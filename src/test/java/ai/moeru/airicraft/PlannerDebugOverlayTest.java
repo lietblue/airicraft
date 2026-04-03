@@ -125,7 +125,8 @@ class PlannerDebugOverlayTest {
 			text -> text.length() * 6,
 			10,
 			0,
-			true
+			true,
+			null
 		);
 
 		assertEquals(2, layout.cards().size());
@@ -154,7 +155,8 @@ class PlannerDebugOverlayTest {
 			text -> text.length() * 6,
 			10,
 			0,
-			true
+			true,
+			null
 		);
 
 		PlannerDebugOverlay.ConversationScrollUpdate ignored = PlannerDebugOverlay.scrollConversation(
@@ -178,6 +180,61 @@ class PlannerDebugOverlayTest {
 		assertFalse(consumed.pinnedToBottom());
 	}
 
+	@Test
+	void conversationFooterShowsSpinnerWhilePlannerIsInFlight() {
+		String footer = PlannerDebugOverlay.formatConversationFooter(
+			plannerSnapshot(
+				new PlannerRequest(120L, 2_000L, SessionMode.OUT_OF_WORLD, "Alice", null, "Alice", "hello", null),
+				new PlannerContextDebugSnapshot(65_536, false, 12, 8, 1, 0, 0, 42L, 1_000L, null, null, null),
+				false,
+				-1L,
+				0L,
+				true,
+				true,
+				false,
+				false
+			),
+			400L
+		);
+
+		assertEquals("-", footer.substring(0, 1));
+		assertTrue(footer.contains("waiting for planner"));
+	}
+
+	@Test
+	void conversationLayoutReservesFooterSpaceWhenStatusLinePresent() {
+		PlannerConversationDebugSnapshot snapshot = new PlannerConversationDebugSnapshot(
+			7L,
+			"PLANNER_REQUEST",
+			1,
+			List.of(message("assistant", PlannerConversationDebugKind.ASSISTANT_TURN, "Final assistant answer."))
+		);
+
+		PlannerDebugOverlay.ConversationPaneLayout withFooter = PlannerDebugOverlay.layoutConversationPane(
+			snapshot,
+			800,
+			600,
+			text -> text.length() * 6,
+			10,
+			0,
+			true,
+			"| waiting for planner"
+		);
+		PlannerDebugOverlay.ConversationPaneLayout withoutFooter = PlannerDebugOverlay.layoutConversationPane(
+			snapshot,
+			800,
+			600,
+			text -> text.length() * 6,
+			10,
+			0,
+			true,
+			null
+		);
+
+		assertEquals("| waiting for planner", withFooter.footerLine());
+		assertTrue(withFooter.viewportBounds().height() < withoutFooter.viewportBounds().height());
+	}
+
 	private static AgentRuntimeSnapshot runtimeSnapshot(SessionMode mode) {
 		return new AgentRuntimeSnapshot(
 			true,
@@ -194,14 +251,28 @@ class PlannerDebugOverlayTest {
 		long coalesceReadyAtMs,
 		long coalesceWindowMs
 	) {
+		return plannerSnapshot(request, context, coalescePending, coalesceReadyAtMs, coalesceWindowMs, false, false, false, false);
+	}
+
+	private static PlannerOrchestratorDebugSnapshot plannerSnapshot(
+		PlannerRequest request,
+		PlannerContextDebugSnapshot context,
+		boolean coalescePending,
+		long coalesceReadyAtMs,
+		long coalesceWindowMs,
+		boolean inFlight,
+		boolean plannerInFlight,
+		boolean toolInFlight,
+		boolean captureInFlight
+	) {
 		return new PlannerOrchestratorDebugSnapshot(
 			true,
 			"native_tool_image",
+			inFlight,
+			plannerInFlight,
 			false,
-			false,
-			false,
-			false,
-			false,
+			captureInFlight,
+			toolInFlight,
 			false,
 			request,
 			null,
