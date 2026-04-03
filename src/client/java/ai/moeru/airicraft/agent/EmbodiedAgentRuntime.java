@@ -417,6 +417,7 @@ public final class EmbodiedAgentRuntime {
 		}
 
 		eventBuffer.append(tickCount, "crafting.item_crafted", Map.of(
+			"actor", "self",
 			"itemId", itemId,
 			"count", count
 		));

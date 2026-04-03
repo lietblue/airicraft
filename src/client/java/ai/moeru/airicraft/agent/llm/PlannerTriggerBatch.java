@@ -48,18 +48,27 @@ public record PlannerTriggerBatch(
 			return "";
 		}
 		if (triggers.size() == 1) {
-			return triggers.get(0).text();
+			PlannerTrigger trigger = triggers.get(0);
+			if (trigger.type() == PlannerTriggerType.CRAFT) {
+				return genericWakePrompt();
+			}
+			return trigger.text();
 		}
 		return renderPrompt();
 	}
 
 	public String renderPrompt() {
 		if (triggers.isEmpty()) {
-			return "Recent updates requiring one combined response:\n\nRespond once to the combined latest context above.";
+			return genericWakePrompt();
 		}
 
 		StringBuilder builder = new StringBuilder("Recent updates requiring one combined response:\n");
+		int renderedCount = 0;
 		for (PlannerTrigger trigger : triggers) {
+			if (trigger.type() == PlannerTriggerType.CRAFT) {
+				continue;
+			}
+			renderedCount++;
 			builder
 				.append("- [")
 				.append(trigger.type().promptLabel())
@@ -69,11 +78,18 @@ public record PlannerTriggerBatch(
 				.append(trigger.text())
 				.append('\n');
 		}
+		if (renderedCount == 0) {
+			return genericWakePrompt();
+		}
 		builder.append('\n').append("Respond once to the combined latest context above.");
 		return builder.toString();
 	}
 
 	public LlmChatMessage toTerminalMessage() {
 		return LlmChatMessage.user(renderPrompt(), LlmMessageKind.USER_TURN);
+	}
+
+	private static String genericWakePrompt() {
+		return "Recent context updates require one combined response.";
 	}
 }

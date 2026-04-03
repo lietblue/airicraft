@@ -23,7 +23,7 @@ public final class SemanticEventNoticeFormatter {
 					? "LAN sharing opened " + relativeTime + "."
 					: "LAN sharing opened " + relativeTime + " on port " + port + ".";
 			}
-			case "crafting.item_crafted" -> "Crafted " + craftedItemCount(event) + "x " + craftedItemId(event) + " " + relativeTime + ".";
+			case "crafting.item_crafted" -> craftedActor(event) + " crafted " + craftedItemCount(event) + "x " + craftedItemId(event) + " " + relativeTime + ".";
 			case "follow.target_acquired" -> "Started following " + playerName(event) + " " + relativeTime + ".";
 			case "follow.target_lost" -> "Lost the follow target " + playerName(event) + " " + relativeTime + ".";
 			case "follow.stuck" -> "Movement got stuck while following " + playerName(event) + " " + relativeTime + ".";
@@ -74,5 +74,17 @@ public final class SemanticEventNoticeFormatter {
 		} catch (NumberFormatException ignored) {
 			return 1;
 		}
+	}
+
+	private static String craftedActor(SemanticEvent event) {
+		Object actor = event.payload().get("actor");
+		if (actor == null || String.valueOf(actor).isBlank()) {
+			return "Someone";
+		}
+		String actorValue = String.valueOf(actor);
+		if ("self".equals(actorValue)) {
+			return "You";
+		}
+		return actorValue;
 	}
 }

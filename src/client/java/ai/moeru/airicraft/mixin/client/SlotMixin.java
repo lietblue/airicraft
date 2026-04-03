@@ -2,6 +2,7 @@ package ai.moeru.airicraft.mixin.client;
 
 import ai.moeru.airicraft.AiricraftClient;
 import ai.moeru.airicraft.client.CraftingResultSlotCraftEventBridge;
+import net.minecraft.client.MinecraftClient;
 import net.minecraft.item.ItemStack;
 import net.minecraft.registry.Registries;
 import net.minecraft.screen.slot.CraftingResultSlot;
@@ -15,6 +16,10 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 public class SlotMixin {
 	@Inject(method = "onQuickTransfer", at = @At("HEAD"))
 	private void airicraft$onQuickTransfer(ItemStack stack, ItemStack originalStack, CallbackInfo ci) {
+		MinecraftClient client = MinecraftClient.getInstance();
+		if (client == null || !client.isOnThread()) {
+			return;
+		}
 		if (!(((Object) this) instanceof CraftingResultSlot)) {
 			return;
 		}

@@ -3,6 +3,7 @@ package ai.moeru.airicraft.mixin.client;
 import ai.moeru.airicraft.AiricraftClient;
 import ai.moeru.airicraft.client.CraftingResultSlotCraftEventBridge;
 import net.minecraft.entity.player.PlayerEntity;
+import net.minecraft.client.MinecraftClient;
 import net.minecraft.item.ItemStack;
 import net.minecraft.registry.Registries;
 import net.minecraft.screen.slot.CraftingResultSlot;
@@ -21,6 +22,10 @@ public class CraftingResultSlotMixin implements CraftingResultSlotCraftEventBrid
 	private void airicraft$onTakeItem(PlayerEntity player, ItemStack stack, CallbackInfo ci) {
 		if (airicraft$skipNextTakeItemCraftEvent) {
 			airicraft$skipNextTakeItemCraftEvent = false;
+			return;
+		}
+		MinecraftClient client = MinecraftClient.getInstance();
+		if (client == null || !client.isOnThread()) {
 			return;
 		}
 		if (player == null || stack == null || stack.isEmpty() || stack.getCount() <= 0) {
