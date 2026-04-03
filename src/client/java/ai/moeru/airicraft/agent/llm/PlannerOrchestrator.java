@@ -42,6 +42,7 @@ public final class PlannerOrchestrator {
 	private long coalesceReadyAtMs = -1L;
 	private long coalesceWindowMs;
 	private PlannerContextSnapshot coalesceSupersededSnapshot;
+	private PlannerConversationDebugSnapshot lastVisibleConversation = PlannerConversationDebugSnapshot.empty();
 
 	public PlannerOrchestrator(
 		PlannerExecutor plannerExecutor,
@@ -139,7 +140,8 @@ public final class PlannerOrchestrator {
 			this.clock,
 			plannerSessionMaxConcurrentAttempts,
 			SESSION_MAX_ATTEMPTS,
-			SESSION_RETRY_BACKOFF_MS
+			SESSION_RETRY_BACKOFF_MS,
+			this::recordSubmittedConversation
 		);
 		this.visionTool = Objects.requireNonNull(visionTool, "visionTool");
 		this.visionMode = Objects.requireNonNull(visionMode, "visionMode");
@@ -183,6 +185,10 @@ public final class PlannerOrchestrator {
 			coalesceReadyAtMs,
 			coalesceWindowMs
 		);
+	}
+
+	public PlannerConversationDebugSnapshot conversationDebugSnapshot() {
+		return lastVisibleConversation;
 	}
 
 	public boolean submit(PlannerRequest request) {
@@ -244,6 +250,7 @@ public final class PlannerOrchestrator {
 			return null;
 		}
 		if (!plannerResult.succeeded()) {
+			appendFailureCard(plannerResult);
 			sessionCoordinator.finishGeneration(plannerResult.generation(), true);
 			return plannerResult;
 		}
@@ -251,11 +258,13 @@ public final class PlannerOrchestrator {
 		contextAggregator.recordUsage(plannerResult.usage());
 		PlannerToolRequest toolRequest = plannerResult.response().toolRequest();
 		if (toolRequest == null) {
+			appendAssistantReplyCard(plannerResult);
 			acceptGeneration(plannerResult);
 			return plannerResult;
 		}
 		if (plannerResult.phase() == PlannerSessionPhase.TOOL_FOLLOW_UP) {
 			PlannerExecutionResult failure = parseFailure(plannerResult, "Planner requested take_a_look more than once");
+			appendFailureCard(failure);
 			sessionCoordinator.finishGeneration(plannerResult.generation(), true);
 			return failure;
 		}
@@ -270,6 +279,7 @@ public final class PlannerOrchestrator {
 				summarizeForLog(plannerResult.response().replyText())
 			);
 			PlannerExecutionResult failure = parseFailure(plannerResult, "Tool requests cannot set goal intents");
+			appendFailureCard(failure);
 			sessionCoordinator.finishGeneration(plannerResult.generation(), true);
 			return failure;
 		}
@@ -280,6 +290,7 @@ public final class PlannerOrchestrator {
 				summarizeForLog(toolRequest.prompt())
 			);
 			PlannerExecutionResult failure = parseFailure(plannerResult, "Planner requested an invalid tool");
+			appendFailureCard(failure);
 			sessionCoordinator.finishGeneration(plannerResult.generation(), true);
 			return failure;
 		}
@@ -298,6 +309,7 @@ public final class PlannerOrchestrator {
 			);
 		}
 
+		appendToolRequestCard(plannerResult);
 		sessionCoordinator.markToolWait(plannerResult.generation());
 		pendingToolExecution = new PendingToolExecution(plannerResult.generation(), requestVisionTool(toolRequest));
 		return null;
@@ -361,6 +373,7 @@ public final class PlannerOrchestrator {
 		pendingSubmitRequest = null;
 		lastCompactionResult = null;
 		awaitingAcceptedReplyRecord = false;
+		lastVisibleConversation = PlannerConversationDebugSnapshot.empty();
 		clearCoalesceState();
 	}
 
@@ -372,6 +385,7 @@ public final class PlannerOrchestrator {
 		pendingSubmitRequest = null;
 		lastCompactionResult = null;
 		awaitingAcceptedReplyRecord = false;
+		lastVisibleConversation = PlannerConversationDebugSnapshot.empty();
 		clearCoalesceState();
 	}
 
@@ -562,6 +576,16 @@ public final class PlannerOrchestrator {
 		return "image/" + capture.format().toLowerCase(Locale.ROOT);
 	}
 
+	private void recordSubmittedConversation(
+		long generation,
+		int attempt,
+		PlannerSessionPhase phase,
+		PlannerRequest request,
+		LlmConversation conversation
+	) {
+		lastVisibleConversation = PlannerConversationDebugSnapshot.fromConversation(generation, phase, attempt, conversation);
+	}
+
 	private boolean isValidToolRequest(PlannerToolRequest toolRequest) {
 		if (!VISUAL_TOOL_NAME.equals(toolRequest.type())) {
 			return false;
@@ -596,6 +620,73 @@ public final class PlannerOrchestrator {
 			baseResult.phase(),
 			false
 		);
+	}
+
+	private void appendAssistantReplyCard(PlannerExecutionResult result) {
+		if (result == null || result.response() == null || result.response().replyText() == null || result.response().replyText().isBlank()) {
+			return;
+		}
+		appendConversationCard(new PlannerConversationDebugMessage(
+			"assistant",
+			PlannerConversationDebugKind.ASSISTANT_TURN,
+			result.response().replyText(),
+			result.generation(),
+			result.phase().name(),
+			result.attempt(),
+			false
+		));
+	}
+
+	private void appendToolRequestCard(PlannerExecutionResult result) {
+		if (result == null || result.response() == null || result.response().toolRequest() == null) {
+			return;
+		}
+		PlannerToolRequest toolRequest = result.response().toolRequest();
+		String summary = "Tool request: " + toolRequest.type()
+			+ (toolRequest.prompt() == null || toolRequest.prompt().isBlank() ? "" : " | " + toolRequest.prompt());
+		appendConversationCard(new PlannerConversationDebugMessage(
+			"assistant",
+			PlannerConversationDebugKind.TASK,
+			summary,
+			result.generation(),
+			result.phase().name(),
+			result.attempt(),
+			false
+		));
+	}
+
+	private void appendFailureCard(PlannerExecutionResult result) {
+		if (result == null || result.failureType() == null) {
+			return;
+		}
+		String text = result.failureType().name() + ": " + (result.failureMessage() == null || result.failureMessage().isBlank()
+			? "Planner execution failed"
+			: result.failureMessage());
+		appendConversationCard(new PlannerConversationDebugMessage(
+			"system",
+			PlannerConversationDebugKind.FAILURE,
+			text,
+			result.generation(),
+			result.phase() == null ? "UNKNOWN" : result.phase().name(),
+			result.attempt(),
+			false
+		));
+	}
+
+	private void appendConversationCard(PlannerConversationDebugMessage message) {
+		if (message == null) {
+			return;
+		}
+		if (lastVisibleConversation == null || lastVisibleConversation.isEmpty()) {
+			lastVisibleConversation = new PlannerConversationDebugSnapshot(
+				message.generation(),
+				message.phase(),
+				message.attempt(),
+				java.util.List.of(message)
+			);
+			return;
+		}
+		lastVisibleConversation = lastVisibleConversation.withAppended(message);
 	}
 
 	private sealed interface ToolExecutionOutcome permits TextToolExecutionOutcome, ImageToolExecutionOutcome {

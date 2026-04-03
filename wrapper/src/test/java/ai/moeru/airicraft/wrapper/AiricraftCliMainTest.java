@@ -55,6 +55,9 @@ class AiricraftCliMainTest {
 				"captureInFlight", false,
 				"toolInFlight", false,
 				"toolUsed", false,
+				"coalescePending", true,
+				"coalesceReadyAtMs", 123456999L,
+				"coalesceWindowMs", 20L,
 				"context", linkedMap(
 					"compactionTriggerTokens", 65536,
 					"compactionPending", true,
@@ -62,6 +65,7 @@ class AiricraftCliMainTest {
 					"canonicalMessageCount", 8,
 					"pendingEntryCount", 1,
 					"frozenPlannerMessageCount", 0,
+					"queuedTriggerCount", 3,
 					"lastObservedEventSeqNo", 42,
 					"lastTimeBeaconAtMs", 123456789L
 				)
@@ -74,6 +78,9 @@ class AiricraftCliMainTest {
 		assertTrue(result.output().contains("command: agent context\n"));
 		assertTrue(result.output().contains("plannerVisionMode: native_tool_image\n"));
 		assertTrue(result.output().contains("compactionPending: true\n"));
+		assertTrue(result.output().contains("coalescePending: true\n"));
+		assertTrue(result.output().contains("coalesceWindowMs: 20\n"));
+		assertTrue(result.output().contains("queuedTriggerCount: 3\n"));
 		assertTrue(result.output().contains("canonicalMessageCount: 8\n"));
 	}
 

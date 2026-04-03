@@ -844,8 +844,9 @@ public final class AiricraftCliMain {
 			Map<String, Object> planner = map(payload.get("planner"));
 			Map<String, Object> context = map(planner.get("context"));
 			copy(view, planner, "configured", "plannerVisionMode", "inFlight", "plannerInFlight", "compactionInFlight", "captureInFlight", "toolInFlight", "toolUsed");
+			copy(view, planner, "coalescePending", "coalesceReadyAtMs", "coalesceWindowMs");
 			copy(view, context, "compactionTriggerTokens", "compactionPending", "rawArchiveEntryCount", "canonicalMessageCount",
-				"pendingEntryCount", "frozenPlannerMessageCount", "lastObservedEventSeqNo", "lastTimeBeaconAtMs");
+				"pendingEntryCount", "frozenPlannerMessageCount", "queuedTriggerCount", "lastObservedEventSeqNo", "lastTimeBeaconAtMs");
 			if (verbose) {
 				copy(view, planner, "baseRequest", "lastCompactionResult");
 				copy(view, context, "lastObservedUsage", "ambientContext", "activeCheckpoint");

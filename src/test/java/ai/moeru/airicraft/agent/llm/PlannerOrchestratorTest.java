@@ -510,6 +510,143 @@ class PlannerOrchestratorTest {
 	}
 
 	@Test
+	void conversationSnapshotTracksOutboundMessagesAndAssistantReplyCard() {
+		RecordingBackend backend = new RecordingBackend();
+		PlannerOrchestrator orchestrator = newOrchestrator(backend, CurrentViewVisionTool.disabled(), PlannerVisionMode.EXTERNAL_SUMMARY);
+
+		orchestrator.submit(requestAt(10L, 1_000L, "Alice", "A"));
+		backend.awaitCalls(1, Duration.ofSeconds(1));
+
+		PlannerConversationDebugSnapshot submitted = orchestrator.conversationDebugSnapshot();
+		assertEquals(1L, submitted.generation());
+		assertEquals("PLANNER_REQUEST", submitted.phase());
+		assertEquals(1, submitted.attempt());
+		assertTrue(submitted.messages().stream().anyMatch(message -> message.kind() == PlannerConversationDebugKind.SYSTEM));
+		PlannerConversationDebugMessage terminalMessage = lastConversationMessage(submitted);
+		assertEquals(PlannerConversationDebugKind.USER_TURN, terminalMessage.kind());
+		assertTrue(terminalMessage.text().contains("[chat][Alice] A"));
+
+		backend.succeed(0, replyOnly("reply A"));
+		PlannerExecutionResult result = awaitResult(orchestrator);
+
+		assertEquals("reply A", result.response().replyText());
+		PlannerConversationDebugMessage replyCard = lastConversationMessage(orchestrator.conversationDebugSnapshot());
+		assertEquals(PlannerConversationDebugKind.ASSISTANT_TURN, replyCard.kind());
+		assertEquals("reply A", replyCard.text());
+	}
+
+	@Test
+	void toolRequestAddsTaskCardWhileWaitingForToolResult() {
+		RecordingBackend backend = new RecordingBackend();
+		StubVisionTool visionTool = new StubVisionTool(
+			true,
+			new CompletableFuture<>(),
+			CompletableFuture.failedFuture(new AssertionError("External summary should not be requested"))
+		);
+		PlannerOrchestrator orchestrator = newOrchestrator(
+			backend,
+			visionTool,
+			PlannerVisionMode.NATIVE_TOOL_IMAGE
+		);
+
+		orchestrator.submit(requestAt(10L, 1_000L, "Alice", "@agent what do you see?"));
+		backend.awaitCalls(1, Duration.ofSeconds(1));
+		backend.succeed(0, new PlannerResponse(
+			"",
+			new PlannerIntent("none", null, null),
+			new PlannerToolRequest("take_a_look", null)
+		));
+		backend.awaitCompletions(1, Duration.ofSeconds(1));
+
+		assertNull(awaitNullPoll(orchestrator));
+		PlannerConversationDebugMessage taskCard = lastConversationMessage(orchestrator.conversationDebugSnapshot());
+		assertEquals(PlannerConversationDebugKind.TASK, taskCard.kind());
+		assertTrue(taskCard.text().contains("Tool request: take_a_look"));
+	}
+
+	@Test
+	void toolFollowUpConversationShowsLatestToolResultMessage() {
+		RecordingBackend backend = new RecordingBackend();
+		StubVisionTool visionTool = new StubVisionTool(
+			true,
+			CompletableFuture.completedFuture(capturedScreenshot()),
+			CompletableFuture.failedFuture(new AssertionError("External summary should not be requested"))
+		);
+		PlannerOrchestrator orchestrator = newOrchestrator(
+			backend,
+			visionTool,
+			PlannerVisionMode.NATIVE_TOOL_IMAGE
+		);
+
+		orchestrator.submit(requestAt(10L, 1_000L, "Alice", "@agent what do you see?"));
+		backend.awaitCalls(1, Duration.ofSeconds(1));
+		backend.succeed(0, new PlannerResponse(
+			"",
+			new PlannerIntent("none", null, null),
+			new PlannerToolRequest("take_a_look", null)
+		));
+		backend.awaitCompletions(1, Duration.ofSeconds(1));
+
+		awaitBackendCallCount(orchestrator, backend, 2, Duration.ofSeconds(1));
+		PlannerConversationDebugSnapshot followUp = orchestrator.conversationDebugSnapshot();
+		assertEquals(1L, followUp.generation());
+		assertEquals("TOOL_FOLLOW_UP", followUp.phase());
+		PlannerConversationDebugMessage toolResultMessage = lastConversationMessage(followUp);
+		assertEquals(PlannerConversationDebugKind.TOOL_RESULT, toolResultMessage.kind());
+		assertTrue(toolResultMessage.hasImageAttachment());
+		assertTrue(toolResultMessage.text().contains("current first-person view attached"));
+	}
+
+	@Test
+	void failureAppendsFailureCardToVisibleConversation() {
+		RecordingBackend backend = new RecordingBackend();
+		PlannerOrchestrator orchestrator = newOrchestrator(backend, CurrentViewVisionTool.disabled(), PlannerVisionMode.EXTERNAL_SUMMARY);
+
+		orchestrator.submit(requestAt(10L, 1_000L, "Alice", "A"));
+		backend.awaitCalls(1, Duration.ofSeconds(1));
+		backend.fail(0, LlmFailureType.PROVIDER_ERROR, "Injected provider error");
+
+		PlannerExecutionResult result = awaitResult(orchestrator);
+		assertEquals(LlmFailureType.PROVIDER_ERROR, result.failureType());
+
+		PlannerConversationDebugMessage failureCard = lastConversationMessage(orchestrator.conversationDebugSnapshot());
+		assertEquals(PlannerConversationDebugKind.FAILURE, failureCard.kind());
+		assertTrue(failureCard.text().contains("PROVIDER_ERROR"));
+		assertTrue(failureCard.text().contains("Injected provider error"));
+	}
+
+	@Test
+	void resetAndShutdownClearVisibleConversationSnapshot() {
+		RecordingBackend resetBackend = new RecordingBackend();
+		PlannerOrchestrator resetOrchestrator = newOrchestrator(
+			resetBackend,
+			CurrentViewVisionTool.disabled(),
+			PlannerVisionMode.EXTERNAL_SUMMARY
+		);
+		resetOrchestrator.submit(requestAt(10L, 1_000L, "Alice", "A"));
+		resetBackend.awaitCalls(1, Duration.ofSeconds(1));
+		resetBackend.succeed(0, replyOnly("reply A"));
+		awaitResult(resetOrchestrator);
+		assertFalse(resetOrchestrator.conversationDebugSnapshot().isEmpty());
+		resetOrchestrator.reset();
+		assertTrue(resetOrchestrator.conversationDebugSnapshot().isEmpty());
+
+		RecordingBackend shutdownBackend = new RecordingBackend();
+		PlannerOrchestrator shutdownOrchestrator = newOrchestrator(
+			shutdownBackend,
+			CurrentViewVisionTool.disabled(),
+			PlannerVisionMode.EXTERNAL_SUMMARY
+		);
+		shutdownOrchestrator.submit(requestAt(11L, 1_100L, "Alice", "B"));
+		shutdownBackend.awaitCalls(1, Duration.ofSeconds(1));
+		shutdownBackend.succeed(0, replyOnly("reply B"));
+		awaitResult(shutdownOrchestrator);
+		assertFalse(shutdownOrchestrator.conversationDebugSnapshot().isEmpty());
+		shutdownOrchestrator.shutdown();
+		assertTrue(shutdownOrchestrator.conversationDebugSnapshot().isEmpty());
+	}
+
+	@Test
 	void supersededToolExecutionDoesNotFeedOldFollowUpBackIntoPlanner() {
 		RecordingBackend backend = new RecordingBackend();
 		MutableClock clock = new MutableClock(Instant.ofEpochMilli(1_000L), ZoneId.of("Asia/Taipei"));
@@ -979,6 +1116,11 @@ class PlannerOrchestratorTest {
 		for (String expectedFragment : expectedFragments) {
 			assertTrue(prompt.contains(expectedFragment), () -> "Prompt missing fragment: " + expectedFragment + "\nPrompt was:\n" + prompt);
 		}
+	}
+
+	private static PlannerConversationDebugMessage lastConversationMessage(PlannerConversationDebugSnapshot snapshot) {
+		assertFalse(snapshot.messages().isEmpty(), "Expected visible conversation messages");
+		return snapshot.messages().get(snapshot.messages().size() - 1);
 	}
 
 	private static String terminalPrompt(LlmConversation conversation) {

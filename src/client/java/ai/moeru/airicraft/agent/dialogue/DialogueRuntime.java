@@ -7,6 +7,7 @@ import ai.moeru.airicraft.agent.llm.CompactionExecutionResult;
 import ai.moeru.airicraft.agent.llm.LlmFailureType;
 import ai.moeru.airicraft.agent.llm.OpenAiCompatibleChatClient;
 import ai.moeru.airicraft.agent.llm.OpenAiCompatibleLlmBackend;
+import ai.moeru.airicraft.agent.llm.PlannerConversationDebugSnapshot;
 import ai.moeru.airicraft.agent.llm.PlannerContextAggregator;
 import ai.moeru.airicraft.agent.llm.PlannerExecutionResult;
 import ai.moeru.airicraft.agent.llm.PlannerExecutor;
@@ -108,6 +109,10 @@ public final class DialogueRuntime {
 
 	public PlannerOrchestratorDebugSnapshot plannerDebugSnapshot() {
 		return plannerOrchestrator.debugSnapshot();
+	}
+
+	public PlannerConversationDebugSnapshot plannerConversationDebugSnapshot() {
+		return plannerOrchestrator.conversationDebugSnapshot();
 	}
 
 	public boolean startDebugCompaction() {

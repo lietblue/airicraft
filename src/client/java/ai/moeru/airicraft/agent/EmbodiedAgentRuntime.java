@@ -25,6 +25,7 @@ import ai.moeru.airicraft.agent.llm.LlmBackendException;
 import ai.moeru.airicraft.agent.llm.OpenAiCompatibleChatClient;
 import ai.moeru.airicraft.agent.llm.OpenAiCompatibleLlmBackend;
 import ai.moeru.airicraft.agent.llm.OpenAiCompatibleVisionBackend;
+import ai.moeru.airicraft.agent.llm.PlannerConversationDebugSnapshot;
 import ai.moeru.airicraft.agent.llm.PlannerContextAggregator;
 import ai.moeru.airicraft.agent.llm.PlannerExecutor;
 import ai.moeru.airicraft.agent.llm.PlannerIntent;
@@ -303,6 +304,10 @@ public final class EmbodiedAgentRuntime {
 
 	public PlannerOrchestratorDebugSnapshot plannerDebugSnapshot() {
 		return dialogueRuntime.plannerDebugSnapshot();
+	}
+
+	public PlannerConversationDebugSnapshot plannerConversationDebugSnapshot() {
+		return dialogueRuntime.plannerConversationDebugSnapshot();
 	}
 
 	public boolean startDebugCompaction() {
