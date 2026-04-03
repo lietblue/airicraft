@@ -1,8 +1,10 @@
 package ai.moeru.airicraft.agent.llm;
 
 import ai.moeru.airicraft.agent.events.SemanticEvent;
+import ai.moeru.airicraft.agent.events.SemanticEventQueryResult;
 import ai.moeru.airicraft.agent.goals.GoalSnapshot;
 import ai.moeru.airicraft.agent.goals.GoalType;
+import ai.moeru.airicraft.agent.semantic.SemanticContextProjector;
 import ai.moeru.airicraft.agent.session.SessionMode;
 import org.junit.jupiter.api.Test;
 
@@ -17,6 +19,8 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class PlannerContextAggregatorTest {
+	private static final SemanticContextProjector SEMANTIC_CONTEXT_PROJECTOR = new SemanticContextProjector();
+
 	@Test
 	void injectsSingleTimeBeaconPerThirtyMinuteWindow() {
 		Clock clock = Clock.fixed(Instant.ofEpochMilli(1_000L), ZoneId.of("Asia/Taipei"));
@@ -43,10 +47,10 @@ class PlannerContextAggregatorTest {
 	void recordsAmbientContextAndSemanticEventsAsFrozenNotices() {
 		Clock clock = Clock.fixed(Instant.ofEpochMilli(10_000L), ZoneId.of("Asia/Taipei"));
 		PlannerContextAggregator aggregator = new PlannerContextAggregator(clock, 65_536, PlannerVisionMode.EXTERNAL_SUMMARY);
-		aggregator.recordEvents(List.of(
+		recordEvents(aggregator, 10_000L, List.of(
 			new SemanticEvent(1L, 100L, 8_000L, "follow.target_acquired", Map.of("player", "Alice")),
 			new SemanticEvent(2L, 101L, 9_000L, "planner.goal_set", Map.of("goalType", "FOLLOW_PLAYER", "targetPlayer", "Alice"))
-		), 10_000L);
+		));
 
 		LlmConversation conversation = aggregator.buildPlannerConversation(new PlannerRequest(
 			200L,
@@ -63,6 +67,33 @@ class PlannerContextAggregatorTest {
 		assertTrue(conversation.messages().stream().anyMatch(message -> message.content().contains("Active goal: Follow Alice.")));
 		assertTrue(conversation.messages().stream().anyMatch(message -> message.content().contains("Started following Alice")));
 		assertTrue(conversation.messages().stream().anyMatch(message -> message.content().contains("The planner set goal FOLLOW_PLAYER for Alice")));
+	}
+
+	@Test
+	void recordsProjectedMixedEventBatchAsCoalescedNoticesInFirstSeenOrder() {
+		Clock clock = Clock.fixed(Instant.ofEpochMilli(10_000L), ZoneId.of("Asia/Taipei"));
+		PlannerContextAggregator aggregator = new PlannerContextAggregator(clock, 65_536, PlannerVisionMode.EXTERNAL_SUMMARY);
+		recordEvents(aggregator, 10_000L, List.of(
+			new SemanticEvent(1L, 100L, 8_000L, "pickup.item_picked_up", Map.of("actor", "self", "itemId", "minecraft:dirt", "count", 1)),
+			new SemanticEvent(2L, 101L, 8_100L, "pickup.item_picked_up", Map.of("actor", "self", "itemId", "minecraft:cobblestone", "count", 1)),
+			new SemanticEvent(3L, 102L, 8_200L, "pickup.item_picked_up", Map.of("actor", "self", "itemId", "minecraft:dirt", "count", 2)),
+			new SemanticEvent(4L, 103L, 8_300L, "follow.target_acquired", Map.of("player", "Alice"))
+		));
+
+		LlmConversation conversation = aggregator.buildPlannerConversation(requestAt(10_000L, "Alice", "@agent hi"));
+		List<LlmChatMessage> notices = conversation.messages().stream()
+			.filter(message -> message.kind() == LlmMessageKind.NOTICE)
+			.toList();
+
+		assertTrue(notices.stream().anyMatch(message -> message.content().contains("3x minecraft:dirt")));
+		assertTrue(notices.stream().anyMatch(message -> message.content().contains("1x minecraft:cobblestone")));
+		assertTrue(notices.stream().anyMatch(message -> message.content().contains("Started following Alice")));
+
+		int dirtIndex = indexContaining(notices, "3x minecraft:dirt");
+		int cobbleIndex = indexContaining(notices, "1x minecraft:cobblestone");
+		int followIndex = indexContaining(notices, "Started following Alice");
+		assertTrue(dirtIndex < cobbleIndex);
+		assertTrue(cobbleIndex < followIndex);
 	}
 
 	@Test
@@ -107,5 +138,23 @@ class PlannerContextAggregatorTest {
 			message,
 			null
 		);
+	}
+
+	private static void recordEvents(PlannerContextAggregator aggregator, long anchorTimeMs, List<SemanticEvent> events) {
+		aggregator.recordContextUpdates(
+			SEMANTIC_CONTEXT_PROJECTOR.project(
+				new SemanticEventQueryResult(events.isEmpty() ? 0L : events.getFirst().seqNo(), events.isEmpty() ? 0L : events.getLast().seqNo(), false, events),
+				anchorTimeMs
+			)
+		);
+	}
+
+	private static int indexContaining(List<LlmChatMessage> messages, String fragment) {
+		for (int index = 0; index < messages.size(); index++) {
+			if (messages.get(index).content().contains(fragment)) {
+				return index;
+			}
+		}
+		return -1;
 	}
 }

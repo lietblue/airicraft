@@ -314,7 +314,8 @@ public final class DialogueRuntime {
 		if (degraded) {
 			return;
 		}
-		plannerOrchestrator.recordEvents(eventBuffer.query(null).events(), timestampMs);
+		Long sinceSeqNo = plannerOrchestrator.lastObservedEventSeqNo();
+		plannerOrchestrator.recordEvents(eventBuffer.query(sinceSeqNo <= 0L ? null : sinceSeqNo), timestampMs);
 		plannerOrchestrator.submit(request);
 	}
 

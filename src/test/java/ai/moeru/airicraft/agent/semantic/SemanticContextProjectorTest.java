@@ -1,0 +1,138 @@
+package ai.moeru.airicraft.agent.semantic;
+
+import ai.moeru.airicraft.agent.events.SemanticEvent;
+import ai.moeru.airicraft.agent.events.SemanticEventQueryResult;
+import org.junit.jupiter.api.Test;
+
+import java.util.List;
+import java.util.Map;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+class SemanticContextProjectorTest {
+	private final SemanticContextProjector projector = new SemanticContextProjector();
+
+	@Test
+	void coalescesRepeatedPickupEventsIntoSingleUpdate() {
+		SemanticContextProjectionResult result = projector.project(new SemanticEventQueryResult(
+			1L,
+			3L,
+			false,
+			List.of(
+				itemEvent(1L, 100L, 1_000L, "pickup.item_picked_up", "minecraft:dirt", 1),
+				itemEvent(2L, 101L, 1_010L, "pickup.item_picked_up", "minecraft:dirt", 1),
+				itemEvent(3L, 102L, 1_020L, "pickup.item_picked_up", "minecraft:dirt", 1)
+			)
+		), 1_020L);
+
+		assertEquals(1, result.updates().size());
+		SemanticContextUpdate update = result.updates().getFirst();
+		assertEquals(3, update.sourceEventCount());
+		assertEquals(1L, update.firstSourceSeqNo());
+		assertEquals(3L, update.lastSourceSeqNo());
+		assertTrue(update.text().contains("3x minecraft:dirt"));
+		assertEquals(3L, result.latestObservedSeqNo());
+	}
+
+	@Test
+	void preservesFirstSeenOrderAcrossMixedBatches() {
+		SemanticContextProjectionResult result = projector.project(new SemanticEventQueryResult(
+			1L,
+			4L,
+			false,
+			List.of(
+				itemEvent(1L, 100L, 1_000L, "pickup.item_picked_up", "minecraft:dirt", 1),
+				itemEvent(2L, 101L, 1_010L, "pickup.item_picked_up", "minecraft:cobblestone", 1),
+				itemEvent(3L, 102L, 1_020L, "pickup.item_picked_up", "minecraft:dirt", 1),
+				playerEvent(4L, 103L, 1_030L, "social.player_joined_game", "Alice")
+			)
+		), 1_030L);
+
+		assertEquals(3, result.updates().size());
+		assertTrue(result.updates().get(0).text().contains("2x minecraft:dirt"));
+		assertTrue(result.updates().get(1).text().contains("1x minecraft:cobblestone"));
+		assertTrue(result.updates().get(2).text().contains("Alice joined the game"));
+	}
+
+	@Test
+	void doesNotMergeAcrossDifferentEventTypes() {
+		SemanticContextProjectionResult result = projector.project(new SemanticEventQueryResult(
+			1L,
+			2L,
+			false,
+			List.of(
+				itemEvent(1L, 100L, 1_000L, "pickup.item_picked_up", "minecraft:dirt", 1),
+				itemEvent(2L, 101L, 1_010L, "crafting.item_crafted", "minecraft:dirt", 1)
+			)
+		), 1_010L);
+
+		assertEquals(2, result.updates().size());
+		assertTrue(result.updates().get(0).text().contains("picked up 1x minecraft:dirt"));
+		assertTrue(result.updates().get(1).text().contains("crafted 1x minecraft:dirt"));
+	}
+
+	@Test
+	void dedupesRepeatedPlayerJoinEventsByPlayer() {
+		SemanticContextProjectionResult result = projector.project(new SemanticEventQueryResult(
+			1L,
+			2L,
+			false,
+			List.of(
+				playerEvent(1L, 100L, 1_000L, "social.player_joined_game", "Alice"),
+				playerEvent(2L, 101L, 1_010L, "social.player_joined_game", "Alice")
+			)
+		), 1_010L);
+
+		assertEquals(1, result.updates().size());
+		assertEquals(2, result.updates().getFirst().sourceEventCount());
+		assertTrue(result.updates().getFirst().text().contains("Alice joined the game"));
+	}
+
+	@Test
+	void keepsNonAggregatedStateTransitionsSeparate() {
+		SemanticContextProjectionResult result = projector.project(new SemanticEventQueryResult(
+			1L,
+			2L,
+			false,
+			List.of(
+				playerEvent(1L, 100L, 1_000L, "follow.target_acquired", "Alice"),
+				playerEvent(2L, 101L, 1_010L, "follow.target_lost", "Alice")
+			)
+		), 1_010L);
+
+		assertEquals(2, result.updates().size());
+		assertTrue(result.updates().get(0).text().contains("Started following Alice"));
+		assertTrue(result.updates().get(1).text().contains("Lost the follow target Alice"));
+	}
+
+	@Test
+	void emitsDroppedContextNoticeWhenBatchWasTruncated() {
+		SemanticContextProjectionResult result = projector.project(new SemanticEventQueryResult(
+			4L,
+			5L,
+			true,
+			List.of(
+				itemEvent(4L, 100L, 1_000L, "pickup.item_picked_up", "minecraft:dirt", 1),
+				itemEvent(5L, 101L, 1_010L, "pickup.item_picked_up", "minecraft:dirt", 2)
+			)
+		), 1_010L);
+
+		assertEquals(2, result.updates().size());
+		assertTrue(result.updates().get(0).text().contains("dropped before they could be summarized"));
+		assertTrue(result.updates().get(1).text().contains("3x minecraft:dirt"));
+		assertEquals(5L, result.latestObservedSeqNo());
+	}
+
+	private static SemanticEvent itemEvent(long seqNo, long tick, long timestampMs, String type, String itemId, int count) {
+		return new SemanticEvent(seqNo, tick, timestampMs, type, Map.of(
+			"actor", "self",
+			"itemId", itemId,
+			"count", count
+		));
+	}
+
+	private static SemanticEvent playerEvent(long seqNo, long tick, long timestampMs, String type, String player) {
+		return new SemanticEvent(seqNo, tick, timestampMs, type, Map.of("player", player));
+	}
+}

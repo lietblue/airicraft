@@ -4,6 +4,8 @@ import ai.moeru.airicraft.BridgeUnavailableException;
 import ai.moeru.airicraft.FirstPersonScreenshotService;
 import ai.moeru.airicraft.agent.AgentConfig;
 import ai.moeru.airicraft.agent.dialogue.DialogueTurn;
+import ai.moeru.airicraft.agent.events.SemanticEvent;
+import ai.moeru.airicraft.agent.events.SemanticEventQueryResult;
 import ai.moeru.airicraft.agent.goals.GoalType;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
@@ -20,6 +22,7 @@ import java.time.Instant;
 import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.Executors;
@@ -533,6 +536,33 @@ class PlannerOrchestratorTest {
 		PlannerConversationDebugMessage replyCard = lastConversationMessage(orchestrator.conversationDebugSnapshot());
 		assertEquals(PlannerConversationDebugKind.ASSISTANT_TURN, replyCard.kind());
 		assertEquals("reply A", replyCard.text());
+	}
+
+	@Test
+	void conversationSnapshotShowsCoalescedSemanticNoticesInOutboundPrompt() {
+		RecordingBackend backend = new RecordingBackend();
+		PlannerOrchestrator orchestrator = newOrchestrator(backend, CurrentViewVisionTool.disabled(), PlannerVisionMode.EXTERNAL_SUMMARY);
+
+		orchestrator.recordEvents(new SemanticEventQueryResult(
+			1L,
+			3L,
+			false,
+			List.of(
+				new SemanticEvent(1L, 100L, 1_000L, "pickup.item_picked_up", Map.of("actor", "self", "itemId", "minecraft:dirt", "count", 1)),
+				new SemanticEvent(2L, 101L, 1_010L, "pickup.item_picked_up", Map.of("actor", "self", "itemId", "minecraft:dirt", "count", 1)),
+				new SemanticEvent(3L, 102L, 1_020L, "pickup.item_picked_up", Map.of("actor", "self", "itemId", "minecraft:dirt", "count", 1))
+			)
+		), 1_020L);
+		orchestrator.submit(requestAt(10L, 1_020L, "Alice", "A"));
+		backend.awaitCalls(1, Duration.ofSeconds(1));
+
+		PlannerConversationDebugSnapshot submitted = orchestrator.conversationDebugSnapshot();
+		List<PlannerConversationDebugMessage> dirtNotices = submitted.messages().stream()
+			.filter(message -> message.kind() == PlannerConversationDebugKind.NOTICE)
+			.filter(message -> message.text().contains("minecraft:dirt"))
+			.toList();
+		assertEquals(1, dirtNotices.size());
+		assertTrue(dirtNotices.getFirst().text().contains("3x minecraft:dirt"));
 	}
 
 	@Test

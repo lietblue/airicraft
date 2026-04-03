@@ -1,7 +1,9 @@
 package ai.moeru.airicraft.agent.llm;
 
 import ai.moeru.airicraft.agent.dialogue.DialogueTurn;
-import ai.moeru.airicraft.agent.events.SemanticEvent;
+import ai.moeru.airicraft.agent.semantic.SemanticContextProjectionResult;
+import ai.moeru.airicraft.agent.semantic.SemanticContextUpdate;
+import ai.moeru.airicraft.agent.semantic.SemanticContextUpdateKind;
 
 import java.time.Clock;
 import java.time.ZoneId;
@@ -41,6 +43,10 @@ public final class PlannerContextAggregator {
 		return state.lastObservedUsage();
 	}
 
+	public long lastObservedEventSeqNo() {
+		return state.lastObservedEventSeqNo();
+	}
+
 	public PlannerContextDebugSnapshot debugSnapshot() {
 		return new PlannerContextDebugSnapshot(
 			compactionTriggerTokens,
@@ -58,43 +64,25 @@ public final class PlannerContextAggregator {
 		);
 	}
 
-	public void recordEvents(List<SemanticEvent> events, long anchorTimeMs) {
-		if (events == null || events.isEmpty()) {
+	public void recordContextUpdates(SemanticContextProjectionResult projection) {
+		if (projection == null) {
 			return;
 		}
-
-		long previousSeqNo = state.lastObservedEventSeqNo();
-		long latestSeqNo = previousSeqNo;
-		ArrayList<PlannerContextEntry> notices = new ArrayList<>();
-		boolean sawGap = false;
-		for (SemanticEvent event : events) {
-			if (event.seqNo() <= previousSeqNo) {
+		ArrayList<PlannerContextEntry> entries = new ArrayList<>();
+		for (SemanticContextUpdate update : projection.updates()) {
+			if (update.kind() != SemanticContextUpdateKind.NOTICE || update.text().isBlank()) {
 				continue;
 			}
-			if (!sawGap && event.seqNo() > previousSeqNo + 1L) {
-				notices.add(new PlannerContextEntry(
-					PlannerContextEntryType.NOTICE,
-					null,
-					"Some earlier context events were dropped before they could be summarized.",
-					event.tick(),
-					event.timestampMs()
-				));
-				sawGap = true;
-			}
-			String rendered = SemanticEventNoticeFormatter.format(event, anchorTimeMs);
-			if (rendered != null && !rendered.isBlank()) {
-				notices.add(new PlannerContextEntry(
-					PlannerContextEntryType.NOTICE,
-					null,
-					rendered,
-					event.tick(),
-					event.timestampMs()
-				));
-			}
-			latestSeqNo = Math.max(latestSeqNo, event.seqNo());
+			entries.add(new PlannerContextEntry(
+				PlannerContextEntryType.NOTICE,
+				null,
+				update.text(),
+				update.tick(),
+				update.timestampMs()
+			));
 		}
-		state = PlannerContextReducer.recordEntries(state, notices);
-		state = PlannerContextReducer.updateObservedEventSeqNo(state, latestSeqNo);
+		state = PlannerContextReducer.recordEntries(state, entries);
+		state = PlannerContextReducer.updateObservedEventSeqNo(state, projection.latestObservedSeqNo());
 	}
 
 	public void enqueueTrigger(PlannerTrigger trigger) {
