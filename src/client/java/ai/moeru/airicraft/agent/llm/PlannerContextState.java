@@ -11,7 +11,9 @@ public record PlannerContextState(
 	PlannerAmbientContext lastAmbientContext,
 	long lastTimeBeaconAtMs,
 	boolean compactionPending,
-	LlmUsageSnapshot lastObservedUsage
+	LlmUsageSnapshot lastObservedUsage,
+	List<PlannerTrigger> queuedTriggers,
+	long nextTriggerSeqNo
 ) {
 	public static PlannerContextState initial() {
 		return new PlannerContextState(
@@ -23,7 +25,9 @@ public record PlannerContextState(
 			null,
 			-1L,
 			false,
-			LlmUsageSnapshot.unknown()
+			LlmUsageSnapshot.unknown(),
+			List.of(),
+			1L
 		);
 	}
 }

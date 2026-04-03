@@ -7,6 +7,7 @@ public record PlannerContextDebugSnapshot(
 	int canonicalMessageCount,
 	int pendingEntryCount,
 	int frozenPlannerMessageCount,
+	int queuedTriggerCount,
 	long lastObservedEventSeqNo,
 	long lastTimeBeaconAtMs,
 	LlmUsageSnapshot lastObservedUsage,

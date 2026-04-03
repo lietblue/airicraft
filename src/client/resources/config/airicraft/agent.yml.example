@@ -29,6 +29,9 @@ maxRecentConversationTurns: 8
 # Trigger a context compaction checkpoint once the planner input prompt reaches this many tokens.
 plannerCompactionTriggerTokens: 65536
 
+# Maximum number of superseded planner attempts allowed to remain in flight at once.
+plannerSessionMaxConcurrentAttempts: 3
+
 # Image detail hint passed to compatible multimodal providers: low | high | auto
 visionImageDetail: "low"
 

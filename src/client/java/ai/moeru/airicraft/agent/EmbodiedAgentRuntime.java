@@ -32,6 +32,7 @@ import ai.moeru.airicraft.agent.llm.PlannerCompactionService;
 import ai.moeru.airicraft.agent.llm.PlannerOrchestratorDebugSnapshot;
 import ai.moeru.airicraft.agent.llm.PlannerOrchestrator;
 import ai.moeru.airicraft.agent.llm.PlannerResponse;
+import ai.moeru.airicraft.agent.llm.PlannerTriggerType;
 import ai.moeru.airicraft.agent.llm.VisionDescription;
 import ai.moeru.airicraft.agent.session.LanHostingService;
 import ai.moeru.airicraft.agent.session.SessionSnapshot;
@@ -118,7 +119,8 @@ public final class EmbodiedAgentRuntime {
 				new PlannerContextAggregator(clock, config.llm().plannerCompactionTriggerTokens(), config.llm().plannerVisionMode()),
 				visionService,
 				config.llm().plannerVisionMode(),
-				config.llm().visionImageDetail()
+				config.llm().visionImageDetail(),
+				config.llm().plannerSessionMaxConcurrentAttempts()
 			),
 			config.llm().maxRecentConversationTurns(),
 			clock
@@ -397,7 +399,8 @@ public final class EmbodiedAgentRuntime {
 			return;
 		}
 
-			dialogueRuntime.onPlayerChat(
+			dialogueRuntime.onContextTrigger(
+				PlannerTriggerType.SYSTEM,
 				"server",
 				plainTextMessage,
 				tickCount,
@@ -418,13 +421,9 @@ public final class EmbodiedAgentRuntime {
 			"count", count
 		));
 
-		String plannerSender = localPlayerName();
-		if (plannerSender == null || plannerSender.isBlank()) {
-			plannerSender = "player";
-		}
-
 		dialogueRuntime.onContextTrigger(
-			plannerSender,
+			PlannerTriggerType.CRAFT,
+			"self",
 			"I crafted " + count + "x " + itemId + ".",
 			tickCount,
 			sessionSnapshot,
@@ -596,7 +595,8 @@ public final class EmbodiedAgentRuntime {
 			return;
 		}
 
-			dialogueRuntime.onPlayerChat(
+			dialogueRuntime.onContextTrigger(
+				PlannerTriggerType.SYSTEM,
 				"server",
 				plainTextMessage,
 				tickCount,

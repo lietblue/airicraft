@@ -11,6 +11,13 @@ public record PlannerOrchestratorDebugSnapshot(
 	boolean toolUsed,
 	PlannerRequest baseRequest,
 	CompactionExecutionResult lastCompactionResult,
-	PlannerContextDebugSnapshot context
+	PlannerContextDebugSnapshot context,
+	long activeGeneration,
+	String currentPhase,
+	int activeAttemptCount,
+	long pendingNewestGeneration,
+	long supersededCount,
+	boolean retryPending,
+	long retryReadyAtMs
 ) {
 }

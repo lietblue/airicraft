@@ -16,7 +16,7 @@ public final class PlannerContextAggregator {
 	private final PlannerVisionMode visionMode;
 
 	private PlannerContextState state = PlannerContextState.initial();
-	private LlmConversation frozenPlannerConversation;
+	private PlannerContextSnapshot lastFrozenSnapshot;
 
 	public PlannerContextAggregator(Clock clock, int compactionTriggerTokens, PlannerVisionMode visionMode) {
 		this.clock = Objects.requireNonNull(clock, "clock");
@@ -27,6 +27,10 @@ public final class PlannerContextAggregator {
 
 	public boolean compactionPending() {
 		return state.compactionPending();
+	}
+
+	public boolean hasQueuedTriggers() {
+		return !state.queuedTriggers().isEmpty();
 	}
 
 	public LlmUsageSnapshot lastObservedUsage() {
@@ -40,7 +44,8 @@ public final class PlannerContextAggregator {
 			state.rawArchiveTape().size(),
 			state.canonicalTape().size(),
 			state.pendingEntries().size(),
-			frozenPlannerConversation == null ? 0 : frozenPlannerConversation.messages().size(),
+			lastFrozenSnapshot == null ? 0 : lastFrozenSnapshot.plannerConversation().messages().size(),
+			state.queuedTriggers().size(),
 			state.lastObservedEventSeqNo(),
 			state.lastTimeBeaconAtMs(),
 			state.lastObservedUsage(),
@@ -88,8 +93,17 @@ public final class PlannerContextAggregator {
 		state = PlannerContextReducer.updateObservedEventSeqNo(state, latestSeqNo);
 	}
 
-	public LlmConversation buildPlannerConversation(PlannerRequest request) {
+	public void enqueueTrigger(PlannerTrigger trigger) {
+		Objects.requireNonNull(trigger, "trigger");
+		state = PlannerContextReducer.enqueueTrigger(state, trigger.withSeqNo(state.nextTriggerSeqNo()));
+	}
+
+	public PlannerContextSnapshot freezePlannerSnapshot(PlannerRequest request) {
 		Objects.requireNonNull(request, "request");
+		if (state.queuedTriggers().isEmpty()) {
+			return null;
+		}
+
 		long nowMs = request.timestampMs();
 		if (PlannerContextPolicy.shouldInjectTimeBeacon(state.lastTimeBeaconAtMs(), nowMs)) {
 			state = PlannerContextReducer.recordEntry(state, new PlannerContextEntry(
@@ -108,39 +122,86 @@ public final class PlannerContextAggregator {
 			PlannerAmbientContextRenderer.renderChanges(state.lastAmbientContext(), ambientContext, request.tick(), nowMs)
 		);
 		state = PlannerContextReducer.updateAmbientContext(state, ambientContext);
-
-		state = PlannerContextReducer.recordEntry(state, new PlannerContextEntry(
-			PlannerContextEntryType.USER_TURN,
-			request.senderName(),
-			request.message(),
-			request.tick(),
-			request.timestampMs()
-		));
 		state = PlannerContextReducer.commitPending(state, nowMs);
-		frozenPlannerConversation = composeConversation(state.canonicalTape(), null);
-		return frozenPlannerConversation;
+
+		PlannerTriggerBatch triggerBatch = PlannerTriggerBatch.of(state.queuedTriggers());
+		PlannerRequest combinedRequest = request.withTriggerBatch(triggerBatch);
+		PlannerContextSnapshot snapshot = new PlannerContextSnapshot(
+			combinedRequest,
+			triggerBatch,
+			composeConversation(state.canonicalTape(), triggerBatch.toTerminalMessage())
+		);
+		lastFrozenSnapshot = snapshot;
+		return snapshot;
 	}
 
-	public LlmConversation buildPlannerFollowUpConversation(String toolResult) {
-		if (frozenPlannerConversation == null) {
-			throw new IllegalStateException("No frozen planner conversation");
+	public void commitAcceptedTriggerBatch(PlannerContextSnapshot snapshot) {
+		if (snapshot == null) {
+			return;
 		}
-		return frozenPlannerConversation.withAppended(
+		state = PlannerContextReducer.commitAcceptedTriggerBatch(
+			state,
+			snapshot.triggerBatch(),
+			snapshot.request().tick(),
+			snapshot.request().timestampMs()
+		);
+		lastFrozenSnapshot = null;
+	}
+
+	public void dropSupersededGeneration(PlannerContextSnapshot snapshot) {
+		if (snapshot == null) {
+			return;
+		}
+		if (lastFrozenSnapshot != null && lastFrozenSnapshot.equals(snapshot)) {
+			lastFrozenSnapshot = null;
+		}
+	}
+
+	public LlmConversation buildPlannerConversation(PlannerRequest request) {
+		Objects.requireNonNull(request, "request");
+		if (request.triggerBatch() != null) {
+			for (PlannerTrigger trigger : request.triggerBatch().triggers()) {
+				enqueueTrigger(trigger);
+			}
+		}
+		PlannerContextSnapshot snapshot = freezePlannerSnapshot(request);
+		return snapshot == null ? composeConversation(state.canonicalTape(), null) : snapshot.plannerConversation();
+	}
+
+	public LlmConversation buildPlannerFollowUpConversation(PlannerContextSnapshot snapshot, String toolResult) {
+		if (snapshot == null) {
+			throw new IllegalStateException("No planner context snapshot");
+		}
+		return snapshot.plannerConversation().withAppended(
 			LlmChatMessage.user("Tool result: " + (toolResult == null || toolResult.isBlank() ? "none" : toolResult), LlmMessageKind.TOOL_RESULT)
 		);
 	}
 
-	public LlmConversation buildPlannerFollowUpConversation(String toolResult, LlmImageAttachment imageAttachment) {
-		if (frozenPlannerConversation == null) {
-			throw new IllegalStateException("No frozen planner conversation");
+	public LlmConversation buildPlannerFollowUpConversation(PlannerContextSnapshot snapshot, String toolResult, LlmImageAttachment imageAttachment) {
+		if (snapshot == null) {
+			throw new IllegalStateException("No planner context snapshot");
 		}
-		return frozenPlannerConversation.withAppended(
+		return snapshot.plannerConversation().withAppended(
 			LlmChatMessage.userWithImage(
 				toolResult == null || toolResult.isBlank() ? "Tool result: image attached." : toolResult,
 				LlmMessageKind.TOOL_RESULT,
 				imageAttachment
 			)
 		);
+	}
+
+	public LlmConversation buildPlannerFollowUpConversation(String toolResult) {
+		if (lastFrozenSnapshot == null) {
+			throw new IllegalStateException("No frozen planner conversation");
+		}
+		return buildPlannerFollowUpConversation(lastFrozenSnapshot, toolResult);
+	}
+
+	public LlmConversation buildPlannerFollowUpConversation(String toolResult, LlmImageAttachment imageAttachment) {
+		if (lastFrozenSnapshot == null) {
+			throw new IllegalStateException("No frozen planner conversation");
+		}
+		return buildPlannerFollowUpConversation(lastFrozenSnapshot, toolResult, imageAttachment);
 	}
 
 	public LlmConversation buildCompactionConversation() {
@@ -173,16 +234,16 @@ public final class PlannerContextAggregator {
 
 	public void applyCheckpoint(CompactionCheckpoint checkpoint) {
 		state = PlannerContextReducer.clearCompactionPending(state, checkpoint, clock.millis());
-		frozenPlannerConversation = null;
+		lastFrozenSnapshot = null;
 	}
 
 	public void onCompactionFailure() {
-		frozenPlannerConversation = null;
+		lastFrozenSnapshot = null;
 	}
 
 	public void clear() {
 		state = PlannerContextState.initial();
-		frozenPlannerConversation = null;
+		lastFrozenSnapshot = null;
 	}
 
 	private LlmConversation composeConversation(List<LlmChatMessage> canonicalTape, LlmChatMessage terminalMessage) {

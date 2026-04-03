@@ -15,6 +15,7 @@ import ai.moeru.airicraft.agent.llm.PlannerOrchestratorDebugSnapshot;
 import ai.moeru.airicraft.agent.llm.PlannerOrchestrator;
 import ai.moeru.airicraft.agent.llm.PlannerRequest;
 import ai.moeru.airicraft.agent.llm.PlannerResponse;
+import ai.moeru.airicraft.agent.llm.PlannerTriggerType;
 import ai.moeru.airicraft.agent.session.SessionSnapshot;
 
 import java.time.Clock;
@@ -69,7 +70,8 @@ public final class DialogueRuntime {
 				),
 				CurrentViewVisionTool.disabled(),
 				ai.moeru.airicraft.agent.AgentConfig.LlmConfig.defaults().plannerVisionMode(),
-				ai.moeru.airicraft.agent.AgentConfig.LlmConfig.defaults().visionImageDetail()
+				ai.moeru.airicraft.agent.AgentConfig.LlmConfig.defaults().visionImageDetail(),
+				ai.moeru.airicraft.agent.AgentConfig.LlmConfig.defaults().plannerSessionMaxConcurrentAttempts()
 			),
 			maxRecentTurns,
 			Clock.systemDefaultZone()
@@ -175,18 +177,24 @@ public final class DialogueRuntime {
 		long timestampMs = clock.millis();
 		appendTurn(new DialogueTurn(senderName, plainTextMessage, tick, timestampMs));
 		submitPlannerTrigger(
-			senderName,
-			plainTextMessage,
-			tick,
-			sessionSnapshot,
-			primaryInteractionPlayer,
-			activeGoal,
+			PlannerRequest.ofTrigger(
+				tick,
+				timestampMs,
+				sessionSnapshot.mode(),
+				primaryInteractionPlayer,
+				activeGoal.orElse(null),
+				PlannerTriggerType.CHAT,
+				senderName,
+				plainTextMessage,
+				null
+			),
 			eventBuffer,
 			timestampMs
 		);
 	}
 
 	public void onContextTrigger(
+		PlannerTriggerType triggerType,
 		String senderName,
 		String plainTextMessage,
 		long tick,
@@ -195,15 +203,21 @@ public final class DialogueRuntime {
 		Optional<GoalSnapshot> activeGoal,
 		SemanticEventBuffer eventBuffer
 	) {
+		long timestampMs = clock.millis();
 		submitPlannerTrigger(
-			senderName,
-			plainTextMessage,
-			tick,
-			sessionSnapshot,
-			primaryInteractionPlayer,
-			activeGoal,
+			PlannerRequest.ofTrigger(
+				tick,
+				timestampMs,
+				sessionSnapshot.mode(),
+				primaryInteractionPlayer,
+				activeGoal.orElse(null),
+				triggerType,
+				senderName,
+				plainTextMessage,
+				null
+			),
 			eventBuffer,
-			clock.millis()
+			timestampMs
 		);
 	}
 
@@ -243,6 +257,7 @@ public final class DialogueRuntime {
 		if (response.text() != null && !response.text().isBlank()) {
 			recordAgentTurn(response.text(), tick);
 		}
+		plannerOrchestrator.onAcceptedReplyRecorded();
 		return response;
 	}
 
@@ -284,29 +299,15 @@ public final class DialogueRuntime {
 	}
 
 	private void submitPlannerTrigger(
-		String senderName,
-		String plainTextMessage,
-		long tick,
-		SessionSnapshot sessionSnapshot,
-		String primaryInteractionPlayer,
-		Optional<GoalSnapshot> activeGoal,
+		PlannerRequest request,
 		SemanticEventBuffer eventBuffer,
 		long timestampMs
 	) {
-		if (degraded || plannerOrchestrator.hasInFlight()) {
+		if (degraded) {
 			return;
 		}
 		plannerOrchestrator.recordEvents(eventBuffer.query(null).events(), timestampMs);
-		plannerOrchestrator.submit(new PlannerRequest(
-			tick,
-			timestampMs,
-			sessionSnapshot.mode(),
-			primaryInteractionPlayer,
-			activeGoal.orElse(null),
-			senderName,
-			plainTextMessage,
-			null
-		));
+		plannerOrchestrator.submit(request);
 	}
 
 	private void onFailure(LlmFailureType failureType, String failureMessage, long tick, SemanticEventBuffer eventBuffer) {
@@ -368,7 +369,8 @@ public final class DialogueRuntime {
 			new PlannerContextAggregator(clock, config.plannerCompactionTriggerTokens(), config.plannerVisionMode()),
 			CurrentViewVisionTool.disabled(),
 			config.plannerVisionMode(),
-			config.visionImageDetail()
+			config.visionImageDetail(),
+			config.plannerSessionMaxConcurrentAttempts()
 		);
 	}
 }

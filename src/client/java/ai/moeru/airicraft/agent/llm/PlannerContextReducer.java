@@ -21,7 +21,9 @@ final class PlannerContextReducer {
 			state.lastAmbientContext(),
 			state.lastTimeBeaconAtMs(),
 			state.compactionPending(),
-			state.lastObservedUsage()
+			state.lastObservedUsage(),
+			state.queuedTriggers(),
+			state.nextTriggerSeqNo()
 		);
 	}
 
@@ -51,7 +53,9 @@ final class PlannerContextReducer {
 			state.lastAmbientContext(),
 			state.lastTimeBeaconAtMs(),
 			state.compactionPending(),
-			state.lastObservedUsage()
+			state.lastObservedUsage(),
+			state.queuedTriggers(),
+			state.nextTriggerSeqNo()
 		);
 	}
 
@@ -65,7 +69,9 @@ final class PlannerContextReducer {
 			state.lastAmbientContext(),
 			timestampMs,
 			state.compactionPending(),
-			state.lastObservedUsage()
+			state.lastObservedUsage(),
+			state.queuedTriggers(),
+			state.nextTriggerSeqNo()
 		);
 	}
 
@@ -79,7 +85,9 @@ final class PlannerContextReducer {
 			state.lastAmbientContext(),
 			state.lastTimeBeaconAtMs(),
 			state.compactionPending(),
-			state.lastObservedUsage()
+			state.lastObservedUsage(),
+			state.queuedTriggers(),
+			state.nextTriggerSeqNo()
 		);
 	}
 
@@ -93,7 +101,9 @@ final class PlannerContextReducer {
 			ambientContext,
 			state.lastTimeBeaconAtMs(),
 			state.compactionPending(),
-			state.lastObservedUsage()
+			state.lastObservedUsage(),
+			state.queuedTriggers(),
+			state.nextTriggerSeqNo()
 		);
 	}
 
@@ -112,7 +122,63 @@ final class PlannerContextReducer {
 			state.lastAmbientContext(),
 			state.lastTimeBeaconAtMs(),
 			compactionPending,
-			usage == null ? state.lastObservedUsage() : usage
+			usage == null ? state.lastObservedUsage() : usage,
+			state.queuedTriggers(),
+			state.nextTriggerSeqNo()
+		);
+	}
+
+	static PlannerContextState enqueueTrigger(PlannerContextState state, PlannerTrigger trigger) {
+		ArrayList<PlannerTrigger> queued = new ArrayList<>(state.queuedTriggers());
+		queued.add(trigger);
+		return new PlannerContextState(
+			state.rawArchiveTape(),
+			state.canonicalTape(),
+			state.activeCheckpoint(),
+			state.pendingEntries(),
+			state.lastObservedEventSeqNo(),
+			state.lastAmbientContext(),
+			state.lastTimeBeaconAtMs(),
+			state.compactionPending(),
+			state.lastObservedUsage(),
+			List.copyOf(queued),
+			trigger.seqNo() + 1L
+		);
+	}
+
+	static PlannerContextState commitAcceptedTriggerBatch(PlannerContextState state, PlannerTriggerBatch triggerBatch, long tick, long timestampMs) {
+		if (triggerBatch == null || triggerBatch.isEmpty()) {
+			return state;
+		}
+
+		ArrayList<PlannerContextEntry> archive = new ArrayList<>(state.rawArchiveTape());
+		archive.add(new PlannerContextEntry(
+			PlannerContextEntryType.USER_TURN,
+			triggerBatch.primarySpeaker(),
+			triggerBatch.renderPrompt(),
+			tick,
+			timestampMs
+		));
+		ArrayList<LlmChatMessage> canonical = new ArrayList<>(state.canonicalTape());
+		canonical.add(triggerBatch.toTerminalMessage());
+		ArrayList<PlannerTrigger> remainingQueued = new ArrayList<>();
+		for (PlannerTrigger queuedTrigger : state.queuedTriggers()) {
+			if (queuedTrigger.seqNo() > triggerBatch.endSeqNo()) {
+				remainingQueued.add(queuedTrigger);
+			}
+		}
+		return new PlannerContextState(
+			List.copyOf(archive),
+			List.copyOf(canonical),
+			state.activeCheckpoint(),
+			state.pendingEntries(),
+			state.lastObservedEventSeqNo(),
+			state.lastAmbientContext(),
+			state.lastTimeBeaconAtMs(),
+			state.compactionPending(),
+			state.lastObservedUsage(),
+			List.copyOf(remainingQueued),
+			state.nextTriggerSeqNo()
 		);
 	}
 
@@ -142,7 +208,9 @@ final class PlannerContextReducer {
 			state.lastAmbientContext(),
 			compactedAtMs,
 			false,
-			state.lastObservedUsage()
+			state.lastObservedUsage(),
+			state.queuedTriggers(),
+			state.nextTriggerSeqNo()
 		);
 	}
 }

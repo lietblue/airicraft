@@ -20,9 +20,41 @@ public record AgentConfig(
 		int visionRequestTimeoutMillis,
 		int maxRecentConversationTurns,
 		int plannerCompactionTriggerTokens,
+		int plannerSessionMaxConcurrentAttempts,
 		String visionImageDetail,
 		boolean plannerNativeVisionEnabled
 	) {
+		public LlmConfig(
+			String providerBaseUrl,
+			String apiKey,
+			String model,
+			String visionProviderBaseUrl,
+			String visionApiKey,
+			String visionModel,
+			int requestTimeoutMillis,
+			int visionRequestTimeoutMillis,
+			int maxRecentConversationTurns,
+			int plannerCompactionTriggerTokens,
+			String visionImageDetail,
+			boolean plannerNativeVisionEnabled
+		) {
+			this(
+				providerBaseUrl,
+				apiKey,
+				model,
+				visionProviderBaseUrl,
+				visionApiKey,
+				visionModel,
+				requestTimeoutMillis,
+				visionRequestTimeoutMillis,
+				maxRecentConversationTurns,
+				plannerCompactionTriggerTokens,
+				3,
+				visionImageDetail,
+				plannerNativeVisionEnabled
+			);
+		}
+
 		public static LlmConfig defaults() {
 			return new LlmConfig(
 				"https://api.openai.com/v1",
@@ -35,6 +67,7 @@ public record AgentConfig(
 				10_000,
 				8,
 				65_536,
+				3,
 				"low",
 				false
 			);
