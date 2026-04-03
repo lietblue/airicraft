@@ -1,0 +1,59 @@
+name: Build Release JARs
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Build publishable JARs
+        run: |
+          ./gradlew --no-daemon clean remapJar :wrapper:jar
+
+      - name: Collect artifacts
+        run: |
+          MOD_VERSION=$(grep '^mod_version=' gradle.properties | cut -d'=' -f2)
+          MOD_JAR=$(find build/libs -maxdepth 1 -type f -name '*.jar' ! -name '*-sources.jar' ! -name '*-dev.jar' | head -n 1)
+          WRAPPER_JAR=$(find wrapper/build/libs -maxdepth 1 -type f -name '*.jar' ! -name '*-sources.jar' | head -n 1)
+
+          if [ -z "$MOD_JAR" ] || [ -z "$WRAPPER_JAR" ]; then
+            echo "Expected jar outputs were not found."
+            exit 1
+          fi
+
+          mkdir -p dist
+          cp "$MOD_JAR" "dist/airicraft-mod-${MOD_VERSION}.jar"
+          cp "$WRAPPER_JAR" "dist/airicraft-wrapper-${MOD_VERSION}.jar"
+
+      - name: Upload JAR artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: airicraft-jars
+          path: dist/*.jar
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.jar
+          generate_release_notes: true
