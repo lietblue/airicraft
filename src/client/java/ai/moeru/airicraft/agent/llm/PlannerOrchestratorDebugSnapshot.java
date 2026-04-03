@@ -18,6 +18,9 @@ public record PlannerOrchestratorDebugSnapshot(
 	long pendingNewestGeneration,
 	long supersededCount,
 	boolean retryPending,
-	long retryReadyAtMs
+	long retryReadyAtMs,
+	boolean coalescePending,
+	long coalesceReadyAtMs,
+	long coalesceWindowMs
 ) {
 }

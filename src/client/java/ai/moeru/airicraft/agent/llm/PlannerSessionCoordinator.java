@@ -55,16 +55,29 @@ public final class PlannerSessionCoordinator {
 		return activeSession.contextSnapshot();
 	}
 
+	public boolean hasReplaceableActiveSession() {
+		return activeSession != null && activeSession.replaceable();
+	}
+
+	public boolean hasReadyResultForActiveSession() {
+		return activeSession != null
+			&& !readyResults.isEmpty()
+			&& readyResults.peekFirst().generation() == activeSession.generation();
+	}
+
+	public PlannerContextSnapshot supersedeActiveSessionIfReplaceable() {
+		if (activeSession == null || !activeSession.replaceable()) {
+			return null;
+		}
+		PlannerContextSnapshot contextSnapshot = activeSession.contextSnapshot();
+		activeSession.markSuperseded();
+		supersededCount++;
+		activeSession = null;
+		return contextSnapshot;
+	}
+
 	public void submit(PlannerContextSnapshot contextSnapshot) {
 		Objects.requireNonNull(contextSnapshot, "contextSnapshot");
-		drainCompletedResults();
-		if (hasReadyResultForActiveSession()) {
-			return;
-		}
-		if (activeSession != null && activeSession.replaceable()) {
-			activeSession.markSuperseded();
-			supersededCount++;
-		}
 		activeSession = new PlannerSession(nextGeneration++, contextSnapshot);
 		launchIfPossible(activeSession);
 	}
@@ -143,12 +156,6 @@ public final class PlannerSessionCoordinator {
 		plannerExecutor.shutdown();
 	}
 
-	private boolean hasReadyResultForActiveSession() {
-		return activeSession != null
-			&& !readyResults.isEmpty()
-			&& readyResults.peekFirst().generation() == activeSession.generation();
-	}
-
 	private void launchIfPossible(PlannerSession session) {
 		if (session == null || !session.awaitingLaunch() || plannerExecutor.activeAttemptCount() >= maxConcurrentAttempts) {
 			return;
@@ -157,7 +164,7 @@ public final class PlannerSessionCoordinator {
 		plannerExecutor.submit(session.generation(), session.attemptCount(), session.phase(), session.request(), session.conversation());
 	}
 
-	private void drainCompletedResults() {
+	public void drainCompletedResults() {
 		PlannerExecutionResult result;
 		while ((result = plannerExecutor.poll()) != null) {
 			handleCompletedResult(result);

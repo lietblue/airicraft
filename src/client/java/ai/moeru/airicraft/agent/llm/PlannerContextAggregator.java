@@ -33,6 +33,10 @@ public final class PlannerContextAggregator {
 		return !state.queuedTriggers().isEmpty();
 	}
 
+	public int queuedTriggerCount() {
+		return state.queuedTriggers().size();
+	}
+
 	public LlmUsageSnapshot lastObservedUsage() {
 		return state.lastObservedUsage();
 	}

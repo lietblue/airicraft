@@ -120,7 +120,10 @@ public final class EmbodiedAgentRuntime {
 				visionService,
 				config.llm().plannerVisionMode(),
 				config.llm().visionImageDetail(),
-				config.llm().plannerSessionMaxConcurrentAttempts()
+				config.llm().plannerSessionMaxConcurrentAttempts(),
+				config.llm().plannerSessionCoalesceStepMillis(),
+				config.llm().plannerSessionCoalesceMinMillis(),
+				config.llm().plannerSessionCoalesceMaxMillis()
 			),
 			config.llm().maxRecentConversationTurns(),
 			clock

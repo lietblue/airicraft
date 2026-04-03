@@ -31,8 +31,47 @@ class AgentConfigLoaderTest {
 		assertEquals("", parsed.llm().visionModel());
 		assertEquals(7777, parsed.llm().visionRequestTimeoutMillis());
 		assertEquals(65_536, parsed.llm().plannerCompactionTriggerTokens());
+		assertEquals(10, parsed.llm().plannerSessionCoalesceStepMillis());
+		assertEquals(10, parsed.llm().plannerSessionCoalesceMinMillis());
+		assertEquals(100, parsed.llm().plannerSessionCoalesceMaxMillis());
 		assertEquals("high", parsed.llm().visionImageDetail());
 		assertEquals(true, parsed.llm().plannerNativeVisionEnabled());
 		assertFalse(parsed.llm().visionConfigured());
+	}
+
+	@Test
+	void fromMapReadsPlannerCoalesceFields() {
+		AgentConfig parsed = AgentConfigLoader.fromMap(Map.of(
+			"plannerSessionCoalesceStepMillis", 25,
+			"plannerSessionCoalesceMinMillis", 30,
+			"plannerSessionCoalesceMaxMillis", 90
+		), AgentConfig.defaults());
+
+		assertEquals(25, parsed.llm().plannerSessionCoalesceStepMillis());
+		assertEquals(30, parsed.llm().plannerSessionCoalesceMinMillis());
+		assertEquals(90, parsed.llm().plannerSessionCoalesceMaxMillis());
+	}
+
+	@Test
+	void fromMapNormalizesPlannerCoalesceFields() {
+		AgentConfig parsed = AgentConfigLoader.fromMap(Map.of(
+			"plannerSessionCoalesceStepMillis", -10,
+			"plannerSessionCoalesceMinMillis", -5,
+			"plannerSessionCoalesceMaxMillis", -1
+		), AgentConfig.defaults());
+
+		assertEquals(0, parsed.llm().plannerSessionCoalesceStepMillis());
+		assertEquals(0, parsed.llm().plannerSessionCoalesceMinMillis());
+		assertEquals(0, parsed.llm().plannerSessionCoalesceMaxMillis());
+
+		AgentConfig reordered = AgentConfigLoader.fromMap(Map.of(
+			"plannerSessionCoalesceStepMillis", 5,
+			"plannerSessionCoalesceMinMillis", 50,
+			"plannerSessionCoalesceMaxMillis", 20
+		), AgentConfig.defaults());
+
+		assertEquals(5, reordered.llm().plannerSessionCoalesceStepMillis());
+		assertEquals(50, reordered.llm().plannerSessionCoalesceMinMillis());
+		assertEquals(50, reordered.llm().plannerSessionCoalesceMaxMillis());
 	}
 }

@@ -71,7 +71,10 @@ public final class DialogueRuntime {
 				CurrentViewVisionTool.disabled(),
 				ai.moeru.airicraft.agent.AgentConfig.LlmConfig.defaults().plannerVisionMode(),
 				ai.moeru.airicraft.agent.AgentConfig.LlmConfig.defaults().visionImageDetail(),
-				ai.moeru.airicraft.agent.AgentConfig.LlmConfig.defaults().plannerSessionMaxConcurrentAttempts()
+				ai.moeru.airicraft.agent.AgentConfig.LlmConfig.defaults().plannerSessionMaxConcurrentAttempts(),
+				ai.moeru.airicraft.agent.AgentConfig.LlmConfig.defaults().plannerSessionCoalesceStepMillis(),
+				ai.moeru.airicraft.agent.AgentConfig.LlmConfig.defaults().plannerSessionCoalesceMinMillis(),
+				ai.moeru.airicraft.agent.AgentConfig.LlmConfig.defaults().plannerSessionCoalesceMaxMillis()
 			),
 			maxRecentTurns,
 			Clock.systemDefaultZone()
@@ -370,7 +373,10 @@ public final class DialogueRuntime {
 			CurrentViewVisionTool.disabled(),
 			config.plannerVisionMode(),
 			config.visionImageDetail(),
-			config.plannerSessionMaxConcurrentAttempts()
+			config.plannerSessionMaxConcurrentAttempts(),
+			config.plannerSessionCoalesceStepMillis(),
+			config.plannerSessionCoalesceMinMillis(),
+			config.plannerSessionCoalesceMaxMillis()
 		);
 	}
 }

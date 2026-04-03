@@ -21,9 +21,18 @@ public record AgentConfig(
 		int maxRecentConversationTurns,
 		int plannerCompactionTriggerTokens,
 		int plannerSessionMaxConcurrentAttempts,
+		int plannerSessionCoalesceStepMillis,
+		int plannerSessionCoalesceMinMillis,
+		int plannerSessionCoalesceMaxMillis,
 		String visionImageDetail,
 		boolean plannerNativeVisionEnabled
 	) {
+		public LlmConfig {
+			plannerSessionCoalesceStepMillis = Math.max(0, plannerSessionCoalesceStepMillis);
+			plannerSessionCoalesceMinMillis = Math.max(0, plannerSessionCoalesceMinMillis);
+			plannerSessionCoalesceMaxMillis = Math.max(plannerSessionCoalesceMinMillis, plannerSessionCoalesceMaxMillis);
+		}
+
 		public LlmConfig(
 			String providerBaseUrl,
 			String apiKey,
@@ -50,6 +59,9 @@ public record AgentConfig(
 				maxRecentConversationTurns,
 				plannerCompactionTriggerTokens,
 				3,
+				10,
+				10,
+				100,
 				visionImageDetail,
 				plannerNativeVisionEnabled
 			);
@@ -68,6 +80,9 @@ public record AgentConfig(
 				8,
 				65_536,
 				3,
+				10,
+				10,
+				100,
 				"low",
 				false
 			);

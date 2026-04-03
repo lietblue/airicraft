@@ -17,6 +17,9 @@ public final class PlannerOrchestrator {
 	private static final String NATIVE_TOOL_RESULT_TEXT = "Tool result for take_a_look: current first-person view attached.";
 	private static final int SESSION_MAX_ATTEMPTS = 2;
 	private static final long SESSION_RETRY_BACKOFF_MS = 250L;
+	private static final int SESSION_COALESCE_STEP_MS = 10;
+	private static final int SESSION_COALESCE_MIN_MS = 10;
+	private static final int SESSION_COALESCE_MAX_MS = 100;
 
 	private final PlannerExecutor plannerExecutor;
 	private final PlannerCompactionService compactionService;
@@ -25,12 +28,20 @@ public final class PlannerOrchestrator {
 	private final CurrentViewVisionTool visionTool;
 	private final PlannerVisionMode visionMode;
 	private final String imageDetail;
+	private final Clock clock;
+	private final long coalesceStepMs;
+	private final long coalesceMinMs;
+	private final long coalesceMaxMs;
 
 	private PlannerRequest pendingSubmitRequest;
 	private PendingToolExecution pendingToolExecution;
 	private CompactionExecutionResult lastCompactionResult;
 	private boolean awaitingAcceptedReplyRecord;
 	private volatile boolean captureInFlight;
+	private boolean coalescePending;
+	private long coalesceReadyAtMs = -1L;
+	private long coalesceWindowMs;
+	private PlannerContextSnapshot coalesceSupersededSnapshot;
 
 	public PlannerOrchestrator(
 		PlannerExecutor plannerExecutor,
@@ -48,6 +59,9 @@ public final class PlannerOrchestrator {
 			visionMode,
 			imageDetail,
 			3,
+			SESSION_COALESCE_STEP_MS,
+			SESSION_COALESCE_MIN_MS,
+			SESSION_COALESCE_MAX_MS,
 			Clock.systemDefaultZone()
 		);
 	}
@@ -69,6 +83,36 @@ public final class PlannerOrchestrator {
 			visionMode,
 			imageDetail,
 			plannerSessionMaxConcurrentAttempts,
+			SESSION_COALESCE_STEP_MS,
+			SESSION_COALESCE_MIN_MS,
+			SESSION_COALESCE_MAX_MS,
+			Clock.systemDefaultZone()
+		);
+	}
+
+	public PlannerOrchestrator(
+		PlannerExecutor plannerExecutor,
+		PlannerCompactionService compactionService,
+		PlannerContextAggregator contextAggregator,
+		CurrentViewVisionTool visionTool,
+		PlannerVisionMode visionMode,
+		String imageDetail,
+		int plannerSessionMaxConcurrentAttempts,
+		int plannerSessionCoalesceStepMillis,
+		int plannerSessionCoalesceMinMillis,
+		int plannerSessionCoalesceMaxMillis
+	) {
+		this(
+			plannerExecutor,
+			compactionService,
+			contextAggregator,
+			visionTool,
+			visionMode,
+			imageDetail,
+			plannerSessionMaxConcurrentAttempts,
+			plannerSessionCoalesceStepMillis,
+			plannerSessionCoalesceMinMillis,
+			plannerSessionCoalesceMaxMillis,
 			Clock.systemDefaultZone()
 		);
 	}
@@ -81,14 +125,18 @@ public final class PlannerOrchestrator {
 		PlannerVisionMode visionMode,
 		String imageDetail,
 		int plannerSessionMaxConcurrentAttempts,
+		int plannerSessionCoalesceStepMillis,
+		int plannerSessionCoalesceMinMillis,
+		int plannerSessionCoalesceMaxMillis,
 		Clock clock
 	) {
 		this.plannerExecutor = Objects.requireNonNull(plannerExecutor, "plannerExecutor");
 		this.compactionService = Objects.requireNonNull(compactionService, "compactionService");
 		this.contextAggregator = Objects.requireNonNull(contextAggregator, "contextAggregator");
+		this.clock = Objects.requireNonNull(clock, "clock");
 		this.sessionCoordinator = new PlannerSessionCoordinator(
 			plannerExecutor,
-			Objects.requireNonNull(clock, "clock"),
+			this.clock,
 			plannerSessionMaxConcurrentAttempts,
 			SESSION_MAX_ATTEMPTS,
 			SESSION_RETRY_BACKOFF_MS
@@ -96,6 +144,9 @@ public final class PlannerOrchestrator {
 		this.visionTool = Objects.requireNonNull(visionTool, "visionTool");
 		this.visionMode = Objects.requireNonNull(visionMode, "visionMode");
 		this.imageDetail = Objects.requireNonNull(imageDetail, "imageDetail");
+		this.coalesceStepMs = Math.max(0L, plannerSessionCoalesceStepMillis);
+		this.coalesceMinMs = Math.max(0L, plannerSessionCoalesceMinMillis);
+		this.coalesceMaxMs = Math.max(this.coalesceMinMs, plannerSessionCoalesceMaxMillis);
 	}
 
 	public boolean isConfigured() {
@@ -103,7 +154,7 @@ public final class PlannerOrchestrator {
 	}
 
 	public boolean hasInFlight() {
-		return sessionCoordinator.hasInFlight() || compactionService.hasInFlight() || pendingToolExecution != null;
+		return coalescePending || sessionCoordinator.hasInFlight() || compactionService.hasInFlight() || pendingToolExecution != null;
 	}
 
 	public PlannerOrchestratorDebugSnapshot debugSnapshot() {
@@ -127,7 +178,10 @@ public final class PlannerOrchestrator {
 			sessionCoordinator.pendingNewestGeneration(),
 			sessionCoordinator.supersededCount(),
 			activeSession != null && activeSession.retryPending(),
-			activeSession == null ? -1L : activeSession.retryReadyAtMs()
+			activeSession == null ? -1L : activeSession.retryReadyAtMs(),
+			coalescePending,
+			coalesceReadyAtMs,
+			coalesceWindowMs
 		);
 	}
 
@@ -142,6 +196,22 @@ public final class PlannerOrchestrator {
 		pendingSubmitRequest = request;
 		if (compactionService.hasInFlight()) {
 			return true;
+		}
+		sessionCoordinator.drainCompletedResults();
+		if (awaitingAcceptedReplyRecord) {
+			return true;
+		}
+		if (sessionCoordinator.hasReplaceableActiveSession()) {
+			if (sessionCoordinator.hasReadyResultForActiveSession()) {
+				return true;
+			}
+			coalesceSupersededSnapshot = sessionCoordinator.supersedeActiveSessionIfReplaceable();
+			armCoalesceWindow();
+			return coalesceWindowMs > 0L || startQueuedWorkIfPossible();
+		}
+		if (coalescePending) {
+			armCoalesceWindow();
+			return coalesceWindowMs > 0L || startQueuedWorkIfPossible();
 		}
 		return startQueuedWorkIfPossible();
 	}
@@ -168,6 +238,9 @@ public final class PlannerOrchestrator {
 
 		PlannerExecutionResult plannerResult = sessionCoordinator.poll();
 		if (plannerResult == null) {
+			if (coalescePending) {
+				startQueuedWorkIfPossible();
+			}
 			return null;
 		}
 		if (!plannerResult.succeeded()) {
@@ -244,6 +317,7 @@ public final class PlannerOrchestrator {
 
 	public void onAcceptedReplyRecorded() {
 		awaitingAcceptedReplyRecord = false;
+		clearCoalesceState();
 		if (
 			pendingSubmitRequest != null
 			&& contextAggregator.hasQueuedTriggers()
@@ -287,6 +361,7 @@ public final class PlannerOrchestrator {
 		pendingSubmitRequest = null;
 		lastCompactionResult = null;
 		awaitingAcceptedReplyRecord = false;
+		clearCoalesceState();
 	}
 
 	public void shutdown() {
@@ -297,10 +372,12 @@ public final class PlannerOrchestrator {
 		pendingSubmitRequest = null;
 		lastCompactionResult = null;
 		awaitingAcceptedReplyRecord = false;
+		clearCoalesceState();
 	}
 
 	private boolean startQueuedWorkIfPossible() {
 		if (pendingSubmitRequest == null || !contextAggregator.hasQueuedTriggers()) {
+			clearCoalesceState();
 			return true;
 		}
 		if (awaitingAcceptedReplyRecord) {
@@ -316,7 +393,16 @@ public final class PlannerOrchestrator {
 			return compactionService.submit(contextAggregator.buildCompactionConversation());
 		}
 
-		contextAggregator.dropSupersededGeneration(sessionCoordinator.contextSnapshotFor(sessionCoordinator.activeGeneration()));
+		if (coalescePending && clock.millis() < coalesceReadyAtMs) {
+			return true;
+		}
+		if (coalescePending) {
+			contextAggregator.dropSupersededGeneration(coalesceSupersededSnapshot);
+			clearCoalesceState();
+		}
+		else {
+			contextAggregator.dropSupersededGeneration(sessionCoordinator.contextSnapshotFor(sessionCoordinator.activeGeneration()));
+		}
 		PlannerContextSnapshot snapshot = contextAggregator.freezePlannerSnapshot(pendingSubmitRequest);
 		if (snapshot == null) {
 			return true;
@@ -334,6 +420,7 @@ public final class PlannerOrchestrator {
 		if (!contextAggregator.hasQueuedTriggers()) {
 			pendingSubmitRequest = null;
 			awaitingAcceptedReplyRecord = false;
+			clearCoalesceState();
 		}
 		else if (
 			acceptedResult.response() == null
@@ -448,6 +535,27 @@ public final class PlannerOrchestrator {
 			pendingToolExecution = null;
 		}
 		captureInFlight = false;
+	}
+
+	private void armCoalesceWindow() {
+		coalescePending = true;
+		coalesceWindowMs = computeCoalesceWindowMs(contextAggregator.queuedTriggerCount());
+		coalesceReadyAtMs = clock.millis() + coalesceWindowMs;
+	}
+
+	private long computeCoalesceWindowMs(int queuedTriggerCount) {
+		if (queuedTriggerCount <= 1) {
+			return 0L;
+		}
+		long windowMs = (long) (queuedTriggerCount - 1) * coalesceStepMs;
+		return Math.max(coalesceMinMs, Math.min(coalesceMaxMs, windowMs));
+	}
+
+	private void clearCoalesceState() {
+		coalescePending = false;
+		coalesceReadyAtMs = -1L;
+		coalesceWindowMs = 0L;
+		coalesceSupersededSnapshot = null;
 	}
 
 	private static String mimeType(FirstPersonScreenshotService.CapturedScreenshot capture) {
