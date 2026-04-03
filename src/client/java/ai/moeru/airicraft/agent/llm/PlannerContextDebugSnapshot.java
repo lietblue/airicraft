@@ -4,14 +4,16 @@ public record PlannerContextDebugSnapshot(
 	int compactionTriggerTokens,
 	boolean compactionPending,
 	int rawArchiveEntryCount,
-	int canonicalMessageCount,
-	int pendingEntryCount,
+	int acceptedConversationMessageCount,
+	int pendingSemanticEventCount,
+	int projectedPendingNoticeCount,
 	int frozenPlannerMessageCount,
 	int queuedTriggerCount,
 	long lastObservedEventSeqNo,
-	long lastTimeBeaconAtMs,
+	long lastAcceptedTimeBeaconAtMs,
+	boolean pendingSemanticGap,
 	LlmUsageSnapshot lastObservedUsage,
-	PlannerAmbientContext ambientContext,
+	PlannerAmbientContext acceptedAmbientContext,
 	CompactionCheckpoint activeCheckpoint
 ) {
 }

@@ -28,7 +28,7 @@ class PlannerDebugOverlayTest {
 			false,
 			plannerSnapshot(
 				new PlannerRequest(120L, 2_000L, SessionMode.OUT_OF_WORLD, "Alice", null, "Alice", "hello", null),
-				new PlannerContextDebugSnapshot(65_536, true, 12, 8, 1, 0, 3, 42L, 1_000L, null, null, null),
+				new PlannerContextDebugSnapshot(65_536, true, 12, 8, 1, 1, 0, 3, 42L, 1_000L, false, null, null, null),
 				true,
 				1_020L,
 				20L
@@ -62,7 +62,7 @@ class PlannerDebugOverlayTest {
 				false,
 				null,
 				null,
-				new PlannerContextDebugSnapshot(0, false, 0, 0, 0, 0, 0, 0L, 0L, null, null, null),
+				new PlannerContextDebugSnapshot(0, false, 0, 0, 0, 0, 0, 0, 0L, 0L, false, null, null, null),
 				0L,
 				null,
 				0,
@@ -185,7 +185,7 @@ class PlannerDebugOverlayTest {
 		String footer = PlannerDebugOverlay.formatConversationFooter(
 			plannerSnapshot(
 				new PlannerRequest(120L, 2_000L, SessionMode.OUT_OF_WORLD, "Alice", null, "Alice", "hello", null),
-				new PlannerContextDebugSnapshot(65_536, false, 12, 8, 1, 0, 0, 42L, 1_000L, null, null, null),
+				new PlannerContextDebugSnapshot(65_536, false, 12, 8, 1, 1, 0, 0, 42L, 1_000L, false, null, null, null),
 				false,
 				-1L,
 				0L,

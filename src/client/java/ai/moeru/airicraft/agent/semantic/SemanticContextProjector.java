@@ -20,16 +20,16 @@ public final class SemanticContextProjector {
 
 		ArrayList<SemanticContextUpdate> updates = new ArrayList<>();
 		List<SemanticEvent> events = queryResult.events();
-		if (queryResult.truncated() && !events.isEmpty()) {
-			SemanticEvent firstEvent = events.getFirst();
+		if (queryResult.truncated()) {
+			SemanticEvent firstEvent = events.isEmpty() ? null : events.getFirst();
 			updates.add(new SemanticContextUpdate(
 				SemanticContextUpdateKind.NOTICE,
 				DROPPED_CONTEXT_NOTICE,
-				firstEvent.tick(),
-				firstEvent.timestampMs(),
+				firstEvent == null ? -1L : firstEvent.tick(),
+				firstEvent == null ? anchorTimeMs : firstEvent.timestampMs(),
 				0,
-				firstEvent.seqNo(),
-				firstEvent.seqNo(),
+				firstEvent == null ? 0L : firstEvent.seqNo(),
+				firstEvent == null ? 0L : firstEvent.seqNo(),
 				null,
 				Map.of(),
 				null

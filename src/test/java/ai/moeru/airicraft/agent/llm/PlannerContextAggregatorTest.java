@@ -4,7 +4,6 @@ import ai.moeru.airicraft.agent.events.SemanticEvent;
 import ai.moeru.airicraft.agent.events.SemanticEventQueryResult;
 import ai.moeru.airicraft.agent.goals.GoalSnapshot;
 import ai.moeru.airicraft.agent.goals.GoalType;
-import ai.moeru.airicraft.agent.semantic.SemanticContextProjector;
 import ai.moeru.airicraft.agent.session.SessionMode;
 import org.junit.jupiter.api.Test;
 
@@ -19,28 +18,31 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class PlannerContextAggregatorTest {
-	private static final SemanticContextProjector SEMANTIC_CONTEXT_PROJECTOR = new SemanticContextProjector();
-
 	@Test
 	void injectsSingleTimeBeaconPerThirtyMinuteWindow() {
 		Clock clock = Clock.fixed(Instant.ofEpochMilli(1_000L), ZoneId.of("Asia/Taipei"));
 		PlannerContextAggregator aggregator = new PlannerContextAggregator(clock, 65_536, PlannerVisionMode.EXTERNAL_SUMMARY);
 
-		LlmConversation first = aggregator.buildPlannerConversation(requestAt(1_000L, "Alice", "@agent hi"));
+		PlannerContextSnapshot firstSnapshot = freezeSnapshot(aggregator, requestAt(1_000L, "Alice", "@agent hi"));
+		LlmConversation first = firstSnapshot.plannerConversation();
 		assertEquals(6, first.messages().size());
 		assertEquals(LlmMessageKind.NOTICE, first.messages().get(1).kind());
 		assertTrue(first.messages().get(1).content().contains("local time"));
 		assertTrue(first.messages().stream().anyMatch(message -> message.content().contains("Session mode is currently out of world.")));
 		assertTrue(first.messages().stream().anyMatch(message -> message.content().contains("There is no primary interaction player right now.")));
 		assertTrue(first.messages().stream().anyMatch(message -> message.content().contains("There is no active goal right now.")));
+		aggregator.commitAcceptedTriggerBatch(firstSnapshot);
 
-		LlmConversation second = aggregator.buildPlannerConversation(requestAt(10 * 60_000L, "Alice", "@agent follow me"));
+		PlannerContextSnapshot secondSnapshot = freezeSnapshot(aggregator, requestAt(10 * 60_000L, "Alice", "@agent follow me"));
+		LlmConversation second = secondSnapshot.plannerConversation();
 		long noticeCount = second.messages().stream().filter(message -> message.kind() == LlmMessageKind.NOTICE).count();
-		assertEquals(4L, noticeCount);
+		assertEquals(0L, noticeCount);
+		aggregator.commitAcceptedTriggerBatch(secondSnapshot);
 
-		LlmConversation third = aggregator.buildPlannerConversation(requestAt(31 * 60_000L, "Alice", "@agent stop"));
+		PlannerContextSnapshot thirdSnapshot = freezeSnapshot(aggregator, requestAt(31 * 60_000L, "Alice", "@agent stop"));
+		LlmConversation third = thirdSnapshot.plannerConversation();
 		long updatedNoticeCount = third.messages().stream().filter(message -> message.kind() == LlmMessageKind.NOTICE).count();
-		assertEquals(5L, updatedNoticeCount);
+		assertEquals(1L, updatedNoticeCount);
 	}
 
 	@Test
@@ -52,7 +54,7 @@ class PlannerContextAggregatorTest {
 			new SemanticEvent(2L, 101L, 9_000L, "planner.goal_set", Map.of("goalType", "FOLLOW_PLAYER", "targetPlayer", "Alice"))
 		));
 
-		LlmConversation conversation = aggregator.buildPlannerConversation(new PlannerRequest(
+		PlannerContextSnapshot snapshot = freezeSnapshot(aggregator, new PlannerRequest(
 			200L,
 			10_000L,
 			SessionMode.REMOTE_MULTIPLAYER,
@@ -62,6 +64,7 @@ class PlannerContextAggregatorTest {
 			"status?",
 			null
 		));
+		LlmConversation conversation = snapshot.plannerConversation();
 
 		assertTrue(conversation.messages().stream().anyMatch(message -> message.content().contains("Primary interaction player is Alice.")));
 		assertTrue(conversation.messages().stream().anyMatch(message -> message.content().contains("Active goal: Follow Alice.")));
@@ -80,7 +83,7 @@ class PlannerContextAggregatorTest {
 			new SemanticEvent(4L, 103L, 8_300L, "follow.target_acquired", Map.of("player", "Alice"))
 		));
 
-		LlmConversation conversation = aggregator.buildPlannerConversation(requestAt(10_000L, "Alice", "@agent hi"));
+		LlmConversation conversation = freezeSnapshot(aggregator, requestAt(10_000L, "Alice", "@agent hi")).plannerConversation();
 		List<LlmChatMessage> notices = conversation.messages().stream()
 			.filter(message -> message.kind() == LlmMessageKind.NOTICE)
 			.toList();
@@ -114,7 +117,7 @@ class PlannerContextAggregatorTest {
 			new SemanticEvent(4L, 103L, 8_300L, "pickup.item_picked_up", Map.of("actor", "self", "itemId", "minecraft:sunflower", "count", 1))
 		));
 
-		LlmConversation conversation = aggregator.buildPlannerConversation(requestAt(10_000L, "Alice", "@agent hi"));
+		LlmConversation conversation = freezeSnapshot(aggregator, requestAt(10_000L, "Alice", "@agent hi")).plannerConversation();
 		List<LlmChatMessage> notices = conversation.messages().stream()
 			.filter(message -> message.kind() == LlmMessageKind.NOTICE)
 			.filter(message -> message.content().contains("picked up"))
@@ -130,7 +133,8 @@ class PlannerContextAggregatorTest {
 		Clock clock = Clock.fixed(Instant.ofEpochMilli(1_000L), ZoneId.of("Asia/Taipei"));
 		PlannerContextAggregator aggregator = new PlannerContextAggregator(clock, 65_536, PlannerVisionMode.EXTERNAL_SUMMARY);
 
-		aggregator.buildPlannerConversation(requestAt(1_000L, "Alice", "@agent hi"));
+		PlannerContextSnapshot initialSnapshot = freezeSnapshot(aggregator, requestAt(1_000L, "Alice", "@agent hi"));
+		aggregator.commitAcceptedTriggerBatch(initialSnapshot);
 		aggregator.recordUsage(new LlmUsageSnapshot(70_000, 200, 70_200));
 
 		assertTrue(aggregator.compactionPending());
@@ -152,7 +156,7 @@ class PlannerContextAggregatorTest {
 		));
 
 		assertFalse(aggregator.compactionPending());
-		LlmConversation afterCheckpoint = aggregator.buildPlannerConversation(requestAt(32 * 60_000L, "Alice", "@agent status"));
+		LlmConversation afterCheckpoint = freezeSnapshot(aggregator, requestAt(32 * 60_000L, "Alice", "@agent status")).plannerConversation();
 		assertEquals(LlmMessageKind.CHECKPOINT, afterCheckpoint.messages().get(1).kind());
 	}
 
@@ -170,12 +174,23 @@ class PlannerContextAggregatorTest {
 	}
 
 	private static void recordEvents(PlannerContextAggregator aggregator, long anchorTimeMs, List<SemanticEvent> events) {
-		aggregator.recordContextUpdates(
-			SEMANTIC_CONTEXT_PROJECTOR.project(
-				new SemanticEventQueryResult(events.isEmpty() ? 0L : events.getFirst().seqNo(), events.isEmpty() ? 0L : events.getLast().seqNo(), false, events),
-				anchorTimeMs
+		aggregator.recordObservedEvents(
+			new SemanticEventQueryResult(
+				events.isEmpty() ? 0L : events.getFirst().seqNo(),
+				events.isEmpty() ? 0L : events.getLast().seqNo(),
+				false,
+				events
 			)
 		);
+	}
+
+	private static PlannerContextSnapshot freezeSnapshot(PlannerContextAggregator aggregator, PlannerRequest request) {
+		if (request.triggerBatch() != null) {
+			for (PlannerTrigger trigger : request.triggerBatch().triggers()) {
+				aggregator.enqueueTrigger(trigger);
+			}
+		}
+		return aggregator.freezePlannerSnapshot(request);
 	}
 
 	private static int indexContaining(List<LlmChatMessage> messages, String fragment) {

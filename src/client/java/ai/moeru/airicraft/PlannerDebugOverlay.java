@@ -261,11 +261,14 @@ final class PlannerDebugOverlay {
 
 		addStateSection(lines, "context counters");
 		addStateLine(lines, "queuedTriggerCount: " + contextInt(context, PlannerContextDebugSnapshot::queuedTriggerCount));
-		addStateLine(lines, "pendingEntryCount: " + contextInt(context, PlannerContextDebugSnapshot::pendingEntryCount));
-		addStateLine(lines, "canonicalMessageCount: " + contextInt(context, PlannerContextDebugSnapshot::canonicalMessageCount));
+		addStateLine(lines, "pendingSemanticEventCount: " + contextInt(context, PlannerContextDebugSnapshot::pendingSemanticEventCount));
+		addStateLine(lines, "projectedPendingNoticeCount: " + contextInt(context, PlannerContextDebugSnapshot::projectedPendingNoticeCount));
+		addStateLine(lines, "acceptedConversationMessageCount: " + contextInt(context, PlannerContextDebugSnapshot::acceptedConversationMessageCount));
 		addStateLine(lines, "rawArchiveEntryCount: " + contextInt(context, PlannerContextDebugSnapshot::rawArchiveEntryCount));
 		addStateLine(lines, "frozenPlannerMessageCount: " + contextInt(context, PlannerContextDebugSnapshot::frozenPlannerMessageCount));
 		addStateLine(lines, "lastObservedEventSeqNo: " + contextLong(context, PlannerContextDebugSnapshot::lastObservedEventSeqNo));
+		addStateLine(lines, "lastAcceptedTimeBeaconAtMs: " + contextLong(context, PlannerContextDebugSnapshot::lastAcceptedTimeBeaconAtMs));
+		addStateLine(lines, "pendingSemanticGap: " + contextBool(context, PlannerContextDebugSnapshot::pendingSemanticGap));
 
 		addStateSection(lines, "summaries");
 		addStateLine(lines, summarizeBaseRequest(plannerSnapshot == null ? null : plannerSnapshot.baseRequest()));
@@ -273,7 +276,7 @@ final class PlannerDebugOverlay {
 		addStateLine(lines, summarizeCompactionResult(plannerSnapshot == null ? null : plannerSnapshot.lastCompactionResult()));
 		addStateLine(lines, summarizeUsage(context == null ? null : context.lastObservedUsage()));
 		addStateLine(lines, summarizeCheckpoint(context == null ? null : context.activeCheckpoint()));
-		addStateLine(lines, summarizeAmbientContext(context == null ? null : context.ambientContext()));
+		addStateLine(lines, summarizeAmbientContext(context == null ? null : context.acceptedAmbientContext()));
 		return List.copyOf(lines);
 	}
 

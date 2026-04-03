@@ -1,15 +1,19 @@
 package ai.moeru.airicraft.agent.llm;
 
+import ai.moeru.airicraft.agent.events.SemanticEvent;
+
 import java.util.List;
 
 public record PlannerContextState(
 	List<PlannerContextEntry> rawArchiveTape,
-	List<LlmChatMessage> canonicalTape,
+	List<LlmChatMessage> acceptedConversationTape,
 	CompactionCheckpoint activeCheckpoint,
-	List<PlannerContextEntry> pendingEntries,
+	List<SemanticEvent> pendingSemanticEvents,
+	long pendingSemanticGapVersion,
+	long nextSemanticGapVersion,
 	long lastObservedEventSeqNo,
-	PlannerAmbientContext lastAmbientContext,
-	long lastTimeBeaconAtMs,
+	PlannerAmbientContext lastAcceptedAmbientContext,
+	long lastAcceptedTimeBeaconAtMs,
 	boolean compactionPending,
 	LlmUsageSnapshot lastObservedUsage,
 	List<PlannerTrigger> queuedTriggers,
@@ -21,6 +25,8 @@ public record PlannerContextState(
 			List.of(),
 			null,
 			List.of(),
+			0L,
+			1L,
 			0L,
 			null,
 			-1L,

@@ -5,7 +5,6 @@ import ai.moeru.airicraft.BridgeUnavailableException;
 import ai.moeru.airicraft.FirstPersonScreenshotService;
 import ai.moeru.airicraft.agent.dialogue.DialogueTurn;
 import ai.moeru.airicraft.agent.events.SemanticEventQueryResult;
-import ai.moeru.airicraft.agent.semantic.SemanticContextProjector;
 
 import java.time.Clock;
 import java.util.Locale;
@@ -30,7 +29,6 @@ public final class PlannerOrchestrator {
 	private final PlannerVisionMode visionMode;
 	private final String imageDetail;
 	private final Clock clock;
-	private final SemanticContextProjector semanticContextProjector = new SemanticContextProjector();
 	private final long coalesceStepMs;
 	private final long coalesceMinMs;
 	private final long coalesceMaxMs;
@@ -348,7 +346,7 @@ public final class PlannerOrchestrator {
 	}
 
 	public void recordEvents(SemanticEventQueryResult queryResult, long anchorTimeMs) {
-		contextAggregator.recordContextUpdates(semanticContextProjector.project(queryResult, anchorTimeMs));
+		contextAggregator.recordObservedEvents(queryResult);
 	}
 
 	public boolean startDebugCompaction() {

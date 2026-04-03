@@ -845,11 +845,12 @@ public final class AiricraftCliMain {
 			Map<String, Object> context = map(planner.get("context"));
 			copy(view, planner, "configured", "plannerVisionMode", "inFlight", "plannerInFlight", "compactionInFlight", "captureInFlight", "toolInFlight", "toolUsed");
 			copy(view, planner, "coalescePending", "coalesceReadyAtMs", "coalesceWindowMs");
-			copy(view, context, "compactionTriggerTokens", "compactionPending", "rawArchiveEntryCount", "canonicalMessageCount",
-				"pendingEntryCount", "frozenPlannerMessageCount", "queuedTriggerCount", "lastObservedEventSeqNo", "lastTimeBeaconAtMs");
+			copy(view, context, "compactionTriggerTokens", "compactionPending", "rawArchiveEntryCount", "acceptedConversationMessageCount",
+				"pendingSemanticEventCount", "projectedPendingNoticeCount", "frozenPlannerMessageCount", "queuedTriggerCount",
+				"lastObservedEventSeqNo", "lastAcceptedTimeBeaconAtMs", "pendingSemanticGap");
 			if (verbose) {
 				copy(view, planner, "baseRequest", "lastCompactionResult");
-				copy(view, context, "lastObservedUsage", "ambientContext", "activeCheckpoint");
+				copy(view, context, "lastObservedUsage", "acceptedAmbientContext", "activeCheckpoint");
 			}
 			return view;
 		}
@@ -860,7 +861,7 @@ public final class AiricraftCliMain {
 			Map<String, Object> planner = map(payload.get("planner"));
 			Map<String, Object> context = map(planner.get("context"));
 			copy(view, planner, "configured", "inFlight", "plannerInFlight", "compactionInFlight", "toolInFlight");
-			copy(view, context, "compactionPending", "canonicalMessageCount", "rawArchiveEntryCount");
+			copy(view, context, "compactionPending", "acceptedConversationMessageCount", "rawArchiveEntryCount");
 			if (verbose) {
 				copy(view, planner, "lastCompactionResult");
 				copy(view, context, "lastObservedUsage", "activeCheckpoint");

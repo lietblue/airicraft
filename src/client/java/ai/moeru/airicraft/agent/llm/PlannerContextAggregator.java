@@ -1,9 +1,11 @@
 package ai.moeru.airicraft.agent.llm;
 
 import ai.moeru.airicraft.agent.dialogue.DialogueTurn;
+import ai.moeru.airicraft.agent.events.SemanticEvent;
+import ai.moeru.airicraft.agent.events.SemanticEventQueryResult;
 import ai.moeru.airicraft.agent.semantic.SemanticContextProjectionResult;
+import ai.moeru.airicraft.agent.semantic.SemanticContextProjector;
 import ai.moeru.airicraft.agent.semantic.SemanticContextUpdate;
-import ai.moeru.airicraft.agent.semantic.SemanticContextUpdateKind;
 
 import java.time.Clock;
 import java.time.ZoneId;
@@ -16,6 +18,7 @@ public final class PlannerContextAggregator {
 	private final ZoneId zoneId;
 	private final int compactionTriggerTokens;
 	private final PlannerVisionMode visionMode;
+	private final SemanticContextProjector semanticContextProjector = new SemanticContextProjector();
 
 	private PlannerContextState state = PlannerContextState.initial();
 	private PlannerContextSnapshot lastFrozenSnapshot;
@@ -48,35 +51,27 @@ public final class PlannerContextAggregator {
 	}
 
 	public PlannerContextDebugSnapshot debugSnapshot() {
+		SemanticContextProjectionResult projection = pendingSemanticProjection(clock.millis());
 		return new PlannerContextDebugSnapshot(
 			compactionTriggerTokens,
 			state.compactionPending(),
 			state.rawArchiveTape().size(),
-			state.canonicalTape().size(),
-			state.pendingEntries().size(),
+			state.acceptedConversationTape().size(),
+			state.pendingSemanticEvents().size(),
+			projection.updates().size(),
 			lastFrozenSnapshot == null ? 0 : lastFrozenSnapshot.plannerConversation().messages().size(),
 			state.queuedTriggers().size(),
 			state.lastObservedEventSeqNo(),
-			state.lastTimeBeaconAtMs(),
+			state.lastAcceptedTimeBeaconAtMs(),
+			state.pendingSemanticGapVersion() != 0L,
 			state.lastObservedUsage(),
-			state.lastAmbientContext(),
+			state.lastAcceptedAmbientContext(),
 			state.activeCheckpoint()
 		);
 	}
 
-	public void recordContextUpdates(SemanticContextProjectionResult projection) {
-		if (projection == null) {
-			return;
-		}
-		ArrayList<SemanticContextUpdate> updates = new ArrayList<>();
-		for (SemanticContextUpdate update : projection.updates()) {
-			if (update.kind() != SemanticContextUpdateKind.NOTICE || update.text().isBlank()) {
-				continue;
-			}
-			updates.add(update);
-		}
-		state = PlannerContextReducer.recordSemanticUpdates(state, updates, clock.millis());
-		state = PlannerContextReducer.updateObservedEventSeqNo(state, projection.latestObservedSeqNo());
+	public void recordObservedEvents(SemanticEventQueryResult queryResult) {
+		state = PlannerContextReducer.recordObservedEvents(state, queryResult);
 	}
 
 	public void enqueueTrigger(PlannerTrigger trigger) {
@@ -91,31 +86,22 @@ public final class PlannerContextAggregator {
 		}
 
 		long nowMs = request.timestampMs();
-		if (PlannerContextPolicy.shouldInjectTimeBeacon(state.lastTimeBeaconAtMs(), nowMs)) {
-			state = PlannerContextReducer.recordEntry(state, new PlannerContextEntry(
-				PlannerContextEntryType.NOTICE,
-				null,
-				PlannerContextPolicy.timeBeaconText(nowMs, zoneId),
-				-1L,
-				nowMs
-			));
-			state = PlannerContextReducer.updateTimeBeacon(state, nowMs);
-		}
-
 		PlannerAmbientContext ambientContext = PlannerAmbientContext.fromRequest(request);
-		state = PlannerContextReducer.recordEntries(
-			state,
-			PlannerAmbientContextRenderer.renderChanges(state.lastAmbientContext(), ambientContext, request.tick(), nowMs)
-		);
-		state = PlannerContextReducer.updateAmbientContext(state, ambientContext);
-		state = PlannerContextReducer.commitPending(state, nowMs);
+		long renderedTimeBeaconAtMs = PlannerContextPolicy.shouldInjectTimeBeacon(state.lastAcceptedTimeBeaconAtMs(), nowMs)
+			? nowMs
+			: -1L;
+		List<LlmChatMessage> snapshotNotices = renderSnapshotNotices(request, ambientContext, renderedTimeBeaconAtMs);
 
 		PlannerTriggerBatch triggerBatch = PlannerTriggerBatch.of(state.queuedTriggers());
 		PlannerRequest combinedRequest = request.withTriggerBatch(triggerBatch);
 		PlannerContextSnapshot snapshot = new PlannerContextSnapshot(
 			combinedRequest,
 			triggerBatch,
-			composeConversation(state.canonicalTape(), triggerBatch.toTerminalMessage())
+			composeConversation(state.acceptedConversationTape(), snapshotNotices, triggerBatch.toTerminalMessage()),
+			state.pendingSemanticEvents().isEmpty() ? 0L : state.pendingSemanticEvents().getLast().seqNo(),
+			state.pendingSemanticGapVersion(),
+			ambientContext,
+			renderedTimeBeaconAtMs
 		);
 		lastFrozenSnapshot = snapshot;
 		return snapshot;
@@ -125,12 +111,7 @@ public final class PlannerContextAggregator {
 		if (snapshot == null) {
 			return;
 		}
-		state = PlannerContextReducer.commitAcceptedTriggerBatch(
-			state,
-			snapshot.triggerBatch(),
-			snapshot.request().tick(),
-			snapshot.request().timestampMs()
-		);
+		state = PlannerContextReducer.commitAcceptedSnapshot(state, snapshot);
 		lastFrozenSnapshot = null;
 	}
 
@@ -151,7 +132,7 @@ public final class PlannerContextAggregator {
 			}
 		}
 		PlannerContextSnapshot snapshot = freezePlannerSnapshot(request);
-		return snapshot == null ? composeConversation(state.canonicalTape(), null) : snapshot.plannerConversation();
+		return snapshot == null ? composeConversation(state.acceptedConversationTape(), List.of(), null) : snapshot.plannerConversation();
 	}
 
 	public LlmConversation buildPlannerFollowUpConversation(PlannerContextSnapshot snapshot, String toolResult) {
@@ -191,23 +172,16 @@ public final class PlannerContextAggregator {
 	}
 
 	public LlmConversation buildCompactionConversation() {
-		long nowMs = clock.millis();
-		state = PlannerContextReducer.commitPending(state, nowMs);
 		return composeConversation(
-			state.canonicalTape(),
+			state.acceptedConversationTape(),
+			List.of(),
 			LlmChatMessage.user(PlannerPromptPolicy.compactionInstruction(), LlmMessageKind.TASK)
 		);
 	}
 
 	public void recordAgentTurn(DialogueTurn turn) {
 		Objects.requireNonNull(turn, "turn");
-		state = PlannerContextReducer.recordEntry(state, new PlannerContextEntry(
-			PlannerContextEntryType.ASSISTANT_TURN,
-			turn.speaker(),
-			turn.text(),
-			turn.tick(),
-			turn.timestampMs()
-		));
+		state = PlannerContextReducer.recordAcceptedAssistantTurn(state, turn);
 	}
 
 	public void recordUsage(LlmUsageSnapshot usage) {
@@ -232,13 +206,64 @@ public final class PlannerContextAggregator {
 		lastFrozenSnapshot = null;
 	}
 
-	private LlmConversation composeConversation(List<LlmChatMessage> canonicalTape, LlmChatMessage terminalMessage) {
+	private SemanticEventQueryResult pendingSemanticQueryResult() {
+		List<SemanticEvent> events = state.pendingSemanticEvents();
+		long oldestSeqNo = events.isEmpty() ? 0L : events.getFirst().seqNo();
+		long latestSeqNo = events.isEmpty() ? state.lastObservedEventSeqNo() : events.getLast().seqNo();
+		return new SemanticEventQueryResult(
+			oldestSeqNo,
+			latestSeqNo,
+			state.pendingSemanticGapVersion() != 0L,
+			List.copyOf(events)
+		);
+	}
+
+	private SemanticContextProjectionResult pendingSemanticProjection(long anchorTimeMs) {
+		return semanticContextProjector.project(pendingSemanticQueryResult(), anchorTimeMs);
+	}
+
+	private List<LlmChatMessage> renderSnapshotNotices(
+		PlannerRequest request,
+		PlannerAmbientContext ambientContext,
+		long renderedTimeBeaconAtMs
+	) {
+		long anchorTimeMs = request.timestampMs();
+		ArrayList<LlmChatMessage> messages = new ArrayList<>();
+		if (renderedTimeBeaconAtMs >= 0L) {
+			messages.add(ContextMessageRenderer.renderEntry(new PlannerContextEntry(
+				PlannerContextEntryType.NOTICE,
+				null,
+				PlannerContextPolicy.timeBeaconText(renderedTimeBeaconAtMs, zoneId),
+				-1L,
+				renderedTimeBeaconAtMs
+			), anchorTimeMs));
+		}
+		for (PlannerContextEntry entry : PlannerAmbientContextRenderer.renderChanges(
+			state.lastAcceptedAmbientContext(),
+			ambientContext,
+			request.tick(),
+			anchorTimeMs
+		)) {
+			messages.add(ContextMessageRenderer.renderEntry(entry, anchorTimeMs));
+		}
+		for (SemanticContextUpdate update : pendingSemanticProjection(anchorTimeMs).updates()) {
+			messages.add(ContextMessageRenderer.renderEntry(PlannerContextEntry.semanticNotice(update), anchorTimeMs));
+		}
+		return List.copyOf(messages);
+	}
+
+	private LlmConversation composeConversation(
+		List<LlmChatMessage> acceptedConversationTape,
+		List<LlmChatMessage> snapshotNotices,
+		LlmChatMessage terminalMessage
+	) {
 		ArrayList<LlmChatMessage> messages = new ArrayList<>();
 		messages.add(LlmChatMessage.system(PlannerPromptPolicy.systemPrompt(visionMode)));
 		if (state.activeCheckpoint() != null) {
 			messages.add(LlmChatMessage.user(state.activeCheckpoint().renderMessage(), LlmMessageKind.CHECKPOINT));
 		}
-		messages.addAll(canonicalTape);
+		messages.addAll(acceptedConversationTape);
+		messages.addAll(snapshotNotices);
 		if (terminalMessage != null) {
 			messages.add(terminalMessage);
 		}
