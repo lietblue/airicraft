@@ -28,9 +28,13 @@ public final class SemanticEventBuffer {
 	}
 
 	public SemanticEvent append(long tick, String type, Map<String, Object> payload) {
+		return append(tick, clock.getAsLong(), type, payload);
+	}
+
+	public SemanticEvent append(long tick, long timestampMs, String type, Map<String, Object> payload) {
 		Objects.requireNonNull(type, "type");
 		Map<String, Object> safePayload = payload == null ? Map.of() : new LinkedHashMap<>(payload);
-		SemanticEvent event = new SemanticEvent(nextSeqNo++, tick, clock.getAsLong(), type, Map.copyOf(safePayload));
+		SemanticEvent event = new SemanticEvent(nextSeqNo++, tick, timestampMs, type, Map.copyOf(safePayload));
 		if (events.size() == capacity) {
 			events.remove(0);
 			droppedCount++;

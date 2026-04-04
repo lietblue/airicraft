@@ -238,6 +238,16 @@ final class HttpBridgeTransport implements MinecraftTransport {
 	}
 
 	@Override
+	public Map<String, Object> getAgentEventPolicy() {
+		return get("/v1/agent/event-policy");
+	}
+
+	@Override
+	public Map<String, Object> clearAgentEventPolicy() {
+		return send("POST", "/v1/agent/event-policy/clear", null);
+	}
+
+	@Override
 	public Map<String, Object> getVerificationStatus() {
 		return get("/v1/verification/status");
 	}

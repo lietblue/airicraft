@@ -227,6 +227,30 @@ class HttpBridgeTransportTest {
 	}
 
 	@Test
+	void agentEventPolicyEndpointsMapToBridgePaths(@TempDir Path tempDir) throws Exception {
+		try (TestBridgeServer server = TestBridgeServer.start()) {
+			server.respondJson("/v1/agent/event-policy", 0, 200, """
+				{"available":true,"activeRuleCount":1,"recentInterventionCount":0,"activeRules":[],"recentInterventions":[]}
+				""");
+			server.respondJson("/v1/agent/event-policy/clear", 0, 200, """
+				{"available":true,"activeRuleCount":0,"recentInterventionCount":0,"activeRules":[],"recentInterventions":[]}
+				""");
+			writeBridgeState(tempDir, server.port());
+			System.setProperty("user.home", tempDir.toString());
+
+			HttpBridgeTransport transport = new HttpBridgeTransport();
+
+			Map<String, Object> before = transport.getAgentEventPolicy();
+			Map<String, Object> after = transport.clearAgentEventPolicy();
+
+			assertEquals(1, ((Number) before.get("activeRuleCount")).intValue());
+			assertEquals(0, ((Number) after.get("activeRuleCount")).intValue());
+			assertEquals(1, server.requestCount("/v1/agent/event-policy"));
+			assertEquals(1, server.requestCount("/v1/agent/event-policy/clear"));
+		}
+	}
+
+	@Test
 	void verificationStatusReadsPayload(@TempDir Path tempDir) throws Exception {
 		try (TestBridgeServer server = TestBridgeServer.start()) {
 			server.respondJson("/v1/verification/status", 0, 200, """

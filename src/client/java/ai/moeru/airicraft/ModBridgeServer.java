@@ -116,9 +116,11 @@ public final class ModBridgeServer {
 				httpServer.createContext("/v1/agent/events/recent", exchange -> handleJson(exchange, () -> createRecentAgentEventsResponse(exchange)));
 				httpServer.createContext("/v1/agent/goals", exchange -> handleJson(exchange, this::createAgentGoalsResponse));
 				httpServer.createContext("/v1/agent/tree", exchange -> handleJson(exchange, this::createAgentTreeResponse));
-				httpServer.createContext("/v1/agent/dialogue", exchange -> handleJson(exchange, this::createAgentDialogueResponse));
-				httpServer.createContext("/v1/agent/context", exchange -> handleJson(exchange, this::createAgentContextResponse));
-				httpServer.createContext("/v1/agent/debug/compact", this::handleAgentDebugCompact);
+			httpServer.createContext("/v1/agent/dialogue", exchange -> handleJson(exchange, this::createAgentDialogueResponse));
+			httpServer.createContext("/v1/agent/context", exchange -> handleJson(exchange, this::createAgentContextResponse));
+			httpServer.createContext("/v1/agent/event-policy", exchange -> handleJson(exchange, this::createAgentEventPolicyResponse));
+			httpServer.createContext("/v1/agent/event-policy/clear", this::handleAgentEventPolicyClear);
+			httpServer.createContext("/v1/agent/debug/compact", this::handleAgentDebugCompact);
 				httpServer.createContext("/v1/verification/status", exchange -> handleJson(exchange, this::createVerificationStatusResponse));
 				httpServer.createContext("/v1/verification/player", exchange -> handleJson(exchange, this::createVerificationPlayerResponse));
 				httpServer.createContext("/v1/verification/player/teleport", this::handleVerificationPlayerTeleport);
@@ -524,6 +526,15 @@ public final class ModBridgeServer {
 		});
 	}
 
+	private void handleAgentEventPolicyClear(HttpExchange exchange) throws IOException {
+		handleJsonBody(exchange, "POST", Object.class, request -> {
+			return onClientThread(() -> {
+				agentRuntime.clearEventPolicy();
+				return createAgentEventPolicyPayload();
+			});
+		});
+	}
+
 	private void handleJson(HttpExchange exchange, Supplier<Object> supplier) throws IOException {
 		if (!authorize(exchange)) {
 			writeJson(exchange, 401, Map.of("error", "unauthorized", "message", "Invalid bridge token"));
@@ -654,6 +665,7 @@ public final class ModBridgeServer {
 			response.put("visionAvailable", agentRuntime.visionAvailable());
 			response.put("plannerVisionMode", plannerSnapshot.plannerVisionMode());
 			response.put("degraded", agentRuntime.isDegraded());
+			response.put("eventPolicy", eventPolicySummaryPayload());
 			response.put("verification", snapshot.verification());
 			return response;
 		});
@@ -757,8 +769,35 @@ public final class ModBridgeServer {
 			response.put("available", true);
 			response.put("planner", agentRuntime.plannerDebugSnapshot());
 			response.put("contextExcerpt", agentRuntime.plannerContextExcerpt());
+			response.put("eventPolicy", eventPolicySummaryPayload());
 			return response;
 		});
+	}
+
+	private Object createAgentEventPolicyResponse() {
+		return onClientThread(this::createAgentEventPolicyPayload);
+	}
+
+	private Map<String, Object> createAgentEventPolicyPayload() {
+		LinkedHashMap<String, Object> response = new LinkedHashMap<>();
+		response.put("available", true);
+		response.put("activeRuleCount", agentRuntime.activeEventPolicyRuleCount());
+		response.put("recentInterventionCount", agentRuntime.recentEventPolicyInterventionCount());
+		response.put("lastDecision", agentRuntime.lastEventPolicyDecision());
+		response.put("activeRules", agentRuntime.activeEventPolicyRules());
+		response.put("recentInterventions", agentRuntime.recentEventPolicyInterventions());
+		return response;
+	}
+
+	private Map<String, Object> eventPolicySummaryPayload() {
+		LinkedHashMap<String, Object> payload = new LinkedHashMap<>();
+		payload.put("activeRuleCount", agentRuntime.activeEventPolicyRuleCount());
+		payload.put("recentInterventionCount", agentRuntime.recentEventPolicyInterventionCount());
+		if (agentRuntime.lastEventPolicyDecision() != null) {
+			payload.put("lastMatchedRuleId", agentRuntime.lastEventPolicyDecision().matchedRuleId());
+			payload.put("lastMatchedEffect", agentRuntime.lastEventPolicyDecision().effect().name());
+		}
+		return payload;
 	}
 
 	private Object createFocusResponse() {

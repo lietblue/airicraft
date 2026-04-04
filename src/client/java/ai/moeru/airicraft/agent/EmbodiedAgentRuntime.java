@@ -13,7 +13,18 @@ import ai.moeru.airicraft.agent.dialogue.DialogueResponse;
 import ai.moeru.airicraft.agent.dialogue.DialogueSpeakerLabels;
 import ai.moeru.airicraft.agent.dialogue.DialogueSnapshot;
 import ai.moeru.airicraft.agent.dialogue.DialogueRuntime;
+import ai.moeru.airicraft.agent.events.AgentEventPipeline;
+import ai.moeru.airicraft.agent.events.EventPolicyChanges;
+import ai.moeru.airicraft.agent.events.EventPolicyDecision;
+import ai.moeru.airicraft.agent.events.EventPolicyEffect;
+import ai.moeru.airicraft.agent.events.EventPolicyIntervention;
+import ai.moeru.airicraft.agent.events.EventPolicyMatch;
+import ai.moeru.airicraft.agent.events.EventPolicyRule;
+import ai.moeru.airicraft.agent.events.EventPolicyRuleUpsert;
+import ai.moeru.airicraft.agent.events.EventPolicyState;
+import ai.moeru.airicraft.agent.events.EventRoutingProfile;
 import ai.moeru.airicraft.agent.events.SemanticEventBuffer;
+import ai.moeru.airicraft.agent.events.SemanticEvent;
 import ai.moeru.airicraft.agent.events.SemanticEventQueryResult;
 import ai.moeru.airicraft.agent.follow.FollowCapability;
 import ai.moeru.airicraft.agent.follow.FollowState;
@@ -52,6 +63,7 @@ import ai.moeru.airicraft.agent.verification.scenarios.DialogueChatSanitizationV
 import ai.moeru.airicraft.agent.verification.scenarios.DialogueClearGoalVerification;
 import ai.moeru.airicraft.agent.verification.scenarios.DialogueProactiveSocialModeVerification;
 import ai.moeru.airicraft.agent.verification.scenarios.DamageFallContextVerification;
+import ai.moeru.airicraft.agent.verification.scenarios.EventPolicyIgnoreSystemVerification;
 import ai.moeru.airicraft.agent.verification.scenarios.FollowVerification;
 import ai.moeru.airicraft.agent.verification.scenarios.FollowSingleplayerLocalPauseVerification;
 import ai.moeru.airicraft.agent.verification.scenarios.FollowReacquireTargetVerification;
@@ -87,6 +99,7 @@ import java.util.function.BiFunction;
 
 public final class EmbodiedAgentRuntime {
 	static final long CHAT_ECHO_SUPPRESSION_TICKS = 40L;
+	private static final Map<String, EventRoutingProfile> EVENT_ROUTING_PROFILES = createEventRoutingProfiles();
 
 	private final AiricraftConfig airicraftConfig;
 	private final AgentConfig config;
@@ -95,6 +108,9 @@ public final class EmbodiedAgentRuntime {
 	private final SessionRuntime sessionRuntime = new SessionRuntime();
 	private final LanHostingService lanHostingService = new LanHostingService();
 	private final SemanticEventBuffer eventBuffer = new SemanticEventBuffer(512);
+	private final SemanticEventBuffer plannerEventBuffer = new SemanticEventBuffer(512);
+	private final EventPolicyState eventPolicyState = new EventPolicyState();
+	private final AgentEventPipeline eventPipeline = new AgentEventPipeline(eventBuffer, plannerEventBuffer, eventPolicyState, EVENT_ROUTING_PROFILES);
 	private final ChatIngestService chatIngestService = new ChatIngestService();
 	private final LocalDamageTracker localDamageTracker = new LocalDamageTracker();
 	private final NearbyPlayerTracker nearbyPlayerTracker;
@@ -183,6 +199,8 @@ public final class EmbodiedAgentRuntime {
 		localDamageTracker.clear();
 		nearbyPlayerTracker.clear(tickCount, eventBuffer);
 		primaryInteractionResolver.clear();
+		eventPolicyState.clear();
+		eventPipeline.clearPlannerFeed();
 		dialogueRuntime.clear();
 		goalDirector.clear();
 		followCapability.clear();
@@ -213,12 +231,15 @@ public final class EmbodiedAgentRuntime {
 			primaryInteractionResolver.clearIfNotNearby(current.uuid(), nearbyPlayerTracker.isNearby(current.uuid()))
 		);
 		primaryInteractionResolver.expireInactive(tickCount);
+		drainEventPipeline();
 
 		DialogueResponse completedDialogueResponse = dialogueRuntime.poll(tickCount, eventBuffer);
 		if (completedDialogueResponse != null) {
 			Optional<GoalSnapshot> previousGoal = goalDirector.activeGoal();
+			applyPlannerEventPolicyChanges(completedDialogueResponse.eventPolicyChanges());
 			goalDirector.onPlannerResponse(completedDialogueResponse);
 			recordPlannerOutcome(completedDialogueResponse, previousGoal, goalDirector.activeGoal());
+			drainEventPipeline();
 		}
 
 		followState = followCapability.tick(
@@ -254,6 +275,7 @@ public final class EmbodiedAgentRuntime {
 				"distanceToTarget", followState.distanceToTarget()
 			));
 		}
+		drainEventPipeline();
 
 		verificationRunner.onTick();
 		lastKnownPlayerHealth = currentPlayerHealth(client);
@@ -266,7 +288,7 @@ public final class EmbodiedAgentRuntime {
 		verificationRunner.reset();
 		localDamageTracker.clear();
 		nearbyPlayerTracker.clear(tickCount, eventBuffer);
-		eventBuffer.clear();
+		eventPipeline.clear();
 		primaryInteractionResolver.clear();
 		dialogueRuntime.shutdown();
 		visionService.shutdown();
@@ -338,6 +360,30 @@ public final class EmbodiedAgentRuntime {
 
 	public List<String> plannerContextExcerpt() {
 		return dialogueRuntime.plannerContextExcerpt();
+	}
+
+	public int activeEventPolicyRuleCount() {
+		return eventPolicyState.activeRuleCount();
+	}
+
+	public int recentEventPolicyInterventionCount() {
+		return eventPolicyState.recentInterventionCount();
+	}
+
+	public EventPolicyDecision lastEventPolicyDecision() {
+		return eventPolicyState.lastDecision().orElse(null);
+	}
+
+	public List<EventPolicyRule> activeEventPolicyRules() {
+		return eventPolicyState.activeRules();
+	}
+
+	public List<EventPolicyIntervention> recentEventPolicyInterventions() {
+		return eventPolicyState.recentInterventions();
+	}
+
+	public void clearEventPolicy() {
+		eventPolicyState.clear();
 	}
 
 	public boolean verificationAvailable() {
@@ -466,20 +512,13 @@ public final class EmbodiedAgentRuntime {
 
 			String plannerSender = DialogueSpeakerLabels.SAME_CLIENT_ADMIN;
 			if (dialogueRuntime.handleResetCommand(plannerSender, plainTextMessage, tickCount, eventBuffer)) {
+				eventPolicyState.clear();
+				drainEventPipeline();
 				return;
 			}
-
-				dialogueRuntime.onPlayerChat(
-					plannerSender,
-					plainTextMessage,
-					tickCount,
-					sessionSnapshot,
-					primaryInteractionResolver.current().map(PrimaryInteractionPlayer::name).orElse(null),
-					goalDirector.activeGoal(),
-					eventBuffer
-				);
-				return;
-			}
+			drainEventPipeline();
+			return;
+		}
 
 		chatIngestService.ingest(
 			senderName,
@@ -491,23 +530,12 @@ public final class EmbodiedAgentRuntime {
 		);
 
 		if (dialogueRuntime.handleResetCommand(senderName, plainTextMessage, tickCount, eventBuffer)) {
+			eventPolicyState.clear();
+			drainEventPipeline();
 			return;
 		}
-
-		boolean plannerEligibleChat = ChatIngestService.isAddressedToAgent(plainTextMessage)
-			|| proactiveSocialModeEnabled();
-		if (plannerEligibleChat && playerChatWithinConfiguredDistance(senderName)) {
-				dialogueRuntime.onPlayerChat(
-					senderName,
-					plainTextMessage,
-					tickCount,
-					sessionSnapshot,
-					primaryInteractionResolver.current().map(PrimaryInteractionPlayer::name).orElse(null),
-					goalDirector.activeGoal(),
-					eventBuffer
-				);
-			}
-		}
+		drainEventPipeline();
+	}
 
 	public void onSystemChatReceived(String plainTextMessage) {
 		if (!airicraftConfig.readSystemChatMessages()) {
@@ -518,21 +546,8 @@ public final class EmbodiedAgentRuntime {
 		}
 
 		chatIngestService.ingestSystemMessage(plainTextMessage, tickCount, eventBuffer);
-		if (!proactiveSocialModeEnabled()) {
-			return;
-		}
-
-			dialogueRuntime.onContextTrigger(
-				PlannerTriggerType.SYSTEM,
-				"server",
-				plainTextMessage,
-				tickCount,
-				sessionSnapshot,
-				primaryInteractionResolver.current().map(PrimaryInteractionPlayer::name).orElse(null),
-				goalDirector.activeGoal(),
-				eventBuffer
-			);
-		}
+		drainEventPipeline();
+	}
 
 	public void onPlayerCraftedItem(String itemId, int count) {
 		if (itemId == null || itemId.isBlank() || count <= 0) {
@@ -544,17 +559,7 @@ public final class EmbodiedAgentRuntime {
 			"itemId", itemId,
 			"count", count
 		));
-
-		dialogueRuntime.onContextTrigger(
-			PlannerTriggerType.CRAFT,
-			"self",
-			"I crafted " + count + "x " + itemId + ".",
-			tickCount,
-			sessionSnapshot,
-			primaryInteractionResolver.current().map(PrimaryInteractionPlayer::name).orElse(null),
-			goalDirector.activeGoal(),
-			eventBuffer
-		);
+		drainEventPipeline();
 	}
 
 	public void onPlayerPickedUpItem(String itemId, int count) {
@@ -567,17 +572,7 @@ public final class EmbodiedAgentRuntime {
 			"itemId", itemId,
 			"count", count
 		));
-
-		dialogueRuntime.onContextTrigger(
-			PlannerTriggerType.PICKUP,
-			"self",
-			"Picked up " + count + "x " + itemId + ".",
-			tickCount,
-			sessionSnapshot,
-			primaryInteractionResolver.current().map(PrimaryInteractionPlayer::name).orElse(null),
-			goalDirector.activeGoal(),
-			eventBuffer
-		);
+		drainEventPipeline();
 	}
 
 	public void onPlayerDamageObserved(DamageSource damageSource) {
@@ -593,35 +588,7 @@ public final class EmbodiedAgentRuntime {
 		}
 
 		eventBuffer.append(tickCount, "combat.damage_taken", payload);
-
-		String damageTypeId = stringPayloadValue(payload, "damageTypeId");
-		String attackerName = stringPayloadValue(payload, "attackerName");
-		Float amount = floatPayloadValue(payload, "amount");
-		Float resultingHealth = floatPayloadValue(payload, "healthAfter");
-		StringBuilder message = new StringBuilder("I took ")
-			.append(formatDecimal(amount == null ? healthBefore - healthAfter : amount))
-			.append(" damage");
-		if (attackerName != null) {
-			message.append(" from ").append(attackerName);
-		}
-		else if (damageTypeId != null) {
-			message.append(" from ").append(damageTypeId);
-		}
-		if (resultingHealth != null) {
-			message.append(" and dropped to ").append(formatDecimal(resultingHealth)).append(" health");
-		}
-		message.append('.');
-
-		dialogueRuntime.onContextTrigger(
-			PlannerTriggerType.DAMAGE,
-			"self",
-			message.toString(),
-			tickCount,
-			sessionSnapshot,
-			primaryInteractionResolver.current().map(PrimaryInteractionPlayer::name).orElse(null),
-			goalDirector.activeGoal(),
-			eventBuffer
-		);
+		drainEventPipeline();
 	}
 
 	public void onPlayerRespawned() {
@@ -645,6 +612,7 @@ public final class EmbodiedAgentRuntime {
 			"player", playerName
 		));
 		forwardSyntheticPresenceMessage(playerName + " joined the game");
+		drainEventPipeline();
 	}
 
 	public void onPlayerLeftGame(UUID playerUuid) {
@@ -661,6 +629,7 @@ public final class EmbodiedAgentRuntime {
 			"player", playerName
 		));
 		forwardSyntheticPresenceMessage(playerName + " left the game");
+		drainEventPipeline();
 	}
 
 	public SemanticEventQueryResult recentEvents(Long sinceSeqNo) {
@@ -787,21 +756,8 @@ public final class EmbodiedAgentRuntime {
 		}
 
 		chatIngestService.ingestSystemMessage(plainTextMessage, tickCount, eventBuffer);
-		if (!proactiveSocialModeEnabled()) {
-			return;
-		}
-
-			dialogueRuntime.onContextTrigger(
-				PlannerTriggerType.SYSTEM,
-				"server",
-				plainTextMessage,
-				tickCount,
-				sessionSnapshot,
-				primaryInteractionResolver.current().map(PrimaryInteractionPlayer::name).orElse(null),
-				goalDirector.activeGoal(),
-				eventBuffer
-			);
-		}
+		drainEventPipeline();
+	}
 
 	private boolean isLocalPlayer(UUID playerUuid, String playerName) {
 		MinecraftClient client = MinecraftClient.getInstance();
@@ -852,6 +808,255 @@ public final class EmbodiedAgentRuntime {
 				"source", previousGoal.get().source()
 			));
 		}
+	}
+
+	private void drainEventPipeline() {
+		List<ai.moeru.airicraft.agent.llm.PlannerTrigger> triggers = eventPipeline.drain(this::createPlannerTrigger);
+		if (triggers.isEmpty()) {
+			return;
+		}
+		String primaryInteractionPlayer = primaryInteractionResolver.current().map(PrimaryInteractionPlayer::name).orElse(null);
+		Optional<GoalSnapshot> activeGoal = goalDirector.activeGoal();
+		for (ai.moeru.airicraft.agent.llm.PlannerTrigger trigger : triggers) {
+			dialogueRuntime.onPlannerTrigger(
+				trigger,
+				sessionSnapshot,
+				primaryInteractionPlayer,
+				activeGoal,
+				plannerEventBuffer
+			);
+		}
+	}
+
+	private ai.moeru.airicraft.agent.llm.PlannerTrigger createPlannerTrigger(SemanticEvent event, EventRoutingProfile profile) {
+		String eventType = event.type();
+		if (eventType == null) {
+			return null;
+		}
+		return switch (eventType) {
+			case "social.player_spoke" -> createPlayerSpokeTrigger(event);
+			case "social.player_addressed_agent" -> createAddressedChatTrigger(event);
+			case "social.local_controller_spoke" -> createLocalControllerTrigger(event);
+			case "social.system_message" -> createSystemTrigger(event);
+			case "pickup.item_picked_up" -> createPickupTrigger(event);
+			case "crafting.item_crafted" -> createCraftTrigger(event);
+			case "combat.damage_taken" -> createDamageTrigger(event);
+			default -> null;
+		};
+	}
+
+	private ai.moeru.airicraft.agent.llm.PlannerTrigger createPlayerSpokeTrigger(SemanticEvent event) {
+		String player = stringPayloadValue(event.payload(), "player");
+		String message = stringPayloadValue(event.payload(), "message");
+		if (player == null || message == null) {
+			return null;
+		}
+		if (ChatIngestService.isAddressedToAgent(message)) {
+			return null;
+		}
+		if (!proactiveSocialModeEnabled() || !playerChatWithinConfiguredDistance(player)) {
+			return null;
+		}
+		return ai.moeru.airicraft.agent.llm.PlannerTrigger.pending(PlannerTriggerType.CHAT, player, message, event.tick(), event.timestampMs());
+	}
+
+	private ai.moeru.airicraft.agent.llm.PlannerTrigger createAddressedChatTrigger(SemanticEvent event) {
+		String player = stringPayloadValue(event.payload(), "player");
+		String message = stringPayloadValue(event.payload(), "message");
+		if (player == null || message == null) {
+			return null;
+		}
+		if (DialogueRuntime.isResetCommand(message) || !playerChatWithinConfiguredDistance(player)) {
+			return null;
+		}
+		return ai.moeru.airicraft.agent.llm.PlannerTrigger.pending(PlannerTriggerType.CHAT, player, message, event.tick(), event.timestampMs());
+	}
+
+	private ai.moeru.airicraft.agent.llm.PlannerTrigger createLocalControllerTrigger(SemanticEvent event) {
+		String message = stringPayloadValue(event.payload(), "message");
+		if (message == null || DialogueRuntime.isResetCommand(message)) {
+			return null;
+		}
+		return ai.moeru.airicraft.agent.llm.PlannerTrigger.pending(
+			PlannerTriggerType.CHAT,
+			DialogueSpeakerLabels.SAME_CLIENT_ADMIN,
+			message,
+			event.tick(),
+			event.timestampMs()
+		);
+	}
+
+	private ai.moeru.airicraft.agent.llm.PlannerTrigger createSystemTrigger(SemanticEvent event) {
+		String message = stringPayloadValue(event.payload(), "message");
+		if (message == null || !proactiveSocialModeEnabled()) {
+			return null;
+		}
+		return ai.moeru.airicraft.agent.llm.PlannerTrigger.pending(PlannerTriggerType.SYSTEM, "server", message, event.tick(), event.timestampMs());
+	}
+
+	private ai.moeru.airicraft.agent.llm.PlannerTrigger createPickupTrigger(SemanticEvent event) {
+		String itemId = stringPayloadValue(event.payload(), "itemId");
+		Float count = floatPayloadValue(event.payload(), "count");
+		if (itemId == null || count == null) {
+			return null;
+		}
+		return ai.moeru.airicraft.agent.llm.PlannerTrigger.pending(
+			PlannerTriggerType.PICKUP,
+			"self",
+			"Picked up " + formatDecimal(count) + "x " + itemId + ".",
+			event.tick(),
+			event.timestampMs()
+		);
+	}
+
+	private ai.moeru.airicraft.agent.llm.PlannerTrigger createCraftTrigger(SemanticEvent event) {
+		String itemId = stringPayloadValue(event.payload(), "itemId");
+		Float count = floatPayloadValue(event.payload(), "count");
+		if (itemId == null || count == null) {
+			return null;
+		}
+		return ai.moeru.airicraft.agent.llm.PlannerTrigger.pending(
+			PlannerTriggerType.CRAFT,
+			"self",
+			"I crafted " + formatDecimal(count) + "x " + itemId + ".",
+			event.tick(),
+			event.timestampMs()
+		);
+	}
+
+	private ai.moeru.airicraft.agent.llm.PlannerTrigger createDamageTrigger(SemanticEvent event) {
+		Map<String, Object> payload = event.payload();
+		String damageTypeId = stringPayloadValue(payload, "damageTypeId");
+		String attackerName = stringPayloadValue(payload, "attackerName");
+		Float amount = floatPayloadValue(payload, "amount");
+		Float resultingHealth = floatPayloadValue(payload, "healthAfter");
+		if (amount == null && resultingHealth == null) {
+			return null;
+		}
+
+		StringBuilder message = new StringBuilder("I took ")
+			.append(formatDecimal(amount == null ? 0.0F : amount))
+			.append(" damage");
+		if (attackerName != null) {
+			message.append(" from ").append(attackerName);
+		}
+		else if (damageTypeId != null) {
+			message.append(" from ").append(damageTypeId);
+		}
+		if (resultingHealth != null) {
+			message.append(" and dropped to ").append(formatDecimal(resultingHealth)).append(" health");
+		}
+		message.append('.');
+		return ai.moeru.airicraft.agent.llm.PlannerTrigger.pending(
+			PlannerTriggerType.DAMAGE,
+			"self",
+			message.toString(),
+			event.tick(),
+			event.timestampMs()
+		);
+	}
+
+	private void applyPlannerEventPolicyChanges(EventPolicyChanges changes) {
+		if (changes == null) {
+			return;
+		}
+		long timestampMs = System.currentTimeMillis();
+		if (changes.clearAll()) {
+			eventPolicyState.clear();
+		}
+		eventPolicyState.removeRuleIds(changes.removeRuleIds());
+		for (EventPolicyRuleUpsert upsert : changes.upserts()) {
+			applyPlannerEventPolicyUpsert(upsert, timestampMs);
+		}
+	}
+
+	private void applyPlannerEventPolicyUpsert(EventPolicyRuleUpsert upsert, long timestampMs) {
+		if (upsert == null) {
+			return;
+		}
+		EventPolicyMatch match = upsert.match();
+		String eventType = match == null ? null : match.eventType();
+		EventPolicyEffect effect = EventPolicyEffect.parse(upsert.effect());
+		String ruleId = normalizeRuleId(upsert.ruleId());
+		if (ruleId == null) {
+			ruleId = "planner-rule-" + timestampMs + "-" + eventPolicyState.activeRuleCount();
+		}
+		if (match == null || !match.isValid()) {
+			recordPolicyRuleRejected(ruleId, eventType, upsert.effect(), "eventType is required");
+			return;
+		}
+		EventRoutingProfile profile = EVENT_ROUTING_PROFILES.get(eventType);
+		if (profile != null && profile.policyBypass()) {
+			recordPolicyRuleRejected(ruleId, eventType, upsert.effect(), "event type bypasses planner-authored policy");
+			return;
+		}
+		if (effect == null) {
+			recordPolicyRuleRejected(ruleId, eventType, upsert.effect(), "effect must be allow, ignore, semantic_only, or trigger_only");
+			return;
+		}
+		eventPolicyState.upsert(new EventPolicyRule(
+			ruleId,
+			effect,
+			match,
+			upsert.reason(),
+			timestampMs,
+			null,
+			0L,
+			"planner"
+		));
+	}
+
+	private void recordPolicyRuleRejected(String ruleId, String eventType, String effect, String reason) {
+		LinkedHashMap<String, Object> payload = new LinkedHashMap<>();
+		if (ruleId != null) {
+			payload.put("ruleId", ruleId);
+		}
+		if (eventType != null) {
+			payload.put("eventType", eventType);
+		}
+		if (effect != null && !effect.isBlank()) {
+			payload.put("effect", effect);
+		}
+		payload.put("reason", reason == null || reason.isBlank() ? "rule rejected" : reason);
+		eventBuffer.append(tickCount, "policy.rule_rejected", payload);
+	}
+
+	private static String normalizeRuleId(String ruleId) {
+		if (ruleId == null) {
+			return null;
+		}
+		String trimmed = ruleId.trim();
+		return trimmed.isEmpty() ? null : trimmed;
+	}
+
+	private static Map<String, EventRoutingProfile> createEventRoutingProfiles() {
+		LinkedHashMap<String, EventRoutingProfile> profiles = new LinkedHashMap<>();
+		profiles.put("social.player_spoke", new EventRoutingProfile("social.player_spoke", false, PlannerTriggerType.CHAT, false));
+		profiles.put("social.player_addressed_agent", new EventRoutingProfile("social.player_addressed_agent", false, PlannerTriggerType.CHAT, true));
+		profiles.put("social.local_controller_spoke", new EventRoutingProfile("social.local_controller_spoke", false, PlannerTriggerType.CHAT, true));
+		profiles.put("social.system_message", new EventRoutingProfile("social.system_message", false, PlannerTriggerType.SYSTEM, false));
+		profiles.put("pickup.item_picked_up", new EventRoutingProfile("pickup.item_picked_up", true, PlannerTriggerType.PICKUP, false));
+		profiles.put("crafting.item_crafted", new EventRoutingProfile("crafting.item_crafted", true, PlannerTriggerType.CRAFT, false));
+		profiles.put("combat.damage_taken", new EventRoutingProfile("combat.damage_taken", true, PlannerTriggerType.DAMAGE, false));
+		profiles.put("session.world_loaded", new EventRoutingProfile("session.world_loaded", true, null, false));
+		profiles.put("session.world_unloaded", new EventRoutingProfile("session.world_unloaded", true, null, false));
+		profiles.put("session.connection_lost", new EventRoutingProfile("session.connection_lost", true, null, false));
+		profiles.put("session.lan_opened", new EventRoutingProfile("session.lan_opened", true, null, false));
+		profiles.put("social.player_joined_game", new EventRoutingProfile("social.player_joined_game", true, null, false));
+		profiles.put("social.player_left_game", new EventRoutingProfile("social.player_left_game", true, null, false));
+		profiles.put("social.player_joined_nearby", new EventRoutingProfile("social.player_joined_nearby", true, null, false));
+		profiles.put("social.player_left_nearby", new EventRoutingProfile("social.player_left_nearby", true, null, false));
+		profiles.put("follow.target_acquired", new EventRoutingProfile("follow.target_acquired", true, null, false));
+		profiles.put("follow.target_lost", new EventRoutingProfile("follow.target_lost", true, null, false));
+		profiles.put("follow.stuck", new EventRoutingProfile("follow.stuck", true, null, false));
+		profiles.put("planner.goal_set", new EventRoutingProfile("planner.goal_set", true, null, false));
+		profiles.put("planner.goal_cleared", new EventRoutingProfile("planner.goal_cleared", true, null, false));
+		profiles.put("planner.degraded_entered", new EventRoutingProfile("planner.degraded_entered", true, null, false));
+		profiles.put("planner.degraded_cleared", new EventRoutingProfile("planner.degraded_cleared", true, null, false));
+		profiles.put("planner.reset_requested", new EventRoutingProfile("planner.reset_requested", true, null, true));
+		profiles.put("policy.event_intervened", EventRoutingProfile.rawOnly("policy.event_intervened"));
+		profiles.put("policy.rule_rejected", EventRoutingProfile.rawOnly("policy.rule_rejected"));
+		return Map.copyOf(profiles);
 	}
 
 	private void registerDefaultScenarios() {
@@ -1079,6 +1284,38 @@ public final class EmbodiedAgentRuntime {
 			)),
 			() -> onChatReceived("ObserveAlice", "@agent stop"),
 			sinceSeqNo -> eventBuffer.containsTypeSince(sinceSeqNo, "planner.goal_cleared")
+		));
+		verificationRunner.register(new EventPolicyIgnoreSystemVerification(
+			() -> sessionSnapshot.worldLoaded(),
+			() -> nearbyPlayerTracker.injectPlayerNearby("PolicyAlice", playerOffset(5.0D), tickCount, eventBuffer),
+			() -> injectMockPlannerResponse(new PlannerResponse(
+				"Okay, I'll ignore repeated system messages for now.",
+				new PlannerIntent("reply_only", null, null),
+				null,
+				new EventPolicyChanges(
+					false,
+					List.of(),
+					List.of(new EventPolicyRuleUpsert(
+						"mute-system-server",
+						"ignore",
+						new EventPolicyMatch("social.system_message", null, "server", null, null, null, null),
+						"Ignore repeated server system chatter for this session."
+					))
+				)
+			)),
+			() -> onChatReceived("PolicyAlice", "@agent ignore repeated server system messages"),
+			this::activeEventPolicyRules,
+			this::recentEventPolicyInterventions,
+			() -> onSystemChatReceived("Policy harness system noise"),
+			() -> injectMockPlannerResponse(new PlannerResponse(
+				"Bypass chat still works.",
+				new PlannerIntent("reply_only", null, null)
+			)),
+			() -> onChatReceived("PolicyAlice", "@agent say hi again"),
+			this::latestEventSeqNo,
+			sinceSeqNo -> eventBuffer.containsTypeSince(sinceSeqNo, "planner.response_applied"),
+			sinceSeqNo -> eventBuffer.containsTypeSince(sinceSeqNo, "social.system_message"),
+			sinceSeqNo -> eventBuffer.containsTypeSince(sinceSeqNo, "policy.event_intervened")
 		));
 	}
 

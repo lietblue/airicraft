@@ -59,6 +59,10 @@ interface MinecraftTransport {
 
 	Map<String, Object> triggerAgentCompaction(boolean wait, Integer timeoutMs);
 
+	Map<String, Object> getAgentEventPolicy();
+
+	Map<String, Object> clearAgentEventPolicy();
+
 	Map<String, Object> getVerificationStatus();
 
 	Map<String, Object> getVerificationPlayerState();

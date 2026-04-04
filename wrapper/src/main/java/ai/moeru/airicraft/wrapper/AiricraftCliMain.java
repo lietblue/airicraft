@@ -55,6 +55,10 @@ public final class AiricraftCliMain {
 			agent.addSubcommand(new AgentDialogueCommand(context));
 			agent.addSubcommand(new AgentContextCommand(context));
 			agent.addSubcommand(new AgentCompactCommand(context));
+			agent.addSubcommand(new AgentEventPolicyCommand(context));
+			CommandLine agentEventPolicy = agent.getSubcommands().get("event-policy");
+			agentEventPolicy.addSubcommand(new AgentEventPolicyShowCommand(context));
+			agentEventPolicy.addSubcommand(new AgentEventPolicyClearCommand(context));
 			agent.addSubcommand("events", new UsageCommand(out, "airicraft agent events", "Agent event stream commands"));
 			CommandLine agentEvents = agent.getSubcommands().get("events");
 			agentEvents.addSubcommand(new AgentEventsRecentCommand(context));
@@ -311,6 +315,42 @@ public final class AiricraftCliMain {
 			}
 			Integer timeoutMs = timeoutSeconds == null ? null : timeoutSeconds * 1000;
 			return PayloadViews.agentCompact(transport().triggerAgentCompaction(!noWait, timeoutMs), verbose());
+		}
+	}
+
+	@Command(name = "event-policy", mixinStandardHelpOptions = true, description = "Inspect active event-policy rules and recent interventions.")
+	private static final class AgentEventPolicyCommand extends BaseCommand {
+		private AgentEventPolicyCommand(CliContext context) {
+			super(context, "agent event-policy");
+		}
+
+		@Override
+		Map<String, Object> runCommand() {
+			return PayloadViews.agentEventPolicy(transport().getAgentEventPolicy(), verbose());
+		}
+	}
+
+	@Command(name = "show", mixinStandardHelpOptions = true, description = "Inspect active event-policy rules and recent interventions.")
+	private static final class AgentEventPolicyShowCommand extends BaseCommand {
+		private AgentEventPolicyShowCommand(CliContext context) {
+			super(context, "agent event-policy show");
+		}
+
+		@Override
+		Map<String, Object> runCommand() {
+			return PayloadViews.agentEventPolicy(transport().getAgentEventPolicy(), verbose());
+		}
+	}
+
+	@Command(name = "clear", mixinStandardHelpOptions = true, description = "Clear all session-scoped event-policy rules.")
+	private static final class AgentEventPolicyClearCommand extends BaseCommand {
+		private AgentEventPolicyClearCommand(CliContext context) {
+			super(context, "agent event-policy clear");
+		}
+
+		@Override
+		Map<String, Object> runCommand() {
+			return PayloadViews.agentEventPolicy(transport().clearAgentEventPolicy(), verbose());
 		}
 	}
 
@@ -954,6 +994,8 @@ public final class AiricraftCliMain {
 			if (payload.containsKey("session")) {
 				view.put("session", payload.get("session"));
 			}
+			Map<String, Object> eventPolicy = map(payload.get("eventPolicy"));
+			copy(view, eventPolicy, "activeRuleCount", "recentInterventionCount", "lastMatchedRuleId", "lastMatchedEffect");
 			if (verbose && payload.containsKey("verification")) {
 				view.put("verification", payload.get("verification"));
 			}
@@ -1011,17 +1053,35 @@ public final class AiricraftCliMain {
 			view.put("available", payload.getOrDefault("available", false));
 			Map<String, Object> planner = map(payload.get("planner"));
 			Map<String, Object> context = map(planner.get("context"));
+			Map<String, Object> eventPolicy = map(payload.get("eventPolicy"));
 			List<Object> contextExcerpt = values(payload.get("contextExcerpt"));
 			copy(view, planner, "configured", "plannerVisionMode", "inFlight", "plannerInFlight", "compactionInFlight", "captureInFlight", "toolInFlight", "toolUsed");
 			copy(view, planner, "coalescePending", "coalesceReadyAtMs", "coalesceWindowMs");
 			copy(view, context, "compactionTriggerTokens", "compactionPending", "acceptedTurnCount",
 				"pendingSemanticEventCount", "projectedPendingNoticeCount", "frozenPlannerMessageCount", "queuedTriggerCount",
 				"lastObservedEventSeqNo", "lastAcceptedTimeContextAtMs", "pendingSemanticGap", "overflowFlushPending");
+			copy(view, eventPolicy, "activeRuleCount", "recentInterventionCount", "lastMatchedRuleId", "lastMatchedEffect");
 			view.put("contextExcerptLineCount", contextExcerpt.size());
 			if (verbose) {
 				copy(view, planner, "baseRequest", "lastCompactionResult");
 				copy(view, context, "lastObservedUsage", "acceptedAmbientContext", "activeCheckpoint");
 				view.put("contextExcerpt", contextExcerpt);
+			}
+			return view;
+		}
+
+		private static Map<String, Object> agentEventPolicy(Map<String, Object> payload, boolean verbose) {
+			LinkedHashMap<String, Object> view = new LinkedHashMap<>();
+			copy(view, payload, "available", "activeRuleCount", "recentInterventionCount");
+			Map<String, Object> lastDecision = map(payload.get("lastDecision"));
+			copy(view, lastDecision, "matchedRuleId", "effect", "reason", "bypassed");
+			List<Map<String, Object>> activeRules = maps(payload.get("activeRules"));
+			List<Map<String, Object>> recentInterventions = maps(payload.get("recentInterventions"));
+			view.put("ruleCount", activeRules.size());
+			view.put("interventionCount", recentInterventions.size());
+			if (verbose) {
+				view.put("activeRules", activeRules);
+				view.put("recentInterventions", recentInterventions);
 			}
 			return view;
 		}

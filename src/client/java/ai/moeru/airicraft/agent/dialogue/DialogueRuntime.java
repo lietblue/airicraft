@@ -17,6 +17,7 @@ import ai.moeru.airicraft.agent.llm.PlannerOrchestrator;
 import ai.moeru.airicraft.agent.llm.PlannerRequest;
 import ai.moeru.airicraft.agent.llm.PlannerRequestSeed;
 import ai.moeru.airicraft.agent.llm.PlannerResponse;
+import ai.moeru.airicraft.agent.llm.PlannerTrigger;
 import ai.moeru.airicraft.agent.llm.PlannerTriggerType;
 import ai.moeru.airicraft.agent.session.SessionSnapshot;
 
@@ -235,6 +236,33 @@ public final class DialogueRuntime {
 		);
 	}
 
+	public void onPlannerTrigger(
+		PlannerTrigger trigger,
+		SessionSnapshot sessionSnapshot,
+		String primaryInteractionPlayer,
+		Optional<GoalSnapshot> activeGoal,
+		SemanticEventBuffer plannerEventBuffer
+	) {
+		if (trigger == null) {
+			return;
+		}
+		submitPlannerTrigger(
+			PlannerRequest.ofTrigger(
+				trigger.tick(),
+				trigger.timestampMs(),
+				sessionSnapshot.mode(),
+				primaryInteractionPlayer,
+				activeGoal.orElse(null),
+				trigger.type(),
+				trigger.speaker(),
+				trigger.text(),
+				null
+			),
+			plannerEventBuffer,
+			trigger.timestampMs()
+		);
+	}
+
 	public DialogueResponse poll(long tick, SemanticEventBuffer eventBuffer) {
 		if (queuedTimeoutInjections > 0 && !plannerOrchestrator.hasInFlight()) {
 			queuedTimeoutInjections--;
@@ -265,7 +293,8 @@ public final class DialogueRuntime {
 		DialogueResponse response = new DialogueResponse(
 			plannerResponse.replyText() == null ? "" : plannerResponse.replyText(),
 			new DialogueIntent(mappedIntentType, plannerResponse.intent().goalType(), plannerResponse.intent().targetPlayer()),
-			tick
+			tick,
+			plannerResponse.eventPolicyChanges()
 		);
 		recordResponse(response);
 		if (response.text() != null && !response.text().isBlank()) {

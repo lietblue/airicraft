@@ -132,6 +132,54 @@ class AiricraftCliMainTest {
 	}
 
 	@Test
+	void agentEventPolicyShowsRuleSummary() {
+		TestTransport transport = new TestTransport();
+		transport.agentEventPolicyPayload = linkedMap(
+			"available", true,
+			"activeRuleCount", 2,
+			"recentInterventionCount", 1,
+			"lastDecision", linkedMap(
+				"matchedRuleId", "mute-system",
+				"effect", "IGNORE",
+				"reason", "suppress noisy system spam",
+				"bypassed", false
+			),
+			"activeRules", List.of(
+				linkedMap("ruleId", "mute-system", "effect", "IGNORE")
+			),
+			"recentInterventions", List.of(
+				linkedMap("matchedRuleId", "mute-system", "effect", "IGNORE")
+			)
+		);
+
+		CliResult result = execute(transport, "agent", "event-policy");
+
+		assertEquals(0, result.exitCode());
+		assertTrue(result.output().contains("command: agent event-policy\n"));
+		assertTrue(result.output().contains("activeRuleCount: 2\n"));
+		assertTrue(result.output().contains("matchedRuleId: mute-system\n"));
+	}
+
+	@Test
+	void agentEventPolicyClearCallsTransport() {
+		TestTransport transport = new TestTransport();
+		transport.agentEventPolicyPayload = linkedMap(
+			"available", true,
+			"activeRuleCount", 0,
+			"recentInterventionCount", 0,
+			"activeRules", List.of(),
+			"recentInterventions", List.of()
+		);
+
+		CliResult result = execute(transport, "agent", "event-policy", "clear");
+
+		assertEquals(0, result.exitCode());
+		assertTrue(transport.agentEventPolicyCleared);
+		assertTrue(result.output().contains("command: agent event-policy clear\n"));
+		assertTrue(result.output().contains("activeRuleCount: 0\n"));
+	}
+
+	@Test
 	void agentCompactPassesWaitAndTimeout() {
 		TestTransport transport = new TestTransport();
 		transport.agentCompactPayload = linkedMap(
@@ -514,6 +562,7 @@ class AiricraftCliMainTest {
 		private Map<String, Object> agentContextPayload = Map.of();
 		private Map<String, Object> agentEventsPayload = Map.of("events", List.of());
 		private Map<String, Object> agentCompactPayload = Map.of("started", true);
+		private Map<String, Object> agentEventPolicyPayload = Map.of("activeRules", List.of(), "recentInterventions", List.of());
 		private Map<String, Object> verificationStatusPayload = Map.of("capabilities", List.of());
 		private Map<String, Object> verificationPlayerPayload = Map.of();
 		private Map<String, Object> verificationRunPayload = Map.of("accepted", true);
@@ -542,6 +591,7 @@ class AiricraftCliMainTest {
 		private String lastVerificationGameMode;
 		private String lastVerificationCommand;
 		private boolean verificationRespawnCalled;
+		private boolean agentEventPolicyCleared;
 
 		private RuntimeException worldsJoinFailure;
 		private RuntimeException serversListFailure;
@@ -673,6 +723,17 @@ class AiricraftCliMainTest {
 			lastCompactWait = wait;
 			lastCompactTimeoutMs = timeoutMs;
 			return agentCompactPayload;
+		}
+
+		@Override
+		public Map<String, Object> getAgentEventPolicy() {
+			return agentEventPolicyPayload;
+		}
+
+		@Override
+		public Map<String, Object> clearAgentEventPolicy() {
+			agentEventPolicyCleared = true;
+			return agentEventPolicyPayload;
 		}
 
 		@Override
