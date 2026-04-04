@@ -85,6 +85,10 @@ public final class ClientRuntimeController {
 		agentRuntime.onPlayerHealthUpdated(healthInitialized, healthBefore, healthAfter);
 	}
 
+	public void onPlayerRespawned() {
+		agentRuntime.onPlayerRespawned();
+	}
+
 	public void onPlayerJoinedGame(UUID playerUuid, String playerName) {
 		agentRuntime.onPlayerJoinedGame(playerUuid, playerName);
 	}

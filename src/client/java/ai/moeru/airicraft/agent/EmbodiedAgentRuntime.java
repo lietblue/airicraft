@@ -2,6 +2,7 @@ package ai.moeru.airicraft.agent;
 
 import ai.moeru.airicraft.AiricraftConfig;
 import ai.moeru.airicraft.AiricraftConfigLoader;
+import ai.moeru.airicraft.BridgeUnavailableException;
 import ai.moeru.airicraft.FirstPersonScreenshotService;
 import ai.moeru.airicraft.SingleplayerWorldService;
 import ai.moeru.airicraft.agent.behavior.BehaviorTreeRuntime;
@@ -45,10 +46,12 @@ import ai.moeru.airicraft.agent.social.PrimaryInteractionPlayer;
 import ai.moeru.airicraft.agent.social.PrimaryInteractionResolver;
 import ai.moeru.airicraft.agent.verification.VerificationReport;
 import ai.moeru.airicraft.agent.verification.VerificationRunner;
+import ai.moeru.airicraft.agent.verification.VerificationPlayerProbe;
 import ai.moeru.airicraft.agent.verification.scenarios.DialogueVerification;
 import ai.moeru.airicraft.agent.verification.scenarios.DialogueChatSanitizationVerification;
 import ai.moeru.airicraft.agent.verification.scenarios.DialogueClearGoalVerification;
 import ai.moeru.airicraft.agent.verification.scenarios.DialogueProactiveSocialModeVerification;
+import ai.moeru.airicraft.agent.verification.scenarios.DamageFallContextVerification;
 import ai.moeru.airicraft.agent.verification.scenarios.FollowVerification;
 import ai.moeru.airicraft.agent.verification.scenarios.FollowSingleplayerLocalPauseVerification;
 import ai.moeru.airicraft.agent.verification.scenarios.FollowReacquireTargetVerification;
@@ -63,9 +66,13 @@ import ai.moeru.airicraft.agent.verification.scenarios.SocialChatIngestVerificat
 import ai.moeru.airicraft.agent.session.SessionMode;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.entity.damage.DamageSource;
+import net.minecraft.server.integrated.IntegratedServer;
+import net.minecraft.server.network.ServerPlayerEntity;
 import net.minecraft.text.Text;
 import net.minecraft.util.math.Vec3d;
+import net.minecraft.world.GameMode;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -73,6 +80,10 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
 import java.time.Clock;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.function.BiFunction;
 
 public final class EmbodiedAgentRuntime {
 	static final long CHAT_ECHO_SUPPRESSION_TICKS = 40L;
@@ -103,6 +114,7 @@ public final class EmbodiedAgentRuntime {
 	private FollowState followState = FollowState.idle();
 	private long lastSystemChatTick = -1L;
 	private String lastSystemChatText;
+	private Float lastKnownPlayerHealth;
 	private final Map<UUID, String> seenPlayerNames = new LinkedHashMap<>();
 
 	public EmbodiedAgentRuntime(AiricraftConfig airicraftConfig, AgentConfig config, FirstPersonScreenshotService screenshotService) {
@@ -180,6 +192,7 @@ public final class EmbodiedAgentRuntime {
 		proactiveSocialModeOverride = null;
 		lastSystemChatTick = -1L;
 		lastSystemChatText = null;
+		lastKnownPlayerHealth = null;
 		seenPlayerNames.clear();
 	}
 
@@ -192,6 +205,7 @@ public final class EmbodiedAgentRuntime {
 		sessionSnapshot = sessionRuntime.poll(client, tickCount, eventBuffer);
 		if (!wasWorldLoaded && sessionSnapshot.worldLoaded()) {
 			worldLoadTick = tickCount;
+			localDamageTracker.onLifecycleReset(tickCount);
 		}
 
 		nearbyPlayerTracker.poll(client, tickCount, eventBuffer);
@@ -242,6 +256,7 @@ public final class EmbodiedAgentRuntime {
 		}
 
 		verificationRunner.onTick();
+		lastKnownPlayerHealth = currentPlayerHealth(client);
 	}
 
 	public void shutdown() {
@@ -263,6 +278,7 @@ public final class EmbodiedAgentRuntime {
 		proactiveSocialModeOverride = null;
 		lastSystemChatTick = -1L;
 		lastSystemChatText = null;
+		lastKnownPlayerHealth = null;
 		seenPlayerNames.clear();
 		sessionSnapshot = SessionSnapshot.initial();
 	}
@@ -320,6 +336,94 @@ public final class EmbodiedAgentRuntime {
 		return dialogueRuntime.plannerConversationDebugSnapshot();
 	}
 
+	public List<String> plannerContextExcerpt() {
+		return dialogueRuntime.plannerContextExcerpt();
+	}
+
+	public boolean verificationAvailable() {
+		MinecraftClient client = MinecraftClient.getInstance();
+		return sessionSnapshot.mode() == SessionMode.SINGLEPLAYER_LOCAL
+			&& sessionSnapshot.worldLoaded()
+			&& client != null
+			&& client.player != null
+			&& client.isIntegratedServerRunning()
+			&& client.getServer() != null;
+	}
+
+	public long latestEventSeqNo() {
+		return eventBuffer.latestSeqNo();
+	}
+
+	public VerificationPlayerProbe verificationPlayerProbe() {
+		prepareClientForVerification();
+		return onVerificationServer((server, player) -> verificationPlayerProbe(player));
+	}
+
+	public VerificationPlayerProbe verificationTeleportPlayer(double x, double y, double z) {
+		if (!Double.isFinite(x) || !Double.isFinite(y) || !Double.isFinite(z)) {
+			throw new BridgeUnavailableException("invalid_request", "x, y, and z must be finite numbers");
+		}
+		prepareClientForVerification();
+		return onVerificationServer((server, player) -> {
+			player.requestTeleport(x, y, z);
+			return verificationPlayerProbe(player);
+		});
+	}
+
+	public VerificationPlayerProbe verificationSetPlayerVelocity(double x, double y, double z) {
+		if (!Double.isFinite(x) || !Double.isFinite(y) || !Double.isFinite(z)) {
+			throw new BridgeUnavailableException("invalid_request", "x, y, and z must be finite numbers");
+		}
+		prepareClientForVerification();
+		MinecraftClient client = MinecraftClient.getInstance();
+		if (client == null || client.player == null) {
+			throw new BridgeUnavailableException("verification_unavailable", "Local verification player is unavailable");
+		}
+		client.player.setVelocityClient(new Vec3d(x, y, z));
+		client.player.setOnGround(false);
+		return onVerificationServer((server, player) -> {
+			player.setVelocity(x, y, z);
+			player.velocityDirty = true;
+			player.setOnGround(false);
+			return verificationPlayerProbe(player);
+		});
+	}
+
+	public VerificationPlayerProbe verificationSetGameMode(String modeId) {
+		GameMode gameMode = verificationGameMode(modeId);
+		prepareClientForVerification();
+		return onVerificationServer((server, player) -> {
+			player.changeGameMode(gameMode);
+			return verificationPlayerProbe(player);
+		});
+	}
+
+	public VerificationPlayerProbe verificationRunCommand(String command) {
+		String normalizedCommand = normalizedVerificationCommand(command);
+		prepareClientForVerification();
+		return onVerificationServer((server, player) -> {
+			server.getCommandManager().parseAndExecute(
+				server.getCommandSource()
+					.withEntity(player)
+					.withPosition(new Vec3d(player.getX(), player.getY(), player.getZ()))
+					.withWorld(player.getEntityWorld())
+					.withSilent(),
+				normalizedCommand
+			);
+			return verificationPlayerProbe(player);
+		});
+	}
+
+	public boolean verificationRequestRespawn() {
+		prepareClientForVerification();
+		MinecraftClient client = MinecraftClient.getInstance();
+		if (client == null || client.player == null) {
+			throw new BridgeUnavailableException("verification_unavailable", "Local verification player is unavailable");
+		}
+		client.player.requestRespawn();
+		return true;
+	}
+
 	public boolean startDebugCompaction() {
 		return dialogueRuntime.startDebugCompaction();
 	}
@@ -338,6 +442,7 @@ public final class EmbodiedAgentRuntime {
 
 	public boolean startVerification(String scenarioName) {
 		proactiveSocialModeOverride = null;
+		prepareClientForVerification();
 		return verificationRunner.start(scenarioName);
 	}
 
@@ -480,7 +585,9 @@ public final class EmbodiedAgentRuntime {
 	}
 
 	public void onPlayerHealthUpdated(boolean healthInitialized, float healthBefore, float healthAfter) {
-		Map<String, Object> payload = localDamageTracker.consumeDamage(healthInitialized, tickCount, healthBefore, healthAfter);
+		float effectiveHealthBefore = resolveEffectiveHealthBefore(healthBefore, healthAfter);
+		Map<String, Object> payload = localDamageTracker.consumeDamage(healthInitialized, tickCount, effectiveHealthBefore, healthAfter);
+		lastKnownPlayerHealth = healthAfter;
 		if (payload == null) {
 			return;
 		}
@@ -515,6 +622,11 @@ public final class EmbodiedAgentRuntime {
 			goalDirector.activeGoal(),
 			eventBuffer
 		);
+	}
+
+	public void onPlayerRespawned() {
+		localDamageTracker.onLifecycleReset(tickCount);
+		lastKnownPlayerHealth = null;
 	}
 
 	public void onPlayerJoinedGame(UUID playerUuid, String playerName) {
@@ -934,6 +1046,16 @@ public final class EmbodiedAgentRuntime {
 			sinceSeqNo -> eventBuffer.containsTypeForPlayerSince(sinceSeqNo, "follow.target_acquired", "ReacquireAlice"),
 			() -> activeGoal().map(goal -> goal.type() == GoalType.FOLLOW_PLAYER && "ReacquireAlice".equals(goal.targetPlayer())).orElse(false)
 		));
+		verificationRunner.register(new DamageFallContextVerification(
+			this::verificationAvailable,
+			this::verificationPlayerProbe,
+			() -> verificationSetGameMode("survival"),
+			() -> verificationRunCommand("effect give @s resistance 10 3 true"),
+			(x, y, z) -> verificationSetPlayerVelocity(x, y, z),
+			this::latestEventSeqNo,
+			sinceSeqNo -> recentEvents(sinceSeqNo),
+			this::plannerContextExcerpt
+		));
 		verificationRunner.register(new PlannerObservabilityVerification(
 			() -> sessionSnapshot.worldLoaded(),
 			() -> nearbyPlayerTracker.injectPlayerNearby("ObserveAlice", playerOffset(5.0D), tickCount, eventBuffer),
@@ -1006,6 +1128,113 @@ public final class EmbodiedAgentRuntime {
 		return text.substring(0, trimIndex);
 	}
 
+	private void ensureVerificationSessionAvailable() {
+		if (sessionSnapshot.mode() != SessionMode.SINGLEPLAYER_LOCAL) {
+			throw new BridgeUnavailableException("unsupported_session_state", "Verification actions require a singleplayer local world");
+		}
+		if (!sessionSnapshot.worldLoaded()) {
+			throw new BridgeUnavailableException("verification_unavailable", "No singleplayer local world is loaded for verification");
+		}
+		MinecraftClient client = MinecraftClient.getInstance();
+		if (client == null || client.player == null || !client.isIntegratedServerRunning() || client.getServer() == null) {
+			throw new BridgeUnavailableException("verification_unavailable", "Integrated singleplayer verification controls are unavailable");
+		}
+	}
+
+	private void prepareClientForVerification() {
+		MinecraftClient client = MinecraftClient.getInstance();
+		if (client == null) {
+			return;
+		}
+		if (client.options != null && client.options.pauseOnLostFocus) {
+			client.options.pauseOnLostFocus = false;
+			client.options.write();
+		}
+		if (client.currentScreen != null && "GameMenuScreen".equals(client.currentScreen.getClass().getSimpleName())) {
+			client.setScreen(null);
+		}
+	}
+
+	private <T> T onVerificationServer(BiFunction<IntegratedServer, ServerPlayerEntity, T> action) {
+		ensureVerificationSessionAvailable();
+		MinecraftClient client = MinecraftClient.getInstance();
+		if (client == null || client.player == null) {
+			throw new BridgeUnavailableException("verification_unavailable", "Local verification player is unavailable");
+		}
+		IntegratedServer server = client.getServer();
+		if (server == null) {
+			throw new BridgeUnavailableException("verification_unavailable", "Integrated server is unavailable");
+		}
+		UUID playerUuid = client.player.getUuid();
+		CompletableFuture<T> future = new CompletableFuture<>();
+		server.executeSync(() -> {
+			try {
+				ServerPlayerEntity serverPlayer = server.getPlayerManager().getPlayer(playerUuid);
+				if (serverPlayer == null) {
+					throw new BridgeUnavailableException("verification_unavailable", "Server-side verification player is unavailable");
+				}
+				future.complete(action.apply(server, serverPlayer));
+			}
+			catch (Throwable throwable) {
+				future.completeExceptionally(throwable);
+			}
+		});
+
+		try {
+			return future.get(5L, TimeUnit.SECONDS);
+		}
+		catch (ExecutionException exception) {
+			if (exception.getCause() instanceof RuntimeException runtimeException) {
+				throw runtimeException;
+			}
+			throw new IllegalStateException("Verification action failed on integrated server thread", exception.getCause());
+		}
+		catch (Exception exception) {
+			throw new BridgeUnavailableException("verification_unavailable", "Timed out waiting for integrated server verification action");
+		}
+	}
+
+	private static VerificationPlayerProbe verificationPlayerProbe(ServerPlayerEntity player) {
+		return new VerificationPlayerProbe(
+			player.getX(),
+			player.getY(),
+			player.getZ(),
+			player.getHealth(),
+			player.getMaxHealth(),
+			player.getHungerManager().getFoodLevel(),
+			player.getHungerManager().getSaturationLevel(),
+			player.isOnGround(),
+			player.fallDistance,
+			player.getGameMode().asString(),
+			player.getEntityWorld().getRegistryKey().getValue().toString()
+		);
+	}
+
+	private static GameMode verificationGameMode(String modeId) {
+		if (modeId == null || modeId.isBlank()) {
+			throw new BridgeUnavailableException("invalid_request", "mode must be survival, creative, or spectator");
+		}
+		GameMode mode = GameMode.byId(modeId.trim().toLowerCase(java.util.Locale.ROOT), null);
+		if (mode != GameMode.SURVIVAL && mode != GameMode.CREATIVE && mode != GameMode.SPECTATOR) {
+			throw new BridgeUnavailableException("invalid_request", "mode must be survival, creative, or spectator");
+		}
+		return mode;
+	}
+
+	private static String normalizedVerificationCommand(String command) {
+		if (command == null) {
+			throw new BridgeUnavailableException("invalid_request", "Missing command");
+		}
+		String normalized = command.trim();
+		if (normalized.startsWith("/")) {
+			normalized = normalized.substring(1).trim();
+		}
+		if (normalized.isBlank()) {
+			throw new BridgeUnavailableException("invalid_request", "Missing command");
+		}
+		return normalized;
+	}
+
 	private void joinFirstWorld() {
 		List<Map<String, Object>> worlds = singleplayerWorldService.listWorlds();
 		if (worlds.isEmpty()) {
@@ -1063,5 +1292,26 @@ public final class EmbodiedAgentRuntime {
 		return client != null
 			&& client.options != null
 			&& client.options.forwardKey.isPressed();
+	}
+
+	private float resolveEffectiveHealthBefore(float observedHealthBefore, float healthAfter) {
+		return effectiveHealthBefore(lastKnownPlayerHealth, observedHealthBefore, healthAfter);
+	}
+
+	private static Float currentPlayerHealth(MinecraftClient client) {
+		if (client == null || client.player == null || !client.isOnThread()) {
+			return null;
+		}
+		return client.player.getHealth();
+	}
+
+	static float effectiveHealthBefore(Float lastKnownPlayerHealth, float observedHealthBefore, float healthAfter) {
+		if (lastKnownPlayerHealth != null
+			&& Float.isFinite(lastKnownPlayerHealth.floatValue())
+			&& lastKnownPlayerHealth.floatValue() > healthAfter
+		) {
+			return lastKnownPlayerHealth.floatValue();
+		}
+		return observedHealthBefore;
 	}
 }

@@ -11,6 +11,7 @@ import net.minecraft.network.packet.s2c.play.HealthUpdateS2CPacket;
 import net.minecraft.network.packet.s2c.play.ItemPickupAnimationS2CPacket;
 import net.minecraft.network.packet.s2c.play.PlayerListS2CPacket;
 import net.minecraft.network.packet.s2c.play.PlayerRemoveS2CPacket;
+import net.minecraft.network.packet.s2c.play.PlayerRespawnS2CPacket;
 import net.minecraft.registry.Registries;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Unique;
@@ -26,7 +27,7 @@ public class ClientPlayNetworkHandlerMixin {
 	@Unique
 	private boolean airicraft$healthInitializedBeforeUpdate;
 
-	@Inject(method = "onEntityDamage", at = @At("HEAD"))
+	@Inject(method = "onEntityDamage", at = @At("TAIL"))
 	private void airicraft$onEntityDamage(EntityDamageS2CPacket packet, CallbackInfo ci) {
 		MinecraftClient client = MinecraftClient.getInstance();
 		if (client == null || !client.isOnThread() || client.player == null || client.world == null) {
@@ -38,7 +39,10 @@ public class ClientPlayNetworkHandlerMixin {
 		AiricraftClient.runtimeController().onPlayerDamageObserved(packet.createDamageSource(client.world));
 	}
 
-	@Inject(method = "onHealthUpdate", at = @At("HEAD"))
+	@Inject(
+		method = "onHealthUpdate",
+		at = @At(value = "INVOKE", target = "Lnet/minecraft/client/network/ClientPlayerEntity;updateHealth(F)V")
+	)
 	private void airicraft$captureHealthUpdate(HealthUpdateS2CPacket packet, CallbackInfo ci) {
 		ClientPlayerEntity player = currentPlayer();
 		if (player == null) {
@@ -48,7 +52,14 @@ public class ClientPlayNetworkHandlerMixin {
 		airicraft$healthInitializedBeforeUpdate = ((ClientPlayerEntityAccessor) player).airicraft$isHealthInitialized();
 	}
 
-	@Inject(method = "onHealthUpdate", at = @At("TAIL"))
+	@Inject(
+		method = "onHealthUpdate",
+		at = @At(
+			value = "INVOKE",
+			target = "Lnet/minecraft/client/network/ClientPlayerEntity;updateHealth(F)V",
+			shift = At.Shift.AFTER
+		)
+	)
 	private void airicraft$reportHealthUpdate(HealthUpdateS2CPacket packet, CallbackInfo ci) {
 		if (currentPlayer() == null) {
 			return;
@@ -58,6 +69,11 @@ public class ClientPlayNetworkHandlerMixin {
 			airicraft$healthBeforeUpdate,
 			packet.getHealth()
 		);
+	}
+
+	@Inject(method = "onPlayerRespawn", at = @At("TAIL"))
+	private void airicraft$onPlayerRespawn(PlayerRespawnS2CPacket packet, CallbackInfo ci) {
+		AiricraftClient.runtimeController().onPlayerRespawned();
 	}
 
 	@Inject(method = "onItemPickupAnimation", at = @At("HEAD"))

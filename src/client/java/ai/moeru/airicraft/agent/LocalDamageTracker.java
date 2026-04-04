@@ -8,13 +8,33 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 
 final class LocalDamageTracker {
+	private static final long INITIAL_SYNC_GRACE_TICKS = 10L;
+
 	private PendingDamageObservation pendingObservation;
+	private long lastLifecycleResetTick = Long.MIN_VALUE;
 
 	static boolean shouldCaptureHealthLoss(boolean healthInitialized, float healthBefore, float healthAfter) {
-		return healthInitialized
-			&& Float.isFinite(healthBefore)
+		return Float.isFinite(healthBefore)
 			&& Float.isFinite(healthAfter)
 			&& healthAfter < healthBefore;
+	}
+
+	boolean shouldCaptureHealthLossAfterLifecycle(
+		boolean healthInitialized,
+		long tick,
+		float healthBefore,
+		float healthAfter
+	) {
+		if (!shouldCaptureHealthLoss(healthInitialized, healthBefore, healthAfter)) {
+			return false;
+		}
+		if (healthInitialized) {
+			return true;
+		}
+		if (lastLifecycleResetTick == Long.MIN_VALUE) {
+			return true;
+		}
+		return tick - lastLifecycleResetTick > INITIAL_SYNC_GRACE_TICKS;
 	}
 
 	void observeDamageSource(long tick, DamageSource damageSource) {
@@ -47,7 +67,7 @@ final class LocalDamageTracker {
 	}
 
 	Map<String, Object> consumeDamage(boolean healthInitialized, long tick, float healthBefore, float healthAfter) {
-		if (!shouldCaptureHealthLoss(healthInitialized, healthBefore, healthAfter)) {
+		if (!shouldCaptureHealthLossAfterLifecycle(healthInitialized, tick, healthBefore, healthAfter)) {
 			return null;
 		}
 
@@ -82,10 +102,16 @@ final class LocalDamageTracker {
 
 	void clear() {
 		pendingObservation = null;
+		lastLifecycleResetTick = Long.MIN_VALUE;
 	}
 
 	PendingDamageObservation pendingObservation() {
 		return pendingObservation;
+	}
+
+	void onLifecycleReset(long tick) {
+		pendingObservation = null;
+		lastLifecycleResetTick = tick;
 	}
 
 	private static String damageTypeId(DamageSource damageSource) {

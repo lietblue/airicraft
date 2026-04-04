@@ -117,6 +117,10 @@ public final class DialogueRuntime {
 		return plannerOrchestrator.conversationDebugSnapshot();
 	}
 
+	public List<String> plannerContextExcerpt() {
+		return plannerOrchestrator.contextExcerpt();
+	}
+
 	public boolean startDebugCompaction() {
 		return plannerOrchestrator.startDebugCompaction();
 	}

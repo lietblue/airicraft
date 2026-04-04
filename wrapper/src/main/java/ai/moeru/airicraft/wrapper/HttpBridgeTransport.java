@@ -237,6 +237,59 @@ final class HttpBridgeTransport implements MinecraftTransport {
 		return send("POST", "/v1/agent/debug/compact", body);
 	}
 
+	@Override
+	public Map<String, Object> getVerificationStatus() {
+		return get("/v1/verification/status");
+	}
+
+	@Override
+	public Map<String, Object> getVerificationPlayerState() {
+		return get("/v1/verification/player");
+	}
+
+	@Override
+	public Map<String, Object> teleportVerificationPlayer(double x, double y, double z) {
+		return send("POST", "/v1/verification/player/teleport", Map.of(
+			"x", x,
+			"y", y,
+			"z", z
+		));
+	}
+
+	@Override
+	public Map<String, Object> setVerificationPlayerVelocity(double x, double y, double z) {
+		return send("POST", "/v1/verification/player/velocity", Map.of(
+			"x", x,
+			"y", y,
+			"z", z
+		));
+	}
+
+	@Override
+	public Map<String, Object> respawnVerificationPlayer() {
+		return send("POST", "/v1/verification/player/respawn", null);
+	}
+
+	@Override
+	public Map<String, Object> setVerificationPlayerGameMode(String mode) {
+		return send("POST", "/v1/verification/player/gamemode", Map.of("mode", mode));
+	}
+
+	@Override
+	public Map<String, Object> runVerificationCommand(String command) {
+		return send("POST", "/v1/verification/command", Map.of("command", command));
+	}
+
+	@Override
+	public Map<String, Object> runVerificationScenario(String scenario) {
+		return send("POST", "/v1/verification/run", Map.of("scenario", scenario));
+	}
+
+	@Override
+	public Map<String, Object> getVerificationResults() {
+		return get("/v1/verification/results");
+	}
+
 	private Map<String, Object> get(String path) {
 		return send("GET", path, null);
 	}

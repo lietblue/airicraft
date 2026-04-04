@@ -13,7 +13,11 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class LocalDamageTrackerTest {
 	@Test
 	void initialHealthSyncDoesNotCountAsDamage() {
-		assertFalse(LocalDamageTracker.shouldCaptureHealthLoss(false, 20.0F, 18.0F));
+		LocalDamageTracker tracker = new LocalDamageTracker();
+		tracker.onLifecycleReset(10L);
+
+		assertTrue(LocalDamageTracker.shouldCaptureHealthLoss(false, 20.0F, 18.0F));
+		assertFalse(tracker.shouldCaptureHealthLossAfterLifecycle(false, 12L, 20.0F, 18.0F));
 	}
 
 	@Test
@@ -69,7 +73,20 @@ class LocalDamageTrackerTest {
 	@Test
 	void uninitializedHealthStateDoesNotEmitDamagePayload() {
 		LocalDamageTracker tracker = new LocalDamageTracker();
+		tracker.onLifecycleReset(10L);
 
 		assertNull(tracker.consumeDamage(false, 12L, 20.0F, 18.0F));
+	}
+
+	@Test
+	void delayedUninitializedHealthLossAfterLifecycleResetEmitsDamagePayload() {
+		LocalDamageTracker tracker = new LocalDamageTracker();
+		tracker.onLifecycleReset(10L);
+
+		Map<String, Object> payload = tracker.consumeDamage(false, 25L, 20.0F, 0.0F);
+
+		assertNotNull(payload);
+		assertEquals(Boolean.TRUE, payload.get("fatal"));
+		assertEquals(20.0F, ((Number) payload.get("amount")).floatValue());
 	}
 }

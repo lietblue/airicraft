@@ -59,6 +59,23 @@ public final class AiricraftCliMain {
 			CommandLine agentEvents = agent.getSubcommands().get("events");
 			agentEvents.addSubcommand(new AgentEventsRecentCommand(context));
 
+			root.addSubcommand("verification", new UsageCommand(out, "airicraft verification", "Dev-only verification commands"));
+			CommandLine verification = root.getSubcommands().get("verification");
+			verification.addSubcommand(new VerificationStatusCommand(context));
+			verification.addSubcommand(new VerificationScenariosCommand(context));
+			verification.addSubcommand(new VerificationRunCommand(context));
+			verification.addSubcommand(new VerificationResultsCommand(context));
+			verification.addSubcommand("player", new UsageCommand(out, "airicraft verification player", "Verification player control commands"));
+			CommandLine verificationPlayer = verification.getSubcommands().get("player");
+			verificationPlayer.addSubcommand(new VerificationPlayerStateCommand(context));
+			verificationPlayer.addSubcommand(new VerificationPlayerTeleportCommand(context));
+			verificationPlayer.addSubcommand(new VerificationPlayerVelocityCommand(context));
+			verificationPlayer.addSubcommand(new VerificationPlayerRespawnCommand(context));
+			verificationPlayer.addSubcommand(new VerificationPlayerGameModeCommand(context));
+			verification.addSubcommand("command", new UsageCommand(out, "airicraft verification command", "Verification command execution"));
+			CommandLine verificationCommand = verification.getSubcommands().get("command");
+			verificationCommand.addSubcommand(new VerificationCommandRunCommand(context));
+
 			root.addSubcommand("worlds", new UsageCommand(out, "airicraft worlds", "Saved singleplayer worlds"));
 		CommandLine worlds = root.getSubcommands().get("worlds");
 		worlds.addSubcommand(new WorldsListCommand(context));
@@ -294,6 +311,157 @@ public final class AiricraftCliMain {
 			}
 			Integer timeoutMs = timeoutSeconds == null ? null : timeoutSeconds * 1000;
 			return PayloadViews.agentCompact(transport().triggerAgentCompaction(!noWait, timeoutMs), verbose());
+		}
+	}
+
+	@Command(name = "status", mixinStandardHelpOptions = true, description = "Inspect verification availability.")
+	private static final class VerificationStatusCommand extends BaseCommand {
+		private VerificationStatusCommand(CliContext context) {
+			super(context, "verification status");
+		}
+
+		@Override
+		Map<String, Object> runCommand() {
+			return PayloadViews.verificationStatus(transport().getVerificationStatus(), verbose());
+		}
+	}
+
+	@Command(name = "scenarios", mixinStandardHelpOptions = true, description = "List available verification scenarios.")
+	private static final class VerificationScenariosCommand extends BaseCommand {
+		private VerificationScenariosCommand(CliContext context) {
+			super(context, "verification scenarios");
+		}
+
+		@Override
+		Map<String, Object> runCommand() {
+			return PayloadViews.verificationScenarios(transport().getVerificationResults(), verbose());
+		}
+	}
+
+	@Command(name = "run", mixinStandardHelpOptions = true, description = "Start a verification scenario.")
+	private static final class VerificationRunCommand extends BaseCommand {
+		@Option(names = "--scenario", required = true, description = "Scenario name from `airicraft verification scenarios`.")
+		private String scenario;
+
+		private VerificationRunCommand(CliContext context) {
+			super(context, "verification run");
+		}
+
+		@Override
+		Map<String, Object> runCommand() {
+			return transport().runVerificationScenario(scenario);
+		}
+	}
+
+	@Command(name = "results", mixinStandardHelpOptions = true, description = "Inspect verification scenario results.")
+	private static final class VerificationResultsCommand extends BaseCommand {
+		private VerificationResultsCommand(CliContext context) {
+			super(context, "verification results");
+		}
+
+		@Override
+		Map<String, Object> runCommand() {
+			return PayloadViews.verificationResults(transport().getVerificationResults(), verbose());
+		}
+	}
+
+	@Command(name = "state", mixinStandardHelpOptions = true, description = "Inspect the verification player state.")
+	private static final class VerificationPlayerStateCommand extends BaseCommand {
+		private VerificationPlayerStateCommand(CliContext context) {
+			super(context, "verification player state");
+		}
+
+		@Override
+		Map<String, Object> runCommand() {
+			return PayloadViews.verificationPlayerState(transport().getVerificationPlayerState(), verbose());
+		}
+	}
+
+	@Command(name = "teleport", mixinStandardHelpOptions = true, description = "Teleport the verification player.")
+	private static final class VerificationPlayerTeleportCommand extends BaseCommand {
+		@Option(names = "--x", required = true)
+		private double x;
+
+		@Option(names = "--y", required = true)
+		private double y;
+
+		@Option(names = "--z", required = true)
+		private double z;
+
+		private VerificationPlayerTeleportCommand(CliContext context) {
+			super(context, "verification player teleport");
+		}
+
+		@Override
+		Map<String, Object> runCommand() {
+			return PayloadViews.verificationPlayerState(transport().teleportVerificationPlayer(x, y, z), verbose());
+		}
+	}
+
+	@Command(name = "velocity", mixinStandardHelpOptions = true, description = "Apply velocity to the verification player.")
+	private static final class VerificationPlayerVelocityCommand extends BaseCommand {
+		@Option(names = "--x", required = true, description = "Horizontal X velocity.")
+		private double x;
+
+		@Option(names = "--y", required = true, description = "Vertical Y velocity.")
+		private double y;
+
+		@Option(names = "--z", required = true, description = "Horizontal Z velocity.")
+		private double z;
+
+		private VerificationPlayerVelocityCommand(CliContext context) {
+			super(context, "verification player velocity");
+		}
+
+		@Override
+		Map<String, Object> runCommand() {
+			return PayloadViews.verificationPlayerState(transport().setVerificationPlayerVelocity(x, y, z), verbose());
+		}
+	}
+
+	@Command(name = "respawn", mixinStandardHelpOptions = true, description = "Respawn the verification player if the client is on the death screen.")
+	private static final class VerificationPlayerRespawnCommand extends BaseCommand {
+		private VerificationPlayerRespawnCommand(CliContext context) {
+			super(context, "verification player respawn");
+		}
+
+		@Override
+		Map<String, Object> runCommand() {
+			return PayloadViews.verificationPlayerState(transport().respawnVerificationPlayer(), verbose());
+		}
+	}
+
+	@Command(name = "gamemode", mixinStandardHelpOptions = true, description = "Set the verification player gamemode.")
+	private static final class VerificationPlayerGameModeCommand extends BaseCommand {
+		@Option(names = "--mode", required = true, description = "One of survival, creative, spectator.")
+		private String mode;
+
+		private VerificationPlayerGameModeCommand(CliContext context) {
+			super(context, "verification player gamemode");
+		}
+
+		@Override
+		Map<String, Object> runCommand() {
+			String normalized = mode == null ? null : mode.trim().toLowerCase(Locale.ROOT);
+			if (!List.of("survival", "creative", "spectator").contains(normalized)) {
+				throw new CliUsageException(commandPath(), "invalid_arguments", "mode must be survival, creative, or spectator");
+			}
+			return PayloadViews.verificationPlayerState(transport().setVerificationPlayerGameMode(normalized), verbose());
+		}
+	}
+
+	@Command(name = "run", mixinStandardHelpOptions = true, description = "Run an integrated-server command for verification.")
+	private static final class VerificationCommandRunCommand extends BaseCommand {
+		@Option(names = "--command", required = true, description = "Command text to execute.")
+		private String command;
+
+		private VerificationCommandRunCommand(CliContext context) {
+			super(context, "verification command run");
+		}
+
+		@Override
+		Map<String, Object> runCommand() {
+			return PayloadViews.verificationPlayerState(transport().runVerificationCommand(command), verbose());
 		}
 	}
 
@@ -843,14 +1011,17 @@ public final class AiricraftCliMain {
 			view.put("available", payload.getOrDefault("available", false));
 			Map<String, Object> planner = map(payload.get("planner"));
 			Map<String, Object> context = map(planner.get("context"));
+			List<Object> contextExcerpt = values(payload.get("contextExcerpt"));
 			copy(view, planner, "configured", "plannerVisionMode", "inFlight", "plannerInFlight", "compactionInFlight", "captureInFlight", "toolInFlight", "toolUsed");
 			copy(view, planner, "coalescePending", "coalesceReadyAtMs", "coalesceWindowMs");
 			copy(view, context, "compactionTriggerTokens", "compactionPending", "acceptedTurnCount",
 				"pendingSemanticEventCount", "projectedPendingNoticeCount", "frozenPlannerMessageCount", "queuedTriggerCount",
 				"lastObservedEventSeqNo", "lastAcceptedTimeContextAtMs", "pendingSemanticGap", "overflowFlushPending");
+			view.put("contextExcerptLineCount", contextExcerpt.size());
 			if (verbose) {
 				copy(view, planner, "baseRequest", "lastCompactionResult");
 				copy(view, context, "lastObservedUsage", "acceptedAmbientContext", "activeCheckpoint");
+				view.put("contextExcerpt", contextExcerpt);
 			}
 			return view;
 		}
@@ -866,6 +1037,60 @@ public final class AiricraftCliMain {
 				copy(view, planner, "lastCompactionResult");
 				copy(view, context, "lastObservedUsage", "activeCheckpoint");
 			}
+			return view;
+		}
+
+		private static Map<String, Object> verificationStatus(Map<String, Object> payload, boolean verbose) {
+			LinkedHashMap<String, Object> view = new LinkedHashMap<>();
+			List<Object> capabilities = values(payload.get("capabilities"));
+			copy(view, payload, "available", "sessionMode", "worldLoaded");
+			view.put("capabilityCount", capabilities.size());
+			if (verbose) {
+				view.put("capabilities", capabilities);
+			}
+			return view;
+		}
+
+		private static Map<String, Object> verificationScenarios(Map<String, Object> payload, boolean verbose) {
+			LinkedHashMap<String, Object> view = new LinkedHashMap<>();
+			List<Object> scenarios = values(payload.get("scenarios"));
+			copy(view, payload, "available");
+			view.put("scenarioCount", scenarios.size());
+			view.put("scenarios", scenarios);
+			if (verbose && payload.containsKey("report")) {
+				view.put("report", payload.get("report"));
+			}
+			return view;
+		}
+
+		private static Map<String, Object> verificationResults(Map<String, Object> payload, boolean verbose) {
+			LinkedHashMap<String, Object> view = new LinkedHashMap<>();
+			List<Object> scenarios = values(payload.get("scenarios"));
+			Map<String, Object> report = map(payload.get("report"));
+			copy(view, payload, "available");
+			view.put("scenarioCount", scenarios.size());
+			if (report.containsKey("status")) {
+				view.put("reportStatus", report.get("status"));
+			}
+			if (report.containsKey("scenarioName")) {
+				view.put("reportScenarioName", report.get("scenarioName"));
+			}
+			if (report.containsKey("message")) {
+				view.put("reportMessage", report.get("message"));
+			}
+			List<Map<String, Object>> steps = maps(report.get("steps"));
+			view.put("stepCount", steps.size());
+			if (verbose) {
+				view.put("scenarios", scenarios);
+				view.put("report", report);
+			}
+			return view;
+		}
+
+		private static Map<String, Object> verificationPlayerState(Map<String, Object> payload, boolean verbose) {
+			LinkedHashMap<String, Object> view = new LinkedHashMap<>();
+			copy(view, payload, "available", "sessionMode", "worldLoaded", "teleported", "applied", "respawned", "changed", "executed", "command", "currentScreen");
+			copy(view, payload, "x", "y", "z", "health", "maxHealth", "food", "saturation", "onGround", "fallDistance", "gameMode", "dimensionId");
 			return view;
 		}
 
@@ -953,6 +1178,13 @@ public final class AiricraftCliMain {
 				}
 			}
 			return maps;
+		}
+
+		private static List<Object> values(Object value) {
+			if (value instanceof List<?> list) {
+				return List.copyOf(list);
+			}
+			return List.of();
 		}
 
 		private static Map<String, Object> map(Object value) {

@@ -8,6 +8,8 @@ import ai.moeru.airicraft.agent.events.SemanticEventQueryResult;
 import ai.moeru.airicraft.agent.session.SessionMode;
 
 import java.time.Clock;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
@@ -194,6 +196,23 @@ public final class PlannerOrchestrator {
 
 	public PlannerConversationDebugSnapshot conversationDebugSnapshot() {
 		return lastVisibleConversation;
+	}
+
+	public List<String> contextExcerpt() {
+		if (lastVisibleConversation.isEmpty()) {
+			return List.of();
+		}
+
+		ArrayList<String> excerpt = new ArrayList<>();
+		for (PlannerConversationDebugMessage message : lastVisibleConversation.messages()) {
+			if (message.kind() != PlannerConversationDebugKind.NOTICE && message.kind() != PlannerConversationDebugKind.CHECKPOINT) {
+				continue;
+			}
+			if (message.text() != null && !message.text().isBlank()) {
+				excerpt.add(message.text());
+			}
+		}
+		return List.copyOf(excerpt);
 	}
 
 	public long lastObservedEventSeqNo() {

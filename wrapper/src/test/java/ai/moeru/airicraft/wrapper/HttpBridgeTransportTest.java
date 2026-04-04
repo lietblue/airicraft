@@ -226,6 +226,99 @@ class HttpBridgeTransportTest {
 		}
 	}
 
+	@Test
+	void verificationStatusReadsPayload(@TempDir Path tempDir) throws Exception {
+		try (TestBridgeServer server = TestBridgeServer.start()) {
+			server.respondJson("/v1/verification/status", 0, 200, """
+				{"available":true,"sessionMode":"SINGLEPLAYER_LOCAL","worldLoaded":true,"capabilities":["player_state","scenario_run"]}
+				""");
+			writeBridgeState(tempDir, server.port());
+			System.setProperty("user.home", tempDir.toString());
+
+			HttpBridgeTransport transport = new HttpBridgeTransport();
+			Map<String, Object> payload = transport.getVerificationStatus();
+
+			assertEquals(true, payload.get("available"));
+			assertEquals("SINGLEPLAYER_LOCAL", payload.get("sessionMode"));
+			assertEquals(1, server.requestCount("/v1/verification/status"));
+		}
+	}
+
+	@Test
+	void teleportVerificationPlayerPostsCoordinates(@TempDir Path tempDir) throws Exception {
+		try (TestBridgeServer server = TestBridgeServer.start()) {
+			server.respondJson("/v1/verification/player/teleport", 0, 200, """
+				{"available":true,"teleported":true,"x":10.5,"y":94.0,"z":-3.0}
+				""");
+			writeBridgeState(tempDir, server.port());
+			System.setProperty("user.home", tempDir.toString());
+
+			HttpBridgeTransport transport = new HttpBridgeTransport();
+			Map<String, Object> payload = transport.teleportVerificationPlayer(10.5D, 94.0D, -3.0D);
+
+			assertEquals(true, payload.get("teleported"));
+			assertEquals(1, server.requestCount("/v1/verification/player/teleport"));
+			assertTrue(server.lastRequestBody("/v1/verification/player/teleport").contains("\"x\":10.5"));
+			assertTrue(server.lastRequestBody("/v1/verification/player/teleport").contains("\"y\":94.0"));
+			assertTrue(server.lastRequestBody("/v1/verification/player/teleport").contains("\"z\":-3.0"));
+		}
+	}
+
+	@Test
+	void setVerificationPlayerVelocityPostsComponents(@TempDir Path tempDir) throws Exception {
+		try (TestBridgeServer server = TestBridgeServer.start()) {
+			server.respondJson("/v1/verification/player/velocity", 0, 200, """
+				{"available":true,"applied":true,"x":0.0,"y":1.5,"z":-0.25}
+				""");
+			writeBridgeState(tempDir, server.port());
+			System.setProperty("user.home", tempDir.toString());
+
+			HttpBridgeTransport transport = new HttpBridgeTransport();
+			Map<String, Object> payload = transport.setVerificationPlayerVelocity(0.0D, 1.5D, -0.25D);
+
+			assertEquals(true, payload.get("applied"));
+			assertEquals(1, server.requestCount("/v1/verification/player/velocity"));
+			assertTrue(server.lastRequestBody("/v1/verification/player/velocity").contains("\"x\":0.0"));
+			assertTrue(server.lastRequestBody("/v1/verification/player/velocity").contains("\"y\":1.5"));
+			assertTrue(server.lastRequestBody("/v1/verification/player/velocity").contains("\"z\":-0.25"));
+		}
+	}
+
+	@Test
+	void respawnVerificationPlayerPostsToRespawnEndpoint(@TempDir Path tempDir) throws Exception {
+		try (TestBridgeServer server = TestBridgeServer.start()) {
+			server.respondJson("/v1/verification/player/respawn", 0, 200, """
+				{"available":true,"respawned":true,"health":20.0,"currentScreen":"in_game"}
+				""");
+			writeBridgeState(tempDir, server.port());
+			System.setProperty("user.home", tempDir.toString());
+
+			HttpBridgeTransport transport = new HttpBridgeTransport();
+			Map<String, Object> payload = transport.respawnVerificationPlayer();
+
+			assertEquals(true, payload.get("respawned"));
+			assertEquals(1, server.requestCount("/v1/verification/player/respawn"));
+			assertEquals("", server.lastRequestBody("/v1/verification/player/respawn"));
+		}
+	}
+
+	@Test
+	void verificationRunPostsScenario(@TempDir Path tempDir) throws Exception {
+		try (TestBridgeServer server = TestBridgeServer.start()) {
+			server.respondJson("/v1/verification/run", 0, 200, """
+				{"accepted":true,"scenario":"damage.fall_context","running":true}
+				""");
+			writeBridgeState(tempDir, server.port());
+			System.setProperty("user.home", tempDir.toString());
+
+			HttpBridgeTransport transport = new HttpBridgeTransport();
+			Map<String, Object> payload = transport.runVerificationScenario("damage.fall_context");
+
+			assertEquals(true, payload.get("accepted"));
+			assertTrue(server.lastRequestBody("/v1/verification/run").contains("\"scenario\":\"damage.fall_context\""));
+		}
+	}
+
 	private static void writeBridgeState(Path tempDir) throws Exception {
 		writeBridgeState(tempDir, 1);
 	}
@@ -245,6 +338,7 @@ class HttpBridgeTransportTest {
 	private static final class TestBridgeServer implements AutoCloseable {
 		private final HttpServer server;
 		private final Map<String, Integer> requestCounts = new java.util.concurrent.ConcurrentHashMap<>();
+		private final Map<String, String> requestBodies = new java.util.concurrent.ConcurrentHashMap<>();
 
 		private TestBridgeServer(HttpServer server) {
 			this.server = server;
@@ -264,6 +358,7 @@ class HttpBridgeTransportTest {
 		private void respondJson(String path, long delayMillis, int statusCode, String body) {
 			server.createContext(path, exchange -> {
 				requestCounts.merge(path, 1, Integer::sum);
+				requestBodies.put(path, new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
 				if (!"Bearer test-token".equals(exchange.getRequestHeaders().getFirst("Authorization"))) {
 					writeResponse(exchange, 401, "{\"error\":\"unauthorized\"}");
 					return;
@@ -282,6 +377,10 @@ class HttpBridgeTransportTest {
 
 		private int requestCount(String path) {
 			return requestCounts.getOrDefault(path, 0);
+		}
+
+		private String lastRequestBody(String path) {
+			return requestBodies.get(path);
 		}
 
 		@Override
