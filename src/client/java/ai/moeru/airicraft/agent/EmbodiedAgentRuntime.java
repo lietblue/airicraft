@@ -62,6 +62,7 @@ import ai.moeru.airicraft.agent.verification.scenarios.SocialPrimaryInteractionT
 import ai.moeru.airicraft.agent.verification.scenarios.SocialChatIngestVerification;
 import ai.moeru.airicraft.agent.session.SessionMode;
 import net.minecraft.client.MinecraftClient;
+import net.minecraft.entity.damage.DamageSource;
 import net.minecraft.text.Text;
 import net.minecraft.util.math.Vec3d;
 
@@ -84,6 +85,7 @@ public final class EmbodiedAgentRuntime {
 	private final LanHostingService lanHostingService = new LanHostingService();
 	private final SemanticEventBuffer eventBuffer = new SemanticEventBuffer(512);
 	private final ChatIngestService chatIngestService = new ChatIngestService();
+	private final LocalDamageTracker localDamageTracker = new LocalDamageTracker();
 	private final NearbyPlayerTracker nearbyPlayerTracker;
 	private final PrimaryInteractionResolver primaryInteractionResolver = new PrimaryInteractionResolver(200L);
 	private final GoalDirector goalDirector = new GoalDirector();
@@ -166,6 +168,7 @@ public final class EmbodiedAgentRuntime {
 	public void onWorldLeave() {
 		sessionRuntime.onWorldLeave(tickCount, eventBuffer);
 		sessionSnapshot = sessionRuntime.snapshot();
+		localDamageTracker.clear();
 		nearbyPlayerTracker.clear(tickCount, eventBuffer);
 		primaryInteractionResolver.clear();
 		dialogueRuntime.clear();
@@ -182,6 +185,7 @@ public final class EmbodiedAgentRuntime {
 
 	public void onClientTick(MinecraftClient client) {
 		tickCount++;
+		localDamageTracker.pruneStale(tickCount);
 		FollowState previousFollowState = followState;
 		BehaviorTreeSnapshot previousTreeSnapshot = behaviorTreeRuntime.snapshot();
 		boolean wasWorldLoaded = sessionSnapshot.worldLoaded();
@@ -245,6 +249,7 @@ public final class EmbodiedAgentRuntime {
 		tickCount = 0L;
 		worldLoadTick = -1L;
 		verificationRunner.reset();
+		localDamageTracker.clear();
 		nearbyPlayerTracker.clear(tickCount, eventBuffer);
 		eventBuffer.clear();
 		primaryInteractionResolver.clear();
@@ -462,6 +467,48 @@ public final class EmbodiedAgentRuntime {
 			PlannerTriggerType.PICKUP,
 			"self",
 			"Picked up " + count + "x " + itemId + ".",
+			tickCount,
+			sessionSnapshot,
+			primaryInteractionResolver.current().map(PrimaryInteractionPlayer::name).orElse(null),
+			goalDirector.activeGoal(),
+			eventBuffer
+		);
+	}
+
+	public void onPlayerDamageObserved(DamageSource damageSource) {
+		localDamageTracker.observeDamageSource(tickCount, damageSource);
+	}
+
+	public void onPlayerHealthUpdated(boolean healthInitialized, float healthBefore, float healthAfter) {
+		Map<String, Object> payload = localDamageTracker.consumeDamage(healthInitialized, tickCount, healthBefore, healthAfter);
+		if (payload == null) {
+			return;
+		}
+
+		eventBuffer.append(tickCount, "combat.damage_taken", payload);
+
+		String damageTypeId = stringPayloadValue(payload, "damageTypeId");
+		String attackerName = stringPayloadValue(payload, "attackerName");
+		Float amount = floatPayloadValue(payload, "amount");
+		Float resultingHealth = floatPayloadValue(payload, "healthAfter");
+		StringBuilder message = new StringBuilder("I took ")
+			.append(formatDecimal(amount == null ? healthBefore - healthAfter : amount))
+			.append(" damage");
+		if (attackerName != null) {
+			message.append(" from ").append(attackerName);
+		}
+		else if (damageTypeId != null) {
+			message.append(" from ").append(damageTypeId);
+		}
+		if (resultingHealth != null) {
+			message.append(" and dropped to ").append(formatDecimal(resultingHealth)).append(" health");
+		}
+		message.append('.');
+
+		dialogueRuntime.onContextTrigger(
+			PlannerTriggerType.DAMAGE,
+			"self",
+			message.toString(),
 			tickCount,
 			sessionSnapshot,
 			primaryInteractionResolver.current().map(PrimaryInteractionPlayer::name).orElse(null),
@@ -911,6 +958,52 @@ public final class EmbodiedAgentRuntime {
 			() -> onChatReceived("ObserveAlice", "@agent stop"),
 			sinceSeqNo -> eventBuffer.containsTypeSince(sinceSeqNo, "planner.goal_cleared")
 		));
+	}
+
+	private static String stringPayloadValue(Map<String, Object> payload, String key) {
+		if (payload == null) {
+			return null;
+		}
+		Object value = payload.get(key);
+		if (value == null) {
+			return null;
+		}
+		String text = String.valueOf(value);
+		return text.isBlank() ? null : text;
+	}
+
+	private static Float floatPayloadValue(Map<String, Object> payload, String key) {
+		if (payload == null) {
+			return null;
+		}
+		Object value = payload.get(key);
+		if (value instanceof Number number) {
+			return number.floatValue();
+		}
+		if (value == null) {
+			return null;
+		}
+		try {
+			return Float.parseFloat(String.valueOf(value));
+		}
+		catch (NumberFormatException ignored) {
+			return null;
+		}
+	}
+
+	private static String formatDecimal(float value) {
+		if (Math.abs(value - Math.round(value)) < 0.001F) {
+			return Integer.toString(Math.round(value));
+		}
+		String text = String.format(java.util.Locale.ROOT, "%.2f", value);
+		int trimIndex = text.length();
+		while (trimIndex > 0 && text.charAt(trimIndex - 1) == '0') {
+			trimIndex--;
+		}
+		if (trimIndex > 0 && text.charAt(trimIndex - 1) == '.') {
+			trimIndex--;
+		}
+		return text.substring(0, trimIndex);
 	}
 
 	private void joinFirstWorld() {

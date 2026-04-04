@@ -3,6 +3,7 @@ package ai.moeru.airicraft.agent.llm;
 public enum PlannerTriggerType {
 	CHAT("chat"),
 	CRAFT("craft"),
+	DAMAGE("damage"),
 	PICKUP("pickup"),
 	SYSTEM("system");
 

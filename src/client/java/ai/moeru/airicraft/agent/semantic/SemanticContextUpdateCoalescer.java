@@ -35,13 +35,21 @@ public final class SemanticContextUpdateCoalescer {
 			return null;
 		}
 
-		Map<String, Object> mergedPayload = new LinkedHashMap<>(existing.payload());
-		switch (sourceType) {
-			case "pickup.item_picked_up", "crafting.item_crafted" ->
-				mergedPayload.put("count", countValue(existing.payload().get("count")) + countValue(incoming.payload().get("count")));
-			case "social.player_joined_game",
-				"social.player_left_game",
-				"social.player_joined_nearby",
+			Map<String, Object> mergedPayload = new LinkedHashMap<>(existing.payload());
+			switch (sourceType) {
+				case "pickup.item_picked_up", "crafting.item_crafted" ->
+					mergedPayload.put("count", countValue(existing.payload().get("count")) + countValue(incoming.payload().get("count")));
+				case "combat.damage_taken" -> {
+					mergedPayload.put("amount", floatValue(existing.payload().get("amount")) + floatValue(incoming.payload().get("amount")));
+					if (!mergedPayload.containsKey("healthBefore")) {
+						mergedPayload.put("healthBefore", incoming.payload().get("healthBefore"));
+					}
+					mergedPayload.put("healthAfter", incoming.payload().get("healthAfter"));
+					mergedPayload.put("fatal", booleanValue(existing.payload().get("fatal")) || booleanValue(incoming.payload().get("fatal")));
+				}
+				case "social.player_joined_game",
+					"social.player_left_game",
+					"social.player_joined_nearby",
 				"social.player_left_nearby",
 				"follow.stuck" -> mergeDistinctValue(mergedPayload, "player", incoming.payload().get("player"));
 			case "planner.reset_requested", "planner.degraded_entered", "planner.degraded_cleared" -> {
@@ -98,6 +106,28 @@ public final class SemanticContextUpdateCoalescer {
 		catch (NumberFormatException ignored) {
 			return 1;
 		}
+	}
+
+	private static float floatValue(Object value) {
+		if (value instanceof Number number) {
+			return number.floatValue();
+		}
+		if (value == null) {
+			return 0.0F;
+		}
+		try {
+			return Float.parseFloat(String.valueOf(value));
+		}
+		catch (NumberFormatException ignored) {
+			return 0.0F;
+		}
+	}
+
+	private static boolean booleanValue(Object value) {
+		if (value instanceof Boolean bool) {
+			return bool;
+		}
+		return value != null && Boolean.parseBoolean(String.valueOf(value));
 	}
 
 	private static void mergeDistinctValue(Map<String, Object> payload, String key, Object candidate) {

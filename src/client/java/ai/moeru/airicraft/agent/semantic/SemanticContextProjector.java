@@ -79,6 +79,7 @@ public final class SemanticContextProjector {
 	private enum AggregationStrategy {
 		SINGLE,
 		SUM_COUNT_BY_TYPE_ACTOR_ITEM,
+		SUM_DAMAGE_BY_CONTEXT,
 		DEDUPE_BY_TYPE_PLAYER,
 		DEDUP_BY_TYPE,
 		SKIP;
@@ -87,6 +88,12 @@ public final class SemanticContextProjector {
 			return switch (this) {
 				case SINGLE -> event.type() + "#seq:" + event.seqNo();
 				case SUM_COUNT_BY_TYPE_ACTOR_ITEM -> event.type() + "|actor=" + value(event, "actor") + "|itemId=" + value(event, "itemId");
+				case SUM_DAMAGE_BY_CONTEXT -> event.type()
+					+ "|actor=" + value(event, "actor")
+					+ "|damageTypeId=" + value(event, "damageTypeId")
+					+ "|attackerName=" + value(event, "attackerName")
+					+ "|attackerEntityTypeId=" + value(event, "attackerEntityTypeId")
+					+ "|directSourceEntityTypeId=" + value(event, "directSourceEntityTypeId");
 				case DEDUPE_BY_TYPE_PLAYER -> event.type() + "|player=" + value(event, "player");
 				case DEDUP_BY_TYPE -> event.type();
 				case SKIP -> "skip#" + event.seqNo();
@@ -99,6 +106,7 @@ public final class SemanticContextProjector {
 			}
 			return switch (eventType) {
 				case "pickup.item_picked_up", "crafting.item_crafted" -> SUM_COUNT_BY_TYPE_ACTOR_ITEM;
+				case "combat.damage_taken" -> SUM_DAMAGE_BY_CONTEXT;
 				case "social.player_joined_game",
 					"social.player_left_game",
 					"social.player_joined_nearby",
@@ -180,6 +188,15 @@ public final class SemanticContextProjector {
 				payload.put("count", countValue(payload.get("count")) + countValue(event.payload().get("count")));
 				return;
 			}
+			if (strategy == AggregationStrategy.SUM_DAMAGE_BY_CONTEXT) {
+				payload.put("amount", floatValue(payload.get("amount")) + floatValue(event.payload().get("amount")));
+				if (!payload.containsKey("healthBefore")) {
+					payload.put("healthBefore", event.payload().get("healthBefore"));
+				}
+				payload.put("healthAfter", event.payload().get("healthAfter"));
+				payload.put("fatal", booleanValue(payload.get("fatal")) || booleanValue(event.payload().get("fatal")));
+				return;
+			}
 			if (strategy == AggregationStrategy.DEDUPE_BY_TYPE_PLAYER) {
 				mergeDistinctValue("player", event.payload().get("player"));
 			}
@@ -232,6 +249,28 @@ public final class SemanticContextProjector {
 			catch (NumberFormatException ignored) {
 				return 1;
 			}
+		}
+
+		private static float floatValue(Object value) {
+			if (value instanceof Number number) {
+				return number.floatValue();
+			}
+			if (value == null) {
+				return 0.0F;
+			}
+			try {
+				return Float.parseFloat(String.valueOf(value));
+			}
+			catch (NumberFormatException ignored) {
+				return 0.0F;
+			}
+		}
+
+		private static boolean booleanValue(Object value) {
+			if (value instanceof Boolean bool) {
+				return bool;
+			}
+			return value != null && Boolean.parseBoolean(String.valueOf(value));
 		}
 	}
 }

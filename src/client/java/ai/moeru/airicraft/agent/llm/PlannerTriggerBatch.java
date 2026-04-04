@@ -49,7 +49,7 @@ public record PlannerTriggerBatch(
 		}
 		if (triggers.size() == 1) {
 			PlannerTrigger trigger = triggers.get(0);
-			if (trigger.type() == PlannerTriggerType.CRAFT || trigger.type() == PlannerTriggerType.PICKUP) {
+			if (usesGenericWakePrompt(trigger.type())) {
 				return genericWakePrompt();
 			}
 			return trigger.text();
@@ -65,7 +65,7 @@ public record PlannerTriggerBatch(
 		StringBuilder builder = new StringBuilder("Recent updates requiring one combined response:\n");
 		int renderedCount = 0;
 		for (PlannerTrigger trigger : triggers) {
-			if (trigger.type() == PlannerTriggerType.CRAFT || trigger.type() == PlannerTriggerType.PICKUP) {
+			if (usesGenericWakePrompt(trigger.type())) {
 				continue;
 			}
 			renderedCount++;
@@ -91,5 +91,11 @@ public record PlannerTriggerBatch(
 
 	private static String genericWakePrompt() {
 		return "Recent context updates require one combined response.";
+	}
+
+	private static boolean usesGenericWakePrompt(PlannerTriggerType triggerType) {
+		return triggerType == PlannerTriggerType.CRAFT
+			|| triggerType == PlannerTriggerType.PICKUP
+			|| triggerType == PlannerTriggerType.DAMAGE;
 	}
 }

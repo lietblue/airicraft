@@ -5,6 +5,7 @@ import net.fabricmc.fabric.api.client.rendering.v1.world.WorldRenderContext;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.gui.DrawContext;
 import net.minecraft.client.render.RenderTickCounter;
+import net.minecraft.entity.damage.DamageSource;
 
 import java.util.UUID;
 
@@ -74,6 +75,14 @@ public final class ClientRuntimeController {
 
 	public void onPlayerPickedUpItem(String itemId, int count) {
 		agentRuntime.onPlayerPickedUpItem(itemId, count);
+	}
+
+	public void onPlayerDamageObserved(DamageSource damageSource) {
+		agentRuntime.onPlayerDamageObserved(damageSource);
+	}
+
+	public void onPlayerHealthUpdated(boolean healthInitialized, float healthBefore, float healthAfter) {
+		agentRuntime.onPlayerHealthUpdated(healthInitialized, healthBefore, healthAfter);
 	}
 
 	public void onPlayerJoinedGame(UUID playerUuid, String playerName) {

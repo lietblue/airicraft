@@ -129,6 +129,40 @@ class PlannerContextAggregatorTest {
 	}
 
 	@Test
+	void coalescesMatchingDamageUpdatesAcrossMultipleRecordBatchesBeforeFreeze() {
+		Clock clock = Clock.fixed(Instant.ofEpochMilli(10_000L), ZoneId.of("Asia/Taipei"));
+		PlannerContextAggregator aggregator = new PlannerContextAggregator(clock, 65_536, PlannerVisionMode.EXTERNAL_SUMMARY);
+
+		recordEvents(aggregator, 10_000L, List.of(
+			damageEvent(1L, 100L, 8_000L, 2.0F, 18.0F)
+		));
+		recordEvents(aggregator, 10_000L, List.of(
+			damageEvent(2L, 101L, 8_100L, 1.5F, 16.5F)
+		));
+		recordEvents(aggregator, 10_000L, List.of(
+			new SemanticEvent(3L, 102L, 8_200L, "combat.damage_taken", Map.of(
+				"actor", "self",
+				"amount", 1.0F,
+				"healthBefore", 16.5F,
+				"healthAfter", 15.5F,
+				"fatal", false,
+				"damageTypeId", "minecraft:fall"
+			))
+		));
+
+		LlmConversation conversation = freezeSnapshot(aggregator, requestAt(10_000L, "Alice", "@agent hi")).plannerConversation();
+		List<LlmChatMessage> notices = conversation.messages().stream()
+			.filter(message -> message.kind() == LlmMessageKind.NOTICE)
+			.filter(message -> message.content().contains("took"))
+			.toList();
+
+		assertEquals(2, notices.size());
+		assertTrue(notices.get(0).content().contains("3.5 damage from Zombie"));
+		assertTrue(notices.get(0).content().contains("16.5 health"));
+		assertTrue(notices.get(1).content().contains("1 damage from minecraft:fall"));
+	}
+
+	@Test
 	void compactionConversationAppendsTaskInstructionAtTail() {
 		Clock clock = Clock.fixed(Instant.ofEpochMilli(1_000L), ZoneId.of("Asia/Taipei"));
 		PlannerContextAggregator aggregator = new PlannerContextAggregator(clock, 65_536, PlannerVisionMode.EXTERNAL_SUMMARY);
@@ -200,6 +234,20 @@ class PlannerContextAggregatorTest {
 				events
 			)
 		);
+	}
+
+	private static SemanticEvent damageEvent(long seqNo, long tick, long timestampMs, float amount, float healthAfter) {
+		return new SemanticEvent(seqNo, tick, timestampMs, "combat.damage_taken", Map.of(
+			"actor", "self",
+			"amount", amount,
+			"healthBefore", healthAfter + amount,
+			"healthAfter", healthAfter,
+			"fatal", false,
+			"damageTypeId", "minecraft:mob_attack",
+			"attackerName", "Zombie",
+			"attackerEntityTypeId", "minecraft:zombie",
+			"directSourceEntityTypeId", "minecraft:zombie"
+		));
 	}
 
 	private static PlannerContextSnapshot freezeSnapshot(PlannerContextAggregator aggregator, PlannerRequest request) {

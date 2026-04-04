@@ -30,4 +30,28 @@ class PlannerTriggerBatchTest {
 			
 			Respond once to the combined latest context above.""", batch.renderPrompt());
 	}
+
+	@Test
+	void damageOnlyBatchUsesGenericWakePrompt() {
+		PlannerTriggerBatch batch = PlannerTriggerBatch.of(List.of(
+			PlannerTrigger.pending(PlannerTriggerType.DAMAGE, "self", "I took 2 damage from Zombie.", 10L, 20L)
+		));
+
+		assertEquals("Recent context updates require one combined response.", batch.primaryMessage());
+		assertEquals("Recent context updates require one combined response.", batch.renderPrompt());
+	}
+
+	@Test
+	void damageIsOmittedFromCombinedPromptWhenChatIsPresent() {
+		PlannerTriggerBatch batch = PlannerTriggerBatch.of(List.of(
+			PlannerTrigger.pending(PlannerTriggerType.CHAT, "Alice", "watch out", 10L, 20L),
+			PlannerTrigger.pending(PlannerTriggerType.DAMAGE, "self", "I took 2 damage from Zombie.", 10L, 21L)
+		));
+
+		assertEquals("""
+			Recent updates requiring one combined response:
+			- [chat][Alice] watch out
+			
+			Respond once to the combined latest context above.""", batch.renderPrompt());
+	}
 }

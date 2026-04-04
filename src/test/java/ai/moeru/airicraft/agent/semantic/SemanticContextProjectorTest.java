@@ -124,6 +124,28 @@ class SemanticContextProjectorTest {
 		assertEquals(5L, result.latestObservedSeqNo());
 	}
 
+	@Test
+	void coalescesRepeatedDamageEventsIntoSingleUpdateWithLatestHealth() {
+		SemanticContextProjectionResult result = projector.project(new SemanticEventQueryResult(
+			1L,
+			3L,
+			false,
+			List.of(
+				damageEvent(1L, 100L, 1_000L, 2.0F, 18.0F, "minecraft:mob_attack", "Zombie"),
+				damageEvent(2L, 101L, 1_010L, 1.5F, 16.5F, "minecraft:mob_attack", "Zombie"),
+				damageEvent(3L, 102L, 1_020L, 1.0F, 15.5F, "minecraft:mob_attack", "Zombie")
+			)
+		), 1_020L);
+
+		assertEquals(1, result.updates().size());
+		SemanticContextUpdate update = result.updates().getFirst();
+		assertEquals(3, update.sourceEventCount());
+		assertEquals(4.5F, ((Number) update.payload().get("amount")).floatValue());
+		assertEquals(20.0F, ((Number) update.payload().get("healthBefore")).floatValue());
+		assertEquals(15.5F, ((Number) update.payload().get("healthAfter")).floatValue());
+		assertTrue(update.text().contains("Zombie"));
+	}
+
 	private static SemanticEvent itemEvent(long seqNo, long tick, long timestampMs, String type, String itemId, int count) {
 		return new SemanticEvent(seqNo, tick, timestampMs, type, Map.of(
 			"actor", "self",
@@ -134,5 +156,27 @@ class SemanticContextProjectorTest {
 
 	private static SemanticEvent playerEvent(long seqNo, long tick, long timestampMs, String type, String player) {
 		return new SemanticEvent(seqNo, tick, timestampMs, type, Map.of("player", player));
+	}
+
+	private static SemanticEvent damageEvent(
+		long seqNo,
+		long tick,
+		long timestampMs,
+		float amount,
+		float healthAfter,
+		String damageTypeId,
+		String attackerName
+	) {
+		return new SemanticEvent(seqNo, tick, timestampMs, "combat.damage_taken", Map.of(
+			"actor", "self",
+			"amount", amount,
+			"healthBefore", healthAfter + amount,
+			"healthAfter", healthAfter,
+			"fatal", false,
+			"damageTypeId", damageTypeId,
+			"attackerName", attackerName,
+			"attackerEntityTypeId", "minecraft:zombie",
+			"directSourceEntityTypeId", "minecraft:zombie"
+		));
 	}
 }

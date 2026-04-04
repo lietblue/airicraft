@@ -2,6 +2,7 @@ package ai.moeru.airicraft.agent.semantic;
 
 import ai.moeru.airicraft.agent.llm.RelativeTimeFormatter;
 
+import java.util.Locale;
 import java.util.Map;
 
 public final class SemanticContextUpdateFormatter {
@@ -26,6 +27,20 @@ public final class SemanticContextUpdateFormatter {
 					: "LAN sharing opened " + relativeTime + " on port " + port + ".";
 			}
 			case "crafting.item_crafted" -> actor(event.payload()) + " crafted " + itemCount(event.payload()) + "x " + itemId(event.payload()) + " " + relativeTime + ".";
+			case "combat.damage_taken" -> {
+				String actor = actor(event.payload());
+				String amount = decimalValue(event.payload(), "amount", 0.0F);
+				String healthAfter = decimalValue(event.payload(), "healthAfter", 0.0F);
+				Object attackerName = event.payload().get("attackerName");
+				Object damageTypeId = event.payload().get("damageTypeId");
+				if (attackerName != null && !String.valueOf(attackerName).isBlank()) {
+					yield actor + " took " + amount + " damage from " + attackerName + " and dropped to " + healthAfter + " health " + relativeTime + ".";
+				}
+				if (damageTypeId != null && !String.valueOf(damageTypeId).isBlank()) {
+					yield actor + " took " + amount + " damage from " + damageTypeId + " and dropped to " + healthAfter + " health " + relativeTime + ".";
+				}
+				yield actor + " took " + amount + " damage and dropped to " + healthAfter + " health " + relativeTime + ".";
+			}
 			case "pickup.item_picked_up" -> actor(event.payload()) + " picked up " + itemCount(event.payload()) + "x " + itemId(event.payload()) + " " + relativeTime + ".";
 			case "social.player_joined_game" -> playerName(event.payload()) + " joined the game " + relativeTime + ".";
 			case "social.player_left_game" -> playerName(event.payload()) + " left the game " + relativeTime + ".";
@@ -94,6 +109,34 @@ public final class SemanticContextUpdateFormatter {
 			return "You";
 		}
 		return actorValue;
+	}
+
+	private static String decimalValue(Map<String, Object> payload, String key, float fallback) {
+		Object value = payload.get(key);
+		float numeric = fallback;
+		if (value instanceof Number number) {
+			numeric = number.floatValue();
+		}
+		else if (value != null) {
+			try {
+				numeric = Float.parseFloat(String.valueOf(value));
+			}
+			catch (NumberFormatException ignored) {
+				numeric = fallback;
+			}
+		}
+		if (Math.abs(numeric - Math.round(numeric)) < 0.001F) {
+			return Integer.toString(Math.round(numeric));
+		}
+		String text = String.format(Locale.ROOT, "%.2f", numeric);
+		int trimIndex = text.length();
+		while (trimIndex > 0 && text.charAt(trimIndex - 1) == '0') {
+			trimIndex--;
+		}
+		if (trimIndex > 0 && text.charAt(trimIndex - 1) == '.') {
+			trimIndex--;
+		}
+		return text.substring(0, trimIndex);
 	}
 }
 
