@@ -68,6 +68,7 @@ public final class AgentConfigLoader {
 			readInt(root, "visionRequestTimeoutMillis", defaults.llm().visionRequestTimeoutMillis()),
 			readInt(root, "maxRecentConversationTurns", defaults.llm().maxRecentConversationTurns()),
 			readInt(root, "plannerCompactionTriggerTokens", defaults.llm().plannerCompactionTriggerTokens()),
+			readInt(root, "plannerPendingSemanticEventCap", defaults.llm().plannerPendingSemanticEventCap()),
 			readInt(root, "plannerSessionMaxConcurrentAttempts", defaults.llm().plannerSessionMaxConcurrentAttempts()),
 			readInt(root, "plannerSessionCoalesceStepMillis", defaults.llm().plannerSessionCoalesceStepMillis()),
 			readInt(root, "plannerSessionCoalesceMinMillis", defaults.llm().plannerSessionCoalesceMinMillis()),
@@ -124,6 +125,7 @@ public final class AgentConfigLoader {
 		yamlData.put("visionRequestTimeoutMillis", readInt(root, "visionRequestTimeoutMillis", defaults.llm().visionRequestTimeoutMillis()));
 		yamlData.put("maxRecentConversationTurns", readInt(root, "maxRecentConversationTurns", defaults.llm().maxRecentConversationTurns()));
 		yamlData.put("plannerCompactionTriggerTokens", readInt(root, "plannerCompactionTriggerTokens", defaults.llm().plannerCompactionTriggerTokens()));
+		yamlData.put("plannerPendingSemanticEventCap", readInt(root, "plannerPendingSemanticEventCap", defaults.llm().plannerPendingSemanticEventCap()));
 		yamlData.put("plannerSessionMaxConcurrentAttempts", readInt(root, "plannerSessionMaxConcurrentAttempts", defaults.llm().plannerSessionMaxConcurrentAttempts()));
 		yamlData.put("plannerSessionCoalesceStepMillis", readInt(root, "plannerSessionCoalesceStepMillis", defaults.llm().plannerSessionCoalesceStepMillis()));
 		yamlData.put("plannerSessionCoalesceMinMillis", readInt(root, "plannerSessionCoalesceMinMillis", defaults.llm().plannerSessionCoalesceMinMillis()));

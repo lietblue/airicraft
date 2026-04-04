@@ -263,12 +263,12 @@ final class PlannerDebugOverlay {
 		addStateLine(lines, "queuedTriggerCount: " + contextInt(context, PlannerContextDebugSnapshot::queuedTriggerCount));
 		addStateLine(lines, "pendingSemanticEventCount: " + contextInt(context, PlannerContextDebugSnapshot::pendingSemanticEventCount));
 		addStateLine(lines, "projectedPendingNoticeCount: " + contextInt(context, PlannerContextDebugSnapshot::projectedPendingNoticeCount));
-		addStateLine(lines, "acceptedConversationMessageCount: " + contextInt(context, PlannerContextDebugSnapshot::acceptedConversationMessageCount));
-		addStateLine(lines, "rawArchiveEntryCount: " + contextInt(context, PlannerContextDebugSnapshot::rawArchiveEntryCount));
+		addStateLine(lines, "acceptedTurnCount: " + contextInt(context, PlannerContextDebugSnapshot::acceptedTurnCount));
 		addStateLine(lines, "frozenPlannerMessageCount: " + contextInt(context, PlannerContextDebugSnapshot::frozenPlannerMessageCount));
 		addStateLine(lines, "lastObservedEventSeqNo: " + contextLong(context, PlannerContextDebugSnapshot::lastObservedEventSeqNo));
-		addStateLine(lines, "lastAcceptedTimeBeaconAtMs: " + contextLong(context, PlannerContextDebugSnapshot::lastAcceptedTimeBeaconAtMs));
+		addStateLine(lines, "lastAcceptedTimeContextAtMs: " + contextLong(context, PlannerContextDebugSnapshot::lastAcceptedTimeContextAtMs));
 		addStateLine(lines, "pendingSemanticGap: " + contextBool(context, PlannerContextDebugSnapshot::pendingSemanticGap));
+		addStateLine(lines, "overflowFlushPending: " + contextBool(context, PlannerContextDebugSnapshot::overflowFlushPending));
 
 		addStateSection(lines, "summaries");
 		addStateLine(lines, summarizeBaseRequest(plannerSnapshot == null ? null : plannerSnapshot.baseRequest()));
@@ -350,12 +350,15 @@ final class PlannerDebugOverlay {
 			return null;
 		}
 		String spinner = SPINNER_FRAMES[(int) ((Math.max(0L, nowMs) / 200L) % SPINNER_FRAMES.length)];
+		PlannerContextDebugSnapshot context = plannerSnapshot.context();
 		String status = plannerSnapshot.compactionInFlight()
 			? "compacting context"
 			: plannerSnapshot.captureInFlight()
 				? "capturing view"
 				: plannerSnapshot.toolInFlight()
 					? "waiting for tool follow-up"
+					: context != null && context.overflowFlushPending()
+						? "flushing pending semantic context"
 					: plannerSnapshot.coalescePending()
 						? "coalescing updates"
 						: plannerSnapshot.plannerInFlight()

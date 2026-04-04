@@ -15,6 +15,7 @@ import ai.moeru.airicraft.agent.llm.PlannerCompactionService;
 import ai.moeru.airicraft.agent.llm.PlannerOrchestratorDebugSnapshot;
 import ai.moeru.airicraft.agent.llm.PlannerOrchestrator;
 import ai.moeru.airicraft.agent.llm.PlannerRequest;
+import ai.moeru.airicraft.agent.llm.PlannerRequestSeed;
 import ai.moeru.airicraft.agent.llm.PlannerResponse;
 import ai.moeru.airicraft.agent.llm.PlannerTriggerType;
 import ai.moeru.airicraft.agent.session.SessionSnapshot;
@@ -67,6 +68,7 @@ public final class DialogueRuntime {
 				new PlannerContextAggregator(
 					Clock.systemDefaultZone(),
 					ai.moeru.airicraft.agent.AgentConfig.LlmConfig.defaults().plannerCompactionTriggerTokens(),
+					ai.moeru.airicraft.agent.AgentConfig.LlmConfig.defaults().plannerPendingSemanticEventCap(),
 					ai.moeru.airicraft.agent.AgentConfig.LlmConfig.defaults().plannerVisionMode()
 				),
 				CurrentViewVisionTool.disabled(),
@@ -315,7 +317,16 @@ public final class DialogueRuntime {
 			return;
 		}
 		Long sinceSeqNo = plannerOrchestrator.lastObservedEventSeqNo();
-		plannerOrchestrator.recordEvents(eventBuffer.query(sinceSeqNo <= 0L ? null : sinceSeqNo), timestampMs);
+		plannerOrchestrator.recordEvents(
+			eventBuffer.query(sinceSeqNo <= 0L ? null : sinceSeqNo),
+			new PlannerRequestSeed(
+				request.tick(),
+				timestampMs,
+				request.sessionMode(),
+				request.primaryInteractionPlayer(),
+				request.activeGoal()
+			)
+		);
 		plannerOrchestrator.submit(request);
 	}
 
@@ -375,7 +386,7 @@ public final class DialogueRuntime {
 		return new PlannerOrchestrator(
 			new PlannerExecutor(new OpenAiCompatibleLlmBackend(config)),
 			new PlannerCompactionService(new OpenAiCompatibleChatClient(config)),
-			new PlannerContextAggregator(clock, config.plannerCompactionTriggerTokens(), config.plannerVisionMode()),
+			new PlannerContextAggregator(clock, config.plannerCompactionTriggerTokens(), config.plannerPendingSemanticEventCap(), config.plannerVisionMode()),
 			CurrentViewVisionTool.disabled(),
 			config.plannerVisionMode(),
 			config.visionImageDetail(),

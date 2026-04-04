@@ -160,6 +160,24 @@ class PlannerContextAggregatorTest {
 		assertEquals(LlmMessageKind.CHECKPOINT, afterCheckpoint.messages().get(1).kind());
 	}
 
+	@Test
+	void acceptedAssistantHistoryIsRenderedWithoutFrozenRelativeTimeText() {
+		MutableClock clock = new MutableClock(Instant.ofEpochMilli(1_000L), ZoneId.of("Asia/Taipei"));
+		PlannerContextAggregator aggregator = new PlannerContextAggregator(clock, 65_536, PlannerVisionMode.EXTERNAL_SUMMARY);
+
+		PlannerContextSnapshot firstSnapshot = freezeSnapshot(aggregator, requestAt(1_000L, "Alice", "@agent hi"));
+		aggregator.commitAcceptedTriggerBatch(firstSnapshot);
+		aggregator.recordAgentTurn(new ai.moeru.airicraft.agent.dialogue.DialogueTurn("agent", "On it.", 20L, 1_000L));
+
+		clock.advanceMillis(120_000L);
+		LlmConversation laterConversation = freezeSnapshot(aggregator, requestAt(clock.millis(), "Alice", "@agent status")).plannerConversation();
+
+		assertTrue(laterConversation.messages().stream().anyMatch(message ->
+			"assistant".equals(message.role()) && "On it.".equals(message.content())
+		));
+		assertFalse(laterConversation.messages().stream().anyMatch(message -> message.content().contains("Agent replied just now")));
+	}
+
 	private static PlannerRequest requestAt(long timestampMs, String sender, String message) {
 		return new PlannerRequest(
 			timestampMs / 50L,
@@ -200,5 +218,39 @@ class PlannerContextAggregatorTest {
 			}
 		}
 		return -1;
+	}
+
+	private static final class MutableClock extends Clock {
+		private Instant instant;
+		private final ZoneId zoneId;
+
+		private MutableClock(Instant instant, ZoneId zoneId) {
+			this.instant = instant;
+			this.zoneId = zoneId;
+		}
+
+		@Override
+		public ZoneId getZone() {
+			return zoneId;
+		}
+
+		@Override
+		public Clock withZone(ZoneId zone) {
+			return new MutableClock(instant, zone);
+		}
+
+		@Override
+		public Instant instant() {
+			return instant;
+		}
+
+		private void advanceMillis(long millis) {
+			instant = instant.plusMillis(millis);
+		}
+
+		@Override
+		public long millis() {
+			return instant.toEpochMilli();
+		}
 	}
 }

@@ -5,6 +5,7 @@ import ai.moeru.airicraft.BridgeUnavailableException;
 import ai.moeru.airicraft.FirstPersonScreenshotService;
 import ai.moeru.airicraft.agent.dialogue.DialogueTurn;
 import ai.moeru.airicraft.agent.events.SemanticEventQueryResult;
+import ai.moeru.airicraft.agent.session.SessionMode;
 
 import java.time.Clock;
 import java.util.Locale;
@@ -156,7 +157,11 @@ public final class PlannerOrchestrator {
 	}
 
 	public boolean hasInFlight() {
-		return coalescePending || sessionCoordinator.hasInFlight() || compactionService.hasInFlight() || pendingToolExecution != null;
+		return contextAggregator.hasPendingOverflowFlush()
+			|| coalescePending
+			|| sessionCoordinator.hasInFlight()
+			|| compactionService.hasInFlight()
+			|| pendingToolExecution != null;
 	}
 
 	public PlannerOrchestratorDebugSnapshot debugSnapshot() {
@@ -200,6 +205,8 @@ public final class PlannerOrchestrator {
 		if (request.triggerBatch() == null || request.triggerBatch().isEmpty()) {
 			return false;
 		}
+		contextAggregator.recordPlannerRequestSeed(PlannerRequestSeed.fromRequest(request));
+		contextAggregator.cancelPendingOverflowFlush();
 		for (PlannerTrigger trigger : request.triggerBatch().triggers()) {
 			contextAggregator.enqueueTrigger(trigger);
 		}
@@ -335,18 +342,22 @@ public final class PlannerOrchestrator {
 		awaitingAcceptedReplyRecord = false;
 		clearCoalesceState();
 		if (
-			pendingSubmitRequest != null
-			&& contextAggregator.hasQueuedTriggers()
-			&& !compactionService.hasInFlight()
-			&& sessionCoordinator.activeGeneration() == 0L
-			&& pendingToolExecution == null
+			(pendingSubmitRequest != null && contextAggregator.hasQueuedTriggers())
+				|| contextAggregator.hasPendingOverflowFlush()
 		) {
 			startQueuedWorkIfPossible();
 		}
 	}
 
 	public void recordEvents(SemanticEventQueryResult queryResult, long anchorTimeMs) {
-		contextAggregator.recordObservedEvents(queryResult);
+		recordEvents(queryResult, new PlannerRequestSeed(anchorTimeMs / 50L, anchorTimeMs, SessionMode.OUT_OF_WORLD, null, null));
+	}
+
+	public void recordEvents(SemanticEventQueryResult queryResult, PlannerRequestSeed requestSeed) {
+		contextAggregator.recordObservedEvents(queryResult, requestSeed);
+		if (contextAggregator.hasPendingOverflowFlush()) {
+			startQueuedWorkIfPossible();
+		}
 	}
 
 	public boolean startDebugCompaction() {
@@ -394,14 +405,20 @@ public final class PlannerOrchestrator {
 	}
 
 	private boolean startQueuedWorkIfPossible() {
-		if (pendingSubmitRequest == null || !contextAggregator.hasQueuedTriggers()) {
+		boolean hasRealTrigger = pendingSubmitRequest != null && contextAggregator.hasQueuedTriggers();
+		boolean hasOverflowFlush = contextAggregator.hasPendingOverflowFlush();
+		if (!hasRealTrigger && !hasOverflowFlush) {
 			clearCoalesceState();
 			return true;
 		}
 		if (awaitingAcceptedReplyRecord) {
 			return true;
 		}
-		if (contextAggregator.compactionPending()) {
+		if (hasRealTrigger && hasOverflowFlush) {
+			contextAggregator.cancelPendingOverflowFlush();
+			hasOverflowFlush = false;
+		}
+		if (hasRealTrigger && contextAggregator.compactionPending()) {
 			if (sessionCoordinator.hasInFlight() || pendingToolExecution != null) {
 				return true;
 			}
@@ -409,6 +426,17 @@ public final class PlannerOrchestrator {
 				return true;
 			}
 			return compactionService.submit(contextAggregator.buildCompactionConversation());
+		}
+		if (!hasRealTrigger && hasOverflowFlush) {
+			if (sessionCoordinator.hasInFlight() || pendingToolExecution != null || compactionService.hasInFlight()) {
+				return true;
+			}
+			PlannerContextSnapshot overflowSnapshot = contextAggregator.freezeOverflowFlushSnapshot();
+			if (overflowSnapshot == null) {
+				return true;
+			}
+			sessionCoordinator.submit(overflowSnapshot);
+			return true;
 		}
 
 		if (coalescePending && clock.millis() < coalesceReadyAtMs) {
@@ -435,16 +463,18 @@ public final class PlannerOrchestrator {
 			contextAggregator.commitAcceptedTriggerBatch(snapshot);
 		}
 		sessionCoordinator.finishGeneration(acceptedResult.generation(), false);
+		boolean hasVisibleReply = acceptedResult.response() != null
+			&& acceptedResult.response().replyText() != null
+			&& !acceptedResult.response().replyText().isBlank();
 		if (!contextAggregator.hasQueuedTriggers()) {
 			pendingSubmitRequest = null;
-			awaitingAcceptedReplyRecord = false;
+			awaitingAcceptedReplyRecord = hasVisibleReply;
 			clearCoalesceState();
+			if (!awaitingAcceptedReplyRecord && contextAggregator.hasPendingOverflowFlush()) {
+				startQueuedWorkIfPossible();
+			}
 		}
-		else if (
-			acceptedResult.response() == null
-			|| acceptedResult.response().replyText() == null
-			|| acceptedResult.response().replyText().isBlank()
-		) {
+		else if (!hasVisibleReply) {
 			awaitingAcceptedReplyRecord = false;
 			startQueuedWorkIfPossible();
 		}

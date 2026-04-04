@@ -31,6 +31,7 @@ class AgentConfigLoaderTest {
 		assertEquals("", parsed.llm().visionModel());
 		assertEquals(7777, parsed.llm().visionRequestTimeoutMillis());
 		assertEquals(65_536, parsed.llm().plannerCompactionTriggerTokens());
+		assertEquals(128, parsed.llm().plannerPendingSemanticEventCap());
 		assertEquals(10, parsed.llm().plannerSessionCoalesceStepMillis());
 		assertEquals(10, parsed.llm().plannerSessionCoalesceMinMillis());
 		assertEquals(100, parsed.llm().plannerSessionCoalesceMaxMillis());
@@ -42,11 +43,13 @@ class AgentConfigLoaderTest {
 	@Test
 	void fromMapReadsPlannerCoalesceFields() {
 		AgentConfig parsed = AgentConfigLoader.fromMap(Map.of(
+			"plannerPendingSemanticEventCap", 256,
 			"plannerSessionCoalesceStepMillis", 25,
 			"plannerSessionCoalesceMinMillis", 30,
 			"plannerSessionCoalesceMaxMillis", 90
 		), AgentConfig.defaults());
 
+		assertEquals(256, parsed.llm().plannerPendingSemanticEventCap());
 		assertEquals(25, parsed.llm().plannerSessionCoalesceStepMillis());
 		assertEquals(30, parsed.llm().plannerSessionCoalesceMinMillis());
 		assertEquals(90, parsed.llm().plannerSessionCoalesceMaxMillis());
@@ -55,11 +58,13 @@ class AgentConfigLoaderTest {
 	@Test
 	void fromMapNormalizesPlannerCoalesceFields() {
 		AgentConfig parsed = AgentConfigLoader.fromMap(Map.of(
+			"plannerPendingSemanticEventCap", -10,
 			"plannerSessionCoalesceStepMillis", -10,
 			"plannerSessionCoalesceMinMillis", -5,
 			"plannerSessionCoalesceMaxMillis", -1
 		), AgentConfig.defaults());
 
+		assertEquals(1, parsed.llm().plannerPendingSemanticEventCap());
 		assertEquals(0, parsed.llm().plannerSessionCoalesceStepMillis());
 		assertEquals(0, parsed.llm().plannerSessionCoalesceMinMillis());
 		assertEquals(0, parsed.llm().plannerSessionCoalesceMaxMillis());

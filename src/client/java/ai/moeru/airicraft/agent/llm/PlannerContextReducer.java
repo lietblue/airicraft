@@ -32,15 +32,14 @@ final class PlannerContextReducer {
 		}
 
 		return new PlannerContextState(
-			state.rawArchiveTape(),
-			state.acceptedConversationTape(),
+			state.acceptedHistoryTape(),
 			state.activeCheckpoint(),
 			List.copyOf(pending),
 			pendingSemanticGapVersion,
 			nextSemanticGapVersion,
 			Math.max(state.lastObservedEventSeqNo(), queryResult.latestSeqNo()),
 			state.lastAcceptedAmbientContext(),
-			state.lastAcceptedTimeBeaconAtMs(),
+			state.lastAcceptedTimeContextAtMs(),
 			state.compactionPending(),
 			state.lastObservedUsage(),
 			state.queuedTriggers(),
@@ -52,15 +51,14 @@ final class PlannerContextReducer {
 		ArrayList<PlannerTrigger> queued = new ArrayList<>(state.queuedTriggers());
 		queued.add(trigger);
 		return new PlannerContextState(
-			state.rawArchiveTape(),
-			state.acceptedConversationTape(),
+			state.acceptedHistoryTape(),
 			state.activeCheckpoint(),
 			state.pendingSemanticEvents(),
 			state.pendingSemanticGapVersion(),
 			state.nextSemanticGapVersion(),
 			state.lastObservedEventSeqNo(),
 			state.lastAcceptedAmbientContext(),
-			state.lastAcceptedTimeBeaconAtMs(),
+			state.lastAcceptedTimeContextAtMs(),
 			state.compactionPending(),
 			state.lastObservedUsage(),
 			List.copyOf(queued),
@@ -78,27 +76,24 @@ final class PlannerContextReducer {
 			return state;
 		}
 
-		PlannerContextEntry archiveEntry = new PlannerContextEntry(
+		PlannerContextEntry acceptedEntry = new PlannerContextEntry(
 			PlannerContextEntryType.USER_TURN,
 			triggerBatch.primarySpeaker(),
 			triggerBatch.renderPrompt(),
 			tick,
 			timestampMs
 		);
-		ArrayList<PlannerContextEntry> archive = new ArrayList<>(state.rawArchiveTape());
-		archive.add(archiveEntry);
-		ArrayList<LlmChatMessage> accepted = new ArrayList<>(state.acceptedConversationTape());
-		accepted.add(triggerBatch.toTerminalMessage());
+		ArrayList<PlannerContextEntry> acceptedHistory = new ArrayList<>(state.acceptedHistoryTape());
+		acceptedHistory.add(acceptedEntry);
 		return new PlannerContextState(
-			List.copyOf(archive),
-			List.copyOf(accepted),
+			List.copyOf(acceptedHistory),
 			state.activeCheckpoint(),
 			state.pendingSemanticEvents(),
 			state.pendingSemanticGapVersion(),
 			state.nextSemanticGapVersion(),
 			state.lastObservedEventSeqNo(),
 			state.lastAcceptedAmbientContext(),
-			state.lastAcceptedTimeBeaconAtMs(),
+			state.lastAcceptedTimeContextAtMs(),
 			state.compactionPending(),
 			state.lastObservedUsage(),
 			state.queuedTriggers(),
@@ -111,27 +106,24 @@ final class PlannerContextReducer {
 			return state;
 		}
 
-		PlannerContextEntry archiveEntry = new PlannerContextEntry(
+		PlannerContextEntry acceptedEntry = new PlannerContextEntry(
 			PlannerContextEntryType.ASSISTANT_TURN,
 			turn.speaker(),
 			turn.text(),
 			turn.tick(),
 			turn.timestampMs()
 		);
-		ArrayList<PlannerContextEntry> archive = new ArrayList<>(state.rawArchiveTape());
-		archive.add(archiveEntry);
-		ArrayList<LlmChatMessage> accepted = new ArrayList<>(state.acceptedConversationTape());
-		accepted.add(ContextMessageRenderer.renderEntry(archiveEntry, turn.timestampMs()));
+		ArrayList<PlannerContextEntry> acceptedHistory = new ArrayList<>(state.acceptedHistoryTape());
+		acceptedHistory.add(acceptedEntry);
 		return new PlannerContextState(
-			List.copyOf(archive),
-			List.copyOf(accepted),
+			List.copyOf(acceptedHistory),
 			state.activeCheckpoint(),
 			state.pendingSemanticEvents(),
 			state.pendingSemanticGapVersion(),
 			state.nextSemanticGapVersion(),
 			state.lastObservedEventSeqNo(),
 			state.lastAcceptedAmbientContext(),
-			state.lastAcceptedTimeBeaconAtMs(),
+			state.lastAcceptedTimeContextAtMs(),
 			state.compactionPending(),
 			state.lastObservedUsage(),
 			state.queuedTriggers(),
@@ -140,16 +132,13 @@ final class PlannerContextReducer {
 	}
 
 	static PlannerContextState commitAcceptedSnapshot(PlannerContextState state, PlannerContextSnapshot snapshot) {
-		if (snapshot == null || snapshot.triggerBatch() == null || snapshot.triggerBatch().isEmpty()) {
+		if (snapshot == null) {
 			return state;
 		}
 
-		PlannerContextState next = recordAcceptedUserTurn(
-			state,
-			snapshot.triggerBatch(),
-			snapshot.request().tick(),
-			snapshot.request().timestampMs()
-		);
+		PlannerContextState next = snapshot.mode() == PlannerSnapshotMode.TRIGGERED
+			? recordAcceptedUserTurn(state, snapshot.triggerBatch(), snapshot.request().tick(), snapshot.request().timestampMs())
+			: state;
 
 		ArrayList<SemanticEvent> remainingPending = new ArrayList<>();
 		for (SemanticEvent event : next.pendingSemanticEvents()) {
@@ -158,10 +147,13 @@ final class PlannerContextReducer {
 			}
 		}
 
-		ArrayList<PlannerTrigger> remainingQueued = new ArrayList<>();
-		for (PlannerTrigger queuedTrigger : next.queuedTriggers()) {
-			if (queuedTrigger.seqNo() > snapshot.triggerBatch().endSeqNo()) {
-				remainingQueued.add(queuedTrigger);
+		ArrayList<PlannerTrigger> remainingQueued = new ArrayList<>(next.queuedTriggers());
+		if (snapshot.mode() == PlannerSnapshotMode.TRIGGERED && snapshot.triggerBatch() != null && !snapshot.triggerBatch().isEmpty()) {
+			remainingQueued.clear();
+			for (PlannerTrigger queuedTrigger : next.queuedTriggers()) {
+				if (queuedTrigger.seqNo() > snapshot.triggerBatch().endSeqNo()) {
+					remainingQueued.add(queuedTrigger);
+				}
 			}
 		}
 
@@ -174,15 +166,14 @@ final class PlannerContextReducer {
 		}
 
 		return new PlannerContextState(
-			next.rawArchiveTape(),
-			next.acceptedConversationTape(),
+			next.acceptedHistoryTape(),
 			next.activeCheckpoint(),
 			List.copyOf(remainingPending),
 			pendingSemanticGapVersion,
 			next.nextSemanticGapVersion(),
 			next.lastObservedEventSeqNo(),
 			snapshot.renderedAmbientContext(),
-			snapshot.renderedTimeBeaconAtMs() >= 0L ? snapshot.renderedTimeBeaconAtMs() : next.lastAcceptedTimeBeaconAtMs(),
+			snapshot.renderedTimeContextAtMs() >= 0L ? snapshot.renderedTimeContextAtMs() : next.lastAcceptedTimeContextAtMs(),
 			next.compactionPending(),
 			next.lastObservedUsage(),
 			List.copyOf(remainingQueued),
@@ -197,15 +188,14 @@ final class PlannerContextReducer {
 
 	static PlannerContextState updateObservedUsage(PlannerContextState state, LlmUsageSnapshot usage, boolean compactionPending) {
 		return new PlannerContextState(
-			state.rawArchiveTape(),
-			state.acceptedConversationTape(),
+			state.acceptedHistoryTape(),
 			state.activeCheckpoint(),
 			state.pendingSemanticEvents(),
 			state.pendingSemanticGapVersion(),
 			state.nextSemanticGapVersion(),
 			state.lastObservedEventSeqNo(),
 			state.lastAcceptedAmbientContext(),
-			state.lastAcceptedTimeBeaconAtMs(),
+			state.lastAcceptedTimeContextAtMs(),
 			compactionPending,
 			usage == null ? state.lastObservedUsage() : usage,
 			state.queuedTriggers(),
@@ -214,15 +204,15 @@ final class PlannerContextReducer {
 	}
 
 	static PlannerContextState clearCompactionPending(PlannerContextState state, CompactionCheckpoint checkpoint, long compactedAtMs) {
-		ArrayList<LlmChatMessage> retained = new ArrayList<>();
+		ArrayList<PlannerContextEntry> retained = new ArrayList<>();
 		int retainedUserTurns = 0;
-		for (int index = state.acceptedConversationTape().size() - 1; index >= 0; index--) {
-			LlmChatMessage message = state.acceptedConversationTape().get(index);
-			if (message.kind() != LlmMessageKind.USER_TURN && message.kind() != LlmMessageKind.ASSISTANT_TURN) {
+		for (int index = state.acceptedHistoryTape().size() - 1; index >= 0; index--) {
+			PlannerContextEntry entry = state.acceptedHistoryTape().get(index);
+			if (entry.type() != PlannerContextEntryType.USER_TURN && entry.type() != PlannerContextEntryType.ASSISTANT_TURN) {
 				continue;
 			}
-			retained.add(0, message);
-			if (message.kind() == LlmMessageKind.USER_TURN) {
+			retained.add(0, entry);
+			if (entry.type() == PlannerContextEntryType.USER_TURN) {
 				retainedUserTurns++;
 			}
 			if (retainedUserTurns >= PlannerContextPolicy.RETAINED_USER_TURNS || retained.size() >= PlannerContextPolicy.RETAINED_MESSAGE_CAP) {
@@ -231,7 +221,6 @@ final class PlannerContextReducer {
 		}
 
 		return new PlannerContextState(
-			state.rawArchiveTape(),
 			List.copyOf(retained),
 			checkpoint,
 			state.pendingSemanticEvents(),

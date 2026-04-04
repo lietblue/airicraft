@@ -4,16 +4,18 @@ import java.util.Objects;
 
 public record PlannerContextSnapshot(
 	PlannerRequest request,
+	PlannerSnapshotMode mode,
 	PlannerTriggerBatch triggerBatch,
 	LlmConversation plannerConversation,
 	long includedSemanticEventSeqNoUpperBound,
 	long includedSemanticGapVersion,
 	PlannerAmbientContext renderedAmbientContext,
-	long renderedTimeBeaconAtMs
+	long renderedTimeContextAtMs
 ) {
 	public PlannerContextSnapshot {
 		request = Objects.requireNonNull(request, "request");
-		triggerBatch = Objects.requireNonNull(triggerBatch, "triggerBatch");
+		mode = Objects.requireNonNull(mode, "mode");
+		triggerBatch = Objects.requireNonNullElseGet(triggerBatch, () -> PlannerTriggerBatch.of(java.util.List.of()));
 		plannerConversation = Objects.requireNonNull(plannerConversation, "plannerConversation");
 		renderedAmbientContext = Objects.requireNonNull(renderedAmbientContext, "renderedAmbientContext");
 	}

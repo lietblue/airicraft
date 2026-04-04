@@ -29,6 +29,9 @@ maxRecentConversationTurns: 8
 # Trigger a context compaction checkpoint once the planner input prompt reaches this many tokens.
 plannerCompactionTriggerTokens: 65536
 
+# Maximum number of raw semantic events allowed to remain pending before planner auto-flush is triggered.
+plannerPendingSemanticEventCap: 128
+
 # Maximum number of superseded planner attempts allowed to remain in flight at once.
 plannerSessionMaxConcurrentAttempts: 3
 

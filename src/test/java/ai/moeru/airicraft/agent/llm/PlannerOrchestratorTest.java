@@ -629,6 +629,55 @@ class PlannerOrchestratorTest {
 	}
 
 	@Test
+	void pendingSemanticOverflowAutoSubmitsFlushWithoutPersistingSyntheticPrompt() {
+		RecordingBackend backend = new RecordingBackend();
+		PlannerOrchestrator orchestrator = newOrchestrator(
+			backend,
+			CurrentViewVisionTool.disabled(),
+			PlannerVisionMode.EXTERNAL_SUMMARY,
+			3,
+			10,
+			10,
+			100,
+			2,
+			Clock.systemDefaultZone()
+		);
+
+		PlannerRequestSeed seed = new PlannerRequestSeed(10L, 1_000L, SessionMode.OUT_OF_WORLD, "Alice", null);
+		orchestrator.recordEvents(new SemanticEventQueryResult(
+			1L,
+			2L,
+			false,
+			List.of(
+				new SemanticEvent(1L, 100L, 1_000L, "pickup.item_picked_up", Map.of("actor", "self", "itemId", "minecraft:dirt", "count", 1)),
+				new SemanticEvent(2L, 101L, 1_010L, "pickup.item_picked_up", Map.of("actor", "self", "itemId", "minecraft:dirt", "count", 1))
+			)
+		), seed);
+		backend.awaitCalls(1, Duration.ofSeconds(1));
+
+		PlannerConversationDebugSnapshot submitted = orchestrator.conversationDebugSnapshot();
+		assertEquals(PlannerConversationDebugKind.TASK, lastConversationMessage(submitted).kind());
+		assertTrue(lastConversationMessage(submitted).text().contains("Pending semantic context reached capacity"));
+		assertTrue(submitted.messages().stream().anyMatch(message ->
+			message.kind() == PlannerConversationDebugKind.NOTICE && message.text().contains("2x minecraft:dirt")
+		));
+
+		backend.succeed(0, replyOnly("noted"));
+		PlannerExecutionResult result = awaitResult(orchestrator);
+
+		assertEquals("noted", result.response().replyText());
+		assertNull(result.request().triggerBatch());
+
+		orchestrator.recordAssistantTurn(new DialogueTurn("agent", "noted", 11L, 1_100L));
+		orchestrator.onAcceptedReplyRecorded();
+		orchestrator.submit(requestAt(12L, 1_200L, "Alice", "status?"));
+		backend.awaitCalls(2, Duration.ofSeconds(1));
+
+		String secondPrompt = terminalPrompt(backend.conversation(1));
+		assertFalse(secondPrompt.contains("Pending semantic context reached capacity"));
+	}
+
+	@Test
 	void toolRequestAddsTaskCardWhileWaitingForToolResult() {
 		RecordingBackend backend = new RecordingBackend();
 		StubVisionTool visionTool = new StubVisionTool(
@@ -837,6 +886,7 @@ class PlannerOrchestratorTest {
 			config.plannerSessionCoalesceStepMillis(),
 			config.plannerSessionCoalesceMinMillis(),
 			config.plannerSessionCoalesceMaxMillis(),
+			config.plannerPendingSemanticEventCap(),
 			clock
 		);
 	}
@@ -849,13 +899,14 @@ class PlannerOrchestratorTest {
 		int plannerSessionCoalesceStepMillis,
 		int plannerSessionCoalesceMinMillis,
 		int plannerSessionCoalesceMaxMillis,
+		int plannerPendingSemanticEventCap,
 		Clock clock
 	) {
 		AgentConfig.LlmConfig config = AgentConfig.LlmConfig.defaults();
 		return new PlannerOrchestrator(
 			new PlannerExecutor(backend),
 			new PlannerCompactionService(new OpenAiCompatibleChatClient(config)),
-			new PlannerContextAggregator(clock, config.plannerCompactionTriggerTokens(), visionMode),
+			new PlannerContextAggregator(clock, config.plannerCompactionTriggerTokens(), plannerPendingSemanticEventCap, visionMode),
 			visionTool,
 			visionMode,
 			config.visionImageDetail(),

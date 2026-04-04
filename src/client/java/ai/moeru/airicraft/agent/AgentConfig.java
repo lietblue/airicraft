@@ -20,6 +20,7 @@ public record AgentConfig(
 		int visionRequestTimeoutMillis,
 		int maxRecentConversationTurns,
 		int plannerCompactionTriggerTokens,
+		int plannerPendingSemanticEventCap,
 		int plannerSessionMaxConcurrentAttempts,
 		int plannerSessionCoalesceStepMillis,
 		int plannerSessionCoalesceMinMillis,
@@ -28,6 +29,7 @@ public record AgentConfig(
 		boolean plannerNativeVisionEnabled
 	) {
 		public LlmConfig {
+			plannerPendingSemanticEventCap = Math.max(1, plannerPendingSemanticEventCap);
 			plannerSessionCoalesceStepMillis = Math.max(0, plannerSessionCoalesceStepMillis);
 			plannerSessionCoalesceMinMillis = Math.max(0, plannerSessionCoalesceMinMillis);
 			plannerSessionCoalesceMaxMillis = Math.max(plannerSessionCoalesceMinMillis, plannerSessionCoalesceMaxMillis);
@@ -58,6 +60,7 @@ public record AgentConfig(
 				visionRequestTimeoutMillis,
 				maxRecentConversationTurns,
 				plannerCompactionTriggerTokens,
+				128,
 				3,
 				10,
 				10,
@@ -79,6 +82,7 @@ public record AgentConfig(
 				10_000,
 				8,
 				65_536,
+				128,
 				3,
 				10,
 				10,
