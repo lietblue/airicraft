@@ -4,6 +4,9 @@ import ai.moeru.airicraft.Airicraft;
 import ai.moeru.airicraft.BridgeUnavailableException;
 import ai.moeru.airicraft.FirstPersonScreenshotService;
 import ai.moeru.airicraft.agent.dialogue.DialogueTurn;
+import ai.moeru.airicraft.agent.events.EventPolicyChanges;
+import ai.moeru.airicraft.agent.events.EventPolicyMatch;
+import ai.moeru.airicraft.agent.events.EventPolicyRuleUpsert;
 import ai.moeru.airicraft.agent.events.SemanticEventQueryResult;
 import ai.moeru.airicraft.agent.session.SessionMode;
 
@@ -23,6 +26,7 @@ public final class PlannerOrchestrator {
 	private static final int SESSION_COALESCE_STEP_MS = 10;
 	private static final int SESSION_COALESCE_MIN_MS = 10;
 	private static final int SESSION_COALESCE_MAX_MS = 100;
+	private static final int CONVERSATION_HISTORY_CARD_LIMIT = 48;
 
 	private final PlannerExecutor plannerExecutor;
 	private final PlannerCompactionService compactionService;
@@ -289,6 +293,7 @@ public final class PlannerOrchestrator {
 		PlannerToolRequest toolRequest = plannerResult.response().toolRequest();
 		if (toolRequest == null) {
 			appendAssistantOutcomeCard(plannerResult);
+			appendOperationCards(plannerResult);
 			acceptGeneration(plannerResult);
 			return plannerResult;
 		}
@@ -341,7 +346,11 @@ public final class PlannerOrchestrator {
 
 		appendToolRequestCard(plannerResult);
 		sessionCoordinator.markToolWait(plannerResult.generation());
-		pendingToolExecution = new PendingToolExecution(plannerResult.generation(), requestVisionTool(toolRequest));
+		pendingToolExecution = new PendingToolExecution(
+			plannerResult.generation(),
+			toolRequestSummary(toolRequest),
+			requestVisionTool(toolRequest)
+		);
 		return null;
 	}
 
@@ -532,6 +541,7 @@ public final class PlannerOrchestrator {
 			followUpRequest,
 			toolOutcome.appendFollowUp(contextAggregator, snapshot)
 		);
+		appendToolFollowUpCard(toolExecution);
 		return null;
 	}
 
@@ -636,7 +646,19 @@ public final class PlannerOrchestrator {
 		PlannerRequest request,
 		LlmConversation conversation
 	) {
-		lastVisibleConversation = PlannerConversationDebugSnapshot.fromConversation(generation, phase, attempt, conversation);
+		PlannerConversationDebugSnapshot submitted = PlannerConversationDebugSnapshot.fromConversation(generation, phase, attempt, conversation);
+		if (lastVisibleConversation == null || lastVisibleConversation.isEmpty()) {
+			lastVisibleConversation = submitted;
+			return;
+		}
+		ArrayList<PlannerConversationDebugMessage> merged = new ArrayList<>(persistentConversationHistory(lastVisibleConversation));
+		merged.addAll(submitted.messages());
+		lastVisibleConversation = new PlannerConversationDebugSnapshot(
+			generation,
+			phase == null ? "UNKNOWN" : phase.name(),
+			attempt,
+			trimConversationMessages(merged)
+		);
 	}
 
 	private boolean isValidToolRequest(PlannerToolRequest toolRequest) {
@@ -698,16 +720,49 @@ public final class PlannerOrchestrator {
 		if (result == null || result.response() == null || result.response().toolRequest() == null) {
 			return;
 		}
-		PlannerToolRequest toolRequest = result.response().toolRequest();
-		String summary = "Tool request: " + toolRequest.type()
-			+ (toolRequest.prompt() == null || toolRequest.prompt().isBlank() ? "" : " | " + toolRequest.prompt());
-		appendConversationCard(new PlannerConversationDebugMessage(
-			"assistant",
-			PlannerConversationDebugKind.TASK,
-			summary,
+		appendOperationCard(
 			result.generation(),
 			result.phase().name(),
 			result.attempt(),
+			toolRequestSummary(result.response().toolRequest())
+		);
+	}
+
+	private void appendToolFollowUpCard(PendingToolExecution toolExecution) {
+		if (toolExecution == null || toolExecution.toolSummary() == null || toolExecution.toolSummary().isBlank()) {
+			return;
+		}
+		PlannerSessionSnapshot activeSnapshot = sessionCoordinator.activeSnapshot();
+		String phase = activeSnapshot == null || activeSnapshot.phase() == null ? PlannerSessionPhase.TOOL_FOLLOW_UP.name() : activeSnapshot.phase().name();
+		int attempt = activeSnapshot == null ? 0 : activeSnapshot.attemptCount();
+		appendOperationCard(toolExecution.generation(), phase, attempt, toolExecution.toolSummary());
+	}
+
+	private void appendOperationCards(PlannerExecutionResult result) {
+		if (result == null || result.response() == null) {
+			return;
+		}
+		PlannerResponse response = result.response();
+		String intentSummary = intentOperationSummary(response.intent());
+		if (intentSummary != null) {
+			appendOperationCard(result.generation(), result.phase().name(), result.attempt(), intentSummary);
+		}
+		for (String policySummary : eventPolicyOperationSummaries(response.eventPolicyChanges())) {
+			appendOperationCard(result.generation(), result.phase().name(), result.attempt(), policySummary);
+		}
+	}
+
+	private void appendOperationCard(long generation, String phase, int attempt, String text) {
+		if (text == null || text.isBlank()) {
+			return;
+		}
+		appendConversationCard(new PlannerConversationDebugMessage(
+			"assistant",
+			PlannerConversationDebugKind.TASK,
+			text,
+			generation,
+			phase,
+			attempt,
 			false
 		));
 	}
@@ -743,7 +798,56 @@ public final class PlannerOrchestrator {
 			);
 			return;
 		}
-		lastVisibleConversation = lastVisibleConversation.withAppended(message);
+		lastVisibleConversation = new PlannerConversationDebugSnapshot(
+			lastVisibleConversation.generation(),
+			lastVisibleConversation.phase(),
+			lastVisibleConversation.attempt(),
+			trimConversationMessages(new ArrayList<>(lastVisibleConversation.withAppended(message).messages()))
+		);
+	}
+
+	private static List<PlannerConversationDebugMessage> persistentConversationHistory(PlannerConversationDebugSnapshot snapshot) {
+		if (snapshot == null || snapshot.isEmpty()) {
+			return List.of();
+		}
+		ArrayList<PlannerConversationDebugMessage> history = new ArrayList<>();
+		for (PlannerConversationDebugMessage message : snapshot.messages()) {
+			if (isPersistentConversationCard(message.kind())) {
+				history.add(message);
+			}
+		}
+		return List.copyOf(history);
+	}
+
+	private static boolean isPersistentConversationCard(PlannerConversationDebugKind kind) {
+		if (kind == null) {
+			return false;
+		}
+		return switch (kind) {
+			case ASSISTANT_TURN, TOOL_RESULT, TASK, FAILURE -> true;
+			case SYSTEM, CHECKPOINT, NOTICE, USER_TURN -> false;
+		};
+	}
+
+	private static List<PlannerConversationDebugMessage> trimConversationMessages(List<PlannerConversationDebugMessage> messages) {
+		if (messages == null || messages.isEmpty()) {
+			return List.of();
+		}
+		ArrayList<PlannerConversationDebugMessage> trimmed = new ArrayList<>(messages);
+		while (trimmed.size() > CONVERSATION_HISTORY_CARD_LIMIT) {
+			int removableIndex = firstNonPersistentIndex(trimmed);
+			trimmed.remove(removableIndex >= 0 ? removableIndex : 0);
+		}
+		return List.copyOf(trimmed);
+	}
+
+	private static int firstNonPersistentIndex(List<PlannerConversationDebugMessage> messages) {
+		for (int index = 0; index < messages.size(); index++) {
+			if (!isPersistentConversationCard(messages.get(index).kind())) {
+				return index;
+			}
+		}
+		return -1;
 	}
 
 	private sealed interface ToolExecutionOutcome permits TextToolExecutionOutcome, ImageToolExecutionOutcome {
@@ -766,7 +870,7 @@ public final class PlannerOrchestrator {
 		}
 	}
 
-	private record PendingToolExecution(long generation, CompletableFuture<ToolExecutionOutcome> future) {
+	private record PendingToolExecution(long generation, String toolSummary, CompletableFuture<ToolExecutionOutcome> future) {
 	}
 
 	private static String visionFailureCode(Throwable throwable) {
@@ -802,20 +906,100 @@ public final class PlannerOrchestrator {
 			return null;
 		}
 		return switch (intent.type()) {
-			case "set_goal" -> {
-				if (intent.goalType() != null && intent.targetPlayer() != null && !intent.targetPlayer().isBlank()) {
-					yield "Set goal: " + intent.goalType().name() + " for " + intent.targetPlayer() + ".";
-				}
-				if (intent.goalType() != null) {
-					yield "Set goal: " + intent.goalType().name() + ".";
-				}
-				yield "Set goal.";
-			}
-			case "clear_goal" -> "Cleared the current goal.";
 			case "ask_clarification" -> "Asked for clarification.";
 			case "acknowledge_failure" -> "Acknowledged failure.";
-			case "reply_only", "none" -> null;
+			case "set_goal", "clear_goal", "reply_only", "none" -> null;
 			default -> "Applied intent: " + intent.type() + ".";
 		};
+	}
+
+	private static String toolRequestSummary(PlannerToolRequest toolRequest) {
+		if (toolRequest == null || toolRequest.type() == null || toolRequest.type().isBlank()) {
+			return null;
+		}
+		return "Tool call: " + toolRequest.type()
+			+ (toolRequest.prompt() == null || toolRequest.prompt().isBlank() ? "" : " | " + toolRequest.prompt());
+	}
+
+	private static String intentOperationSummary(PlannerIntent intent) {
+		if (intent == null || intent.type() == null || intent.type().isBlank()) {
+			return null;
+		}
+		return switch (intent.type()) {
+			case "set_goal" -> {
+				if (intent.goalType() != null && intent.targetPlayer() != null && !intent.targetPlayer().isBlank()) {
+					yield "Goal call: " + intent.goalType().name() + " -> " + intent.targetPlayer() + ".";
+				}
+				if (intent.goalType() != null) {
+					yield "Goal call: " + intent.goalType().name() + ".";
+				}
+				yield "Goal call: set_goal.";
+			}
+			case "clear_goal" -> "Goal call: clear current goal.";
+			default -> null;
+		};
+	}
+
+	private static List<String> eventPolicyOperationSummaries(EventPolicyChanges changes) {
+		if (changes == null) {
+			return List.of();
+		}
+		ArrayList<String> summaries = new ArrayList<>();
+		if (changes.clearAll()) {
+			summaries.add("Event filter: clear all rules.");
+		}
+		for (String ruleId : changes.removeRuleIds()) {
+			if (ruleId != null && !ruleId.isBlank()) {
+				summaries.add("Event filter: remove " + ruleId + ".");
+			}
+		}
+		for (EventPolicyRuleUpsert upsert : changes.upserts()) {
+			String summary = eventPolicyUpsertSummary(upsert);
+			if (summary != null) {
+				summaries.add(summary);
+			}
+		}
+		return List.copyOf(summaries);
+	}
+
+	private static String eventPolicyUpsertSummary(EventPolicyRuleUpsert upsert) {
+		if (upsert == null) {
+			return null;
+		}
+		StringBuilder builder = new StringBuilder("Event filter: upsert");
+		if (upsert.ruleId() != null && !upsert.ruleId().isBlank()) {
+			builder.append(' ').append(upsert.ruleId());
+		}
+		if (upsert.effect() != null && !upsert.effect().isBlank()) {
+			builder.append(" -> ").append(upsert.effect().trim().toUpperCase(Locale.ROOT));
+		}
+		String matchSummary = eventPolicyMatchSummary(upsert.match());
+		if (matchSummary != null) {
+			builder.append(" on ").append(matchSummary);
+		}
+		return builder.append('.').toString();
+	}
+
+	private static String eventPolicyMatchSummary(EventPolicyMatch match) {
+		if (match == null || !match.isValid()) {
+			return null;
+		}
+		ArrayList<String> filters = new ArrayList<>();
+		appendMatchFilter(filters, "player", match.player());
+		appendMatchFilter(filters, "speaker", match.speaker());
+		appendMatchFilter(filters, "actor", match.actor());
+		appendMatchFilter(filters, "itemId", match.itemId());
+		appendMatchFilter(filters, "damageTypeId", match.damageTypeId());
+		appendMatchFilter(filters, "attackerName", match.attackerName());
+		if (filters.isEmpty()) {
+			return match.eventType();
+		}
+		return match.eventType() + " [" + String.join(", ", filters) + "]";
+	}
+
+	private static void appendMatchFilter(List<String> filters, String key, String value) {
+		if (value != null && !value.isBlank()) {
+			filters.add(key + "=" + value);
+		}
 	}
 }

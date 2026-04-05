@@ -4,6 +4,9 @@ import ai.moeru.airicraft.BridgeUnavailableException;
 import ai.moeru.airicraft.FirstPersonScreenshotService;
 import ai.moeru.airicraft.agent.AgentConfig;
 import ai.moeru.airicraft.agent.dialogue.DialogueTurn;
+import ai.moeru.airicraft.agent.events.EventPolicyChanges;
+import ai.moeru.airicraft.agent.events.EventPolicyMatch;
+import ai.moeru.airicraft.agent.events.EventPolicyRuleUpsert;
 import ai.moeru.airicraft.agent.events.SemanticEvent;
 import ai.moeru.airicraft.agent.events.SemanticEventQueryResult;
 import ai.moeru.airicraft.agent.goals.GoalType;
@@ -554,8 +557,116 @@ class PlannerOrchestratorTest {
 		assertTrue(result.succeeded());
 
 		PlannerConversationDebugMessage outcomeCard = lastConversationMessage(orchestrator.conversationDebugSnapshot());
-		assertEquals(PlannerConversationDebugKind.ASSISTANT_TURN, outcomeCard.kind());
-		assertTrue(outcomeCard.text().contains("Set goal: FOLLOW_PLAYER for Alice."));
+		assertEquals(PlannerConversationDebugKind.TASK, outcomeCard.kind());
+		assertTrue(outcomeCard.text().contains("Goal call: FOLLOW_PLAYER -> Alice."));
+	}
+
+	@Test
+	void conversationSnapshotShowsReplyAndOperationCardsForGoalAndEventFilters() {
+		RecordingBackend backend = new RecordingBackend();
+		PlannerOrchestrator orchestrator = newOrchestrator(backend, CurrentViewVisionTool.disabled(), PlannerVisionMode.EXTERNAL_SUMMARY);
+
+		orchestrator.submit(requestAt(10L, 1_000L, "Alice", "@agent follow me but mute system spam"));
+		backend.awaitCalls(1, Duration.ofSeconds(1));
+		backend.succeed(0, new PlannerResponse(
+			"On it.",
+			new PlannerIntent("set_goal", GoalType.FOLLOW_PLAYER, "Alice"),
+			null,
+			new EventPolicyChanges(
+				true,
+				List.of("old-noise-rule"),
+				List.of(new EventPolicyRuleUpsert(
+					"mute-system-server",
+					"ignore",
+					new EventPolicyMatch("social.system_message", null, "server", null, null, null, null),
+					"system chatter"
+				))
+			)
+		));
+
+		PlannerExecutionResult result = awaitResult(orchestrator);
+		assertTrue(result.succeeded());
+
+		PlannerConversationDebugSnapshot snapshot = orchestrator.conversationDebugSnapshot();
+		assertNotNull(findConversationMessage(snapshot, PlannerConversationDebugKind.ASSISTANT_TURN, "On it."));
+		assertNotNull(findConversationMessage(snapshot, PlannerConversationDebugKind.TASK, "Goal call: FOLLOW_PLAYER -> Alice."));
+		assertNotNull(findConversationMessage(snapshot, PlannerConversationDebugKind.TASK, "Event filter: clear all rules."));
+		assertNotNull(findConversationMessage(snapshot, PlannerConversationDebugKind.TASK, "Event filter: remove old-noise-rule."));
+		assertNotNull(findConversationMessage(snapshot, PlannerConversationDebugKind.TASK, "Event filter: upsert mute-system-server -> IGNORE on social.system_message [speaker=server]."));
+	}
+
+	@Test
+	void conversationSnapshotKeepsPreviousOperationCardsAcrossLaterPlannerSubmits() {
+		RecordingBackend backend = new RecordingBackend();
+		PlannerOrchestrator orchestrator = newOrchestrator(backend, CurrentViewVisionTool.disabled(), PlannerVisionMode.EXTERNAL_SUMMARY);
+
+		orchestrator.submit(requestAt(10L, 1_000L, "Alice", "@agent follow me"));
+		backend.awaitCalls(1, Duration.ofSeconds(1));
+		backend.succeed(0, new PlannerResponse(
+			"",
+			new PlannerIntent("set_goal", GoalType.FOLLOW_PLAYER, "Alice")
+		));
+		PlannerExecutionResult firstResult = awaitResult(orchestrator);
+		assertTrue(firstResult.succeeded());
+		assertNotNull(findConversationMessage(
+			orchestrator.conversationDebugSnapshot(),
+			PlannerConversationDebugKind.TASK,
+			"Goal call: FOLLOW_PLAYER -> Alice."
+		));
+
+		orchestrator.submit(requestAt(11L, 1_100L, "Alice", "status?"));
+		backend.awaitCalls(2, Duration.ofSeconds(1));
+
+		PlannerConversationDebugSnapshot submitted = orchestrator.conversationDebugSnapshot();
+		assertNotNull(findConversationMessage(submitted, PlannerConversationDebugKind.TASK, "Goal call: FOLLOW_PLAYER -> Alice."));
+		assertNotNull(findConversationMessage(submitted, PlannerConversationDebugKind.USER_TURN, "[chat][Alice] status?"));
+	}
+
+	@Test
+	void conversationSnapshotKeepsOperationCardsWhenLaterPromptHasManyNotices() {
+		RecordingBackend backend = new RecordingBackend();
+		PlannerOrchestrator orchestrator = newOrchestrator(backend, CurrentViewVisionTool.disabled(), PlannerVisionMode.EXTERNAL_SUMMARY);
+
+		orchestrator.submit(requestAt(10L, 1_000L, "Alice", "@agent ignore noisy system messages"));
+		backend.awaitCalls(1, Duration.ofSeconds(1));
+		backend.succeed(0, new PlannerResponse(
+			"",
+			new PlannerIntent("reply_only", null, null),
+			null,
+			new EventPolicyChanges(
+				false,
+				List.of(),
+				List.of(new EventPolicyRuleUpsert(
+					"mute-system-server",
+					"ignore",
+					new EventPolicyMatch("social.system_message", null, "server", null, null, null, null),
+					"noise"
+				))
+			)
+		));
+		PlannerExecutionResult firstResult = awaitResult(orchestrator);
+		assertTrue(firstResult.succeeded());
+
+		List<SemanticEvent> noisyEvents = new ArrayList<>();
+		for (int index = 0; index < 64; index++) {
+			noisyEvents.add(new SemanticEvent(
+				index + 1L,
+				200L + index,
+				2_000L + index,
+				"pickup.item_picked_up",
+				Map.of("actor", "self", "itemId", "minecraft:item_" + index, "count", 1)
+			));
+		}
+		orchestrator.recordEvents(
+			new SemanticEventQueryResult(1L, 64L, false, noisyEvents),
+			new PlannerRequestSeed(20L, 2_100L, SessionMode.OUT_OF_WORLD, "Alice", null)
+		);
+		orchestrator.submit(requestAt(21L, 2_100L, "Alice", "status?"));
+		backend.awaitCalls(2, Duration.ofSeconds(1));
+
+		PlannerConversationDebugSnapshot submitted = orchestrator.conversationDebugSnapshot();
+		assertNotNull(findConversationMessage(submitted, PlannerConversationDebugKind.TASK, "Event filter: upsert mute-system-server -> IGNORE on social.system_message [speaker=server]."));
+		assertNotNull(findConversationMessage(submitted, PlannerConversationDebugKind.USER_TURN, "[chat][Alice] status?"));
 	}
 
 	@Test
@@ -703,11 +814,11 @@ class PlannerOrchestratorTest {
 		assertNull(awaitNullPoll(orchestrator));
 		PlannerConversationDebugMessage taskCard = lastConversationMessage(orchestrator.conversationDebugSnapshot());
 		assertEquals(PlannerConversationDebugKind.TASK, taskCard.kind());
-		assertTrue(taskCard.text().contains("Tool request: take_a_look"));
+		assertTrue(taskCard.text().contains("Tool call: take_a_look"));
 	}
 
 	@Test
-	void toolFollowUpConversationShowsLatestToolResultMessage() {
+	void toolFollowUpConversationShowsToolResultAndRetainsToolCallCard() {
 		RecordingBackend backend = new RecordingBackend();
 		StubVisionTool visionTool = new StubVisionTool(
 			true,
@@ -733,10 +844,12 @@ class PlannerOrchestratorTest {
 		PlannerConversationDebugSnapshot followUp = orchestrator.conversationDebugSnapshot();
 		assertEquals(1L, followUp.generation());
 		assertEquals("TOOL_FOLLOW_UP", followUp.phase());
-		PlannerConversationDebugMessage toolResultMessage = lastConversationMessage(followUp);
-		assertEquals(PlannerConversationDebugKind.TOOL_RESULT, toolResultMessage.kind());
+		PlannerConversationDebugMessage toolResultMessage = findConversationMessage(followUp, PlannerConversationDebugKind.TOOL_RESULT, "current first-person view attached");
+		assertNotNull(toolResultMessage);
 		assertTrue(toolResultMessage.hasImageAttachment());
-		assertTrue(toolResultMessage.text().contains("current first-person view attached"));
+		PlannerConversationDebugMessage toolCallCard = lastConversationMessage(followUp);
+		assertEquals(PlannerConversationDebugKind.TASK, toolCallCard.kind());
+		assertTrue(toolCallCard.text().contains("Tool call: take_a_look"));
 	}
 
 	@Test
@@ -1265,6 +1378,18 @@ class PlannerOrchestratorTest {
 	private static PlannerConversationDebugMessage lastConversationMessage(PlannerConversationDebugSnapshot snapshot) {
 		assertFalse(snapshot.messages().isEmpty(), "Expected visible conversation messages");
 		return snapshot.messages().get(snapshot.messages().size() - 1);
+	}
+
+	private static PlannerConversationDebugMessage findConversationMessage(
+		PlannerConversationDebugSnapshot snapshot,
+		PlannerConversationDebugKind kind,
+		String textFragment
+	) {
+		return snapshot.messages().stream()
+			.filter(message -> kind == null || message.kind() == kind)
+			.filter(message -> textFragment == null || message.text().contains(textFragment))
+			.findFirst()
+			.orElse(null);
 	}
 
 	private static String terminalPrompt(LlmConversation conversation) {
