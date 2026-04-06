@@ -28,6 +28,20 @@ public record PlannerAmbientContext(
 			case FOLLOW_PLAYER -> goal.targetPlayer() == null || goal.targetPlayer().isBlank()
 				? "Follow the current player."
 				: "Follow " + goal.targetPlayer() + ".";
+			case NAVIGATE_TO -> goal.position() == null
+				? "Navigate to the requested position."
+				: "Navigate to "
+					+ goal.position().x() + ", "
+					+ goal.position().y() + ", "
+					+ goal.position().z()
+					+ (goal.position().exactY() ? " with exact Y." : ".");
+			case MINE_BLOCKS -> goal.mineSpec() == null
+				? "Mine the requested blocks."
+				: "Mine "
+					+ goal.mineSpec().quantity()
+					+ " of "
+					+ String.join(", ", goal.mineSpec().blockIds())
+					+ ".";
 		};
 	}
 }
