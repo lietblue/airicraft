@@ -2,13 +2,17 @@ package ai.moeru.airicraft.agent.llm;
 
 import ai.moeru.airicraft.Airicraft;
 import ai.moeru.airicraft.agent.AgentConfig;
+import ai.moeru.airicraft.agent.goals.GoalMineSpec;
+import ai.moeru.airicraft.agent.goals.GoalPosition;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParseException;
 import com.google.gson.JsonParser;
 
 import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.Deque;
+import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
 import java.util.Optional;
@@ -83,7 +87,9 @@ public final class OpenAiCompatibleLlmBackend implements LlmBackend {
 				getString(intentObject, "goalType")
 					.map(value -> ai.moeru.airicraft.agent.goals.GoalType.valueOf(value.toUpperCase(Locale.ROOT)))
 					.orElse(null),
-				getString(intentObject, "targetPlayer").orElse(null)
+				getString(intentObject, "targetPlayer").orElse(null),
+				parseGoalPosition(intentObject, "position"),
+				parseGoalMineSpec(intentObject, "mineSpec")
 			);
 			PlannerToolRequest toolRequest = toolRequestObject == null
 				? null
@@ -109,11 +115,92 @@ public final class OpenAiCompatibleLlmBackend implements LlmBackend {
 	}
 
 	private static Optional<String> getString(JsonObject object, String fieldName) {
-		if (object == null || !object.has(fieldName) || object.get(fieldName).isJsonNull()) {
+		if (object == null || !object.has(fieldName) || object.get(fieldName).isJsonNull() || !object.get(fieldName).isJsonPrimitive()) {
 			return Optional.empty();
 		}
-		String value = object.get(fieldName).getAsString();
-		return value == null || value.isBlank() ? Optional.empty() : Optional.of(value);
+		try {
+			String value = object.get(fieldName).getAsString();
+			return value == null || value.isBlank() ? Optional.empty() : Optional.of(value);
+		}
+		catch (RuntimeException exception) {
+			return Optional.empty();
+		}
+	}
+
+	private static GoalPosition parseGoalPosition(JsonObject object, String fieldName) {
+		if (object == null || !object.has(fieldName) || !object.get(fieldName).isJsonObject()) {
+			return null;
+		}
+		JsonObject positionObject = object.getAsJsonObject(fieldName);
+		Optional<Integer> x = getInt(positionObject, "x");
+		Optional<Integer> y = getInt(positionObject, "y");
+		Optional<Integer> z = getInt(positionObject, "z");
+		if (x.isEmpty() || y.isEmpty() || z.isEmpty()) {
+			return null;
+		}
+		return new GoalPosition(x.get(), y.get(), z.get(), getBoolean(positionObject, "exactY").orElse(false));
+	}
+
+	private static GoalMineSpec parseGoalMineSpec(JsonObject object, String fieldName) {
+		if (object == null || !object.has(fieldName) || !object.get(fieldName).isJsonObject()) {
+			return null;
+		}
+		JsonObject mineSpecObject = object.getAsJsonObject(fieldName);
+		Optional<List<String>> blockIds = getStringArray(mineSpecObject, "blockIds");
+		Optional<Integer> quantity = getInt(mineSpecObject, "quantity");
+		if (blockIds.isEmpty() || quantity.isEmpty()) {
+			return null;
+		}
+		try {
+			return new GoalMineSpec(blockIds.get(), quantity.get());
+		}
+		catch (IllegalArgumentException exception) {
+			return null;
+		}
+	}
+
+	private static Optional<Integer> getInt(JsonObject object, String fieldName) {
+		if (object == null || !object.has(fieldName) || object.get(fieldName).isJsonNull() || !object.get(fieldName).isJsonPrimitive()) {
+			return Optional.empty();
+		}
+		try {
+			return Optional.of(object.get(fieldName).getAsInt());
+		}
+		catch (RuntimeException exception) {
+			return Optional.empty();
+		}
+	}
+
+	private static Optional<Boolean> getBoolean(JsonObject object, String fieldName) {
+		if (object == null || !object.has(fieldName) || object.get(fieldName).isJsonNull() || !object.get(fieldName).isJsonPrimitive()) {
+			return Optional.empty();
+		}
+		try {
+			return Optional.of(object.get(fieldName).getAsBoolean());
+		}
+		catch (RuntimeException exception) {
+			return Optional.empty();
+		}
+	}
+
+	private static Optional<List<String>> getStringArray(JsonObject object, String fieldName) {
+		if (object == null || !object.has(fieldName) || object.get(fieldName).isJsonNull() || !object.get(fieldName).isJsonArray()) {
+			return Optional.empty();
+		}
+		JsonArray array = object.getAsJsonArray(fieldName);
+		ArrayList<String> values = new ArrayList<>(array.size());
+		for (int index = 0; index < array.size(); index++) {
+			if (!array.get(index).isJsonPrimitive()) {
+				return Optional.empty();
+			}
+			try {
+				values.add(array.get(index).getAsString());
+			}
+			catch (RuntimeException exception) {
+				return Optional.empty();
+			}
+		}
+		return Optional.of(values);
 	}
 
 	private static String summarizeForLog(String text) {

@@ -220,7 +220,13 @@ public final class DialogueRuntime {
 
 		DialogueResponse response = new DialogueResponse(
 			plannerResponse.replyText() == null ? "" : plannerResponse.replyText(),
-			new DialogueIntent(mappedIntentType, plannerResponse.intent().goalType(), plannerResponse.intent().targetPlayer()),
+			new DialogueIntent(
+				mappedIntentType,
+				plannerResponse.intent().goalType(),
+				plannerResponse.intent().targetPlayer(),
+				plannerResponse.intent().position(),
+				plannerResponse.intent().mineSpec()
+			),
 			tick
 		);
 		recordResponse(response);

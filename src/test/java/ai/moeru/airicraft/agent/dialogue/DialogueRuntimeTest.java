@@ -2,6 +2,8 @@ package ai.moeru.airicraft.agent.dialogue;
 
 import ai.moeru.airicraft.agent.AgentConfig;
 import ai.moeru.airicraft.agent.events.SemanticEventBuffer;
+import ai.moeru.airicraft.agent.goals.GoalMineSpec;
+import ai.moeru.airicraft.agent.goals.GoalPosition;
 import ai.moeru.airicraft.agent.goals.GoalType;
 import ai.moeru.airicraft.agent.llm.OpenAiCompatibleLlmBackend;
 import ai.moeru.airicraft.agent.llm.PlannerExecutor;
@@ -12,6 +14,7 @@ import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.List;
 import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -35,6 +38,33 @@ class DialogueRuntimeTest {
 		assertEquals("Sure, I'll follow you!", response.text());
 		assertEquals(DialogueIntentType.SET_GOAL, response.intent().type());
 		assertFalse(runtime.isDegraded());
+		runtime.shutdown();
+	}
+
+	@Test
+	void structuredPlannerIntentSurvivesDialogueRuntimeMapping() {
+		OpenAiCompatibleLlmBackend backend = new OpenAiCompatibleLlmBackend(AgentConfig.LlmConfig.defaults());
+		DialogueRuntime runtime = new DialogueRuntime(new PlannerExecutor(backend), 8);
+		SemanticEventBuffer eventBuffer = new SemanticEventBuffer(32);
+		backend.injectMockResponse(new PlannerResponse(
+			"Heading there.",
+			new PlannerIntent(
+				"set_goal",
+				GoalType.NAVIGATE_TO,
+				null,
+				new GoalPosition(12, 64, -8, true),
+				new GoalMineSpec(List.of("minecraft:oak_log"), 16)
+			)
+		));
+
+		runtime.onPlayerChat("Alice", "@agent head there", 10L, SessionSnapshot.initial(), "Alice", Optional.empty(), eventBuffer);
+		DialogueResponse response = awaitResponse(runtime, eventBuffer, Duration.ofSeconds(1));
+
+		assertEquals("Heading there.", response.text());
+		assertEquals(DialogueIntentType.SET_GOAL, response.intent().type());
+		assertEquals(GoalType.NAVIGATE_TO, response.intent().goalType());
+		assertEquals(new GoalPosition(12, 64, -8, true), response.intent().position());
+		assertEquals(new GoalMineSpec(List.of("minecraft:oak_log"), 16), response.intent().mineSpec());
 		runtime.shutdown();
 	}
 

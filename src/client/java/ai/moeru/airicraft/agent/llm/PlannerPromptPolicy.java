@@ -26,8 +26,18 @@ public final class PlannerPromptPolicy {
 			  "replyText": string,
 			  "intent": {
 			    "type": "set_goal" | "clear_goal" | "reply_only" | "ask_clarification" | "acknowledge_failure" | "none",
-			    "goalType": "FOLLOW_PLAYER" | null,
-			    "targetPlayer": string | null
+			    "goalType": "FOLLOW_PLAYER" | "NAVIGATE_TO" | "MINE_BLOCKS" | null,
+			    "targetPlayer": string | null,
+			    "position": {
+			      "x": number,
+			      "y": number,
+			      "z": number,
+			      "exactY": boolean
+			    } | null,
+			    "mineSpec": {
+			      "blockIds": string[],
+			      "quantity": number
+			    } | null
 			  },
 			  "toolRequest": {
 			    "type": "take_a_look",
@@ -36,6 +46,8 @@ public final class PlannerPromptPolicy {
 			}
 			If the final user message begins with "COMPACTION TASK:", ignore the normal planner output format for this response and follow that final compaction task instead.
 			Only choose FOLLOW_PLAYER when the player explicitly asks the companion to follow.
+			Only choose MINE_BLOCKS for directly mineable or harvestable blocks.
+			For crafting, inventory management, combat, or container interaction, ask for clarification or acknowledge the limitation.
 			If the current session mode is singleplayer local and someone asks you to follow, you may keep a FOLLOW_PLAYER goal, but make it clear movement is paused until LAN is opened or multiplayer is active.
 			%s
 			When a tool result is already present in the conversation, do not request another tool.
