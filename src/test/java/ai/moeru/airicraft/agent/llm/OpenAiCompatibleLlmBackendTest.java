@@ -4,6 +4,9 @@ import ai.moeru.airicraft.agent.AgentConfig;
 import ai.moeru.airicraft.agent.goals.GoalMineSpec;
 import ai.moeru.airicraft.agent.goals.GoalPosition;
 import ai.moeru.airicraft.agent.goals.GoalType;
+import ai.moeru.airicraft.agent.tasks.TaskResourceKind;
+import ai.moeru.airicraft.agent.tasks.TaskSpec;
+import ai.moeru.airicraft.agent.tasks.TaskType;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import org.junit.jupiter.api.Test;
@@ -147,6 +150,98 @@ class OpenAiCompatibleLlmBackendTest {
 			assertEquals("set_goal", result.payload().intent().type());
 			assertEquals(GoalType.MINE_BLOCKS, result.payload().intent().goalType());
 			assertEquals(new GoalMineSpec(List.of("minecraft:oak_log"), 16), result.payload().intent().mineSpec());
+		}
+	}
+
+	@Test
+	void generateParsesSubmitTaskPlannerPayload() throws Exception {
+		String responseBody = """
+			{
+			  "choices": [
+			    {
+			      "message": {
+			        "content": "{\\"replyText\\":\\"On it.\\",\\"intent\\":{\\"type\\":\\"submit_task\\",\\"taskSpec\\":{\\"type\\":\\"COLLECT_RESOURCE\\",\\"resourceKind\\":\\"WOOD_LOGS\\",\\"quantity\\":16}},\\"toolRequest\\":null}"
+			      }
+			    }
+			  ],
+			  "usage": {
+			    "prompt_tokens": 1234,
+			    "completion_tokens": 56,
+			    "total_tokens": 1290
+			  }
+			}
+			""";
+		AtomicReference<String> bodyRef = new AtomicReference<>();
+		try (TestServer server = TestServer.start(bodyRef, responseBody)) {
+			OpenAiCompatibleLlmBackend backend = new OpenAiCompatibleLlmBackend(new AgentConfig.LlmConfig(
+				"http://127.0.0.1:" + server.port(),
+				"planner-key",
+				"planner-model",
+				"https://api.openai.com/v1",
+				"",
+				"",
+				15_000,
+				10_000,
+				8,
+				65_536,
+				"low",
+				false
+			));
+
+			LlmCallResult<PlannerResponse> result = backend.generate(LlmConversation.of(List.of(
+				LlmChatMessage.system("system"),
+				LlmChatMessage.user("Alice said just now: @agent get wood", LlmMessageKind.USER_TURN)
+			)));
+
+			assertEquals("On it.", result.payload().replyText());
+			assertEquals("submit_task", result.payload().intent().type());
+			assertEquals(new TaskSpec(TaskType.COLLECT_RESOURCE, TaskResourceKind.WOOD_LOGS, 16), result.payload().intent().taskSpec());
+		}
+	}
+
+	@Test
+	void generateParsesCancelTaskPlannerPayload() throws Exception {
+		String responseBody = """
+			{
+			  "choices": [
+			    {
+			      "message": {
+			        "content": "{\\"replyText\\":\\"Stopping the task.\\",\\"intent\\":{\\"type\\":\\"cancel_task\\",\\"taskSpec\\":null},\\"toolRequest\\":null}"
+			      }
+			    }
+			  ],
+			  "usage": {
+			    "prompt_tokens": 1234,
+			    "completion_tokens": 56,
+			    "total_tokens": 1290
+			  }
+			}
+			""";
+		AtomicReference<String> bodyRef = new AtomicReference<>();
+		try (TestServer server = TestServer.start(bodyRef, responseBody)) {
+			OpenAiCompatibleLlmBackend backend = new OpenAiCompatibleLlmBackend(new AgentConfig.LlmConfig(
+				"http://127.0.0.1:" + server.port(),
+				"planner-key",
+				"planner-model",
+				"https://api.openai.com/v1",
+				"",
+				"",
+				15_000,
+				10_000,
+				8,
+				65_536,
+				"low",
+				false
+			));
+
+			LlmCallResult<PlannerResponse> result = backend.generate(LlmConversation.of(List.of(
+				LlmChatMessage.system("system"),
+				LlmChatMessage.user("Alice said just now: @agent stop the task", LlmMessageKind.USER_TURN)
+			)));
+
+			assertEquals("Stopping the task.", result.payload().replyText());
+			assertEquals("cancel_task", result.payload().intent().type());
+			assertEquals(null, result.payload().intent().taskSpec());
 		}
 	}
 

@@ -25,7 +25,7 @@ public final class PlannerPromptPolicy {
 			{
 			  "replyText": string,
 			  "intent": {
-			    "type": "set_goal" | "clear_goal" | "reply_only" | "ask_clarification" | "acknowledge_failure" | "none",
+			    "type": "set_goal" | "clear_goal" | "submit_task" | "cancel_task" | "reply_only" | "ask_clarification" | "acknowledge_failure" | "none",
 			    "goalType": "FOLLOW_PLAYER" | "NAVIGATE_TO" | "MINE_BLOCKS" | null,
 			    "targetPlayer": string | null,
 			    "position": {
@@ -37,6 +37,11 @@ public final class PlannerPromptPolicy {
 			    "mineSpec": {
 			      "blockIds": string[],
 			      "quantity": number
+			    } | null,
+			    "taskSpec": {
+			      "type": "COLLECT_RESOURCE",
+			      "resourceKind": "WOOD_LOGS",
+			      "quantity": number
 			    } | null
 			  },
 			  "toolRequest": {
@@ -47,6 +52,8 @@ public final class PlannerPromptPolicy {
 			If the final user message begins with "COMPACTION TASK:", ignore the normal planner output format for this response and follow that final compaction task instead.
 			Only choose FOLLOW_PLAYER when the player explicitly asks the companion to follow.
 			Only choose MINE_BLOCKS for directly mineable or harvestable blocks.
+			Use submit_task for high-level resource collection like wood gathering, and include taskSpec instead of a primitive goal.
+			Use cancel_task when the user asks to stop an active task.
 			For crafting, inventory management, combat, or container interaction, ask for clarification or acknowledge the limitation.
 			If the current session mode is singleplayer local and someone asks you to follow, you may keep a FOLLOW_PLAYER goal, but make it clear movement is paused until LAN is opened or multiplayer is active.
 			%s

@@ -9,6 +9,9 @@ import ai.moeru.airicraft.agent.llm.OpenAiCompatibleLlmBackend;
 import ai.moeru.airicraft.agent.llm.PlannerExecutor;
 import ai.moeru.airicraft.agent.llm.PlannerIntent;
 import ai.moeru.airicraft.agent.llm.PlannerResponse;
+import ai.moeru.airicraft.agent.tasks.TaskResourceKind;
+import ai.moeru.airicraft.agent.tasks.TaskSpec;
+import ai.moeru.airicraft.agent.tasks.TaskType;
 import ai.moeru.airicraft.agent.session.SessionSnapshot;
 import org.junit.jupiter.api.Test;
 
@@ -65,6 +68,58 @@ class DialogueRuntimeTest {
 		assertEquals(GoalType.NAVIGATE_TO, response.intent().goalType());
 		assertEquals(new GoalPosition(12, 64, -8, true), response.intent().position());
 		assertEquals(new GoalMineSpec(List.of("minecraft:oak_log"), 16), response.intent().mineSpec());
+		runtime.shutdown();
+	}
+
+	@Test
+	void submitTaskPlannerIntentSurvivesDialogueRuntimeMapping() {
+		OpenAiCompatibleLlmBackend backend = new OpenAiCompatibleLlmBackend(AgentConfig.LlmConfig.defaults());
+		DialogueRuntime runtime = new DialogueRuntime(new PlannerExecutor(backend), 8);
+		SemanticEventBuffer eventBuffer = new SemanticEventBuffer(32);
+		backend.injectMockResponse(new PlannerResponse(
+			"On it.",
+			new PlannerIntent(
+				"submit_task",
+				null,
+				null,
+				null,
+				null,
+				new TaskSpec(TaskType.COLLECT_RESOURCE, TaskResourceKind.WOOD_LOGS, 16)
+			)
+		));
+
+		runtime.onPlayerChat("Alice", "@agent get wood", 10L, SessionSnapshot.initial(), "Alice", Optional.empty(), eventBuffer);
+		DialogueResponse response = awaitResponse(runtime, eventBuffer, Duration.ofSeconds(1));
+
+		assertEquals("On it.", response.text());
+		assertEquals(DialogueIntentType.SUBMIT_TASK, response.intent().type());
+		assertEquals(new TaskSpec(TaskType.COLLECT_RESOURCE, TaskResourceKind.WOOD_LOGS, 16), response.intent().taskSpec());
+		runtime.shutdown();
+	}
+
+	@Test
+	void cancelTaskPlannerIntentSurvivesDialogueRuntimeMapping() {
+		OpenAiCompatibleLlmBackend backend = new OpenAiCompatibleLlmBackend(AgentConfig.LlmConfig.defaults());
+		DialogueRuntime runtime = new DialogueRuntime(new PlannerExecutor(backend), 8);
+		SemanticEventBuffer eventBuffer = new SemanticEventBuffer(32);
+		backend.injectMockResponse(new PlannerResponse(
+			"Stopping the task.",
+			new PlannerIntent(
+				"cancel_task",
+				null,
+				null,
+				null,
+				null,
+				null
+			)
+		));
+
+		runtime.onPlayerChat("Alice", "@agent stop the task", 10L, SessionSnapshot.initial(), "Alice", Optional.empty(), eventBuffer);
+		DialogueResponse response = awaitResponse(runtime, eventBuffer, Duration.ofSeconds(1));
+
+		assertEquals("Stopping the task.", response.text());
+		assertEquals(DialogueIntentType.CANCEL_TASK, response.intent().type());
+		assertEquals(null, response.intent().taskSpec());
 		runtime.shutdown();
 	}
 

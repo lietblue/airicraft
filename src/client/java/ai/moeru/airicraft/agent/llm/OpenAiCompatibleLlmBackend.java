@@ -4,6 +4,9 @@ import ai.moeru.airicraft.Airicraft;
 import ai.moeru.airicraft.agent.AgentConfig;
 import ai.moeru.airicraft.agent.goals.GoalMineSpec;
 import ai.moeru.airicraft.agent.goals.GoalPosition;
+import ai.moeru.airicraft.agent.tasks.TaskResourceKind;
+import ai.moeru.airicraft.agent.tasks.TaskSpec;
+import ai.moeru.airicraft.agent.tasks.TaskType;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParseException;
@@ -89,7 +92,8 @@ public final class OpenAiCompatibleLlmBackend implements LlmBackend {
 					.orElse(null),
 				getString(intentObject, "targetPlayer").orElse(null),
 				parseGoalPosition(intentObject, "position"),
-				parseGoalMineSpec(intentObject, "mineSpec")
+				parseGoalMineSpec(intentObject, "mineSpec"),
+				parseTaskSpec(intentObject, "taskSpec")
 			);
 			PlannerToolRequest toolRequest = toolRequestObject == null
 				? null
@@ -156,6 +160,43 @@ public final class OpenAiCompatibleLlmBackend implements LlmBackend {
 		}
 		catch (IllegalArgumentException exception) {
 			return null;
+		}
+	}
+
+	private static TaskSpec parseTaskSpec(JsonObject object, String fieldName) {
+		if (object == null || !object.has(fieldName) || !object.get(fieldName).isJsonObject()) {
+			return null;
+		}
+		JsonObject taskSpecObject = object.getAsJsonObject(fieldName);
+		Optional<TaskType> taskType = getString(taskSpecObject, "type").flatMap(OpenAiCompatibleLlmBackend::parseTaskType);
+		Optional<TaskResourceKind> resourceKind = getString(taskSpecObject, "resourceKind").flatMap(OpenAiCompatibleLlmBackend::parseTaskResourceKind);
+		Optional<Integer> quantity = getInt(taskSpecObject, "quantity");
+		if (taskType.isEmpty() || resourceKind.isEmpty() || quantity.isEmpty()) {
+			return null;
+		}
+		try {
+			return new TaskSpec(taskType.get(), resourceKind.get(), quantity.get());
+		}
+		catch (IllegalArgumentException exception) {
+			return null;
+		}
+	}
+
+	private static Optional<TaskType> parseTaskType(String value) {
+		try {
+			return Optional.of(TaskType.valueOf(value.toUpperCase(Locale.ROOT)));
+		}
+		catch (IllegalArgumentException exception) {
+			return Optional.empty();
+		}
+	}
+
+	private static Optional<TaskResourceKind> parseTaskResourceKind(String value) {
+		try {
+			return Optional.of(TaskResourceKind.valueOf(value.toUpperCase(Locale.ROOT)));
+		}
+		catch (IllegalArgumentException exception) {
+			return Optional.empty();
 		}
 	}
 

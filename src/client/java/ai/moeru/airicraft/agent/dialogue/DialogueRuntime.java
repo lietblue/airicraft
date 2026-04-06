@@ -191,6 +191,31 @@ public final class DialogueRuntime {
 		));
 	}
 
+	public void onInternalTaskUpdate(
+		String updateMessage,
+		long tick,
+		SessionSnapshot sessionSnapshot,
+		Optional<GoalSnapshot> activeGoal,
+		SemanticEventBuffer eventBuffer
+	) {
+		long timestampMs = clock.millis();
+		appendTurn(new DialogueTurn("system", updateMessage, tick, timestampMs));
+		if (degraded || plannerOrchestrator.hasInFlight() || !plannerOrchestrator.isConfigured()) {
+			return;
+		}
+		plannerOrchestrator.recordEvents(eventBuffer.query(null).events(), timestampMs);
+		plannerOrchestrator.submit(new PlannerRequest(
+			tick,
+			timestampMs,
+			sessionSnapshot.mode(),
+			null,
+			activeGoal.orElse(null),
+			"system",
+			updateMessage,
+			null
+		));
+	}
+
 	public DialogueResponse poll(long tick, SemanticEventBuffer eventBuffer) {
 		if (queuedTimeoutInjections > 0 && !plannerOrchestrator.hasInFlight()) {
 			queuedTimeoutInjections--;
@@ -225,7 +250,8 @@ public final class DialogueRuntime {
 				plannerResponse.intent().goalType(),
 				plannerResponse.intent().targetPlayer(),
 				plannerResponse.intent().position(),
-				plannerResponse.intent().mineSpec()
+				plannerResponse.intent().mineSpec(),
+				plannerResponse.intent().taskSpec()
 			),
 			tick
 		);
