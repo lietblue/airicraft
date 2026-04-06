@@ -171,7 +171,7 @@ class AiricraftCliMainTest {
 				"unavailable", false,
 				"experimental", false,
 				"details", "A long details string",
-				"version", "1.21.11"
+				"version", "1.21.8"
 			))
 		);
 
@@ -182,7 +182,7 @@ class AiricraftCliMainTest {
 		assertTrue(compact.output().contains("worldCount: 1\n"));
 		assertFalse(compact.output().contains("details:"));
 		assertTrue(verbose.output().contains("details: A long details string\n"));
-		assertTrue(verbose.output().contains("version: 1.21.11\n"));
+		assertTrue(verbose.output().contains("version: 1.21.8\n"));
 	}
 
 	@Test

@@ -879,7 +879,7 @@ public final class EmbodiedAgentRuntime {
 			return;
 		}
 
-		client.disconnect(Text.empty());
+		client.disconnect(null, false);
 	}
 
 	private Vec3d playerOffset(double xOffset) {

@@ -1,7 +1,7 @@
 package ai.moeru.airicraft;
 
 import ai.moeru.airicraft.agent.EmbodiedAgentRuntime;
-import net.fabricmc.fabric.api.client.rendering.v1.world.WorldRenderContext;
+import net.fabricmc.fabric.api.client.rendering.v1.WorldRenderContext;
 import net.minecraft.client.MinecraftClient;
 
 import java.util.UUID;
