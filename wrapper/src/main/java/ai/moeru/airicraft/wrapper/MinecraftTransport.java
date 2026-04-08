@@ -47,11 +47,29 @@ interface MinecraftTransport {
 
 	Map<String, Object> getAgentSession();
 
+	Map<String, Object> openAgentSessionLan();
+
 	Map<String, Object> getAgentGoals();
+
+	Map<String, Object> getAgentTasks();
+
+	Map<String, Object> getAgentLedger();
+
+	Map<String, Object> getAgentEvidence();
+
+	Map<String, Object> getAgentStepExecution();
+
+	Map<String, Object> submitAgentTask(Map<String, Object> taskPayload);
+
+	Map<String, Object> submitAgentMission(Map<String, Object> missionPayload);
+
+	Map<String, Object> cancelAgentTask();
 
 	Map<String, Object> getAgentTree();
 
 	Map<String, Object> getAgentDialogue();
+
+	Map<String, Object> sendAgentDebugChat(String message);
 
 	Map<String, Object> getAgentContext();
 

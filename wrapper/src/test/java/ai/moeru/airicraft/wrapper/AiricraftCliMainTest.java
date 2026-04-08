@@ -8,6 +8,7 @@ import java.io.PrintWriter;
 import java.io.StringWriter;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.charset.StandardCharsets;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -78,6 +79,47 @@ class AiricraftCliMainTest {
 	}
 
 	@Test
+	void agentSessionOpenLanRendersDeterministicText() {
+		TestTransport transport = new TestTransport();
+		transport.agentSessionOpenLanPayload = linkedMap(
+			"opened", true,
+			"port", 25565
+		);
+
+		CliResult result = execute(transport, "agent", "session", "open-lan");
+
+		assertEquals(0, result.exitCode());
+		assertTrue(result.output().startsWith(
+			"status: ok\n" +
+				"command: agent session open-lan\n"
+		));
+		assertTrue(result.output().contains("opened: true\n"));
+		assertTrue(result.output().contains("port: 25565\n"));
+	}
+
+	@Test
+	void agentDebugChatPassesMessagePayload() {
+		TestTransport transport = new TestTransport();
+		transport.agentDebugChatPayload = linkedMap(
+			"available", true,
+			"accepted", true,
+			"senderName", "Player688",
+			"message", "@agent get me 4 wood logs"
+		);
+
+		CliResult result = execute(
+			transport,
+			"agent", "debug", "chat",
+			"--message", "@agent get me 4 wood logs"
+		);
+
+		assertEquals(0, result.exitCode());
+		assertEquals("@agent get me 4 wood logs", transport.lastDebugChatMessage);
+		assertTrue(result.output().contains("command: agent debug chat\n"));
+		assertTrue(result.output().contains("accepted: true\n"));
+	}
+
+	@Test
 	void agentStatusIncludesPlannerVisionMode() {
 		TestTransport transport = new TestTransport();
 		transport.agentStatusPayload = linkedMap(
@@ -95,6 +137,171 @@ class AiricraftCliMainTest {
 		assertEquals(0, result.exitCode());
 		assertTrue(result.output().contains("command: agent status\n"));
 		assertTrue(result.output().contains("plannerVisionMode: native_tool_image\n"));
+	}
+
+	@Test
+	void agentTasksShowsCurrentTaskSnapshot() {
+		TestTransport transport = new TestTransport();
+		transport.agentTasksPayload = linkedMap(
+			"available", true,
+			"task", linkedMap(
+				"state", "RUNNING",
+				"spec", linkedMap(
+					"type", "COLLECT_RESOURCE",
+					"resourceKind", "WOOD_LOGS",
+					"quantity", 4
+				)
+			)
+		);
+
+		CliResult result = execute(transport, "agent", "tasks");
+
+		assertEquals(0, result.exitCode());
+		assertTrue(result.output().contains("command: agent tasks\n"));
+		assertTrue(result.output().contains("state: RUNNING\n"));
+		assertTrue(result.output().contains("resourceKind: WOOD_LOGS\n"));
+	}
+
+	@Test
+	void agentTasksSubmitPassesNormalizedTaskPayload() {
+		TestTransport transport = new TestTransport();
+		transport.agentTaskSubmitPayload = linkedMap(
+			"available", true,
+			"task", linkedMap("state", "QUEUED")
+		);
+
+		CliResult result = execute(
+			transport,
+			"agent", "tasks", "submit",
+			"--type", "collect-resource",
+			"--resource", "wood-logs",
+			"--quantity", "4"
+		);
+
+		assertEquals(0, result.exitCode());
+		assertEquals("COLLECT_RESOURCE", transport.lastSubmittedTask.get("type"));
+		assertEquals("WOOD_LOGS", transport.lastSubmittedTask.get("resourceKind"));
+		assertEquals(4, transport.lastSubmittedTask.get("quantity"));
+		assertTrue(result.output().contains("command: agent tasks submit\n"));
+	}
+
+	@Test
+	void agentLedgerRendersCurrentMissionLedger() {
+		TestTransport transport = new TestTransport();
+		transport.agentLedgerPayload = linkedMap(
+			"available", true,
+			"ledger", linkedMap(
+				"missionId", "mission-wood-1",
+				"activeStepId", "collect_logs"
+			)
+		);
+
+		CliResult result = execute(transport, "agent", "ledger");
+
+		assertEquals(0, result.exitCode());
+		assertTrue(result.output().contains("command: agent ledger\n"));
+		assertTrue(result.output().contains("missionId: mission-wood-1\n"));
+		assertTrue(result.output().contains("activeStepId: collect_logs\n"));
+	}
+
+	@Test
+	void agentEvidenceRendersWorldEvidenceSummary() {
+		TestTransport transport = new TestTransport();
+		transport.agentEvidencePayload = linkedMap(
+			"available", true,
+			"evidence", linkedMap(
+				"dimension", "minecraft:overworld",
+				"inventoryCounts", linkedMap(
+					"WOOD_LOGS", 4
+				)
+			)
+		);
+
+		CliResult result = execute(transport, "agent", "evidence");
+
+		assertEquals(0, result.exitCode());
+		assertTrue(result.output().contains("command: agent evidence\n"));
+		assertTrue(result.output().contains("dimension: minecraft:overworld\n"));
+		assertTrue(result.output().contains("WOOD_LOGS: 4\n"));
+	}
+
+	@Test
+	void agentStepExecutionRendersLatestStepResult() {
+		TestTransport transport = new TestTransport();
+		transport.agentStepExecutionPayload = linkedMap(
+			"available", true,
+			"stepExecution", linkedMap(
+				"stepId", "craft_sticks",
+				"status", "RUNNING"
+			)
+		);
+
+		CliResult result = execute(transport, "agent", "step-execution");
+
+		assertEquals(0, result.exitCode());
+		assertTrue(result.output().contains("command: agent step-execution\n"));
+		assertTrue(result.output().contains("stepId: craft_sticks\n"));
+		assertTrue(result.output().contains("status: RUNNING\n"));
+	}
+
+	@Test
+	void agentMissionSubmitPassesNormalizedMissionPayload() {
+		TestTransport transport = new TestTransport();
+		transport.agentMissionSubmitPayload = linkedMap(
+			"available", true,
+			"task", linkedMap("state", "QUEUED")
+		);
+
+		CliResult result = execute(
+			transport,
+			"agent", "mission", "submit",
+			"--type", "collect-resource",
+			"--resource", "wood-logs",
+			"--quantity", "4"
+		);
+
+		assertEquals(0, result.exitCode());
+		assertEquals("COLLECT_RESOURCE", transport.lastSubmittedMission.get("type"));
+		assertEquals("WOOD_LOGS", transport.lastSubmittedMission.get("resourceKind"));
+		assertEquals(4, transport.lastSubmittedMission.get("quantity"));
+		assertTrue(result.output().contains("command: agent mission submit\n"));
+	}
+
+	@Test
+	void agentMissionSubmitReadsLedgerPayloadFromFile(@TempDir Path tempDir) throws Exception {
+		TestTransport transport = new TestTransport();
+		transport.agentMissionSubmitPayload = linkedMap(
+			"available", true,
+			"task", linkedMap("state", "QUEUED")
+		);
+		Path ledgerFile = tempDir.resolve("ledger.json");
+		Files.writeString(
+			ledgerFile,
+			"""
+				{
+				  "missionId": "mission-craft-1",
+				  "missionType": "CRAFT_TOOL",
+				  "goalText": "Turn wood into sticks",
+				  "steps": [],
+				  "activeStepId": null,
+				  "completionCriteria": [],
+				  "replanReason": "debug",
+				  "plannerNotes": "manual"
+				}
+				""",
+			StandardCharsets.UTF_8
+		);
+
+		CliResult result = execute(
+			transport,
+			"agent", "mission", "submit",
+			"--ledger-file", ledgerFile.toString()
+		);
+
+		assertEquals(0, result.exitCode());
+		assertEquals("mission-craft-1", transport.lastSubmittedMission.get("missionId"));
+		assertEquals("CRAFT_TOOL", transport.lastSubmittedMission.get("missionType"));
+		assertTrue(result.output().contains("command: agent mission submit\n"));
 	}
 
 	@Test
@@ -329,10 +536,18 @@ class AiricraftCliMainTest {
 		private Map<String, Object> snapshotPayload = Map.of();
 		private Map<String, Object> agentStatusPayload = Map.of();
 		private Map<String, Object> agentSessionPayload = Map.of();
+		private Map<String, Object> agentSessionOpenLanPayload = Map.of();
 		private Map<String, Object> agentGoalsPayload = Map.of();
 		private Map<String, Object> agentTreePayload = Map.of();
 		private Map<String, Object> agentDialoguePayload = Map.of();
+		private Map<String, Object> agentDebugChatPayload = Map.of();
 		private Map<String, Object> agentContextPayload = Map.of();
+		private Map<String, Object> agentTasksPayload = Map.of();
+		private Map<String, Object> agentLedgerPayload = Map.of();
+		private Map<String, Object> agentEvidencePayload = Map.of();
+		private Map<String, Object> agentStepExecutionPayload = Map.of();
+		private Map<String, Object> agentTaskSubmitPayload = Map.of();
+		private Map<String, Object> agentMissionSubmitPayload = Map.of();
 		private Map<String, Object> agentEventsPayload = Map.of("events", List.of());
 		private Map<String, Object> agentCompactPayload = Map.of("started", true);
 		private Map<String, Object> blockHighlightPayload = Map.of("highlightId", "highlight-1");
@@ -349,6 +564,9 @@ class AiricraftCliMainTest {
 		private Long lastEventSince;
 		private boolean lastCompactWait = true;
 		private Integer lastCompactTimeoutMs;
+		private Map<String, Object> lastSubmittedTask;
+		private Map<String, Object> lastSubmittedMission;
+		private String lastDebugChatMessage;
 
 		private RuntimeException worldsJoinFailure;
 		private RuntimeException serversListFailure;
@@ -450,6 +668,11 @@ class AiricraftCliMainTest {
 		}
 
 		@Override
+		public Map<String, Object> openAgentSessionLan() {
+			return agentSessionOpenLanPayload;
+		}
+
+		@Override
 		public Map<String, Object> getAgentGoals() {
 			return agentGoalsPayload;
 		}
@@ -465,8 +688,51 @@ class AiricraftCliMainTest {
 		}
 
 		@Override
+		public Map<String, Object> sendAgentDebugChat(String message) {
+			lastDebugChatMessage = message;
+			return agentDebugChatPayload;
+		}
+
+		@Override
 		public Map<String, Object> getAgentContext() {
 			return agentContextPayload;
+		}
+
+		@Override
+		public Map<String, Object> getAgentTasks() {
+			return agentTasksPayload;
+		}
+
+		@Override
+		public Map<String, Object> submitAgentTask(Map<String, Object> taskPayload) {
+			lastSubmittedTask = taskPayload;
+			return agentTaskSubmitPayload;
+		}
+
+		@Override
+		public Map<String, Object> getAgentLedger() {
+			return agentLedgerPayload;
+		}
+
+		@Override
+		public Map<String, Object> getAgentEvidence() {
+			return agentEvidencePayload;
+		}
+
+		@Override
+		public Map<String, Object> getAgentStepExecution() {
+			return agentStepExecutionPayload;
+		}
+
+		@Override
+		public Map<String, Object> submitAgentMission(Map<String, Object> missionPayload) {
+			lastSubmittedMission = missionPayload;
+			return agentMissionSubmitPayload;
+		}
+
+		@Override
+		public Map<String, Object> cancelAgentTask() {
+			return Map.of("available", true, "cancelled", true);
 		}
 
 		@Override
