@@ -59,7 +59,7 @@ public final class BaritoneTaskExecutor implements WorldTaskExecutor {
 		appliedGoal = activeGoal.get();
 
 		Optional<String> pathEvent = facade.pollPathEvent();
-		Optional<TaskExecutionState> terminalState = terminalStateFor(pathEvent);
+		Optional<TaskExecutionState> terminalState = terminalStateFor(pathEvent, appliedGoal);
 		TaskExecutionState state = terminalState
 			.orElseGet(() -> isTerminal(snapshot.state()) ? snapshot.state() : TaskExecutionState.RUNNING);
 		snapshot = new TaskExecutionSnapshot(
@@ -93,7 +93,7 @@ public final class BaritoneTaskExecutor implements WorldTaskExecutor {
 		}
 	}
 
-	private static Optional<TaskExecutionState> terminalStateFor(Optional<String> pathEvent) {
+	private Optional<TaskExecutionState> terminalStateFor(Optional<String> pathEvent, GoalSnapshot activeGoal) {
 		if (pathEvent.isEmpty()) {
 			return Optional.empty();
 		}
@@ -101,9 +101,18 @@ public final class BaritoneTaskExecutor implements WorldTaskExecutor {
 		return switch (normalized) {
 			case "AT_GOAL" -> Optional.of(TaskExecutionState.COMPLETED);
 			case "CALC_FAILED" -> Optional.of(TaskExecutionState.FAILED);
-			case "CANCELLED", "CANCELED" -> Optional.of(TaskExecutionState.CANCELLED);
+			case "CANCELLED", "CANCELED" -> Optional.of(cancelledStateFor(activeGoal));
 			default -> Optional.empty();
 		};
+	}
+
+	private TaskExecutionState cancelledStateFor(GoalSnapshot activeGoal) {
+		if (activeGoal == null || activeGoal.type() != GoalType.NAVIGATE_TO || activeGoal.position() == null) {
+			return TaskExecutionState.CANCELLED;
+		}
+		return facade.navigationGoalReached(activeGoal.position())
+			? TaskExecutionState.COMPLETED
+			: TaskExecutionState.CANCELLED;
 	}
 
 	private static boolean isTerminal(TaskExecutionState state) {

@@ -88,6 +88,30 @@ class BaritoneTaskExecutorTest {
 	}
 
 	@Test
+	void cancelledNavigateAtReachedGoalCountsAsCompleted() {
+		FakeBaritoneFacade facade = new FakeBaritoneFacade();
+		facade.navigationGoalReached = true;
+		BaritoneTaskExecutor executor = new BaritoneTaskExecutor(facade);
+		GoalSnapshot goal = new GoalSnapshot(
+			GoalType.NAVIGATE_TO,
+			null,
+			new GoalPosition(-7, 68, -4, true),
+			null,
+			20L,
+			"verification"
+		);
+
+		executor.tick(multiplayer(), Optional.of(goal));
+		facade.pathEvents.add("CANCELED");
+
+		Optional<TaskTerminalEvent> event = executor.tick(multiplayer(), Optional.of(goal));
+
+		assertTrue(event.isPresent());
+		assertEquals(TaskExecutionState.COMPLETED, event.orElseThrow().terminalState());
+		assertEquals(TaskExecutionState.COMPLETED, executor.snapshot().state());
+	}
+
+	@Test
 	void repeatedTerminalPathEventsOnlyEmitOneTerminalCallbackPerGoal() {
 		FakeBaritoneFacade facade = new FakeBaritoneFacade();
 		BaritoneTaskExecutor executor = new BaritoneTaskExecutor(facade);
@@ -183,6 +207,7 @@ class BaritoneTaskExecutorTest {
 		private final List<String> followCalls = new ArrayList<>();
 		private final List<GoalMineSpec> mineCalls = new ArrayList<>();
 		private final ArrayDeque<String> pathEvents = new ArrayDeque<>();
+		private boolean navigationGoalReached;
 
 		@Override
 		public boolean isLoaded() {
@@ -226,6 +251,11 @@ class BaritoneTaskExecutorTest {
 		@Override
 		public Optional<String> pollPathEvent() {
 			return Optional.ofNullable(pathEvents.pollFirst());
+		}
+
+		@Override
+		public boolean navigationGoalReached(GoalPosition position) {
+			return navigationGoalReached;
 		}
 	}
 }

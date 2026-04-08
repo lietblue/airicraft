@@ -42,6 +42,13 @@ public final class MissionRuntime {
 	public void applyPlannerLedger(TaskLedger nextLedger, long tick, String source) {
 		Objects.requireNonNull(nextLedger, "nextLedger");
 		TaskLedger normalizedLedger = normalizeLedger(nextLedger);
+		if (
+			taskSnapshot.state() == TaskState.CANCELLED
+				&& ledger != null
+				&& Objects.equals(ledger.missionId(), normalizedLedger.missionId())
+		) {
+			return;
+		}
 		if (ledger == null || !Objects.equals(ledger.missionId(), normalizedLedger.missionId())) {
 			terminalStatuses.clear();
 			if (!validateLedgerTransition(normalizedLedger)) {
@@ -123,20 +130,39 @@ public final class MissionRuntime {
 			return;
 		}
 		cancelActiveExecutor(reason, tick);
+		TaskLedger cancelledLedger = cancelActiveSteps(ledger);
+		ledger = cancelledLedger;
+		rememberTerminalStatuses(cancelledLedger);
+		StepExecutionResult cancelledResult = new StepExecutionResult(
+			taskSnapshot.activeStepId(),
+			StepExecutionStatus.CANCELLED,
+			reason,
+			Map.of(),
+			Map.of(),
+			tick
+		);
 		taskSnapshot = new TaskSnapshot(
 			TaskState.CANCELLED,
 			mission,
-			ledger,
+			cancelledLedger,
 			taskSnapshot.spec(),
 			taskSnapshot.progress(),
 			TaskStep.NONE,
 			TaskOwnership.NONE,
 			taskSnapshot.source(),
 			reason,
-			ledger == null ? null : ledger.activeStepId(),
-			activeStepKind(ledger),
-			new StepExecutionResult(ledger == null ? null : ledger.activeStepId(), StepExecutionStatus.CANCELLED, reason, Map.of(), Map.of(), tick),
+			null,
+			null,
+			cancelledResult,
 			tick
+		);
+		executionSnapshot = new MissionExecutionSnapshot(
+			mission,
+			cancelledLedger,
+			null,
+			executionSnapshot.evidence(),
+			cancelledResult,
+			executionSnapshot.primitiveExecution()
 		);
 	}
 
@@ -181,7 +207,7 @@ public final class MissionRuntime {
 		}
 
 		LedgerStep activeStep = activeStep(ledger).orElse(null);
-		if (completionSatisfied(ledger.completionCriteria(), evidence)) {
+		if (completionSatisfied(taskSnapshot, ledger.completionCriteria(), evidence)) {
 			TaskLedger completedLedger = updateStepStatus(ledger, ledger.activeStepId(), LedgerStepStatus.COMPLETED);
 			ledger = completedLedger;
 			rememberTerminalStatuses(completedLedger);
@@ -530,21 +556,43 @@ public final class MissionRuntime {
 		);
 	}
 
-	private static boolean completionSatisfied(List<EvidenceRequirement> completionCriteria, WorldEvidence evidence) {
-		return completionCriteria != null
-			&& !completionCriteria.isEmpty()
-			&& completionCriteria.stream().allMatch(requirement -> evidenceSatisfied(requirement, evidence));
+	private static TaskLedger cancelActiveSteps(TaskLedger ledger) {
+		if (ledger == null) {
+			return null;
+		}
+		return new TaskLedger(
+			ledger.missionId(),
+			ledger.missionType(),
+			ledger.goalText(),
+			ledger.steps().stream()
+				.map(step -> step.status() == LedgerStepStatus.ACTIVE
+					? new LedgerStep(step.id(), step.kind(), step.args(), step.dependsOn(), LedgerStepStatus.CANCELLED, step.expectedEvidence(), step.retryBudget(), step.notes())
+					: step)
+				.toList(),
+			null,
+			ledger.completionCriteria(),
+			ledger.replanReason(),
+			ledger.plannerNotes()
+		);
 	}
 
-	private static boolean evidenceSatisfied(EvidenceRequirement requirement, WorldEvidence evidence) {
+	private static boolean completionSatisfied(TaskSnapshot taskSnapshot, List<EvidenceRequirement> completionCriteria, WorldEvidence evidence) {
+		return completionCriteria != null
+			&& !completionCriteria.isEmpty()
+			&& completionCriteria.stream().allMatch(requirement -> evidenceSatisfied(taskSnapshot, requirement, evidence));
+	}
+
+	private static boolean evidenceSatisfied(TaskSnapshot taskSnapshot, EvidenceRequirement requirement, WorldEvidence evidence) {
 		if (requirement == null) {
 			return false;
 		}
 		return switch (requirement.type()) {
 			case INVENTORY_DELTA_AT_LEAST -> requirement.resourceKind() != null
 				&& requirement.quantity() != null
-				&& evidence != null
-				&& evidence.inventoryCounts().getOrDefault(requirement.resourceKind(), 0) >= requirement.quantity();
+				&& taskSnapshot != null
+				&& taskSnapshot.spec() != null
+				&& taskSnapshot.spec().resourceKind() == requirement.resourceKind()
+				&& taskSnapshot.progress().collected() >= requirement.quantity();
 			case ITEM_COUNT_AT_LEAST -> requirement.itemId() != null
 				&& requirement.quantity() != null
 				&& evidence != null

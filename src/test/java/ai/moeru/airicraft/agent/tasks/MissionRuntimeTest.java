@@ -191,9 +191,96 @@ class MissionRuntimeTest {
 		);
 
 		assertEquals(TaskState.COMPLETED, runtime.taskSnapshot().state());
-		assertEquals("finish", runtime.executionSnapshot().activeStep().id());
+		assertEquals("collect_logs", runtime.executionSnapshot().activeStep().id());
 		assertEquals(LedgerStepStatus.COMPLETED, runtime.executionSnapshot().ledger().steps().get(0).status());
 		assertTrue(runtime.currentGoal().isEmpty());
+	}
+
+	@Test
+	void plannerMissionUpdateDoesNotCompletePausedCollectTaskFromExistingInventory() {
+		MissionRuntime runtime = new MissionRuntime();
+		MissionSpec mission = new MissionSpec(
+			"mission-wood-1",
+			MissionType.COLLECT_RESOURCE,
+			"Collect 1 wood logs"
+		);
+		TaskLedger submittedLedger = new TaskLedger(
+			mission.missionId(),
+			mission.missionType(),
+			mission.goalText(),
+			List.of(
+				new LedgerStep(
+					"collect_resource",
+					LedgerStepKind.COLLECT_RESOURCE,
+					new LedgerStepPayload(
+						new CollectResourceStepArgs(TaskResourceKind.WOOD_LOGS, 1, "KEEP"),
+						null,
+						null,
+						null,
+						null,
+						null,
+						null,
+						null,
+						null,
+						null,
+						null,
+						null
+					),
+					List.of(),
+					LedgerStepStatus.ACTIVE,
+					List.of(new EvidenceRequirement(EvidenceKind.INVENTORY_DELTA_AT_LEAST, TaskResourceKind.WOOD_LOGS, 1, null, null)),
+					2,
+					"Compatibility wrapper mission."
+				)
+			),
+			"collect_resource",
+			List.of(),
+			"compatibility_submit",
+			"Generated from legacy TaskSpec submit."
+		);
+		WorldEvidence pausedEvidence = new WorldEvidence(
+			Map.of(TaskResourceKind.WOOD_LOGS, 21),
+			Map.of("minecraft:birch_log", 21),
+			"minecraft:overworld",
+			0,
+			64,
+			0,
+			null,
+			101L
+		);
+
+		runtime.submit(mission, submittedLedger, 100L, "bridge_debug");
+		runtime.tick(
+			TaskExecutionSnapshot.idle(),
+			pausedEvidence,
+			false,
+			true,
+			101L
+		);
+		assertEquals(TaskState.PAUSED_BY_SESSION_GATE, runtime.taskSnapshot().state());
+
+		TaskLedger replannedLedger = new TaskLedger(
+			mission.missionId(),
+			mission.missionType(),
+			mission.goalText(),
+			submittedLedger.steps(),
+			submittedLedger.activeStepId(),
+			List.of(new EvidenceRequirement(EvidenceKind.INVENTORY_DELTA_AT_LEAST, TaskResourceKind.WOOD_LOGS, 1, null, null)),
+			"session_gate_paused",
+			"Mission paused by session gate."
+		);
+		runtime.applyPlannerLedger(replannedLedger, 102L, "planner_response");
+		runtime.tick(
+			TaskExecutionSnapshot.idle(),
+			pausedEvidence,
+			false,
+			true,
+			103L
+		);
+
+		assertEquals(TaskState.PAUSED_BY_SESSION_GATE, runtime.taskSnapshot().state());
+		assertEquals("collect_resource", runtime.taskSnapshot().activeStepId());
+		assertEquals(0, runtime.taskSnapshot().progress().collected());
 	}
 
 	@Test
@@ -273,6 +360,70 @@ class MissionRuntimeTest {
 
 		assertEquals(TaskState.FAILED, runtime.taskSnapshot().state());
 		assertEquals("illegal_ledger_transition", runtime.taskSnapshot().lastFailure());
+	}
+
+	@Test
+	void cancelledMissionIgnoresSameMissionPlannerUpdate() {
+		MissionRuntime runtime = new MissionRuntime();
+		TaskLedger ledger = new TaskLedger(
+			"mission-wood-1",
+			MissionType.COLLECT_RESOURCE,
+			"Collect 1 wood logs",
+			List.of(
+				new LedgerStep(
+					"collect_logs",
+					LedgerStepKind.COLLECT_RESOURCE,
+					new LedgerStepPayload(
+						new CollectResourceStepArgs(TaskResourceKind.WOOD_LOGS, 1, "KEEP"),
+						null,
+						null,
+						null,
+						null,
+						null,
+						null,
+						null,
+						null,
+						null,
+						null,
+						null
+					),
+					List.of(),
+					LedgerStepStatus.ACTIVE,
+					List.of(new EvidenceRequirement(EvidenceKind.INVENTORY_DELTA_AT_LEAST, TaskResourceKind.WOOD_LOGS, 1, null, null)),
+					2,
+					null
+				)
+			),
+			"collect_logs",
+			List.of(),
+			null,
+			null
+		);
+
+		runtime.applyPlannerLedger(ledger, 100L, "planner_response");
+		runtime.tick(
+			TaskExecutionSnapshot.idle(),
+			new WorldEvidence(
+				Map.of(TaskResourceKind.WOOD_LOGS, 0),
+				Map.of(),
+				"minecraft:overworld",
+				0,
+				64,
+				0,
+				null,
+				101L
+			),
+			false,
+			true,
+			101L
+		);
+		runtime.cancel(102L, "user_cancelled");
+
+		assertEquals(TaskState.CANCELLED, runtime.taskSnapshot().state());
+
+		runtime.applyPlannerLedger(ledger, 103L, "planner_response");
+
+		assertEquals(TaskState.CANCELLED, runtime.taskSnapshot().state());
 	}
 
 	@Test

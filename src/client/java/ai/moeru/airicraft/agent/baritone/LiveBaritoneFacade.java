@@ -9,6 +9,8 @@ import baritone.api.event.events.PathEvent;
 import baritone.api.event.listener.AbstractGameEventListener;
 import baritone.api.pathing.goals.GoalBlock;
 import baritone.api.process.IBaritoneProcess;
+import net.minecraft.client.MinecraftClient;
+import net.minecraft.util.math.BlockPos;
 
 import java.util.Objects;
 import java.util.Optional;
@@ -109,5 +111,26 @@ public final class LiveBaritoneFacade implements BaritoneFacade {
 	public Optional<String> pollPathEvent() {
 		PathEvent event = pathEvents.poll();
 		return event == null ? Optional.empty() : Optional.of(event.name());
+	}
+
+	@Override
+	public boolean navigationGoalReached(GoalPosition position) {
+		if (position == null) {
+			return false;
+		}
+		MinecraftClient client = MinecraftClient.getInstance();
+		if (client == null || client.player == null) {
+			return false;
+		}
+
+		BlockPos playerBlockPos = client.player.getBlockPos();
+		if (position.exactY()) {
+			return playerBlockPos.getX() == position.x()
+				&& playerBlockPos.getY() == position.y()
+				&& playerBlockPos.getZ() == position.z();
+		}
+		return playerBlockPos.getX() == position.x()
+			&& playerBlockPos.getZ() == position.z()
+			&& Math.abs(playerBlockPos.getY() - position.y()) <= 1;
 	}
 }

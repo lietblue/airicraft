@@ -27,6 +27,7 @@ import ai.moeru.airicraft.agent.tasks.TaskState;
 import ai.moeru.airicraft.agent.tasks.TaskType;
 import ai.moeru.airicraft.agent.tasks.TaskTerminalEvent;
 import ai.moeru.airicraft.agent.tasks.WorldTaskExecutor;
+import ai.moeru.airicraft.agent.verification.VerificationStatus;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -423,6 +424,45 @@ class EmbodiedAgentRuntimeTest {
 		runtime.onClientTick(null);
 
 		assertTrue(runtime.recentEvents(null).events().stream().anyMatch(event -> "task.started".equals(event.type())));
+	}
+
+	@Test
+	void cancelTaskRecordsCancelledEventImmediately() {
+		FakeWorldTaskExecutor executor = new FakeWorldTaskExecutor();
+		EmbodiedAgentRuntime runtime = EmbodiedAgentRuntime.createForTests(executor);
+
+		runtime.submitTask(new TaskSpec(TaskType.COLLECT_RESOURCE, TaskResourceKind.WOOD_LOGS, 1), "bridge_debug");
+		runtime.cancelTask("user_cancelled");
+
+		assertEquals(TaskState.CANCELLED, runtime.taskSnapshot().state());
+		assertTrue(runtime.recentEvents(null).events().stream().anyMatch(event -> "task.cancelled".equals(event.type())));
+	}
+
+	@Test
+	void mineBlocksVerificationRegistersAndReachesRunningTaskState() {
+		FakeWorldTaskExecutor executor = new FakeWorldTaskExecutor();
+		EmbodiedAgentRuntime runtime = EmbodiedAgentRuntime.createForTests(executor);
+		runtime.overrideSessionSnapshotForTests(new SessionSnapshot(
+			SessionMode.REMOTE_MULTIPLAYER,
+			true,
+			true,
+			"minecraft:overworld",
+			false,
+			0,
+			0L
+		));
+
+		assertTrue(runtime.verificationScenarioNames().contains("mine_blocks.basic"));
+		assertTrue(runtime.startVerification("mine_blocks.basic"));
+
+		for (int tick = 0; tick < 8 && runtime.verificationReport().status() == VerificationStatus.RUNNING; tick++) {
+			runtime.onClientTick(null);
+		}
+
+		assertEquals(VerificationStatus.PASSED, runtime.verificationReport().status());
+		assertEquals("mine_blocks.basic", runtime.verificationReport().scenarioName());
+		assertEquals(GoalType.MINE_BLOCKS, runtime.activeGoal().orElseThrow().type());
+		assertEquals(TaskExecutionState.RUNNING, runtime.taskExecutionSnapshot().state());
 	}
 
 	private static final class FakeWorldTaskExecutor implements WorldTaskExecutor {

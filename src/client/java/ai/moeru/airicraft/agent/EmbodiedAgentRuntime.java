@@ -18,6 +18,7 @@ import ai.moeru.airicraft.agent.events.SemanticEventQueryResult;
 import ai.moeru.airicraft.agent.follow.FollowCapability;
 import ai.moeru.airicraft.agent.follow.FollowState;
 import ai.moeru.airicraft.agent.goals.GoalDirector;
+import ai.moeru.airicraft.agent.goals.GoalMineSpec;
 import ai.moeru.airicraft.agent.goals.GoalPosition;
 import ai.moeru.airicraft.agent.goals.GoalSnapshot;
 import ai.moeru.airicraft.agent.goals.GoalType;
@@ -69,6 +70,7 @@ import ai.moeru.airicraft.agent.verification.scenarios.FollowReacquireTargetVeri
 import ai.moeru.airicraft.agent.verification.scenarios.LlmDegradationVerification;
 import ai.moeru.airicraft.agent.verification.scenarios.LlmDegradationGoalPreservedVerification;
 import ai.moeru.airicraft.agent.verification.scenarios.ManualInputIdlePassthroughVerification;
+import ai.moeru.airicraft.agent.verification.scenarios.MineBlocksVerification;
 import ai.moeru.airicraft.agent.verification.scenarios.NavigateVerification;
 import ai.moeru.airicraft.agent.verification.scenarios.PlannerObservabilityVerification;
 import ai.moeru.airicraft.agent.verification.scenarios.SessionLanVerification;
@@ -606,8 +608,10 @@ public final class EmbodiedAgentRuntime {
 	}
 
 	public TaskSnapshot cancelTask(String reason) {
+		TaskSnapshot previousTaskSnapshot = taskSnapshot;
 		taskRuntime.cancel(tickCount, reason == null || reason.isBlank() ? "cancelled" : reason);
 		taskSnapshot = taskRuntime.snapshot();
+		recordSemanticTaskTransition(previousTaskSnapshot, taskSnapshot);
 		return taskSnapshot;
 	}
 
@@ -1218,6 +1222,24 @@ public final class EmbodiedAgentRuntime {
 			() -> eventBuffer.containsTypeSince(navigateTaskBaselineSeqNo[0], "task.completed")
 				|| taskExecutionSnapshot.state() == TaskExecutionState.COMPLETED,
 			() -> playerNear(navigateTarget[0], 1.75D)
+		));
+		verificationRunner.register(new MineBlocksVerification(
+			() -> sessionSnapshot.worldLoaded(),
+			() -> sessionSnapshot.companionActuationAllowed(),
+			() -> injectGoalForTests(new GoalSnapshot(
+				GoalType.MINE_BLOCKS,
+				null,
+				null,
+				new GoalMineSpec(List.of("minecraft:oak_log"), 1),
+				tickCount,
+				"verification"
+			)),
+			() -> activeGoal()
+				.map(goal -> goal.type() == GoalType.MINE_BLOCKS
+					&& goal.mineSpec() != null
+					&& List.of("minecraft:oak_log").equals(goal.mineSpec().blockIds()))
+				.orElse(false),
+			() -> taskExecutionSnapshot.state() == TaskExecutionState.RUNNING
 		));
 		verificationRunner.register(new DialogueVerification(
 			() -> sessionSnapshot.worldLoaded(),

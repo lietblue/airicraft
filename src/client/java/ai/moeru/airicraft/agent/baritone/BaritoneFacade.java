@@ -23,4 +23,6 @@ public interface BaritoneFacade {
 	Optional<Double> estimatedTicksToGoal();
 
 	Optional<String> pollPathEvent();
+
+	boolean navigationGoalReached(GoalPosition position);
 }
