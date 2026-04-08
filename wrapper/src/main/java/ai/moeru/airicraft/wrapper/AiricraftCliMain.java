@@ -1,5 +1,7 @@
 package ai.moeru.airicraft.wrapper;
 
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import picocli.CommandLine;
 import picocli.CommandLine.Command;
 import picocli.CommandLine.IExecutionExceptionHandler;
@@ -26,6 +28,10 @@ import java.util.TreeMap;
 import java.util.concurrent.Callable;
 
 public final class AiricraftCliMain {
+	private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
+	private static final TypeReference<LinkedHashMap<String, Object>> MAP_TYPE = new TypeReference<>() {
+	};
+
 	private AiricraftCliMain() {
 	}
 
@@ -44,22 +50,37 @@ public final class AiricraftCliMain {
 		root.setParameterExceptionHandler(new CliParameterExceptionHandler(context));
 		root.setUsageHelpWidth(100);
 
-			root.addSubcommand(new StatusCommand(context));
+		root.addSubcommand(new StatusCommand(context));
 
-			root.addSubcommand("agent", new UsageCommand(out, "airicraft agent", "Agent observability and debug commands"));
-			CommandLine agent = root.getSubcommands().get("agent");
-			agent.addSubcommand(new AgentStatusCommand(context));
-			agent.addSubcommand(new AgentSessionCommand(context));
-			agent.addSubcommand(new AgentGoalsCommand(context));
-			agent.addSubcommand(new AgentTreeCommand(context));
-			agent.addSubcommand(new AgentDialogueCommand(context));
-			agent.addSubcommand(new AgentContextCommand(context));
-			agent.addSubcommand(new AgentCompactCommand(context));
-			agent.addSubcommand("events", new UsageCommand(out, "airicraft agent events", "Agent event stream commands"));
-			CommandLine agentEvents = agent.getSubcommands().get("events");
-			agentEvents.addSubcommand(new AgentEventsRecentCommand(context));
+		root.addSubcommand("agent", new UsageCommand(out, "airicraft agent", "Agent observability and debug commands"));
+		CommandLine agent = root.getSubcommands().get("agent");
+		agent.addSubcommand(new AgentStatusCommand(context));
+		agent.addSubcommand(new AgentSessionCommand(context));
+		CommandLine agentSession = agent.getSubcommands().get("session");
+		agentSession.addSubcommand(new AgentSessionOpenLanCommand(context));
+		agent.addSubcommand(new AgentGoalsCommand(context));
+		agent.addSubcommand(new AgentTasksCommand(context));
+		agent.addSubcommand(new AgentLedgerCommand(context));
+		agent.addSubcommand(new AgentEvidenceCommand(context));
+		agent.addSubcommand(new AgentStepExecutionCommand(context));
+		agent.addSubcommand("mission", new UsageCommand(out, "airicraft agent mission", "Mission-level agent commands"));
+		CommandLine agentMission = agent.getSubcommands().get("mission");
+		agentMission.addSubcommand(new AgentMissionSubmitCommand(context));
+		CommandLine agentTasks = agent.getSubcommands().get("tasks");
+		agentTasks.addSubcommand(new AgentTasksSubmitCommand(context));
+		agentTasks.addSubcommand(new AgentTasksCancelCommand(context));
+		agent.addSubcommand(new AgentTreeCommand(context));
+		agent.addSubcommand(new AgentDialogueCommand(context));
+		agent.addSubcommand("debug", new UsageCommand(out, "airicraft agent debug", "Agent debug injection commands"));
+		CommandLine agentDebug = agent.getSubcommands().get("debug");
+		agentDebug.addSubcommand(new AgentDebugChatCommand(context));
+		agent.addSubcommand(new AgentContextCommand(context));
+		agent.addSubcommand(new AgentCompactCommand(context));
+		agent.addSubcommand("events", new UsageCommand(out, "airicraft agent events", "Agent event stream commands"));
+		CommandLine agentEvents = agent.getSubcommands().get("events");
+		agentEvents.addSubcommand(new AgentEventsRecentCommand(context));
 
-			root.addSubcommand("worlds", new UsageCommand(out, "airicraft worlds", "Saved singleplayer worlds"));
+		root.addSubcommand("worlds", new UsageCommand(out, "airicraft worlds", "Saved singleplayer worlds"));
 		CommandLine worlds = root.getSubcommands().get("worlds");
 		worlds.addSubcommand(new WorldsListCommand(context));
 		worlds.addSubcommand(new WorldsJoinCommand(context));
@@ -209,6 +230,18 @@ public final class AiricraftCliMain {
 		}
 	}
 
+	@Command(name = "open-lan", mixinStandardHelpOptions = true, description = "Open the current singleplayer session to LAN.")
+	private static final class AgentSessionOpenLanCommand extends BaseCommand {
+		private AgentSessionOpenLanCommand(CliContext context) {
+			super(context, "agent session open-lan");
+		}
+
+		@Override
+		Map<String, Object> runCommand() {
+			return transport().openAgentSessionLan();
+		}
+	}
+
 	@Command(name = "goals", mixinStandardHelpOptions = true, description = "Inspect active agent goals.")
 	private static final class AgentGoalsCommand extends BaseCommand {
 		private AgentGoalsCommand(CliContext context) {
@@ -218,6 +251,137 @@ public final class AiricraftCliMain {
 		@Override
 		Map<String, Object> runCommand() {
 			return PayloadViews.agentGoals(transport().getAgentGoals(), verbose());
+		}
+	}
+
+	@Command(name = "tasks", mixinStandardHelpOptions = true, description = "Inspect active agent task state.")
+	private static final class AgentTasksCommand extends BaseCommand {
+		private AgentTasksCommand(CliContext context) {
+			super(context, "agent tasks");
+		}
+
+		@Override
+		Map<String, Object> runCommand() {
+			return PayloadViews.agentTasks(transport().getAgentTasks(), verbose());
+		}
+	}
+
+	@Command(name = "ledger", mixinStandardHelpOptions = true, description = "Inspect the active planner-owned mission ledger.")
+	private static final class AgentLedgerCommand extends BaseCommand {
+		private AgentLedgerCommand(CliContext context) {
+			super(context, "agent ledger");
+		}
+
+		@Override
+		Map<String, Object> runCommand() {
+			return PayloadViews.agentLedger(transport().getAgentLedger(), verbose());
+		}
+	}
+
+	@Command(name = "evidence", mixinStandardHelpOptions = true, description = "Inspect the latest runtime-owned world evidence.")
+	private static final class AgentEvidenceCommand extends BaseCommand {
+		private AgentEvidenceCommand(CliContext context) {
+			super(context, "agent evidence");
+		}
+
+		@Override
+		Map<String, Object> runCommand() {
+			return PayloadViews.agentEvidence(transport().getAgentEvidence(), verbose());
+		}
+	}
+
+	@Command(name = "step-execution", mixinStandardHelpOptions = true, description = "Inspect the latest semantic step execution result and primitive execution state.")
+	private static final class AgentStepExecutionCommand extends BaseCommand {
+		private AgentStepExecutionCommand(CliContext context) {
+			super(context, "agent step-execution");
+		}
+
+		@Override
+		Map<String, Object> runCommand() {
+			return PayloadViews.agentStepExecution(transport().getAgentStepExecution(), verbose());
+		}
+	}
+
+	@Command(name = "submit", mixinStandardHelpOptions = true, description = "Submit a high-level agent task.")
+	private static final class AgentTasksSubmitCommand extends BaseCommand {
+		@Option(names = "--type", required = true, description = "Task type, for example collect-resource.")
+		private String type;
+
+		@Option(names = "--resource", required = true, description = "Task resource kind, for example wood-logs.")
+		private String resource;
+
+		@Option(names = "--quantity", required = true, description = "Requested quantity.")
+		private int quantity;
+
+		private AgentTasksSubmitCommand(CliContext context) {
+			super(context, "agent tasks submit");
+		}
+
+		@Override
+		Map<String, Object> runCommand() {
+			return PayloadViews.agentTasks(transport().submitAgentTask(Map.of(
+				"type", PayloadViews.normalizeTaskValue(type),
+				"resourceKind", PayloadViews.normalizeTaskValue(resource),
+				"quantity", quantity
+			)), verbose());
+		}
+	}
+
+	@Command(name = "submit", mixinStandardHelpOptions = true, description = "Submit a mission-level request and let the runtime seed a ledger.")
+	private static final class AgentMissionSubmitCommand extends BaseCommand {
+		@Option(names = "--type", description = "Mission type, for example collect-resource.")
+		private String type;
+
+		@Option(names = "--resource", description = "Mission resource kind, for example wood-logs.")
+		private String resource;
+
+		@Option(names = "--quantity", description = "Requested quantity.")
+		private int quantity;
+
+		@Option(names = "--ledger-file", description = "Path to a JSON file containing a full TaskLedger payload.")
+		private Path ledgerFile;
+
+		private AgentMissionSubmitCommand(CliContext context) {
+			super(context, "agent mission submit");
+		}
+
+		@Override
+		Map<String, Object> runCommand() {
+			if (ledgerFile != null) {
+				if (type != null || resource != null || quantity > 0) {
+					throw new CliUsageException(commandPath(), "invalid_arguments", "--ledger-file cannot be combined with --type/--resource/--quantity");
+				}
+				return PayloadViews.agentTasks(transport().submitAgentMission(readLedgerPayload(ledgerFile)), verbose());
+			}
+			if (type == null || resource == null || quantity <= 0) {
+				throw new CliUsageException(commandPath(), "invalid_arguments", "Either provide --ledger-file or all of --type, --resource, and --quantity");
+			}
+			return PayloadViews.agentTasks(transport().submitAgentMission(Map.of(
+				"type", PayloadViews.normalizeTaskValue(type),
+				"resourceKind", PayloadViews.normalizeTaskValue(resource),
+				"quantity", quantity
+			)), verbose());
+		}
+
+		private Map<String, Object> readLedgerPayload(Path ledgerFile) {
+			try {
+				return OBJECT_MAPPER.readValue(Files.newBufferedReader(ledgerFile, StandardCharsets.UTF_8), MAP_TYPE);
+			}
+			catch (java.io.IOException exception) {
+				throw new CliUsageException(commandPath(), "invalid_arguments", "Failed to read ledger file: " + ledgerFile);
+			}
+		}
+	}
+
+	@Command(name = "cancel", mixinStandardHelpOptions = true, description = "Cancel the active high-level task.")
+	private static final class AgentTasksCancelCommand extends BaseCommand {
+		private AgentTasksCancelCommand(CliContext context) {
+			super(context, "agent tasks cancel");
+		}
+
+		@Override
+		Map<String, Object> runCommand() {
+			return PayloadViews.agentTasks(transport().cancelAgentTask(), verbose());
 		}
 	}
 
@@ -242,6 +406,21 @@ public final class AiricraftCliMain {
 		@Override
 		Map<String, Object> runCommand() {
 			return PayloadViews.agentDialogue(transport().getAgentDialogue(), verbose());
+		}
+	}
+
+	@Command(name = "chat", mixinStandardHelpOptions = true, description = "Inject a local-controller chat message into the agent runtime.")
+	private static final class AgentDebugChatCommand extends BaseCommand {
+		@Option(names = "--message", required = true, description = "Chat message to inject, for example '@agent get me 4 wood logs'.")
+		private String message;
+
+		private AgentDebugChatCommand(CliContext context) {
+			super(context, "agent debug chat");
+		}
+
+		@Override
+		Map<String, Object> runCommand() {
+			return transport().sendAgentDebugChat(message);
 		}
 	}
 
@@ -786,6 +965,12 @@ public final class AiricraftCliMain {
 			if (payload.containsKey("session")) {
 				view.put("session", payload.get("session"));
 			}
+			if (payload.containsKey("taskExecution")) {
+				view.put("taskExecution", payload.get("taskExecution"));
+			}
+			if (payload.containsKey("task")) {
+				view.put("task", payload.get("task"));
+			}
 			if (verbose && payload.containsKey("verification")) {
 				view.put("verification", payload.get("verification"));
 			}
@@ -805,9 +990,57 @@ public final class AiricraftCliMain {
 
 		private static Map<String, Object> agentGoals(Map<String, Object> payload, boolean verbose) {
 			LinkedHashMap<String, Object> view = new LinkedHashMap<>();
-			copy(view, payload, "available", "activeGoal");
+			copy(view, payload, "available", "activeGoal", "taskExecution");
 			if (verbose) {
-				copy(view, payload, "lastDialogueResponse");
+				copy(view, payload, "task", "lastDialogueResponse");
+			}
+			return view;
+		}
+
+		private static Map<String, Object> agentTasks(Map<String, Object> payload, boolean verbose) {
+			LinkedHashMap<String, Object> view = new LinkedHashMap<>();
+			copy(view, payload, "available", "cancelled", "task", "taskExecution", "missionExecution");
+			if (!verbose && payload.containsKey("task")) {
+				Map<String, Object> task = map(payload.get("task"));
+				LinkedHashMap<String, Object> compactTask = new LinkedHashMap<>();
+				copy(compactTask, task, "state", "spec", "mission", "activeStepId", "activeStepKind");
+				view.put("task", compactTask);
+			}
+			return view;
+		}
+
+		private static Map<String, Object> agentLedger(Map<String, Object> payload, boolean verbose) {
+			LinkedHashMap<String, Object> view = new LinkedHashMap<>();
+			copy(view, payload, "available", "ledger");
+			if (!verbose && payload.containsKey("ledger")) {
+				Map<String, Object> ledger = map(payload.get("ledger"));
+				LinkedHashMap<String, Object> compactLedger = new LinkedHashMap<>();
+				copy(compactLedger, ledger, "missionId", "missionType", "goalText", "activeStepId", "replanReason");
+				view.put("ledger", compactLedger);
+			}
+			return view;
+		}
+
+		private static Map<String, Object> agentEvidence(Map<String, Object> payload, boolean verbose) {
+			LinkedHashMap<String, Object> view = new LinkedHashMap<>();
+			copy(view, payload, "available", "evidence");
+			if (!verbose && payload.containsKey("evidence")) {
+				Map<String, Object> evidence = map(payload.get("evidence"));
+				LinkedHashMap<String, Object> compactEvidence = new LinkedHashMap<>();
+				copy(compactEvidence, evidence, "dimension", "x", "y", "z", "inventoryCounts");
+				view.put("evidence", compactEvidence);
+			}
+			return view;
+		}
+
+		private static Map<String, Object> agentStepExecution(Map<String, Object> payload, boolean verbose) {
+			LinkedHashMap<String, Object> view = new LinkedHashMap<>();
+			copy(view, payload, "available", "stepExecution", "taskExecution");
+			if (!verbose && payload.containsKey("stepExecution")) {
+				Map<String, Object> stepExecution = map(payload.get("stepExecution"));
+				LinkedHashMap<String, Object> compactStep = new LinkedHashMap<>();
+				copy(compactStep, stepExecution, "stepId", "status", "failureReason", "updatedTick");
+				view.put("stepExecution", compactStep);
 			}
 			return view;
 		}
@@ -843,6 +1076,9 @@ public final class AiricraftCliMain {
 			view.put("available", payload.getOrDefault("available", false));
 			Map<String, Object> planner = map(payload.get("planner"));
 			Map<String, Object> context = map(planner.get("context"));
+			if (payload.containsKey("taskExecution")) {
+				view.put("taskExecution", payload.get("taskExecution"));
+			}
 			copy(view, planner, "configured", "plannerVisionMode", "inFlight", "plannerInFlight", "compactionInFlight", "captureInFlight", "toolInFlight", "toolUsed");
 			copy(view, context, "compactionTriggerTokens", "compactionPending", "rawArchiveEntryCount", "canonicalMessageCount",
 				"pendingEntryCount", "frozenPlannerMessageCount", "lastObservedEventSeqNo", "lastTimeBeaconAtMs");
@@ -912,6 +1148,10 @@ public final class AiricraftCliMain {
 				view.put("available", payload.get("available"));
 			}
 			return view;
+		}
+
+		private static String normalizeTaskValue(String value) {
+			return value == null ? null : value.trim().replace('-', '_').toUpperCase(Locale.ROOT);
 		}
 
 		private static List<Map<String, Object>> filterItems(

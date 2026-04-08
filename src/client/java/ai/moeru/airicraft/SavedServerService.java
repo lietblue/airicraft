@@ -17,7 +17,6 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
@@ -55,7 +54,7 @@ public final class SavedServerService {
 				ServerAddress.parse(entry.serverInfo.address),
 				entry.serverInfo,
 				false,
-				new CookieStorage(Map.of(), Map.<UUID, net.minecraft.client.network.PlayerListEntry>of(), false)
+				new CookieStorage(Map.of())
 			);
 			return null;
 		});

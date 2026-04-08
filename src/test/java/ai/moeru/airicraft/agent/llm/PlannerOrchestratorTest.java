@@ -288,6 +288,8 @@ class PlannerOrchestratorTest {
 			SessionMode.OUT_OF_WORLD,
 			"Alice",
 			null,
+			null,
+			null,
 			"Alice",
 			"@agent what do you see?",
 			toolResult

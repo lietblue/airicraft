@@ -39,12 +39,24 @@ public final class GoalDirector {
 	}
 
 	private void applySetGoal(DialogueResponse response) {
-		if (response.intent().goalType() == null || response.intent().targetPlayer() == null || response.intent().targetPlayer().isBlank()) {
+		if (response.intent().goalType() == null) {
+			return;
+		}
+		if (response.intent().goalType() == GoalType.FOLLOW_PLAYER
+			&& (response.intent().targetPlayer() == null || response.intent().targetPlayer().isBlank())) {
+			return;
+		}
+		if (response.intent().goalType() == GoalType.NAVIGATE_TO && response.intent().position() == null) {
+			return;
+		}
+		if (response.intent().goalType() == GoalType.MINE_BLOCKS && response.intent().mineSpec() == null) {
 			return;
 		}
 		activeGoal = new GoalSnapshot(
 			response.intent().goalType(),
 			response.intent().targetPlayer(),
+			response.intent().position(),
+			response.intent().mineSpec(),
 			response.tick(),
 			"planner_response"
 		);

@@ -4,8 +4,13 @@ import ai.moeru.airicraft.agent.EmbodiedAgentRuntime;
 import ai.moeru.airicraft.agent.llm.CurrentViewVisionService;
 import ai.moeru.airicraft.agent.llm.LlmBackendException;
 import ai.moeru.airicraft.agent.session.LanHostingService;
+import ai.moeru.airicraft.agent.tasks.TaskResourceKind;
+import ai.moeru.airicraft.agent.tasks.TaskLedger;
+import ai.moeru.airicraft.agent.tasks.TaskSpec;
+import ai.moeru.airicraft.agent.tasks.TaskType;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
+import com.google.gson.JsonObject;
 import com.google.gson.JsonSyntaxException;
 import com.sun.net.httpserver.Headers;
 import com.sun.net.httpserver.HttpExchange;
@@ -101,11 +106,16 @@ public final class ModBridgeServer {
 			httpServer.createContext("/v1/agent/session", exchange -> handleJson(exchange, this::createAgentSessionResponse));
 			httpServer.createContext("/v1/agent/session/open-lan", this::handleAgentOpenLan);
 				httpServer.createContext("/v1/agent/events/recent", exchange -> handleJson(exchange, () -> createRecentAgentEventsResponse(exchange)));
-				httpServer.createContext("/v1/agent/goals", exchange -> handleJson(exchange, this::createAgentGoalsResponse));
-				httpServer.createContext("/v1/agent/tree", exchange -> handleJson(exchange, this::createAgentTreeResponse));
-				httpServer.createContext("/v1/agent/dialogue", exchange -> handleJson(exchange, this::createAgentDialogueResponse));
-				httpServer.createContext("/v1/agent/context", exchange -> handleJson(exchange, this::createAgentContextResponse));
-				httpServer.createContext("/v1/agent/debug/compact", this::handleAgentDebugCompact);
+			httpServer.createContext("/v1/agent/goals", exchange -> handleJson(exchange, this::createAgentGoalsResponse));
+			httpServer.createContext("/v1/agent/tree", exchange -> handleJson(exchange, this::createAgentTreeResponse));
+			httpServer.createContext("/v1/agent/dialogue", exchange -> handleJson(exchange, this::createAgentDialogueResponse));
+			httpServer.createContext("/v1/agent/context", exchange -> handleJson(exchange, this::createAgentContextResponse));
+			httpServer.createContext("/v1/agent/tasks", this::handleAgentTasks);
+			httpServer.createContext("/v1/agent/ledger", exchange -> handleJson(exchange, this::createAgentLedgerResponse));
+			httpServer.createContext("/v1/agent/evidence", exchange -> handleJson(exchange, this::createAgentEvidenceResponse));
+			httpServer.createContext("/v1/agent/step-execution", exchange -> handleJson(exchange, this::createAgentStepExecutionResponse));
+			httpServer.createContext("/v1/agent/debug/chat", this::handleAgentDebugChat);
+			httpServer.createContext("/v1/agent/debug/compact", this::handleAgentDebugCompact);
 				httpServer.createContext("/v1/verification/results", exchange -> handleJson(exchange, this::createVerificationResultsResponse));
 			httpServer.createContext("/v1/verification/run", this::handleVerificationRun);
 			httpServer.start();
@@ -416,6 +426,121 @@ public final class ModBridgeServer {
 		});
 	}
 
+	private void handleAgentDebugChat(HttpExchange exchange) throws IOException {
+		handleJsonBody(exchange, "POST", DebugChatRequest.class, request -> {
+			if (request == null || request.message() == null || request.message().isBlank()) {
+				throw new BridgeUnavailableException("invalid_request", "Missing message");
+			}
+			return onClientThread(() -> {
+				var client = getClient();
+				ensureWorldLoaded(client);
+				if (client.player == null || client.player.getName() == null || client.player.getName().getString().isBlank()) {
+					throw new BridgeUnavailableException("minecraft_unavailable", "Local player is not available");
+				}
+				String senderName = request.senderName() == null || request.senderName().isBlank()
+					? client.player.getName().getString()
+					: request.senderName().trim();
+				String message = request.message().trim();
+				agentRuntime.onChatReceived(senderName, message);
+
+				Map<String, Object> payload = new LinkedHashMap<>();
+				payload.put("available", true);
+				payload.put("accepted", true);
+				payload.put("senderName", senderName);
+				payload.put("message", message);
+				payload.put("task", agentRuntime.taskSnapshot());
+				payload.put("taskExecution", agentRuntime.taskExecutionSnapshot());
+				payload.put("lastDialogueResponse", agentRuntime.lastDialogueResponse().orElse(null));
+				return payload;
+			});
+		});
+	}
+
+	private void handleAgentTasks(HttpExchange exchange) throws IOException {
+		if (!authorize(exchange)) {
+			writeJson(exchange, 401, Map.of("error", "unauthorized", "message", "Invalid bridge token"));
+			return;
+		}
+		String method = exchange.getRequestMethod();
+		if ("GET".equalsIgnoreCase(method)) {
+			writeJson(exchange, 200, createAgentTasksResponse());
+			return;
+		}
+		if ("DELETE".equalsIgnoreCase(method)) {
+			Map<String, Object> response = onClientThread(() -> {
+				var task = agentRuntime.cancelTask("bridge_debug_cancel");
+				Map<String, Object> payload = new LinkedHashMap<>();
+				payload.put("available", true);
+				payload.put("cancelled", true);
+				payload.put("task", task);
+				payload.put("taskExecution", agentRuntime.taskExecutionSnapshot());
+				payload.put("missionExecution", agentRuntime.missionExecutionSnapshot());
+				return payload;
+			});
+			writeJson(exchange, 200, response);
+			return;
+		}
+		if (!"POST".equalsIgnoreCase(method)) {
+			writeJson(exchange, 405, Map.of("error", "method_not_allowed"));
+			return;
+		}
+		try (InputStreamReader reader = new InputStreamReader(exchange.getRequestBody(), StandardCharsets.UTF_8)) {
+			JsonObject request = GSON.fromJson(reader, JsonObject.class);
+			if (request == null) {
+				throw new BridgeUnavailableException("invalid_request", "Missing task payload");
+			}
+			if (isMissionLedgerRequest(request)) {
+				TaskLedger ledger = GSON.fromJson(request, TaskLedger.class);
+				if (ledger == null || ledger.missionId() == null || ledger.missionType() == null || ledger.steps() == null) {
+					throw new BridgeUnavailableException("invalid_request", "Malformed mission ledger payload");
+				}
+				Map<String, Object> response = onClientThread(() -> {
+					var task = agentRuntime.submitMissionLedger(ledger, "bridge_debug_mission");
+					Map<String, Object> payload = new LinkedHashMap<>();
+					payload.put("available", true);
+					payload.put("task", task);
+					payload.put("taskExecution", agentRuntime.taskExecutionSnapshot());
+					payload.put("missionExecution", agentRuntime.missionExecutionSnapshot());
+					return payload;
+				});
+				writeJson(exchange, 200, response);
+				return;
+			}
+			AgentTaskRequest taskRequest = GSON.fromJson(request, AgentTaskRequest.class);
+			if (taskRequest == null || taskRequest.type() == null || taskRequest.resourceKind() == null || taskRequest.quantity() == null) {
+				throw new BridgeUnavailableException("invalid_request", "Missing task payload");
+			}
+			TaskType taskType = parseTaskType(taskRequest.type());
+			TaskResourceKind resourceKind = parseTaskResourceKind(taskRequest.resourceKind());
+			if (taskRequest.quantity().intValue() <= 0) {
+				throw new BridgeUnavailableException("invalid_request", "quantity must be positive");
+			}
+			Map<String, Object> response = onClientThread(() -> {
+				var task = agentRuntime.submitTask(
+					new TaskSpec(taskType, resourceKind, taskRequest.quantity().intValue()),
+					"bridge_debug"
+				);
+				Map<String, Object> payload = new LinkedHashMap<>();
+				payload.put("available", true);
+				payload.put("task", task);
+				payload.put("taskExecution", agentRuntime.taskExecutionSnapshot());
+				payload.put("missionExecution", agentRuntime.missionExecutionSnapshot());
+				return payload;
+			});
+			writeJson(exchange, 200, response);
+		}
+		catch (JsonSyntaxException exception) {
+			writeJson(exchange, 400, Map.of("error", "invalid_json", "message", "Malformed request payload"));
+		}
+		catch (BridgeUnavailableException exception) {
+			writeJson(exchange, 503, Map.of("error", exception.code(), "message", exception.getMessage()));
+		}
+	}
+
+	private static boolean isMissionLedgerRequest(JsonObject request) {
+		return request.has("missionId") && request.has("missionType") && request.has("steps");
+	}
+
 	private void handleJson(HttpExchange exchange, Supplier<Object> supplier) throws IOException {
 		if (!authorize(exchange)) {
 			writeJson(exchange, 401, Map.of("error", "unauthorized", "message", "Invalid bridge token"));
@@ -542,6 +667,9 @@ public final class ModBridgeServer {
 			response.put("initialized", snapshot.initialized());
 			response.put("tickCount", snapshot.tickCount());
 			response.put("session", snapshot.session());
+			response.put("task", snapshot.task());
+			response.put("taskExecution", snapshot.taskExecution());
+			response.put("missionExecution", snapshot.missionExecution());
 			response.put("llmAvailable", agentRuntime.llmAvailable());
 			response.put("visionAvailable", agentRuntime.visionAvailable());
 			response.put("plannerVisionMode", plannerSnapshot.plannerVisionMode());
@@ -595,6 +723,9 @@ public final class ModBridgeServer {
 			Map<String, Object> response = new LinkedHashMap<>();
 			response.put("available", true);
 			response.put("activeGoal", agentRuntime.activeGoal().orElse(null));
+			response.put("task", agentRuntime.taskSnapshot());
+			response.put("taskExecution", agentRuntime.taskExecutionSnapshot());
+			response.put("missionExecution", agentRuntime.missionExecutionSnapshot());
 			response.put("lastDialogueResponse", agentRuntime.lastDialogueResponse().orElse(null));
 			return response;
 		});
@@ -625,6 +756,51 @@ public final class ModBridgeServer {
 			Map<String, Object> response = new LinkedHashMap<>();
 			response.put("available", true);
 			response.put("planner", agentRuntime.plannerDebugSnapshot());
+			response.put("task", agentRuntime.taskSnapshot());
+			response.put("taskExecution", agentRuntime.taskExecutionSnapshot());
+			response.put("missionExecution", agentRuntime.missionExecutionSnapshot());
+			return response;
+		});
+	}
+
+	private Object createAgentTasksResponse() {
+		return onClientThread(() -> {
+			Map<String, Object> response = new LinkedHashMap<>();
+			response.put("available", true);
+			response.put("task", agentRuntime.taskSnapshot());
+			response.put("taskExecution", agentRuntime.taskExecutionSnapshot());
+			response.put("missionExecution", agentRuntime.missionExecutionSnapshot());
+			return response;
+		});
+	}
+
+	private Object createAgentLedgerResponse() {
+		return onClientThread(() -> {
+			Map<String, Object> response = new LinkedHashMap<>();
+			response.put("available", true);
+			response.put("mission", agentRuntime.taskSnapshot().mission());
+			response.put("ledger", agentRuntime.missionExecutionSnapshot().ledger());
+			response.put("lastStepResult", agentRuntime.missionExecutionSnapshot().lastStepResult());
+			return response;
+		});
+	}
+
+	private Object createAgentEvidenceResponse() {
+		return onClientThread(() -> {
+			Map<String, Object> response = new LinkedHashMap<>();
+			response.put("available", true);
+			response.put("evidence", agentRuntime.missionExecutionSnapshot().evidence());
+			response.put("task", agentRuntime.taskSnapshot());
+			return response;
+		});
+	}
+
+	private Object createAgentStepExecutionResponse() {
+		return onClientThread(() -> {
+			Map<String, Object> response = new LinkedHashMap<>();
+			response.put("available", true);
+			response.put("stepExecution", agentRuntime.missionExecutionSnapshot().lastStepResult());
+			response.put("taskExecution", agentRuntime.taskExecutionSnapshot());
 			return response;
 		});
 	}
@@ -987,6 +1163,24 @@ public final class ModBridgeServer {
 		}
 	}
 
+	private static TaskType parseTaskType(String value) {
+		try {
+			return TaskType.valueOf(value.trim().toUpperCase(java.util.Locale.ROOT));
+		}
+		catch (RuntimeException exception) {
+			throw new BridgeUnavailableException("invalid_request", "Unknown task type: " + value);
+		}
+	}
+
+	private static TaskResourceKind parseTaskResourceKind(String value) {
+		try {
+			return TaskResourceKind.valueOf(value.trim().toUpperCase(java.util.Locale.ROOT));
+		}
+		catch (RuntimeException exception) {
+			throw new BridgeUnavailableException("invalid_request", "Unknown task resource kind: " + value);
+		}
+	}
+
 	private static String generateToken() {
 		byte[] bytes = new byte[24];
 		RANDOM.nextBytes(bytes);
@@ -1080,6 +1274,12 @@ public final class ModBridgeServer {
 	}
 
 	private record VisionDescribeRequest(String prompt) {
+	}
+
+	private record AgentTaskRequest(String type, String resourceKind, Integer quantity) {
+	}
+
+	private record DebugChatRequest(String senderName, String message) {
 	}
 
 	private static final class DebugCompactRequest {

@@ -1,18 +1,13 @@
 package ai.moeru.airicraft;
 
-import net.fabricmc.fabric.api.client.rendering.v1.world.WorldRenderContext;
+import net.fabricmc.fabric.api.client.rendering.v1.WorldRenderContext;
 import net.minecraft.client.MinecraftClient;
-import net.minecraft.client.render.DrawStyle;
+import net.minecraft.client.render.debug.DebugRenderer;
 import net.minecraft.client.render.debug.GameTestDebugRenderer;
 import net.minecraft.util.Util;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Box;
-import net.minecraft.util.math.Vec3d;
-import net.minecraft.world.debug.gizmo.GizmoDrawing;
-import net.minecraft.world.debug.gizmo.TextGizmo;
 
-import java.lang.reflect.Constructor;
-import java.lang.reflect.Field;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -20,9 +15,6 @@ import java.util.Map;
 import java.util.UUID;
 
 public final class HighlightManager {
-	private static final Field MARKERS_FIELD = findMarkersField();
-	private static final Constructor<?> MARKER_CONSTRUCTOR = findMarkerConstructor();
-
 	private final Map<String, HighlightRecord> highlights = new LinkedHashMap<>();
 
 	public String addBlock(BlockPos pos, int colorArgb, Long durationMs, String overlayText) {
@@ -99,55 +91,75 @@ public final class HighlightManager {
 	}
 
 	public void render(WorldRenderContext context) {
-		purgeExpired(Util.getMeasuringTimeMs());
+		long now = Util.getMeasuringTimeMs();
+		if (purgeExpired(now)) {
+			rebuildBlockMarkers();
+		}
 		var client = MinecraftClient.getInstance();
 		if (client.worldRenderer == null || client.world == null) {
 			return;
 		}
+		if (context.matrixStack() == null || context.consumers() == null || context.camera() == null) {
+			return;
+		}
 
-		try (var ignored = client.worldRenderer.startDrawingGizmos()) {
-			for (HighlightRecord highlight : highlights.values()) {
-				if (highlight instanceof RegionHighlight region) {
-					renderRegion(region);
-				}
+		for (HighlightRecord highlight : highlights.values()) {
+			if (highlight instanceof RegionHighlight region) {
+				renderRegion(region, context);
 			}
 		}
 	}
 
-	private void renderRegion(RegionHighlight region) {
-		int strokeColor = withAlpha(region.colorArgb, 0xFF);
-		Box box = Box.enclosing(region.minPos, region.maxPos).expand(0.002D);
-		GizmoDrawing.box(box, DrawStyle.filledAndStroked(strokeColor, 1.0F, region.colorArgb));
-		Vec3d labelPos = box.getCenter().add(0.0D, box.getLengthY() / 2.0D + 0.2D, 0.0D);
-		GizmoDrawing.text(region.overlayText, labelPos, TextGizmo.Style.centered(0xFFFFFFFF).scaled(0.16F))
-			.ignoreOcclusion();
+	private void renderRegion(RegionHighlight region, WorldRenderContext context) {
+		Box box = regionBox(region).expand(0.002D);
+		DebugRenderer.drawBox(
+			context.matrixStack(),
+			context.consumers(),
+			box,
+			colorComponent(region.colorArgb, 16),
+			colorComponent(region.colorArgb, 8),
+			colorComponent(region.colorArgb, 0),
+			colorComponent(region.colorArgb, 24)
+		);
+
+		double labelX = (box.minX + box.maxX) * 0.5D;
+		double labelY = box.maxY + 0.2D;
+		double labelZ = (box.minZ + box.maxZ) * 0.5D;
+		DebugRenderer.drawString(
+			context.matrixStack(),
+			context.consumers(),
+			region.overlayText,
+			labelX,
+			labelY,
+			labelZ,
+			0xFFFFFFFF,
+			0.02F,
+			true,
+			0.0F,
+			true
+		);
 	}
 
 	private void rebuildBlockMarkers() {
 		var client = MinecraftClient.getInstance();
-		if (client.worldRenderer == null) {
+		if (client.debugRenderer == null) {
 			return;
 		}
 
 		clearRendererMarkers();
+		long now = Util.getMeasuringTimeMs();
 
 		for (HighlightRecord highlight : highlights.values()) {
 			if (highlight instanceof BlockHighlight block) {
-				addColoredMarker(
-					client.worldRenderer.gameTestDebugRenderer,
-					block.pos,
-					block.colorArgb,
-					block.overlayText,
-					block.expiresAtEpochMillis
-				);
+				addColoredMarker(client.debugRenderer.gameTestDebugRenderer, block, now);
 			}
 		}
 	}
 
 	private void clearRendererMarkers() {
 		var client = MinecraftClient.getInstance();
-		if (client.worldRenderer != null) {
-			client.worldRenderer.gameTestDebugRenderer.clear();
+		if (client.debugRenderer != null) {
+			client.debugRenderer.gameTestDebugRenderer.clear();
 		}
 	}
 
@@ -156,24 +168,13 @@ public final class HighlightManager {
 		return removed;
 	}
 
-	@SuppressWarnings("unchecked")
-	private static void addColoredMarker(
-		GameTestDebugRenderer renderer,
-		BlockPos pos,
-		int colorArgb,
-		String overlayText,
-		Long expiresAtEpochMillis
-	) {
-		try {
-			renderer.addMarker(pos, pos);
-			Map<BlockPos, Object> markers = (Map<BlockPos, Object>) MARKERS_FIELD.get(renderer);
-			long removalTime = expiresAtEpochMillis == null ? Long.MAX_VALUE : expiresAtEpochMillis;
-			Object marker = MARKER_CONSTRUCTOR.newInstance(colorArgb, overlayText, removalTime);
-			markers.put(pos.toImmutable(), marker);
-		}
-		catch (ReflectiveOperationException exception) {
-			throw new IllegalStateException("Failed to create colored highlight marker", exception);
-		}
+	private static void addColoredMarker(GameTestDebugRenderer renderer, BlockHighlight block, long now) {
+		renderer.addMarker(
+			block.pos,
+			block.colorArgb,
+			block.overlayText,
+			markerDurationMillis(now, block.expiresAtEpochMillis)
+		);
 	}
 
 	private static Long expiresAt(long now, Long durationMs) {
@@ -187,35 +188,31 @@ public final class HighlightManager {
 		return overlayText == null || overlayText.isBlank() ? fallback : overlayText;
 	}
 
-	private static int withAlpha(int colorArgb, int alpha) {
-		return (colorArgb & 0x00FFFFFF) | (alpha << 24);
+	private static Box regionBox(RegionHighlight region) {
+		return new Box(
+			region.minPos.getX(),
+			region.minPos.getY(),
+			region.minPos.getZ(),
+			region.maxPos.getX() + 1.0D,
+			region.maxPos.getY() + 1.0D,
+			region.maxPos.getZ() + 1.0D
+		);
+	}
+
+	private static int markerDurationMillis(long now, Long expiresAtEpochMillis) {
+		if (expiresAtEpochMillis == null) {
+			return Integer.MAX_VALUE;
+		}
+		long remaining = Math.max(expiresAtEpochMillis - now, 1L);
+		return (int) Math.min(remaining, Integer.MAX_VALUE);
+	}
+
+	private static float colorComponent(int colorArgb, int shift) {
+		return ((colorArgb >> shift) & 0xFF) / 255.0F;
 	}
 
 	private static Map<String, Object> blockPosPayload(BlockPos pos) {
 		return Map.of("x", pos.getX(), "y", pos.getY(), "z", pos.getZ());
-	}
-
-	private static Field findMarkersField() {
-		try {
-			Field field = GameTestDebugRenderer.class.getDeclaredField("markers");
-			field.setAccessible(true);
-			return field;
-		}
-		catch (ReflectiveOperationException exception) {
-			throw new ExceptionInInitializerError(exception);
-		}
-	}
-
-	private static Constructor<?> findMarkerConstructor() {
-		try {
-			Class<?> markerClass = Class.forName("net.minecraft.client.render.debug.GameTestDebugRenderer$Marker");
-			Constructor<?> constructor = markerClass.getDeclaredConstructor(int.class, String.class, long.class);
-			constructor.setAccessible(true);
-			return constructor;
-		}
-		catch (ReflectiveOperationException exception) {
-			throw new ExceptionInInitializerError(exception);
-		}
 	}
 
 	private sealed interface HighlightRecord permits BlockHighlight, RegionHighlight {

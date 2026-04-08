@@ -6,7 +6,6 @@ import net.minecraft.client.network.message.MessageHandler;
 import net.minecraft.network.message.MessageType;
 import net.minecraft.network.message.SignedMessage;
 import net.minecraft.text.Text;
-import org.jspecify.annotations.Nullable;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
@@ -17,7 +16,7 @@ public class MessageHandlerMixin {
 	@Inject(method = "onChatMessage", at = @At("TAIL"))
 	private void airicraft$onChatMessage(
 		SignedMessage message,
-		@Nullable GameProfile sender,
+		GameProfile sender,
 		MessageType.Parameters params,
 		CallbackInfo ci
 	) {
@@ -35,7 +34,7 @@ public class MessageHandlerMixin {
 			return;
 		}
 
-		AiricraftClient.runtimeController().onChatReceived(sender.name(), content);
+		AiricraftClient.runtimeController().onChatReceived(sender.getName(), content);
 	}
 
 	@Inject(method = "onProfilelessMessage", at = @At("TAIL"))

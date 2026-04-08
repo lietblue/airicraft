@@ -14,7 +14,7 @@ public class ClientPlayNetworkHandlerMixin {
 	@Inject(method = "onPlayerList", at = @At("TAIL"))
 	private void airicraft$onPlayerList(PlayerListS2CPacket packet, CallbackInfo ci) {
 		for (PlayerListS2CPacket.Entry entry : packet.getPlayerAdditionEntries()) {
-			AiricraftClient.runtimeController().onPlayerJoinedGame(entry.profileId(), entry.profile().name());
+			AiricraftClient.runtimeController().onPlayerJoinedGame(entry.profileId(), entry.profile().getName());
 		}
 	}
 

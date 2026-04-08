@@ -26,6 +26,18 @@ public final class PlannerAmbientContextRenderer {
 		if (previous == null || !Objects.equals(previous.activeGoalDescription(), current.activeGoalDescription())) {
 			entries.add(notice(describeActiveGoal(current.activeGoalDescription()), tick, timestampMs));
 		}
+		if (previous == null || !Objects.equals(previous.activeMissionDescription(), current.activeMissionDescription())) {
+			String missionDescription = describeActiveMission(current.activeMissionDescription());
+			if (missionDescription != null) {
+				entries.add(notice(missionDescription, tick, timestampMs));
+			}
+		}
+		if (previous == null || !Objects.equals(previous.missionEvidenceDescription(), current.missionEvidenceDescription())) {
+			String evidenceDescription = describeMissionEvidence(current.missionEvidenceDescription());
+			if (evidenceDescription != null) {
+				entries.add(notice(evidenceDescription, tick, timestampMs));
+			}
+		}
 		return List.copyOf(entries);
 	}
 
@@ -55,5 +67,13 @@ public final class PlannerAmbientContextRenderer {
 		return activeGoalDescription == null
 			? "There is no active goal right now."
 			: "Active goal: " + activeGoalDescription;
+	}
+
+	private static String describeActiveMission(String activeMissionDescription) {
+		return activeMissionDescription == null ? null : "Active mission: " + activeMissionDescription;
+	}
+
+	private static String describeMissionEvidence(String missionEvidenceDescription) {
+		return missionEvidenceDescription == null ? null : missionEvidenceDescription;
 	}
 }
