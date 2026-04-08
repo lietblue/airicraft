@@ -25,23 +25,100 @@ public final class PlannerPromptPolicy {
 			{
 			  "replyText": string,
 			  "intent": {
-			    "type": "set_goal" | "clear_goal" | "submit_task" | "cancel_task" | "reply_only" | "ask_clarification" | "acknowledge_failure" | "none",
-			    "goalType": "FOLLOW_PLAYER" | "NAVIGATE_TO" | "MINE_BLOCKS" | null,
-			    "targetPlayer": string | null,
-			    "position": {
-			      "x": number,
-			      "y": number,
-			      "z": number,
-			      "exactY": boolean
-			    } | null,
-			    "mineSpec": {
-			      "blockIds": string[],
-			      "quantity": number
-			    } | null,
-			    "taskSpec": {
-			      "type": "COLLECT_RESOURCE",
-			      "resourceKind": "WOOD_LOGS",
-			      "quantity": number
+			    "type": "mission_update" | "reply_only" | "ask_clarification" | "acknowledge_failure" | "none",
+			    "taskLedger": {
+			      "missionId": string,
+			      "missionType": "COLLECT_RESOURCE" | "CRAFT_TOOL" | "CRAFT_ITEM" | "SMELT_ITEM" | "DELIVER_ITEM",
+			      "goalText": string,
+			      "steps": [
+			        {
+			          "id": string,
+			          "kind": "COLLECT_RESOURCE" | "NAVIGATE_TO_POSITION" | "NAVIGATE_TO_BLOCK_KIND" | "MINE_BLOCKS" | "CRAFT_RECIPE" | "OPEN_CONTAINER" | "TRANSFER_ITEMS" | "PLACE_BLOCK" | "DROP_ITEMS" | "WAIT" | "ASK_USER" | "FINISH",
+			          "args": {
+			            "collectResource": {
+			              "resourceKind": "WOOD_LOGS",
+			              "quantity": number,
+			              "deliveryPolicy": string
+			            } | null,
+			            "navigateToPosition": {
+			              "x": number,
+			              "y": number,
+			              "z": number,
+			              "exactY": boolean
+			            } | null,
+			            "navigateToBlockKind": {
+			              "blockIds": string[]
+			            } | null,
+			            "mineBlocks": {
+			              "blockIds": string[],
+			              "quantity": number
+			            } | null,
+			            "craftRecipe": {
+			              "recipeId": string,
+			              "quantity": number
+			            } | null,
+			            "openContainer": {
+			              "containerRef": string
+			            } | null,
+			            "transferItems": {
+			              "direction": string,
+			              "itemFilters": string[],
+			              "quantity": number,
+			              "containerRef": string | null
+			            } | null,
+			            "placeBlock": {
+			              "itemId": string,
+			              "position": {
+			                "x": number,
+			                "y": number,
+			                "z": number,
+			                "exactY": boolean
+			              }
+			            } | null,
+			            "dropItems": {
+			              "itemFilters": string[],
+			              "quantity": number
+			            } | null,
+			            "waitStep": {
+			              "ticks": number,
+			              "reason": string | null
+			            } | null,
+			            "askUser": {
+			              "prompt": string
+			            } | null,
+			            "finish": {
+			              "reason": string | null
+			            } | null
+			          },
+			          "dependsOn": string[],
+			          "status": "PENDING" | "ACTIVE" | "COMPLETED" | "FAILED" | "CANCELLED",
+			          "expectedEvidence": [
+			            {
+			              "type": "INVENTORY_DELTA_AT_LEAST" | "ITEM_COUNT_AT_LEAST" | "ITEM_DELTA_AT_LEAST" | "STEP_COMPLETED" | "POSITION_REACHED" | "RECIPE_CRAFTED" | "ITEMS_TRANSFERRED" | "BLOCK_PLACED" | "MISSION_FINISHED",
+			              "resourceKind": "WOOD_LOGS" | null,
+			              "itemId": string | null,
+			              "quantity": number | null,
+			              "stepId": string | null,
+			              "detail": string | null
+			            }
+			          ],
+			          "retryBudget": number,
+			          "notes": string | null
+			        }
+			      ],
+			      "activeStepId": string | null,
+			      "completionCriteria": [
+			        {
+			          "type": "INVENTORY_DELTA_AT_LEAST" | "ITEM_COUNT_AT_LEAST" | "ITEM_DELTA_AT_LEAST" | "STEP_COMPLETED" | "POSITION_REACHED" | "RECIPE_CRAFTED" | "ITEMS_TRANSFERRED" | "BLOCK_PLACED" | "MISSION_FINISHED",
+			          "resourceKind": "WOOD_LOGS" | null,
+			          "itemId": string | null,
+			          "quantity": number | null,
+			          "stepId": string | null,
+			          "detail": string | null
+			        }
+			      ],
+			      "replanReason": string | null,
+			      "plannerNotes": string | null
 			    } | null
 			  },
 			  "toolRequest": {
@@ -50,12 +127,15 @@ public final class PlannerPromptPolicy {
 			  } | null
 			}
 			If the final user message begins with "COMPACTION TASK:", ignore the normal planner output format for this response and follow that final compaction task instead.
-			Only choose FOLLOW_PLAYER when the player explicitly asks the companion to follow.
-			Only choose MINE_BLOCKS for directly mineable or harvestable blocks.
-			Use submit_task for high-level resource collection like wood gathering, and include taskSpec instead of a primitive goal.
-			Use cancel_task when the user asks to stop an active task.
-			For crafting, inventory management, combat, or container interaction, ask for clarification or acknowledge the limitation.
-			If the current session mode is singleplayer local and someone asks you to follow, you may keep a FOLLOW_PLAYER goal, but make it clear movement is paused until LAN is opened or multiplayer is active.
+			Use mission_update for any execution plan. Return the full taskLedger every planning turn, not a patch.
+			Runtime notices describing the mission ledger, world evidence, and last step result are the source of truth for progress.
+			Do not invent step kinds or ad-hoc args fields outside the schema above.
+			Currently implemented step executors are COLLECT_RESOURCE, CRAFT_RECIPE, WAIT, ASK_USER, and FINISH. Treat the other step kinds as reserved unless an operator explicitly directs otherwise.
+			Use collect_resource for gathering tasks like wood logs.
+			Use craft_recipe only when the required inputs are already available or a previous step in the same ledger will provide them.
+			Use askUser when a required decision or missing information cannot be safely inferred.
+			Do not mark a step completed unless the runtime evidence listed in expectedEvidence should prove it.
+			For combat or unsupported autonomous survival behaviors, ask for clarification or acknowledge the limitation.
 			%s
 			When a tool result is already present in the conversation, do not request another tool.
 			If a message comes from "%s", it is not another in-world player. It is the developer/admin on the very same client you run on, and they share controls with you.

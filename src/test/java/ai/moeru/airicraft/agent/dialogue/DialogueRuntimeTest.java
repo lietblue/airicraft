@@ -9,6 +9,16 @@ import ai.moeru.airicraft.agent.llm.OpenAiCompatibleLlmBackend;
 import ai.moeru.airicraft.agent.llm.PlannerExecutor;
 import ai.moeru.airicraft.agent.llm.PlannerIntent;
 import ai.moeru.airicraft.agent.llm.PlannerResponse;
+import ai.moeru.airicraft.agent.tasks.CollectResourceStepArgs;
+import ai.moeru.airicraft.agent.tasks.EvidenceKind;
+import ai.moeru.airicraft.agent.tasks.EvidenceRequirement;
+import ai.moeru.airicraft.agent.tasks.FinishStepArgs;
+import ai.moeru.airicraft.agent.tasks.LedgerStep;
+import ai.moeru.airicraft.agent.tasks.LedgerStepKind;
+import ai.moeru.airicraft.agent.tasks.LedgerStepPayload;
+import ai.moeru.airicraft.agent.tasks.LedgerStepStatus;
+import ai.moeru.airicraft.agent.tasks.MissionType;
+import ai.moeru.airicraft.agent.tasks.TaskLedger;
 import ai.moeru.airicraft.agent.tasks.TaskResourceKind;
 import ai.moeru.airicraft.agent.tasks.TaskSpec;
 import ai.moeru.airicraft.agent.tasks.TaskType;
@@ -120,6 +130,90 @@ class DialogueRuntimeTest {
 		assertEquals("Stopping the task.", response.text());
 		assertEquals(DialogueIntentType.CANCEL_TASK, response.intent().type());
 		assertEquals(null, response.intent().taskSpec());
+		runtime.shutdown();
+	}
+
+	@Test
+	void missionUpdatePlannerIntentSurvivesDialogueRuntimeMapping() {
+		OpenAiCompatibleLlmBackend backend = new OpenAiCompatibleLlmBackend(AgentConfig.LlmConfig.defaults());
+		DialogueRuntime runtime = new DialogueRuntime(new PlannerExecutor(backend), 8);
+		SemanticEventBuffer eventBuffer = new SemanticEventBuffer(32);
+		TaskLedger ledger = new TaskLedger(
+			"mission-wood-1",
+			MissionType.COLLECT_RESOURCE,
+			"Collect 4 wood logs",
+			List.of(
+				new LedgerStep(
+					"collect_logs",
+					LedgerStepKind.COLLECT_RESOURCE,
+					new LedgerStepPayload(
+						new CollectResourceStepArgs(TaskResourceKind.WOOD_LOGS, 4, "KEEP"),
+						null,
+						null,
+						null,
+						null,
+						null,
+						null,
+						null,
+						null,
+						null,
+						null,
+						null
+					),
+					List.of(),
+					LedgerStepStatus.ACTIVE,
+					List.of(new EvidenceRequirement(EvidenceKind.INVENTORY_DELTA_AT_LEAST, TaskResourceKind.WOOD_LOGS, 4, null, null)),
+					2,
+					"Collect logs"
+				),
+				new LedgerStep(
+					"finish",
+					LedgerStepKind.FINISH,
+					new LedgerStepPayload(
+						null,
+						null,
+						null,
+						null,
+						null,
+						null,
+						null,
+						null,
+						null,
+						null,
+						null,
+						new FinishStepArgs("Mission complete")
+					),
+					List.of("collect_logs"),
+					LedgerStepStatus.PENDING,
+					List.of(new EvidenceRequirement(EvidenceKind.STEP_COMPLETED, null, null, "collect_logs", null)),
+					0,
+					"Finish"
+				)
+			),
+			"collect_logs",
+			List.of(new EvidenceRequirement(EvidenceKind.INVENTORY_DELTA_AT_LEAST, TaskResourceKind.WOOD_LOGS, 4, null, null)),
+			"user_request",
+			"Keep it simple"
+		);
+		backend.injectMockResponse(new PlannerResponse(
+			"Starting the mission.",
+			new PlannerIntent(
+				"mission_update",
+				null,
+				null,
+				null,
+				null,
+				null,
+				ledger
+			)
+		));
+
+		runtime.onPlayerChat("Alice", "@agent get wood", 10L, SessionSnapshot.initial(), "Alice", Optional.empty(), eventBuffer);
+		DialogueResponse response = awaitResponse(runtime, eventBuffer, Duration.ofSeconds(1));
+
+		assertEquals("Starting the mission.", response.text());
+		assertEquals(DialogueIntentType.MISSION_UPDATE, response.intent().type());
+		assertEquals(ledger, response.intent().taskLedger());
 		runtime.shutdown();
 	}
 

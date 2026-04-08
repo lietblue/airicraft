@@ -249,16 +249,18 @@ public final class PlannerOrchestrator {
 		}
 
 		String toolResultText = toolOutcome.toolResultText();
-		PlannerRequest followUpRequest = new PlannerRequest(
-			baseRequest.tick(),
-			baseRequest.timestampMs(),
-			baseRequest.sessionMode(),
-			baseRequest.primaryInteractionPlayer(),
-			baseRequest.activeGoal(),
-			baseRequest.senderName(),
-			baseRequest.message(),
-			toolResultText
-		);
+			PlannerRequest followUpRequest = new PlannerRequest(
+				baseRequest.tick(),
+				baseRequest.timestampMs(),
+				baseRequest.sessionMode(),
+				baseRequest.primaryInteractionPlayer(),
+				baseRequest.activeGoal(),
+				baseRequest.activeTask(),
+				baseRequest.missionExecution(),
+				baseRequest.senderName(),
+				baseRequest.message(),
+				toolResultText
+			);
 		if (!plannerExecutor.submit(followUpRequest, toolOutcome.appendFollowUp(contextAggregator))) {
 			PlannerExecutionResult failure = new PlannerExecutionResult(
 				followUpRequest,

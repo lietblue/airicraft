@@ -16,6 +16,8 @@ import ai.moeru.airicraft.agent.llm.PlannerOrchestrator;
 import ai.moeru.airicraft.agent.llm.PlannerRequest;
 import ai.moeru.airicraft.agent.llm.PlannerResponse;
 import ai.moeru.airicraft.agent.session.SessionSnapshot;
+import ai.moeru.airicraft.agent.tasks.MissionExecutionSnapshot;
+import ai.moeru.airicraft.agent.tasks.TaskSnapshot;
 
 import java.time.Clock;
 import java.util.ArrayList;
@@ -170,6 +172,8 @@ public final class DialogueRuntime {
 		SessionSnapshot sessionSnapshot,
 		String primaryInteractionPlayer,
 		Optional<GoalSnapshot> activeGoal,
+		TaskSnapshot activeTask,
+		MissionExecutionSnapshot missionExecution,
 		SemanticEventBuffer eventBuffer
 	) {
 		long timestampMs = clock.millis();
@@ -185,10 +189,24 @@ public final class DialogueRuntime {
 			sessionSnapshot.mode(),
 			primaryInteractionPlayer,
 			activeGoal.orElse(null),
+			activeTask,
+			missionExecution,
 			senderName,
 			plainTextMessage,
 			null
 		));
+	}
+
+	public void onPlayerChat(
+		String senderName,
+		String plainTextMessage,
+		long tick,
+		SessionSnapshot sessionSnapshot,
+		String primaryInteractionPlayer,
+		Optional<GoalSnapshot> activeGoal,
+		SemanticEventBuffer eventBuffer
+	) {
+		onPlayerChat(senderName, plainTextMessage, tick, sessionSnapshot, primaryInteractionPlayer, activeGoal, null, null, eventBuffer);
 	}
 
 	public void onInternalTaskUpdate(
@@ -196,6 +214,8 @@ public final class DialogueRuntime {
 		long tick,
 		SessionSnapshot sessionSnapshot,
 		Optional<GoalSnapshot> activeGoal,
+		TaskSnapshot activeTask,
+		MissionExecutionSnapshot missionExecution,
 		SemanticEventBuffer eventBuffer
 	) {
 		long timestampMs = clock.millis();
@@ -210,10 +230,22 @@ public final class DialogueRuntime {
 			sessionSnapshot.mode(),
 			null,
 			activeGoal.orElse(null),
+			activeTask,
+			missionExecution,
 			"system",
 			updateMessage,
 			null
 		));
+	}
+
+	public void onInternalTaskUpdate(
+		String updateMessage,
+		long tick,
+		SessionSnapshot sessionSnapshot,
+		Optional<GoalSnapshot> activeGoal,
+		SemanticEventBuffer eventBuffer
+	) {
+		onInternalTaskUpdate(updateMessage, tick, sessionSnapshot, activeGoal, null, null, eventBuffer);
 	}
 
 	public DialogueResponse poll(long tick, SemanticEventBuffer eventBuffer) {
@@ -251,7 +283,8 @@ public final class DialogueRuntime {
 				plannerResponse.intent().targetPlayer(),
 				plannerResponse.intent().position(),
 				plannerResponse.intent().mineSpec(),
-				plannerResponse.intent().taskSpec()
+				plannerResponse.intent().taskSpec(),
+				plannerResponse.intent().taskLedger()
 			),
 			tick
 		);

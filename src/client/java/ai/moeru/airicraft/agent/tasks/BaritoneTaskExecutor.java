@@ -13,21 +13,32 @@ public final class BaritoneTaskExecutor implements WorldTaskExecutor {
 	private final BaritoneFacade facade;
 
 	private GoalSnapshot appliedGoal;
+	private GoalSnapshot terminalEventGoal;
+	private TaskExecutionState terminalEventState;
 	private TaskExecutionSnapshot snapshot = TaskExecutionSnapshot.idle();
 
 	public BaritoneTaskExecutor(BaritoneFacade facade) {
 		this.facade = Objects.requireNonNull(facade, "facade");
+		this.facade.applySettings();
 	}
 
 	@Override
 	public Optional<TaskTerminalEvent> tick(SessionSnapshot sessionSnapshot, Optional<GoalSnapshot> activeGoal) {
 		if (!facade.isLoaded()) {
-			appliedGoal = null;
-			snapshot = TaskExecutionSnapshot.idle();
+			reset();
+			return Optional.empty();
+		}
+
+		if (activeGoal.isEmpty()) {
+			if (appliedGoal != null) {
+				facade.cancel();
+			}
+			reset();
 			return Optional.empty();
 		}
 
 		if (!sessionSnapshot.companionActuationAllowed()) {
+			clearTerminalEvent(activeGoal.get());
 			snapshot = new TaskExecutionSnapshot(
 				TaskExecutionState.PAUSED_BY_SESSION_GATE,
 				activeGoal.orElse(null),
@@ -38,25 +49,18 @@ public final class BaritoneTaskExecutor implements WorldTaskExecutor {
 			return Optional.empty();
 		}
 
-		if (activeGoal.isEmpty()) {
-			if (appliedGoal != null) {
-				facade.cancel();
-				appliedGoal = null;
-			}
-			snapshot = TaskExecutionSnapshot.idle();
-			return Optional.empty();
-		}
-
 		if (!sameGoalTarget(activeGoal.get(), appliedGoal)) {
 			if (appliedGoal != null) {
 				facade.cancel();
 			}
+			clearTerminalEvent(activeGoal.get());
 			applyGoal(activeGoal.get());
 		}
 		appliedGoal = activeGoal.get();
 
 		Optional<String> pathEvent = facade.pollPathEvent();
-		TaskExecutionState state = terminalStateFor(pathEvent)
+		Optional<TaskExecutionState> terminalState = terminalStateFor(pathEvent);
+		TaskExecutionState state = terminalState
 			.orElseGet(() -> isTerminal(snapshot.state()) ? snapshot.state() : TaskExecutionState.RUNNING);
 		snapshot = new TaskExecutionSnapshot(
 			state,
@@ -66,10 +70,18 @@ public final class BaritoneTaskExecutor implements WorldTaskExecutor {
 			facade.estimatedTicksToGoal().orElse(null)
 		);
 
-		return terminalStateFor(pathEvent).map(stateValue -> new TaskTerminalEvent(
+		if (terminalState.isEmpty()) {
+			return Optional.empty();
+		}
+		if (sameGoalTarget(appliedGoal, terminalEventGoal) && terminalState.get() == terminalEventState) {
+			return Optional.empty();
+		}
+		terminalEventGoal = appliedGoal;
+		terminalEventState = terminalState.get();
+		return Optional.of(new TaskTerminalEvent(
 			appliedGoal,
-			stateValue,
-			messageFor(stateValue)
+			terminalState.get(),
+			messageFor(terminalState.get())
 		));
 	}
 
@@ -130,12 +142,25 @@ public final class BaritoneTaskExecutor implements WorldTaskExecutor {
 	@Override
 	public void onWorldLeave() {
 		facade.cancel();
-		appliedGoal = null;
-		snapshot = TaskExecutionSnapshot.idle();
+		reset();
 	}
 
 	@Override
 	public void shutdown() {
 		onWorldLeave();
+	}
+
+	private void reset() {
+		appliedGoal = null;
+		terminalEventGoal = null;
+		terminalEventState = null;
+		snapshot = TaskExecutionSnapshot.idle();
+	}
+
+	private void clearTerminalEvent(GoalSnapshot goal) {
+		if (!sameGoalTarget(goal, terminalEventGoal)) {
+			terminalEventGoal = null;
+			terminalEventState = null;
+		}
 	}
 }

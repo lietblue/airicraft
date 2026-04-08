@@ -6,6 +6,7 @@ import java.util.Optional;
 public enum DialogueIntentType {
 	SET_GOAL,
 	CLEAR_GOAL,
+	MISSION_UPDATE,
 	SUBMIT_TASK,
 	CANCEL_TASK,
 	REPLY_ONLY,
@@ -23,6 +24,7 @@ public enum DialogueIntentType {
 		return switch (wireValue.toLowerCase(Locale.ROOT)) {
 			case "set_goal" -> Optional.of(SET_GOAL);
 			case "clear_goal" -> Optional.of(CLEAR_GOAL);
+			case "mission_update" -> Optional.of(MISSION_UPDATE);
 			case "submit_task" -> Optional.of(SUBMIT_TASK);
 			case "cancel_task" -> Optional.of(CANCEL_TASK);
 			case "reply_only" -> Optional.of(REPLY_ONLY);

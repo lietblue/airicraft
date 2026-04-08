@@ -34,6 +34,7 @@ class BaritoneTaskExecutorTest {
 		executor.tick(multiplayer(), Optional.of(goal));
 		executor.tick(multiplayer(), Optional.of(goal));
 
+		assertEquals(1, facade.applySettingsCalls);
 		assertEquals(1, facade.navigateCalls.size());
 		assertEquals(TaskExecutionState.RUNNING, executor.snapshot().state());
 	}
@@ -87,6 +88,31 @@ class BaritoneTaskExecutorTest {
 	}
 
 	@Test
+	void repeatedTerminalPathEventsOnlyEmitOneTerminalCallbackPerGoal() {
+		FakeBaritoneFacade facade = new FakeBaritoneFacade();
+		BaritoneTaskExecutor executor = new BaritoneTaskExecutor(facade);
+		GoalSnapshot goal = new GoalSnapshot(
+			GoalType.FOLLOW_PLAYER,
+			"LanAlice",
+			null,
+			null,
+			20L,
+			"planner_response"
+		);
+
+		executor.tick(multiplayer(), Optional.of(goal));
+		facade.pathEvents.add("CANCELED");
+		facade.pathEvents.add("CANCELED");
+
+		Optional<TaskTerminalEvent> first = executor.tick(multiplayer(), Optional.of(goal));
+		Optional<TaskTerminalEvent> second = executor.tick(multiplayer(), Optional.of(goal));
+
+		assertTrue(first.isPresent());
+		assertTrue(second.isEmpty());
+		assertEquals(TaskExecutionState.CANCELLED, executor.snapshot().state());
+	}
+
+	@Test
 	void sameGoalTargetWithDifferentTickDoesNotRestartPathing() {
 		FakeBaritoneFacade facade = new FakeBaritoneFacade();
 		BaritoneTaskExecutor executor = new BaritoneTaskExecutor(facade);
@@ -133,6 +159,16 @@ class BaritoneTaskExecutorTest {
 		assertEquals(0, facade.followCalls.size());
 	}
 
+	@Test
+	void noGoalStaysIdleEvenWhenActuationIsBlocked() {
+		FakeBaritoneFacade facade = new FakeBaritoneFacade();
+		BaritoneTaskExecutor executor = new BaritoneTaskExecutor(facade);
+
+		executor.tick(singleplayerLocal(), Optional.empty());
+
+		assertEquals(TaskExecutionState.IDLE, executor.snapshot().state());
+	}
+
 	private static SessionSnapshot multiplayer() {
 		return new SessionSnapshot(SessionMode.REMOTE_MULTIPLAYER, true, true, "minecraft:overworld", false, 0, 30L);
 	}
@@ -142,6 +178,7 @@ class BaritoneTaskExecutorTest {
 	}
 
 	private static final class FakeBaritoneFacade implements BaritoneFacade {
+		private int applySettingsCalls;
 		private final List<GoalPosition> navigateCalls = new ArrayList<>();
 		private final List<String> followCalls = new ArrayList<>();
 		private final List<GoalMineSpec> mineCalls = new ArrayList<>();
@@ -154,6 +191,7 @@ class BaritoneTaskExecutorTest {
 
 		@Override
 		public void applySettings() {
+			applySettingsCalls++;
 		}
 
 		@Override

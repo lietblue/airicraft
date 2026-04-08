@@ -4,6 +4,27 @@ import ai.moeru.airicraft.agent.events.SemanticEvent;
 import ai.moeru.airicraft.agent.goals.GoalSnapshot;
 import ai.moeru.airicraft.agent.goals.GoalType;
 import ai.moeru.airicraft.agent.session.SessionMode;
+import ai.moeru.airicraft.agent.tasks.LedgerStepKind;
+import ai.moeru.airicraft.agent.tasks.MissionExecutionSnapshot;
+import ai.moeru.airicraft.agent.tasks.MissionSpec;
+import ai.moeru.airicraft.agent.tasks.MissionType;
+import ai.moeru.airicraft.agent.tasks.LedgerStep;
+import ai.moeru.airicraft.agent.tasks.LedgerStepPayload;
+import ai.moeru.airicraft.agent.tasks.LedgerStepStatus;
+import ai.moeru.airicraft.agent.tasks.TaskLedger;
+import ai.moeru.airicraft.agent.tasks.StepExecutionResult;
+import ai.moeru.airicraft.agent.tasks.StepExecutionStatus;
+import ai.moeru.airicraft.agent.tasks.TaskExecutionSnapshot;
+import ai.moeru.airicraft.agent.tasks.TaskOwnership;
+import ai.moeru.airicraft.agent.tasks.TaskProgressSnapshot;
+import ai.moeru.airicraft.agent.tasks.TaskSnapshot;
+import ai.moeru.airicraft.agent.tasks.TaskState;
+import ai.moeru.airicraft.agent.tasks.TaskStep;
+import ai.moeru.airicraft.agent.tasks.WorldEvidence;
+import ai.moeru.airicraft.agent.tasks.CollectResourceStepArgs;
+import ai.moeru.airicraft.agent.tasks.EvidenceKind;
+import ai.moeru.airicraft.agent.tasks.EvidenceRequirement;
+import ai.moeru.airicraft.agent.tasks.TaskResourceKind;
 import org.junit.jupiter.api.Test;
 
 import java.time.Clock;
@@ -54,6 +75,8 @@ class PlannerContextAggregatorTest {
 			SessionMode.REMOTE_MULTIPLAYER,
 			"Alice",
 			new GoalSnapshot(GoalType.FOLLOW_PLAYER, "Alice", 200L, "planner"),
+			null,
+			null,
 			"Bob",
 			"status?",
 			null
@@ -63,6 +86,74 @@ class PlannerContextAggregatorTest {
 		assertTrue(conversation.messages().stream().anyMatch(message -> message.content().contains("Active goal: Follow Alice.")));
 		assertTrue(conversation.messages().stream().anyMatch(message -> message.content().contains("Started following Alice")));
 		assertTrue(conversation.messages().stream().anyMatch(message -> message.content().contains("The planner set goal FOLLOW_PLAYER for Alice")));
+	}
+
+	@Test
+	void includesMissionAndEvidenceNoticesWhenPresent() {
+		Clock clock = Clock.fixed(Instant.ofEpochMilli(10_000L), ZoneId.of("Asia/Taipei"));
+		PlannerContextAggregator aggregator = new PlannerContextAggregator(clock, 65_536, PlannerVisionMode.EXTERNAL_SUMMARY);
+		TaskLedger ledger = new TaskLedger(
+			"mission-wood-1",
+			MissionType.COLLECT_RESOURCE,
+			"Collect 4 wood logs",
+			List.of(new LedgerStep(
+				"collect_logs",
+				LedgerStepKind.COLLECT_RESOURCE,
+				new LedgerStepPayload(
+					new CollectResourceStepArgs(TaskResourceKind.WOOD_LOGS, 4, "KEEP"),
+					null, null, null, null, null, null, null, null, null, null, null
+				),
+				List.of(),
+				LedgerStepStatus.ACTIVE,
+				List.of(new EvidenceRequirement(EvidenceKind.INVENTORY_DELTA_AT_LEAST, TaskResourceKind.WOOD_LOGS, 4, null, null)),
+				1,
+				"Collect logs"
+			)),
+			"collect_logs",
+			List.of(new EvidenceRequirement(EvidenceKind.INVENTORY_DELTA_AT_LEAST, TaskResourceKind.WOOD_LOGS, 4, null, null)),
+			"user_request",
+			"Keep it simple"
+		);
+
+		LlmConversation conversation = aggregator.buildPlannerConversation(new PlannerRequest(
+			200L,
+			10_000L,
+			SessionMode.REMOTE_MULTIPLAYER,
+			"Alice",
+			null,
+			new TaskSnapshot(
+				TaskState.RUNNING,
+				new MissionSpec("mission-wood-1", MissionType.COLLECT_RESOURCE, "Collect 4 wood logs"),
+				ledger,
+				null,
+				new TaskProgressSnapshot(2, 2),
+				TaskStep.MINE_TARGET,
+				TaskOwnership.TASK_RUNTIME,
+				"planner_response",
+				null,
+				"collect_logs",
+				LedgerStepKind.COLLECT_RESOURCE,
+				StepExecutionResult.idle(),
+				200L
+			),
+			new MissionExecutionSnapshot(
+				new MissionSpec("mission-wood-1", MissionType.COLLECT_RESOURCE, "Collect 4 wood logs"),
+				ledger,
+				null,
+				new WorldEvidence(Map.of(ai.moeru.airicraft.agent.tasks.TaskResourceKind.WOOD_LOGS, 2), Map.of("minecraft:oak_log", 3), "minecraft:overworld", 0, 64, 0, null, 200L),
+				new StepExecutionResult("collect_logs", StepExecutionStatus.RUNNING, null, Map.of(), Map.of(), 200L),
+				TaskExecutionSnapshot.idle()
+			),
+			"Bob",
+			"status?",
+			null
+		));
+
+		assertTrue(conversation.messages().stream().anyMatch(message -> message.content().contains("Active mission: Mission COLLECT_RESOURCE")));
+		assertTrue(conversation.messages().stream().anyMatch(message -> message.content().contains("Mission evidence snapshot:")));
+		assertTrue(conversation.messages().stream().anyMatch(message -> message.content().contains("Mission ledger snapshot:")));
+		assertTrue(conversation.messages().stream().anyMatch(message -> message.content().contains("Last step result:")));
+		assertTrue(conversation.messages().stream().anyMatch(message -> message.content().contains("Mission history summary:")));
 	}
 
 	@Test
@@ -101,6 +192,8 @@ class PlannerContextAggregatorTest {
 			timestampMs / 50L,
 			timestampMs,
 			SessionMode.OUT_OF_WORLD,
+			null,
+			null,
 			null,
 			null,
 			sender,

@@ -1,0 +1,12 @@
+package ai.moeru.airicraft.agent.tasks;
+
+public enum TaskState {
+	IDLE,
+	QUEUED,
+	RUNNING,
+	WAITING_FOR_PICKUP,
+	PAUSED_BY_SESSION_GATE,
+	COMPLETED,
+	FAILED,
+	CANCELLED
+}

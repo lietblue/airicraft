@@ -4,6 +4,17 @@ import ai.moeru.airicraft.agent.AgentConfig;
 import ai.moeru.airicraft.agent.goals.GoalMineSpec;
 import ai.moeru.airicraft.agent.goals.GoalPosition;
 import ai.moeru.airicraft.agent.goals.GoalType;
+import ai.moeru.airicraft.agent.tasks.CollectResourceStepArgs;
+import ai.moeru.airicraft.agent.tasks.CraftRecipeStepArgs;
+import ai.moeru.airicraft.agent.tasks.EvidenceKind;
+import ai.moeru.airicraft.agent.tasks.EvidenceRequirement;
+import ai.moeru.airicraft.agent.tasks.FinishStepArgs;
+import ai.moeru.airicraft.agent.tasks.LedgerStep;
+import ai.moeru.airicraft.agent.tasks.LedgerStepKind;
+import ai.moeru.airicraft.agent.tasks.LedgerStepPayload;
+import ai.moeru.airicraft.agent.tasks.LedgerStepStatus;
+import ai.moeru.airicraft.agent.tasks.MissionType;
+import ai.moeru.airicraft.agent.tasks.TaskLedger;
 import ai.moeru.airicraft.agent.tasks.TaskResourceKind;
 import ai.moeru.airicraft.agent.tasks.TaskSpec;
 import ai.moeru.airicraft.agent.tasks.TaskType;
@@ -242,6 +253,187 @@ class OpenAiCompatibleLlmBackendTest {
 			assertEquals("Stopping the task.", result.payload().replyText());
 			assertEquals("cancel_task", result.payload().intent().type());
 			assertEquals(null, result.payload().intent().taskSpec());
+		}
+	}
+
+	@Test
+	void generateParsesMissionUpdatePlannerPayload() throws Exception {
+		String responseBody = """
+			{
+			  "choices": [
+			    {
+			      "message": {
+			        "content": "{\\"replyText\\":\\"Starting the mission.\\",\\"intent\\":{\\"type\\":\\"mission_update\\",\\"taskLedger\\":{\\"missionId\\":\\"mission-wood-1\\",\\"missionType\\":\\"COLLECT_RESOURCE\\",\\"goalText\\":\\"Collect 4 wood logs\\",\\"steps\\":[{\\"id\\":\\"collect_logs\\",\\"kind\\":\\"COLLECT_RESOURCE\\",\\"args\\":{\\"collectResource\\":{\\"resourceKind\\":\\"WOOD_LOGS\\",\\"quantity\\":4,\\"deliveryPolicy\\":\\"KEEP\\"}},\\"dependsOn\\":[],\\"status\\":\\"ACTIVE\\",\\"expectedEvidence\\":[{\\"type\\":\\"INVENTORY_DELTA_AT_LEAST\\",\\"resourceKind\\":\\"WOOD_LOGS\\",\\"quantity\\":4}],\\"retryBudget\\":2,\\"notes\\":\\"Collect logs\\"},{\\"id\\":\\"finish\\",\\"kind\\":\\"FINISH\\",\\"args\\":{\\"finish\\":{\\"reason\\":\\"Mission complete\\"}},\\"dependsOn\\":[\\"collect_logs\\"],\\"status\\":\\"PENDING\\",\\"expectedEvidence\\":[{\\"type\\":\\"STEP_COMPLETED\\",\\"stepId\\":\\"collect_logs\\"}],\\"retryBudget\\":0,\\"notes\\":\\"Finish\\"}],\\"activeStepId\\":\\"collect_logs\\",\\"completionCriteria\\":[{\\"type\\":\\"INVENTORY_DELTA_AT_LEAST\\",\\"resourceKind\\":\\"WOOD_LOGS\\",\\"quantity\\":4}],\\"replanReason\\":\\"user_request\\",\\"plannerNotes\\":\\"Keep it simple\\"}},\\"toolRequest\\":null}"
+			      }
+			    }
+			  ],
+			  "usage": {
+			    "prompt_tokens": 1234,
+			    "completion_tokens": 56,
+			    "total_tokens": 1290
+			  }
+			}
+			""";
+		AtomicReference<String> bodyRef = new AtomicReference<>();
+		try (TestServer server = TestServer.start(bodyRef, responseBody)) {
+			OpenAiCompatibleLlmBackend backend = new OpenAiCompatibleLlmBackend(new AgentConfig.LlmConfig(
+				"http://127.0.0.1:" + server.port(),
+				"planner-key",
+				"planner-model",
+				"https://api.openai.com/v1",
+				"",
+				"",
+				15_000,
+				10_000,
+				8,
+				65_536,
+				"low",
+				false
+			));
+
+			LlmCallResult<PlannerResponse> result = backend.generate(LlmConversation.of(List.of(
+				LlmChatMessage.system("system"),
+				LlmChatMessage.user("Alice said just now: @agent get 4 wood logs", LlmMessageKind.USER_TURN)
+			)));
+
+			assertEquals("Starting the mission.", result.payload().replyText());
+			assertEquals("mission_update", result.payload().intent().type());
+			assertEquals(new TaskLedger(
+				"mission-wood-1",
+				MissionType.COLLECT_RESOURCE,
+				"Collect 4 wood logs",
+				List.of(
+					new LedgerStep(
+						"collect_logs",
+						LedgerStepKind.COLLECT_RESOURCE,
+						new LedgerStepPayload(
+							new CollectResourceStepArgs(TaskResourceKind.WOOD_LOGS, 4, "KEEP"),
+							null,
+							null,
+							null,
+							null,
+							null,
+							null,
+							null,
+							null,
+							null,
+							null,
+							null
+						),
+						List.of(),
+						LedgerStepStatus.ACTIVE,
+						List.of(new EvidenceRequirement(EvidenceKind.INVENTORY_DELTA_AT_LEAST, TaskResourceKind.WOOD_LOGS, 4, null, null)),
+						2,
+						"Collect logs"
+					),
+					new LedgerStep(
+						"finish",
+						LedgerStepKind.FINISH,
+						new LedgerStepPayload(
+							null,
+							null,
+							null,
+							null,
+							null,
+							null,
+							null,
+							null,
+							null,
+							null,
+							null,
+							new FinishStepArgs("Mission complete")
+						),
+						List.of("collect_logs"),
+						LedgerStepStatus.PENDING,
+						List.of(new EvidenceRequirement(EvidenceKind.STEP_COMPLETED, null, null, "collect_logs", null)),
+						0,
+						"Finish"
+					)
+				),
+				"collect_logs",
+				List.of(new EvidenceRequirement(EvidenceKind.INVENTORY_DELTA_AT_LEAST, TaskResourceKind.WOOD_LOGS, 4, null, null)),
+				"user_request",
+				"Keep it simple"
+			), result.payload().intent().taskLedger());
+		}
+	}
+
+	@Test
+	void generateParsesCraftMissionLedgerWithItemEvidence() throws Exception {
+		String responseBody = """
+			{
+			  "choices": [
+			    {
+			      "message": {
+			        "content": "{\\"replyText\\":\\"Crafting sticks next.\\",\\"intent\\":{\\"type\\":\\"mission_update\\",\\"taskLedger\\":{\\"missionId\\":\\"mission-craft-1\\",\\"missionType\\":\\"CRAFT_TOOL\\",\\"goalText\\":\\"Turn wood into sticks\\",\\"steps\\":[{\\"id\\":\\"craft_sticks\\",\\"kind\\":\\"CRAFT_RECIPE\\",\\"args\\":{\\"craftRecipe\\":{\\"recipeId\\":\\"minecraft:stick\\",\\"quantity\\":4}},\\"dependsOn\\":[],\\"status\\":\\"ACTIVE\\",\\"expectedEvidence\\":[{\\"type\\":\\"ITEM_DELTA_AT_LEAST\\",\\"itemId\\":\\"minecraft:stick\\",\\"quantity\\":4}],\\"retryBudget\\":1,\\"notes\\":\\"Craft sticks from planks\\"}],\\"activeStepId\\":\\"craft_sticks\\",\\"completionCriteria\\":[],\\"replanReason\\":\\"step_completed\\",\\"plannerNotes\\":\\"Use inventory crafting\\"}},\\"toolRequest\\":null}"
+			      }
+			    }
+			  ],
+			  "usage": {
+			    "prompt_tokens": 120,
+			    "completion_tokens": 40,
+			    "total_tokens": 160
+			  }
+			}
+			""";
+		AtomicReference<String> bodyRef = new AtomicReference<>();
+		try (TestServer server = TestServer.start(bodyRef, responseBody)) {
+			OpenAiCompatibleLlmBackend backend = new OpenAiCompatibleLlmBackend(new AgentConfig.LlmConfig(
+				"http://127.0.0.1:" + server.port(),
+				"planner-key",
+				"planner-model",
+				"https://api.openai.com/v1",
+				"",
+				"",
+				15_000,
+				10_000,
+				8,
+				65_536,
+				"low",
+				false
+			));
+
+			LlmCallResult<PlannerResponse> result = backend.generate(LlmConversation.of(List.of(
+				LlmChatMessage.system("system"),
+				LlmChatMessage.user("Alice said just now: @agent make sticks", LlmMessageKind.USER_TURN)
+			)));
+
+			assertEquals("Crafting sticks next.", result.payload().replyText());
+			assertEquals("mission_update", result.payload().intent().type());
+			assertEquals(new TaskLedger(
+				"mission-craft-1",
+				MissionType.CRAFT_TOOL,
+				"Turn wood into sticks",
+				List.of(
+					new LedgerStep(
+						"craft_sticks",
+						LedgerStepKind.CRAFT_RECIPE,
+						new LedgerStepPayload(
+							null,
+							null,
+							null,
+							null,
+							new CraftRecipeStepArgs("minecraft:stick", 4),
+							null,
+							null,
+							null,
+							null,
+							null,
+							null,
+							null
+						),
+						List.of(),
+						LedgerStepStatus.ACTIVE,
+						List.of(new EvidenceRequirement(EvidenceKind.ITEM_DELTA_AT_LEAST, null, 4, null, "minecraft:stick", null)),
+						1,
+						"Craft sticks from planks"
+					)
+				),
+				"craft_sticks",
+				List.of(),
+				"step_completed",
+				"Use inventory crafting"
+			), result.payload().intent().taskLedger());
 		}
 	}
 
