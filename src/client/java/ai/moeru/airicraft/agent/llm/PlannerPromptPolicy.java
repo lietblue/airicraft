@@ -129,6 +129,8 @@ public final class PlannerPromptPolicy {
 			If the final user message begins with "COMPACTION TASK:", ignore the normal planner output format for this response and follow that final compaction task instead.
 			Use mission_update for any execution plan. Return the full taskLedger every planning turn, not a patch.
 			Runtime notices describing the mission ledger, world evidence, and last step result are the source of truth for progress.
+			INVENTORY_DELTA_AT_LEAST means items gained since the current mission started, not absolute inventory and not the current total inventory.
+			When runtime notices include collected/remaining progress, trust that delta progress over raw inventoryCounts.
 			Do not invent step kinds or ad-hoc args fields outside the schema above.
 			Currently implemented step executors are COLLECT_RESOURCE, CRAFT_RECIPE, WAIT, ASK_USER, and FINISH. Treat the other step kinds as reserved unless an operator explicitly directs otherwise.
 			Use collect_resource for gathering tasks like wood logs.

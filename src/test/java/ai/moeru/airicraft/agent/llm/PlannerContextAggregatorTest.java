@@ -150,6 +150,7 @@ class PlannerContextAggregatorTest {
 		));
 
 		assertTrue(conversation.messages().stream().anyMatch(message -> message.content().contains("Active mission: Mission COLLECT_RESOURCE")));
+		assertTrue(conversation.messages().stream().anyMatch(message -> message.content().contains("Mission progress delta: collected=2, remaining=2.")));
 		assertTrue(conversation.messages().stream().anyMatch(message -> message.content().contains("Mission evidence snapshot:")));
 		assertTrue(conversation.messages().stream().anyMatch(message -> message.content().contains("Mission ledger snapshot:")));
 		assertTrue(conversation.messages().stream().anyMatch(message -> message.content().contains("Last step result:")));

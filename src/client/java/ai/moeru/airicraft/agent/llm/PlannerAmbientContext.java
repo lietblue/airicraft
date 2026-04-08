@@ -66,6 +66,12 @@ public record PlannerAmbientContext(
 		if (missionExecution != null && missionExecution.lastStepResult() != null && missionExecution.lastStepResult().status() != null) {
 			description.append(". Last step result ").append(missionExecution.lastStepResult().status().name());
 		}
+		if (task.progress() != null) {
+			description.append(". Mission progress delta: collected=")
+				.append(task.progress().collected())
+				.append(", remaining=")
+				.append(task.progress().remaining());
+		}
 		description.append(".");
 		return description.toString();
 	}
