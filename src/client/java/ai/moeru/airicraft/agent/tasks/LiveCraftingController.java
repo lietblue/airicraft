@@ -11,6 +11,7 @@ import net.minecraft.registry.RegistryKey;
 import net.minecraft.registry.RegistryKeys;
 import net.minecraft.registry.Registries;
 import net.minecraft.screen.AbstractCraftingScreenHandler;
+import net.minecraft.screen.PlayerScreenHandler;
 import net.minecraft.screen.ScreenHandler;
 import net.minecraft.screen.slot.Slot;
 import net.minecraft.screen.slot.SlotActionType;
@@ -31,7 +32,12 @@ final class LiveCraftingController implements CraftingController {
 			return CraftingAttemptResult.failed("network_unavailable");
 		}
 		ScreenHandler handler = client.player.currentScreenHandler;
-		if (!(handler instanceof AbstractCraftingScreenHandler craftingHandler)) {
+		Slot outputSlot;
+		if (handler instanceof AbstractCraftingScreenHandler craftingHandler) {
+			outputSlot = craftingHandler.getOutputSlot();
+		} else if (handler instanceof PlayerScreenHandler) {
+			outputSlot = handler.getSlot(0);
+		} else {
 			return CraftingAttemptResult.failed("crafting_screen_unavailable");
 		}
 
@@ -43,7 +49,6 @@ final class LiveCraftingController implements CraftingController {
 		NetworkRecipeId networkRecipeId = displayEntry.get().id();
 		client.interactionManager.clickRecipe(handler.syncId, networkRecipeId, craftAll);
 
-		Slot outputSlot = craftingHandler.getOutputSlot();
 		if (outputSlot == null || !outputSlot.hasStack()) {
 			return CraftingAttemptResult.failed("recipe_not_craftable");
 		}
