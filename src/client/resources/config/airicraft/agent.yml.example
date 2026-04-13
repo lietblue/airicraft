@@ -29,6 +29,21 @@ maxRecentConversationTurns: 8
 # Trigger a context compaction checkpoint once the planner input prompt reaches this many tokens.
 plannerCompactionTriggerTokens: 65536
 
+# Maximum number of raw semantic events allowed to remain pending before planner auto-flush is triggered.
+plannerPendingSemanticEventCap: 128
+
+# Maximum number of superseded planner attempts allowed to remain in flight at once.
+plannerSessionMaxConcurrentAttempts: 3
+
+# Additional coalesce delay per queued supersede trigger after the first.
+plannerSessionCoalesceStepMillis: 10
+
+# Minimum coalesce delay once two or more queued triggers are being merged.
+plannerSessionCoalesceMinMillis: 10
+
+# Maximum coalesce delay for superseded planner replacement generations.
+plannerSessionCoalesceMaxMillis: 100
+
 # Image detail hint passed to compatible multimodal providers: low | high | auto
 visionImageDetail: "low"
 

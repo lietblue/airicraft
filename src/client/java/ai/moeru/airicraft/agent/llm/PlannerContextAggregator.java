@@ -2,6 +2,10 @@ package ai.moeru.airicraft.agent.llm;
 
 import ai.moeru.airicraft.agent.dialogue.DialogueTurn;
 import ai.moeru.airicraft.agent.events.SemanticEvent;
+import ai.moeru.airicraft.agent.events.SemanticEventQueryResult;
+import ai.moeru.airicraft.agent.semantic.SemanticContextProjectionResult;
+import ai.moeru.airicraft.agent.semantic.SemanticContextProjector;
+import ai.moeru.airicraft.agent.semantic.SemanticContextUpdate;
 
 import java.time.Clock;
 import java.time.ZoneId;
@@ -10,18 +14,30 @@ import java.util.List;
 import java.util.Objects;
 
 public final class PlannerContextAggregator {
+	private static final int DEFAULT_PENDING_SEMANTIC_EVENT_CAP = 128;
+	private static final String OVERFLOW_FLUSH_INSTRUCTION = "Pending semantic context reached capacity. Review the context updates above and respond once if any reply or action is needed.";
+
 	private final Clock clock;
 	private final ZoneId zoneId;
 	private final int compactionTriggerTokens;
+	private final int pendingSemanticEventCap;
 	private final PlannerVisionMode visionMode;
+	private final SemanticContextProjector semanticContextProjector = new SemanticContextProjector();
 
 	private PlannerContextState state = PlannerContextState.initial();
-	private LlmConversation frozenPlannerConversation;
+	private PlannerContextSnapshot lastFrozenSnapshot;
+	private PlannerRequestSeed latestRequestSeed;
+	private boolean overflowFlushPending;
 
 	public PlannerContextAggregator(Clock clock, int compactionTriggerTokens, PlannerVisionMode visionMode) {
+		this(clock, compactionTriggerTokens, DEFAULT_PENDING_SEMANTIC_EVENT_CAP, visionMode);
+	}
+
+	public PlannerContextAggregator(Clock clock, int compactionTriggerTokens, int pendingSemanticEventCap, PlannerVisionMode visionMode) {
 		this.clock = Objects.requireNonNull(clock, "clock");
 		this.zoneId = clock.getZone();
 		this.compactionTriggerTokens = compactionTriggerTokens;
+		this.pendingSemanticEventCap = Math.max(1, pendingSemanticEventCap);
 		this.visionMode = Objects.requireNonNull(visionMode, "visionMode");
 	}
 
@@ -29,112 +45,172 @@ public final class PlannerContextAggregator {
 		return state.compactionPending();
 	}
 
+	public boolean hasQueuedTriggers() {
+		return !state.queuedTriggers().isEmpty();
+	}
+
+	public int queuedTriggerCount() {
+		return state.queuedTriggers().size();
+	}
+
+	public boolean hasPendingOverflowFlush() {
+		return overflowFlushPending;
+	}
+
 	public LlmUsageSnapshot lastObservedUsage() {
 		return state.lastObservedUsage();
 	}
 
+	public long lastObservedEventSeqNo() {
+		return state.lastObservedEventSeqNo();
+	}
+
 	public PlannerContextDebugSnapshot debugSnapshot() {
+		SemanticContextProjectionResult projection = pendingSemanticProjection(clock.millis());
 		return new PlannerContextDebugSnapshot(
 			compactionTriggerTokens,
 			state.compactionPending(),
-			state.rawArchiveTape().size(),
-			state.canonicalTape().size(),
-			state.pendingEntries().size(),
-			frozenPlannerConversation == null ? 0 : frozenPlannerConversation.messages().size(),
+			state.acceptedHistoryTape().size(),
+			state.pendingSemanticEvents().size(),
+			projection.updates().size(),
+			lastFrozenSnapshot == null ? 0 : lastFrozenSnapshot.plannerConversation().messages().size(),
+			state.queuedTriggers().size(),
 			state.lastObservedEventSeqNo(),
-			state.lastTimeBeaconAtMs(),
+			state.lastAcceptedTimeContextAtMs(),
+			state.pendingSemanticGapVersion() != 0L,
+			overflowFlushPending,
 			state.lastObservedUsage(),
-			state.lastAmbientContext(),
+			state.lastAcceptedAmbientContext(),
 			state.activeCheckpoint()
 		);
 	}
 
-	public void recordEvents(List<SemanticEvent> events, long anchorTimeMs) {
-		if (events == null || events.isEmpty()) {
-			return;
+	public void recordObservedEvents(SemanticEventQueryResult queryResult, PlannerRequestSeed requestSeed) {
+		recordPlannerRequestSeed(requestSeed);
+		state = PlannerContextReducer.recordObservedEvents(state, queryResult);
+		recomputeOverflowFlushPending();
+	}
+
+	public void recordObservedEvents(SemanticEventQueryResult queryResult) {
+		recordObservedEvents(queryResult, null);
+	}
+
+	public void recordPlannerRequestSeed(PlannerRequestSeed requestSeed) {
+		if (requestSeed != null) {
+			latestRequestSeed = requestSeed;
+		}
+	}
+
+	public void cancelPendingOverflowFlush() {
+		overflowFlushPending = false;
+	}
+
+	public void enqueueTrigger(PlannerTrigger trigger) {
+		Objects.requireNonNull(trigger, "trigger");
+		state = PlannerContextReducer.enqueueTrigger(state, trigger.withSeqNo(state.nextTriggerSeqNo()));
+	}
+
+	public PlannerContextSnapshot freezePlannerSnapshot(PlannerRequest request) {
+		Objects.requireNonNull(request, "request");
+		recordPlannerRequestSeed(PlannerRequestSeed.fromRequest(request));
+		if (state.queuedTriggers().isEmpty()) {
+			return null;
 		}
 
-		long previousSeqNo = state.lastObservedEventSeqNo();
-		long latestSeqNo = previousSeqNo;
-		ArrayList<PlannerContextEntry> notices = new ArrayList<>();
-		boolean sawGap = false;
-		for (SemanticEvent event : events) {
-			if (event.seqNo() <= previousSeqNo) {
-				continue;
-			}
-			if (!sawGap && event.seqNo() > previousSeqNo + 1L) {
-				notices.add(new PlannerContextEntry(
-					PlannerContextEntryType.NOTICE,
-					null,
-					"Some earlier context events were dropped before they could be summarized.",
-					event.tick(),
-					event.timestampMs()
-				));
-				sawGap = true;
-			}
-			String rendered = SemanticEventNoticeFormatter.format(event, anchorTimeMs);
-			if (rendered != null && !rendered.isBlank()) {
-				notices.add(new PlannerContextEntry(
-					PlannerContextEntryType.NOTICE,
-					null,
-					rendered,
-					event.tick(),
-					event.timestampMs()
-				));
-			}
-			latestSeqNo = Math.max(latestSeqNo, event.seqNo());
+		long nowMs = request.timestampMs();
+		PlannerAmbientContext ambientContext = PlannerAmbientContext.fromRequest(request);
+		long renderedTimeContextAtMs = PlannerContextPolicy.shouldInjectTimeBeacon(state.lastAcceptedTimeContextAtMs(), nowMs)
+			? nowMs
+			: -1L;
+		List<LlmChatMessage> snapshotNotices = renderSnapshotNotices(request, ambientContext, renderedTimeContextAtMs);
+
+		PlannerTriggerBatch triggerBatch = PlannerTriggerBatch.of(state.queuedTriggers());
+		PlannerRequest combinedRequest = request.withTriggerBatch(triggerBatch);
+		PlannerContextSnapshot snapshot = new PlannerContextSnapshot(
+			combinedRequest,
+			PlannerSnapshotMode.TRIGGERED,
+			triggerBatch,
+			composeConversation(nowMs, snapshotNotices, triggerBatch.toTerminalMessage()),
+			state.pendingSemanticEvents().isEmpty() ? 0L : state.pendingSemanticEvents().getLast().seqNo(),
+			state.pendingSemanticGapVersion(),
+			ambientContext,
+			renderedTimeContextAtMs
+		);
+		lastFrozenSnapshot = snapshot;
+		return snapshot;
+	}
+
+	public PlannerContextSnapshot freezeOverflowFlushSnapshot() {
+		if (!overflowFlushPending || latestRequestSeed == null || !state.queuedTriggers().isEmpty() || state.pendingSemanticEvents().isEmpty()) {
+			return null;
 		}
-		state = PlannerContextReducer.recordEntries(state, notices);
-		state = PlannerContextReducer.updateObservedEventSeqNo(state, latestSeqNo);
+
+		PlannerRequest request = latestRequestSeed.toPlannerRequest();
+		long nowMs = request.timestampMs();
+		PlannerAmbientContext ambientContext = PlannerAmbientContext.fromRequest(request);
+		long renderedTimeContextAtMs = PlannerContextPolicy.shouldInjectTimeBeacon(state.lastAcceptedTimeContextAtMs(), nowMs)
+			? nowMs
+			: -1L;
+		List<LlmChatMessage> snapshotNotices = renderSnapshotNotices(request, ambientContext, renderedTimeContextAtMs);
+		PlannerContextSnapshot snapshot = new PlannerContextSnapshot(
+			request,
+			PlannerSnapshotMode.OVERFLOW_FLUSH,
+			PlannerTriggerBatch.of(List.of()),
+			composeConversation(nowMs, snapshotNotices, LlmChatMessage.user(OVERFLOW_FLUSH_INSTRUCTION, LlmMessageKind.TASK)),
+			state.pendingSemanticEvents().getLast().seqNo(),
+			state.pendingSemanticGapVersion(),
+			ambientContext,
+			renderedTimeContextAtMs
+		);
+		lastFrozenSnapshot = snapshot;
+		overflowFlushPending = false;
+		return snapshot;
+	}
+
+	public void commitAcceptedTriggerBatch(PlannerContextSnapshot snapshot) {
+		if (snapshot == null) {
+			return;
+		}
+		state = PlannerContextReducer.commitAcceptedSnapshot(state, snapshot);
+		lastFrozenSnapshot = null;
+		recomputeOverflowFlushPending();
+	}
+
+	public void dropSupersededGeneration(PlannerContextSnapshot snapshot) {
+		if (snapshot == null) {
+			return;
+		}
+		if (lastFrozenSnapshot != null && lastFrozenSnapshot.equals(snapshot)) {
+			lastFrozenSnapshot = null;
+		}
 	}
 
 	public LlmConversation buildPlannerConversation(PlannerRequest request) {
 		Objects.requireNonNull(request, "request");
-		long nowMs = request.timestampMs();
-		if (PlannerContextPolicy.shouldInjectTimeBeacon(state.lastTimeBeaconAtMs(), nowMs)) {
-			state = PlannerContextReducer.recordEntry(state, new PlannerContextEntry(
-				PlannerContextEntryType.NOTICE,
-				null,
-				PlannerContextPolicy.timeBeaconText(nowMs, zoneId),
-				-1L,
-				nowMs
-			));
-			state = PlannerContextReducer.updateTimeBeacon(state, nowMs);
+		recordPlannerRequestSeed(PlannerRequestSeed.fromRequest(request));
+		if (request.triggerBatch() != null) {
+			for (PlannerTrigger trigger : request.triggerBatch().triggers()) {
+				enqueueTrigger(trigger);
+			}
 		}
-
-		PlannerAmbientContext ambientContext = PlannerAmbientContext.fromRequest(request);
-		state = PlannerContextReducer.recordEntries(
-			state,
-			PlannerAmbientContextRenderer.renderChanges(state.lastAmbientContext(), ambientContext, request.tick(), nowMs)
-		);
-		state = PlannerContextReducer.updateAmbientContext(state, ambientContext);
-
-		state = PlannerContextReducer.recordEntry(state, new PlannerContextEntry(
-			PlannerContextEntryType.USER_TURN,
-			request.senderName(),
-			request.message(),
-			request.tick(),
-			request.timestampMs()
-		));
-		state = PlannerContextReducer.commitPending(state, nowMs);
-		frozenPlannerConversation = composeConversation(state.canonicalTape(), null);
-		return frozenPlannerConversation;
+		PlannerContextSnapshot snapshot = freezePlannerSnapshot(request);
+		return snapshot == null ? composeConversation(request.timestampMs(), List.of(), null) : snapshot.plannerConversation();
 	}
 
-	public LlmConversation buildPlannerFollowUpConversation(String toolResult) {
-		if (frozenPlannerConversation == null) {
-			throw new IllegalStateException("No frozen planner conversation");
+	public LlmConversation buildPlannerFollowUpConversation(PlannerContextSnapshot snapshot, String toolResult) {
+		if (snapshot == null) {
+			throw new IllegalStateException("No planner context snapshot");
 		}
-		return frozenPlannerConversation.withAppended(
+		return snapshot.plannerConversation().withAppended(
 			LlmChatMessage.user("Tool result: " + (toolResult == null || toolResult.isBlank() ? "none" : toolResult), LlmMessageKind.TOOL_RESULT)
 		);
 	}
 
-	public LlmConversation buildPlannerFollowUpConversation(String toolResult, LlmImageAttachment imageAttachment) {
-		if (frozenPlannerConversation == null) {
-			throw new IllegalStateException("No frozen planner conversation");
+	public LlmConversation buildPlannerFollowUpConversation(PlannerContextSnapshot snapshot, String toolResult, LlmImageAttachment imageAttachment) {
+		if (snapshot == null) {
+			throw new IllegalStateException("No planner context snapshot");
 		}
-		return frozenPlannerConversation.withAppended(
+		return snapshot.plannerConversation().withAppended(
 			LlmChatMessage.userWithImage(
 				toolResult == null || toolResult.isBlank() ? "Tool result: image attached." : toolResult,
 				LlmMessageKind.TOOL_RESULT,
@@ -143,24 +219,31 @@ public final class PlannerContextAggregator {
 		);
 	}
 
+	public LlmConversation buildPlannerFollowUpConversation(String toolResult) {
+		if (lastFrozenSnapshot == null) {
+			throw new IllegalStateException("No frozen planner conversation");
+		}
+		return buildPlannerFollowUpConversation(lastFrozenSnapshot, toolResult);
+	}
+
+	public LlmConversation buildPlannerFollowUpConversation(String toolResult, LlmImageAttachment imageAttachment) {
+		if (lastFrozenSnapshot == null) {
+			throw new IllegalStateException("No frozen planner conversation");
+		}
+		return buildPlannerFollowUpConversation(lastFrozenSnapshot, toolResult, imageAttachment);
+	}
+
 	public LlmConversation buildCompactionConversation() {
-		long nowMs = clock.millis();
-		state = PlannerContextReducer.commitPending(state, nowMs);
 		return composeConversation(
-			state.canonicalTape(),
+			clock.millis(),
+			List.of(),
 			LlmChatMessage.user(PlannerPromptPolicy.compactionInstruction(), LlmMessageKind.TASK)
 		);
 	}
 
 	public void recordAgentTurn(DialogueTurn turn) {
 		Objects.requireNonNull(turn, "turn");
-		state = PlannerContextReducer.recordEntry(state, new PlannerContextEntry(
-			PlannerContextEntryType.ASSISTANT_TURN,
-			turn.speaker(),
-			turn.text(),
-			turn.tick(),
-			turn.timestampMs()
-		));
+		state = PlannerContextReducer.recordAcceptedAssistantTurn(state, turn);
 	}
 
 	public void recordUsage(LlmUsageSnapshot usage) {
@@ -173,28 +256,101 @@ public final class PlannerContextAggregator {
 
 	public void applyCheckpoint(CompactionCheckpoint checkpoint) {
 		state = PlannerContextReducer.clearCompactionPending(state, checkpoint, clock.millis());
-		frozenPlannerConversation = null;
+		lastFrozenSnapshot = null;
 	}
 
 	public void onCompactionFailure() {
-		frozenPlannerConversation = null;
+		lastFrozenSnapshot = null;
 	}
 
 	public void clear() {
 		state = PlannerContextState.initial();
-		frozenPlannerConversation = null;
+		lastFrozenSnapshot = null;
+		latestRequestSeed = null;
+		overflowFlushPending = false;
 	}
 
-	private LlmConversation composeConversation(List<LlmChatMessage> canonicalTape, LlmChatMessage terminalMessage) {
+	private SemanticEventQueryResult pendingSemanticQueryResult() {
+		List<SemanticEvent> events = state.pendingSemanticEvents();
+		long oldestSeqNo = events.isEmpty() ? 0L : events.getFirst().seqNo();
+		long latestSeqNo = events.isEmpty() ? state.lastObservedEventSeqNo() : events.getLast().seqNo();
+		return new SemanticEventQueryResult(
+			oldestSeqNo,
+			latestSeqNo,
+			state.pendingSemanticGapVersion() != 0L,
+			List.copyOf(events)
+		);
+	}
+
+	private SemanticContextProjectionResult pendingSemanticProjection(long anchorTimeMs) {
+		return semanticContextProjector.project(pendingSemanticQueryResult(), anchorTimeMs);
+	}
+
+	private List<LlmChatMessage> renderSnapshotNotices(
+		PlannerRequest request,
+		PlannerAmbientContext ambientContext,
+		long renderedTimeContextAtMs
+	) {
+		long anchorTimeMs = request.timestampMs();
+		ArrayList<LlmChatMessage> messages = new ArrayList<>();
+		if (renderedTimeContextAtMs >= 0L) {
+			messages.add(ContextMessageRenderer.renderEntry(new PlannerContextEntry(
+				PlannerContextEntryType.NOTICE,
+				null,
+				PlannerContextPolicy.timeBeaconText(renderedTimeContextAtMs, zoneId),
+				-1L,
+				renderedTimeContextAtMs
+			), anchorTimeMs));
+		}
+		for (PlannerContextEntry entry : PlannerAmbientContextRenderer.renderChanges(
+			state.lastAcceptedAmbientContext(),
+			ambientContext,
+			request.tick(),
+			anchorTimeMs
+		)) {
+			messages.add(ContextMessageRenderer.renderEntry(entry, anchorTimeMs));
+		}
+		for (SemanticContextUpdate update : pendingSemanticProjection(anchorTimeMs).updates()) {
+			messages.add(ContextMessageRenderer.renderEntry(PlannerContextEntry.semanticNotice(update), anchorTimeMs));
+		}
+		return List.copyOf(messages);
+	}
+
+	private LlmConversation composeConversation(
+		long anchorTimeMs,
+		List<LlmChatMessage> snapshotNotices,
+		LlmChatMessage terminalMessage
+	) {
 		ArrayList<LlmChatMessage> messages = new ArrayList<>();
 		messages.add(LlmChatMessage.system(PlannerPromptPolicy.systemPrompt(visionMode)));
 		if (state.activeCheckpoint() != null) {
 			messages.add(LlmChatMessage.user(state.activeCheckpoint().renderMessage(), LlmMessageKind.CHECKPOINT));
 		}
-		messages.addAll(canonicalTape);
+		messages.addAll(renderAcceptedHistory(anchorTimeMs));
+		messages.addAll(snapshotNotices);
 		if (terminalMessage != null) {
 			messages.add(terminalMessage);
 		}
 		return LlmConversation.of(messages);
+	}
+
+	private List<LlmChatMessage> renderAcceptedHistory(long anchorTimeMs) {
+		ArrayList<LlmChatMessage> messages = new ArrayList<>();
+		for (PlannerContextEntry entry : state.acceptedHistoryTape()) {
+			messages.add(renderAcceptedHistoryEntry(entry, anchorTimeMs));
+		}
+		return List.copyOf(messages);
+	}
+
+	private static LlmChatMessage renderAcceptedHistoryEntry(PlannerContextEntry entry, long anchorTimeMs) {
+		return switch (entry.type()) {
+			case USER_TURN -> LlmChatMessage.user(entry.text(), LlmMessageKind.USER_TURN);
+			case ASSISTANT_TURN -> LlmChatMessage.assistant(entry.text());
+			case NOTICE -> ContextMessageRenderer.renderEntry(entry, anchorTimeMs);
+		};
+	}
+
+	private void recomputeOverflowFlushPending() {
+		overflowFlushPending = state.pendingSemanticEvents().size() >= pendingSemanticEventCap;
 	}
 }

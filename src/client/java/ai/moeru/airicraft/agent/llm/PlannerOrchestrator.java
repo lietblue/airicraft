@@ -4,8 +4,15 @@ import ai.moeru.airicraft.Airicraft;
 import ai.moeru.airicraft.BridgeUnavailableException;
 import ai.moeru.airicraft.FirstPersonScreenshotService;
 import ai.moeru.airicraft.agent.dialogue.DialogueTurn;
-import ai.moeru.airicraft.agent.events.SemanticEvent;
+import ai.moeru.airicraft.agent.events.EventPolicyChanges;
+import ai.moeru.airicraft.agent.events.EventPolicyMatch;
+import ai.moeru.airicraft.agent.events.EventPolicyRuleUpsert;
+import ai.moeru.airicraft.agent.events.SemanticEventQueryResult;
+import ai.moeru.airicraft.agent.session.SessionMode;
 
+import java.time.Clock;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
@@ -14,19 +21,35 @@ import java.util.concurrent.CompletionException;
 public final class PlannerOrchestrator {
 	private static final String VISUAL_TOOL_NAME = "take_a_look";
 	private static final String NATIVE_TOOL_RESULT_TEXT = "Tool result for take_a_look: current first-person view attached.";
+	private static final int SESSION_MAX_ATTEMPTS = 2;
+	private static final long SESSION_RETRY_BACKOFF_MS = 250L;
+	private static final int SESSION_COALESCE_STEP_MS = 10;
+	private static final int SESSION_COALESCE_MIN_MS = 10;
+	private static final int SESSION_COALESCE_MAX_MS = 100;
+	private static final int CONVERSATION_HISTORY_CARD_LIMIT = 48;
 
 	private final PlannerExecutor plannerExecutor;
 	private final PlannerCompactionService compactionService;
 	private final PlannerContextAggregator contextAggregator;
+	private final PlannerSessionCoordinator sessionCoordinator;
 	private final CurrentViewVisionTool visionTool;
 	private final PlannerVisionMode visionMode;
 	private final String imageDetail;
+	private final Clock clock;
+	private final long coalesceStepMs;
+	private final long coalesceMinMs;
+	private final long coalesceMaxMs;
 
-	private PlannerRequest baseRequest;
-	private boolean toolUsed;
-	private volatile boolean captureInFlight;
-	private CompletableFuture<ToolExecutionOutcome> toolResultFuture;
+	private PlannerRequest pendingSubmitRequest;
+	private PendingToolExecution pendingToolExecution;
 	private CompactionExecutionResult lastCompactionResult;
+	private boolean awaitingAcceptedReplyRecord;
+	private volatile boolean captureInFlight;
+	private boolean coalescePending;
+	private long coalesceReadyAtMs = -1L;
+	private long coalesceWindowMs;
+	private PlannerContextSnapshot coalesceSupersededSnapshot;
+	private PlannerConversationDebugSnapshot lastVisibleConversation = PlannerConversationDebugSnapshot.empty();
 
 	public PlannerOrchestrator(
 		PlannerExecutor plannerExecutor,
@@ -36,12 +59,103 @@ public final class PlannerOrchestrator {
 		PlannerVisionMode visionMode,
 		String imageDetail
 	) {
+		this(
+			plannerExecutor,
+			compactionService,
+			contextAggregator,
+			visionTool,
+			visionMode,
+			imageDetail,
+			3,
+			SESSION_COALESCE_STEP_MS,
+			SESSION_COALESCE_MIN_MS,
+			SESSION_COALESCE_MAX_MS,
+			Clock.systemDefaultZone()
+		);
+	}
+
+	public PlannerOrchestrator(
+		PlannerExecutor plannerExecutor,
+		PlannerCompactionService compactionService,
+		PlannerContextAggregator contextAggregator,
+		CurrentViewVisionTool visionTool,
+		PlannerVisionMode visionMode,
+		String imageDetail,
+		int plannerSessionMaxConcurrentAttempts
+	) {
+		this(
+			plannerExecutor,
+			compactionService,
+			contextAggregator,
+			visionTool,
+			visionMode,
+			imageDetail,
+			plannerSessionMaxConcurrentAttempts,
+			SESSION_COALESCE_STEP_MS,
+			SESSION_COALESCE_MIN_MS,
+			SESSION_COALESCE_MAX_MS,
+			Clock.systemDefaultZone()
+		);
+	}
+
+	public PlannerOrchestrator(
+		PlannerExecutor plannerExecutor,
+		PlannerCompactionService compactionService,
+		PlannerContextAggregator contextAggregator,
+		CurrentViewVisionTool visionTool,
+		PlannerVisionMode visionMode,
+		String imageDetail,
+		int plannerSessionMaxConcurrentAttempts,
+		int plannerSessionCoalesceStepMillis,
+		int plannerSessionCoalesceMinMillis,
+		int plannerSessionCoalesceMaxMillis
+	) {
+		this(
+			plannerExecutor,
+			compactionService,
+			contextAggregator,
+			visionTool,
+			visionMode,
+			imageDetail,
+			plannerSessionMaxConcurrentAttempts,
+			plannerSessionCoalesceStepMillis,
+			plannerSessionCoalesceMinMillis,
+			plannerSessionCoalesceMaxMillis,
+			Clock.systemDefaultZone()
+		);
+	}
+
+	PlannerOrchestrator(
+		PlannerExecutor plannerExecutor,
+		PlannerCompactionService compactionService,
+		PlannerContextAggregator contextAggregator,
+		CurrentViewVisionTool visionTool,
+		PlannerVisionMode visionMode,
+		String imageDetail,
+		int plannerSessionMaxConcurrentAttempts,
+		int plannerSessionCoalesceStepMillis,
+		int plannerSessionCoalesceMinMillis,
+		int plannerSessionCoalesceMaxMillis,
+		Clock clock
+	) {
 		this.plannerExecutor = Objects.requireNonNull(plannerExecutor, "plannerExecutor");
 		this.compactionService = Objects.requireNonNull(compactionService, "compactionService");
 		this.contextAggregator = Objects.requireNonNull(contextAggregator, "contextAggregator");
+		this.clock = Objects.requireNonNull(clock, "clock");
+		this.sessionCoordinator = new PlannerSessionCoordinator(
+			plannerExecutor,
+			this.clock,
+			plannerSessionMaxConcurrentAttempts,
+			SESSION_MAX_ATTEMPTS,
+			SESSION_RETRY_BACKOFF_MS,
+			this::recordSubmittedConversation
+		);
 		this.visionTool = Objects.requireNonNull(visionTool, "visionTool");
 		this.visionMode = Objects.requireNonNull(visionMode, "visionMode");
 		this.imageDetail = Objects.requireNonNull(imageDetail, "imageDetail");
+		this.coalesceStepMs = Math.max(0L, plannerSessionCoalesceStepMillis);
+		this.coalesceMinMs = Math.max(0L, plannerSessionCoalesceMinMillis);
+		this.coalesceMaxMs = Math.max(this.coalesceMinMs, plannerSessionCoalesceMaxMillis);
 	}
 
 	public boolean isConfigured() {
@@ -49,37 +163,97 @@ public final class PlannerOrchestrator {
 	}
 
 	public boolean hasInFlight() {
-		return plannerExecutor.hasInFlight() || compactionService.hasInFlight() || toolResultFuture != null;
+		return contextAggregator.hasPendingOverflowFlush()
+			|| coalescePending
+			|| sessionCoordinator.hasInFlight()
+			|| compactionService.hasInFlight()
+			|| pendingToolExecution != null;
 	}
 
 	public PlannerOrchestratorDebugSnapshot debugSnapshot() {
+		PlannerSessionSnapshot activeSession = sessionCoordinator.activeSnapshot();
+		PlannerSessionPhase currentPhase = activeSession == null ? null : activeSession.phase();
 		return new PlannerOrchestratorDebugSnapshot(
 			isConfigured(),
 			visionMode.wireValue(),
 			hasInFlight(),
-			plannerExecutor.hasInFlight(),
+			sessionCoordinator.activeAttemptCount() > 0,
 			compactionService.hasInFlight(),
 			captureInFlight,
-			toolResultFuture != null,
-			toolUsed,
-			baseRequest,
+			pendingToolExecution != null,
+			currentPhase == PlannerSessionPhase.TOOL_WAIT || currentPhase == PlannerSessionPhase.TOOL_FOLLOW_UP,
+			activeSession == null ? pendingSubmitRequest : activeSession.request(),
 			lastCompactionResult,
-			contextAggregator.debugSnapshot()
+			contextAggregator.debugSnapshot(),
+			sessionCoordinator.activeGeneration(),
+			currentPhase == null ? null : currentPhase.name(),
+			sessionCoordinator.activeAttemptCount(),
+			sessionCoordinator.pendingNewestGeneration(),
+			sessionCoordinator.supersededCount(),
+			activeSession != null && activeSession.retryPending(),
+			activeSession == null ? -1L : activeSession.retryReadyAtMs(),
+			coalescePending,
+			coalesceReadyAtMs,
+			coalesceWindowMs
 		);
+	}
+
+	public PlannerConversationDebugSnapshot conversationDebugSnapshot() {
+		return lastVisibleConversation;
+	}
+
+	public List<String> contextExcerpt() {
+		if (lastVisibleConversation.isEmpty()) {
+			return List.of();
+		}
+
+		ArrayList<String> excerpt = new ArrayList<>();
+		for (PlannerConversationDebugMessage message : lastVisibleConversation.messages()) {
+			if (message.kind() != PlannerConversationDebugKind.NOTICE && message.kind() != PlannerConversationDebugKind.CHECKPOINT) {
+				continue;
+			}
+			if (message.text() != null && !message.text().isBlank()) {
+				excerpt.add(message.text());
+			}
+		}
+		return List.copyOf(excerpt);
+	}
+
+	public long lastObservedEventSeqNo() {
+		return contextAggregator.lastObservedEventSeqNo();
 	}
 
 	public boolean submit(PlannerRequest request) {
 		Objects.requireNonNull(request, "request");
-		if (hasInFlight()) {
+		if (request.triggerBatch() == null || request.triggerBatch().isEmpty()) {
 			return false;
 		}
-
-		baseRequest = request;
-		toolUsed = false;
-		if (contextAggregator.compactionPending()) {
-			return compactionService.submit(contextAggregator.buildCompactionConversation());
+		contextAggregator.recordPlannerRequestSeed(PlannerRequestSeed.fromRequest(request));
+		contextAggregator.cancelPendingOverflowFlush();
+		for (PlannerTrigger trigger : request.triggerBatch().triggers()) {
+			contextAggregator.enqueueTrigger(trigger);
 		}
-		return submitPlannerConversation(request);
+		pendingSubmitRequest = request;
+		if (compactionService.hasInFlight()) {
+			return true;
+		}
+		sessionCoordinator.drainCompletedResults();
+		if (awaitingAcceptedReplyRecord) {
+			return true;
+		}
+		if (sessionCoordinator.hasReplaceableActiveSession()) {
+			if (sessionCoordinator.hasReadyResultForActiveSession()) {
+				return true;
+			}
+			coalesceSupersededSnapshot = sessionCoordinator.supersedeActiveSessionIfReplaceable();
+			armCoalesceWindow();
+			return coalesceWindowMs > 0L || startQueuedWorkIfPossible();
+		}
+		if (coalescePending) {
+			armCoalesceWindow();
+			return coalesceWindowMs > 0L || startQueuedWorkIfPossible();
+		}
+		return startQueuedWorkIfPossible();
 	}
 
 	public PlannerExecutionResult poll() {
@@ -89,56 +263,47 @@ public final class PlannerOrchestrator {
 				return null;
 			}
 			completeCompaction(compactionResult);
-			if (baseRequest == null) {
-				clearState();
-				return null;
-			}
-			if (!submitPlannerConversation(baseRequest)) {
-				PlannerExecutionResult failure = new PlannerExecutionResult(
-					baseRequest,
-					null,
-					LlmUsageSnapshot.unknown(),
-					LlmFailureType.PROVIDER_ERROR,
-					"Planner request could not be submitted after compaction"
-				);
-				clearState();
-				return failure;
+			if (compactionResult.succeeded() && pendingSubmitRequest != null && contextAggregator.hasQueuedTriggers()) {
+				startQueuedWorkIfPossible();
 			}
 			return null;
 		}
 
-		if (toolResultFuture != null) {
-			if (!toolResultFuture.isDone()) {
-				return null;
+		if (pendingToolExecution != null) {
+			PlannerExecutionResult toolContinuation = continueAfterTool();
+			if (toolContinuation != null) {
+				return toolContinuation;
 			}
-			return continueAfterTool();
 		}
 
-		PlannerExecutionResult plannerResult = plannerExecutor.poll();
+		PlannerExecutionResult plannerResult = sessionCoordinator.poll();
 		if (plannerResult == null) {
+			if (coalescePending) {
+				startQueuedWorkIfPossible();
+			}
 			return null;
 		}
 		if (!plannerResult.succeeded()) {
-			clearState();
+			appendFailureCard(plannerResult);
+			sessionCoordinator.finishGeneration(plannerResult.generation(), true);
 			return plannerResult;
 		}
 
 		contextAggregator.recordUsage(plannerResult.usage());
 		PlannerToolRequest toolRequest = plannerResult.response().toolRequest();
 		if (toolRequest == null) {
-			clearState();
+			appendAssistantOutcomeCard(plannerResult);
+			appendOperationCards(plannerResult);
+			acceptGeneration(plannerResult);
 			return plannerResult;
 		}
-
-		if (toolUsed) {
-			Airicraft.LOGGER.warn(
-				"Planner returned repeated tool request type={} prompt={}",
-				toolRequest.type(),
-				summarizeForLog(toolRequest.prompt())
-			);
-			clearState();
-			return parseFailure("Planner requested take_a_look more than once");
+		if (plannerResult.phase() == PlannerSessionPhase.TOOL_FOLLOW_UP) {
+			PlannerExecutionResult failure = parseFailure(plannerResult, "Planner requested take_a_look more than once");
+			appendFailureCard(failure);
+			sessionCoordinator.finishGeneration(plannerResult.generation(), true);
+			return failure;
 		}
+
 		String toolIntentType = toolIntentType(plannerResult.response());
 		if (!hasToolCompatibleIntent(plannerResult.response())) {
 			Airicraft.LOGGER.warn(
@@ -148,8 +313,10 @@ public final class PlannerOrchestrator {
 				summarizeForLog(toolRequest.prompt()),
 				summarizeForLog(plannerResult.response().replyText())
 			);
-			clearState();
-			return parseFailure("Tool requests cannot set goal intents");
+			PlannerExecutionResult failure = parseFailure(plannerResult, "Tool requests cannot set goal intents");
+			appendFailureCard(failure);
+			sessionCoordinator.finishGeneration(plannerResult.generation(), true);
+			return failure;
 		}
 		if (!isValidToolRequest(toolRequest)) {
 			Airicraft.LOGGER.warn(
@@ -157,8 +324,10 @@ public final class PlannerOrchestrator {
 				toolRequest.type(),
 				summarizeForLog(toolRequest.prompt())
 			);
-			clearState();
-			return parseFailure("Planner requested an invalid tool");
+			PlannerExecutionResult failure = parseFailure(plannerResult, "Planner requested an invalid tool");
+			appendFailureCard(failure);
+			sessionCoordinator.finishGeneration(plannerResult.generation(), true);
+			return failure;
 		}
 		if (!"none".equals(toolIntentType)) {
 			Airicraft.LOGGER.info(
@@ -175,8 +344,13 @@ public final class PlannerOrchestrator {
 			);
 		}
 
-		toolUsed = true;
-		toolResultFuture = requestVisionTool(toolRequest);
+		appendToolRequestCard(plannerResult);
+		sessionCoordinator.markToolWait(plannerResult.generation());
+		pendingToolExecution = new PendingToolExecution(
+			plannerResult.generation(),
+			toolRequestSummary(toolRequest),
+			requestVisionTool(toolRequest)
+		);
 		return null;
 	}
 
@@ -192,8 +366,26 @@ public final class PlannerOrchestrator {
 		contextAggregator.recordAgentTurn(turn);
 	}
 
-	public void recordEvents(java.util.List<SemanticEvent> events, long anchorTimeMs) {
-		contextAggregator.recordEvents(events, anchorTimeMs);
+	public void onAcceptedReplyRecorded() {
+		awaitingAcceptedReplyRecord = false;
+		clearCoalesceState();
+		if (
+			(pendingSubmitRequest != null && contextAggregator.hasQueuedTriggers())
+				|| contextAggregator.hasPendingOverflowFlush()
+		) {
+			startQueuedWorkIfPossible();
+		}
+	}
+
+	public void recordEvents(SemanticEventQueryResult queryResult, long anchorTimeMs) {
+		recordEvents(queryResult, new PlannerRequestSeed(anchorTimeMs / 50L, anchorTimeMs, SessionMode.OUT_OF_WORLD, null, null));
+	}
+
+	public void recordEvents(SemanticEventQueryResult queryResult, PlannerRequestSeed requestSeed) {
+		contextAggregator.recordObservedEvents(queryResult, requestSeed);
+		if (contextAggregator.hasPendingOverflowFlush()) {
+			startQueuedWorkIfPossible();
+		}
 	}
 
 	public boolean startDebugCompaction() {
@@ -217,59 +409,139 @@ public final class PlannerOrchestrator {
 	}
 
 	public void reset() {
-		clearState();
-		plannerExecutor.reset();
+		cancelPendingTool();
+		sessionCoordinator.reset();
 		compactionService.reset();
 		contextAggregator.clear();
+		pendingSubmitRequest = null;
 		lastCompactionResult = null;
+		awaitingAcceptedReplyRecord = false;
+		lastVisibleConversation = PlannerConversationDebugSnapshot.empty();
+		clearCoalesceState();
 	}
 
 	public void shutdown() {
-		reset();
-		plannerExecutor.shutdown();
+		cancelPendingTool();
+		sessionCoordinator.shutdown();
 		compactionService.shutdown();
+		contextAggregator.clear();
+		pendingSubmitRequest = null;
+		lastCompactionResult = null;
+		awaitingAcceptedReplyRecord = false;
+		lastVisibleConversation = PlannerConversationDebugSnapshot.empty();
+		clearCoalesceState();
 	}
 
-	private boolean submitPlannerConversation(PlannerRequest request) {
-		return plannerExecutor.submit(request, contextAggregator.buildPlannerConversation(request));
+	private boolean startQueuedWorkIfPossible() {
+		boolean hasRealTrigger = pendingSubmitRequest != null && contextAggregator.hasQueuedTriggers();
+		boolean hasOverflowFlush = contextAggregator.hasPendingOverflowFlush();
+		if (!hasRealTrigger && !hasOverflowFlush) {
+			clearCoalesceState();
+			return true;
+		}
+		if (awaitingAcceptedReplyRecord) {
+			return true;
+		}
+		if (hasRealTrigger && hasOverflowFlush) {
+			contextAggregator.cancelPendingOverflowFlush();
+			hasOverflowFlush = false;
+		}
+		if (hasRealTrigger && contextAggregator.compactionPending()) {
+			if (sessionCoordinator.hasInFlight() || pendingToolExecution != null) {
+				return true;
+			}
+			if (compactionService.hasInFlight()) {
+				return true;
+			}
+			return compactionService.submit(contextAggregator.buildCompactionConversation());
+		}
+		if (!hasRealTrigger && hasOverflowFlush) {
+			if (sessionCoordinator.hasInFlight() || pendingToolExecution != null || compactionService.hasInFlight()) {
+				return true;
+			}
+			PlannerContextSnapshot overflowSnapshot = contextAggregator.freezeOverflowFlushSnapshot();
+			if (overflowSnapshot == null) {
+				return true;
+			}
+			sessionCoordinator.submit(overflowSnapshot);
+			return true;
+		}
+
+		if (coalescePending && clock.millis() < coalesceReadyAtMs) {
+			return true;
+		}
+		if (coalescePending) {
+			contextAggregator.dropSupersededGeneration(coalesceSupersededSnapshot);
+			clearCoalesceState();
+		}
+		else {
+			contextAggregator.dropSupersededGeneration(sessionCoordinator.contextSnapshotFor(sessionCoordinator.activeGeneration()));
+		}
+		PlannerContextSnapshot snapshot = contextAggregator.freezePlannerSnapshot(pendingSubmitRequest);
+		if (snapshot == null) {
+			return true;
+		}
+		sessionCoordinator.submit(snapshot);
+		return true;
+	}
+
+	private void acceptGeneration(PlannerExecutionResult acceptedResult) {
+		PlannerContextSnapshot snapshot = sessionCoordinator.contextSnapshotFor(acceptedResult.generation());
+		if (snapshot != null) {
+			contextAggregator.commitAcceptedTriggerBatch(snapshot);
+		}
+		sessionCoordinator.finishGeneration(acceptedResult.generation(), false);
+		boolean hasVisibleReply = acceptedResult.response() != null
+			&& acceptedResult.response().replyText() != null
+			&& !acceptedResult.response().replyText().isBlank();
+		if (!contextAggregator.hasQueuedTriggers()) {
+			pendingSubmitRequest = null;
+			awaitingAcceptedReplyRecord = hasVisibleReply;
+			clearCoalesceState();
+			if (!awaitingAcceptedReplyRecord && contextAggregator.hasPendingOverflowFlush()) {
+				startQueuedWorkIfPossible();
+			}
+		}
+		else if (!hasVisibleReply) {
+			awaitingAcceptedReplyRecord = false;
+			startQueuedWorkIfPossible();
+		}
+		else {
+			awaitingAcceptedReplyRecord = true;
+		}
 	}
 
 	private PlannerExecutionResult continueAfterTool() {
+		PendingToolExecution toolExecution = pendingToolExecution;
+		if (toolExecution == null || !toolExecution.future().isDone()) {
+			return null;
+		}
+
 		ToolExecutionOutcome toolOutcome;
 		try {
-			toolOutcome = toolResultFuture.join();
+			toolOutcome = toolExecution.future().join();
 		}
 		catch (CompletionException exception) {
 			toolOutcome = new TextToolExecutionOutcome("VISION_UNAVAILABLE: vision_failed");
-			Airicraft.LOGGER.warn("Planner tool future failed sender={}", baseRequest == null ? null : baseRequest.senderName(), exception);
+			Airicraft.LOGGER.warn("Planner tool future failed generation={}", toolExecution.generation(), exception);
 		}
 		finally {
-			toolResultFuture = null;
+			pendingToolExecution = null;
 			captureInFlight = false;
 		}
 
-		String toolResultText = toolOutcome.toolResultText();
-		PlannerRequest followUpRequest = new PlannerRequest(
-			baseRequest.tick(),
-			baseRequest.timestampMs(),
-			baseRequest.sessionMode(),
-			baseRequest.primaryInteractionPlayer(),
-			baseRequest.activeGoal(),
-			baseRequest.senderName(),
-			baseRequest.message(),
-			toolResultText
-		);
-		if (!plannerExecutor.submit(followUpRequest, toolOutcome.appendFollowUp(contextAggregator))) {
-			PlannerExecutionResult failure = new PlannerExecutionResult(
-				followUpRequest,
-				null,
-				LlmUsageSnapshot.unknown(),
-				LlmFailureType.PROVIDER_ERROR,
-				"Planner follow-up request could not be submitted"
-			);
-			clearState();
-			return failure;
+		PlannerContextSnapshot snapshot = sessionCoordinator.contextSnapshotFor(toolExecution.generation());
+		if (snapshot == null) {
+			return null;
 		}
+
+		PlannerRequest followUpRequest = snapshot.request().withToolResult(toolOutcome.toolResultText());
+		sessionCoordinator.submitToolFollowUp(
+			toolExecution.generation(),
+			followUpRequest,
+			toolOutcome.appendFollowUp(contextAggregator, snapshot)
+		);
+		appendToolFollowUpCard(toolExecution);
 		return null;
 	}
 
@@ -323,8 +595,70 @@ public final class PlannerOrchestrator {
 		}
 	}
 
+	private void completeCompaction(CompactionExecutionResult compactionResult) {
+		lastCompactionResult = compactionResult;
+		if (compactionResult.succeeded()) {
+			contextAggregator.recordObservedUsage(compactionResult.usage());
+			contextAggregator.applyCheckpoint(compactionResult.checkpoint());
+			return;
+		}
+		Airicraft.LOGGER.warn("Planner compaction failed message={}", summarizeForLog(compactionResult.failureMessage()));
+		contextAggregator.onCompactionFailure();
+	}
+
+	private void cancelPendingTool() {
+		if (pendingToolExecution != null) {
+			pendingToolExecution.future().cancel(true);
+			pendingToolExecution = null;
+		}
+		captureInFlight = false;
+	}
+
+	private void armCoalesceWindow() {
+		coalescePending = true;
+		coalesceWindowMs = computeCoalesceWindowMs(contextAggregator.queuedTriggerCount());
+		coalesceReadyAtMs = clock.millis() + coalesceWindowMs;
+	}
+
+	private long computeCoalesceWindowMs(int queuedTriggerCount) {
+		if (queuedTriggerCount <= 1) {
+			return 0L;
+		}
+		long windowMs = (long) (queuedTriggerCount - 1) * coalesceStepMs;
+		return Math.max(coalesceMinMs, Math.min(coalesceMaxMs, windowMs));
+	}
+
+	private void clearCoalesceState() {
+		coalescePending = false;
+		coalesceReadyAtMs = -1L;
+		coalesceWindowMs = 0L;
+		coalesceSupersededSnapshot = null;
+	}
+
 	private static String mimeType(FirstPersonScreenshotService.CapturedScreenshot capture) {
 		return "image/" + capture.format().toLowerCase(Locale.ROOT);
+	}
+
+	private void recordSubmittedConversation(
+		long generation,
+		int attempt,
+		PlannerSessionPhase phase,
+		PlannerRequest request,
+		LlmConversation conversation
+	) {
+		PlannerConversationDebugSnapshot submitted = PlannerConversationDebugSnapshot.fromConversation(generation, phase, attempt, conversation);
+		if (lastVisibleConversation == null || lastVisibleConversation.isEmpty()) {
+			lastVisibleConversation = submitted;
+			return;
+		}
+		ArrayList<PlannerConversationDebugMessage> merged = new ArrayList<>(persistentConversationHistory(lastVisibleConversation));
+		merged.addAll(submitted.messages());
+		lastVisibleConversation = new PlannerConversationDebugSnapshot(
+			generation,
+			phase == null ? "UNKNOWN" : phase.name(),
+			attempt,
+			trimConversationMessages(merged)
+		);
 	}
 
 	private boolean isValidToolRequest(PlannerToolRequest toolRequest) {
@@ -349,46 +683,194 @@ public final class PlannerOrchestrator {
 		return intent == null || intent.type() == null ? "none" : intent.type();
 	}
 
-	private PlannerExecutionResult parseFailure(String message) {
-		return new PlannerExecutionResult(baseRequest, null, LlmUsageSnapshot.unknown(), LlmFailureType.PARSE_ERROR, message);
+	private PlannerExecutionResult parseFailure(PlannerExecutionResult baseResult, String message) {
+		return new PlannerExecutionResult(
+			baseResult.request(),
+			null,
+			LlmUsageSnapshot.unknown(),
+			LlmFailureType.PARSE_ERROR,
+			message,
+			baseResult.generation(),
+			baseResult.attempt(),
+			baseResult.phase(),
+			false
+		);
 	}
 
-	private void completeCompaction(CompactionExecutionResult compactionResult) {
-		lastCompactionResult = compactionResult;
-		if (compactionResult.succeeded()) {
-			contextAggregator.recordObservedUsage(compactionResult.usage());
-			contextAggregator.applyCheckpoint(compactionResult.checkpoint());
+	private void appendAssistantOutcomeCard(PlannerExecutionResult result) {
+		if (result == null || result.response() == null) {
 			return;
 		}
-		Airicraft.LOGGER.warn("Planner compaction failed message={}", summarizeForLog(compactionResult.failureMessage()));
-		contextAggregator.onCompactionFailure();
+		String text = assistantOutcomeText(result.response());
+		if (text == null || text.isBlank()) {
+			return;
+		}
+		appendConversationCard(new PlannerConversationDebugMessage(
+			"assistant",
+			PlannerConversationDebugKind.ASSISTANT_TURN,
+			text,
+			result.generation(),
+			result.phase().name(),
+			result.attempt(),
+			false
+		));
 	}
 
-	private void clearState() {
-		baseRequest = null;
-		toolUsed = false;
-		toolResultFuture = null;
-		captureInFlight = false;
+	private void appendToolRequestCard(PlannerExecutionResult result) {
+		if (result == null || result.response() == null || result.response().toolRequest() == null) {
+			return;
+		}
+		appendOperationCard(
+			result.generation(),
+			result.phase().name(),
+			result.attempt(),
+			toolRequestSummary(result.response().toolRequest())
+		);
+	}
+
+	private void appendToolFollowUpCard(PendingToolExecution toolExecution) {
+		if (toolExecution == null || toolExecution.toolSummary() == null || toolExecution.toolSummary().isBlank()) {
+			return;
+		}
+		PlannerSessionSnapshot activeSnapshot = sessionCoordinator.activeSnapshot();
+		String phase = activeSnapshot == null || activeSnapshot.phase() == null ? PlannerSessionPhase.TOOL_FOLLOW_UP.name() : activeSnapshot.phase().name();
+		int attempt = activeSnapshot == null ? 0 : activeSnapshot.attemptCount();
+		appendOperationCard(toolExecution.generation(), phase, attempt, toolExecution.toolSummary());
+	}
+
+	private void appendOperationCards(PlannerExecutionResult result) {
+		if (result == null || result.response() == null) {
+			return;
+		}
+		PlannerResponse response = result.response();
+		String intentSummary = intentOperationSummary(response.intent());
+		if (intentSummary != null) {
+			appendOperationCard(result.generation(), result.phase().name(), result.attempt(), intentSummary);
+		}
+		for (String policySummary : eventPolicyOperationSummaries(response.eventPolicyChanges())) {
+			appendOperationCard(result.generation(), result.phase().name(), result.attempt(), policySummary);
+		}
+	}
+
+	private void appendOperationCard(long generation, String phase, int attempt, String text) {
+		if (text == null || text.isBlank()) {
+			return;
+		}
+		appendConversationCard(new PlannerConversationDebugMessage(
+			"assistant",
+			PlannerConversationDebugKind.TASK,
+			text,
+			generation,
+			phase,
+			attempt,
+			false
+		));
+	}
+
+	private void appendFailureCard(PlannerExecutionResult result) {
+		if (result == null || result.failureType() == null) {
+			return;
+		}
+		String text = result.failureType().name() + ": " + (result.failureMessage() == null || result.failureMessage().isBlank()
+			? "Planner execution failed"
+			: result.failureMessage());
+		appendConversationCard(new PlannerConversationDebugMessage(
+			"system",
+			PlannerConversationDebugKind.FAILURE,
+			text,
+			result.generation(),
+			result.phase() == null ? "UNKNOWN" : result.phase().name(),
+			result.attempt(),
+			false
+		));
+	}
+
+	private void appendConversationCard(PlannerConversationDebugMessage message) {
+		if (message == null) {
+			return;
+		}
+		if (lastVisibleConversation == null || lastVisibleConversation.isEmpty()) {
+			lastVisibleConversation = new PlannerConversationDebugSnapshot(
+				message.generation(),
+				message.phase(),
+				message.attempt(),
+				java.util.List.of(message)
+			);
+			return;
+		}
+		lastVisibleConversation = new PlannerConversationDebugSnapshot(
+			lastVisibleConversation.generation(),
+			lastVisibleConversation.phase(),
+			lastVisibleConversation.attempt(),
+			trimConversationMessages(new ArrayList<>(lastVisibleConversation.withAppended(message).messages()))
+		);
+	}
+
+	private static List<PlannerConversationDebugMessage> persistentConversationHistory(PlannerConversationDebugSnapshot snapshot) {
+		if (snapshot == null || snapshot.isEmpty()) {
+			return List.of();
+		}
+		ArrayList<PlannerConversationDebugMessage> history = new ArrayList<>();
+		for (PlannerConversationDebugMessage message : snapshot.messages()) {
+			if (isPersistentConversationCard(message.kind())) {
+				history.add(message);
+			}
+		}
+		return List.copyOf(history);
+	}
+
+	private static boolean isPersistentConversationCard(PlannerConversationDebugKind kind) {
+		if (kind == null) {
+			return false;
+		}
+		return switch (kind) {
+			case ASSISTANT_TURN, TOOL_RESULT, TASK, FAILURE -> true;
+			case SYSTEM, CHECKPOINT, NOTICE, USER_TURN -> false;
+		};
+	}
+
+	private static List<PlannerConversationDebugMessage> trimConversationMessages(List<PlannerConversationDebugMessage> messages) {
+		if (messages == null || messages.isEmpty()) {
+			return List.of();
+		}
+		ArrayList<PlannerConversationDebugMessage> trimmed = new ArrayList<>(messages);
+		while (trimmed.size() > CONVERSATION_HISTORY_CARD_LIMIT) {
+			int removableIndex = firstNonPersistentIndex(trimmed);
+			trimmed.remove(removableIndex >= 0 ? removableIndex : 0);
+		}
+		return List.copyOf(trimmed);
+	}
+
+	private static int firstNonPersistentIndex(List<PlannerConversationDebugMessage> messages) {
+		for (int index = 0; index < messages.size(); index++) {
+			if (!isPersistentConversationCard(messages.get(index).kind())) {
+				return index;
+			}
+		}
+		return -1;
 	}
 
 	private sealed interface ToolExecutionOutcome permits TextToolExecutionOutcome, ImageToolExecutionOutcome {
 		String toolResultText();
 
-		LlmConversation appendFollowUp(PlannerContextAggregator contextAggregator);
+		LlmConversation appendFollowUp(PlannerContextAggregator contextAggregator, PlannerContextSnapshot snapshot);
 	}
 
 	private record TextToolExecutionOutcome(String toolResultText) implements ToolExecutionOutcome {
 		@Override
-		public LlmConversation appendFollowUp(PlannerContextAggregator contextAggregator) {
-			return contextAggregator.buildPlannerFollowUpConversation(toolResultText);
+		public LlmConversation appendFollowUp(PlannerContextAggregator contextAggregator, PlannerContextSnapshot snapshot) {
+			return contextAggregator.buildPlannerFollowUpConversation(snapshot, toolResultText);
 		}
 	}
 
 	private record ImageToolExecutionOutcome(String toolResultText, LlmImageAttachment imageAttachment) implements ToolExecutionOutcome {
 		@Override
-		public LlmConversation appendFollowUp(PlannerContextAggregator contextAggregator) {
-			return contextAggregator.buildPlannerFollowUpConversation(toolResultText, imageAttachment);
+		public LlmConversation appendFollowUp(PlannerContextAggregator contextAggregator, PlannerContextSnapshot snapshot) {
+			return contextAggregator.buildPlannerFollowUpConversation(snapshot, toolResultText, imageAttachment);
 		}
+	}
+
+	private record PendingToolExecution(long generation, String toolSummary, CompletableFuture<ToolExecutionOutcome> future) {
 	}
 
 	private static String visionFailureCode(Throwable throwable) {
@@ -410,5 +892,114 @@ public final class PlannerOrchestrator {
 
 	private static String summarizeForLog(String text) {
 		return OpenAiCompatibleChatClient.summarizeForLog(text);
+	}
+
+	private static String assistantOutcomeText(PlannerResponse response) {
+		if (response == null) {
+			return null;
+		}
+		if (response.replyText() != null && !response.replyText().isBlank()) {
+			return response.replyText();
+		}
+		PlannerIntent intent = response.intent();
+		if (intent == null || intent.type() == null || intent.type().isBlank()) {
+			return null;
+		}
+		return switch (intent.type()) {
+			case "ask_clarification" -> "Asked for clarification.";
+			case "acknowledge_failure" -> "Acknowledged failure.";
+			case "set_goal", "clear_goal", "reply_only", "none" -> null;
+			default -> "Applied intent: " + intent.type() + ".";
+		};
+	}
+
+	private static String toolRequestSummary(PlannerToolRequest toolRequest) {
+		if (toolRequest == null || toolRequest.type() == null || toolRequest.type().isBlank()) {
+			return null;
+		}
+		return "Tool call: " + toolRequest.type()
+			+ (toolRequest.prompt() == null || toolRequest.prompt().isBlank() ? "" : " | " + toolRequest.prompt());
+	}
+
+	private static String intentOperationSummary(PlannerIntent intent) {
+		if (intent == null || intent.type() == null || intent.type().isBlank()) {
+			return null;
+		}
+		return switch (intent.type()) {
+			case "set_goal" -> {
+				if (intent.goalType() != null && intent.targetPlayer() != null && !intent.targetPlayer().isBlank()) {
+					yield "Goal call: " + intent.goalType().name() + " -> " + intent.targetPlayer() + ".";
+				}
+				if (intent.goalType() != null) {
+					yield "Goal call: " + intent.goalType().name() + ".";
+				}
+				yield "Goal call: set_goal.";
+			}
+			case "clear_goal" -> "Goal call: clear current goal.";
+			default -> null;
+		};
+	}
+
+	private static List<String> eventPolicyOperationSummaries(EventPolicyChanges changes) {
+		if (changes == null) {
+			return List.of();
+		}
+		ArrayList<String> summaries = new ArrayList<>();
+		if (changes.clearAll()) {
+			summaries.add("Event filter: clear all rules.");
+		}
+		for (String ruleId : changes.removeRuleIds()) {
+			if (ruleId != null && !ruleId.isBlank()) {
+				summaries.add("Event filter: remove " + ruleId + ".");
+			}
+		}
+		for (EventPolicyRuleUpsert upsert : changes.upserts()) {
+			String summary = eventPolicyUpsertSummary(upsert);
+			if (summary != null) {
+				summaries.add(summary);
+			}
+		}
+		return List.copyOf(summaries);
+	}
+
+	private static String eventPolicyUpsertSummary(EventPolicyRuleUpsert upsert) {
+		if (upsert == null) {
+			return null;
+		}
+		StringBuilder builder = new StringBuilder("Event filter: upsert");
+		if (upsert.ruleId() != null && !upsert.ruleId().isBlank()) {
+			builder.append(' ').append(upsert.ruleId());
+		}
+		if (upsert.effect() != null && !upsert.effect().isBlank()) {
+			builder.append(" -> ").append(upsert.effect().trim().toUpperCase(Locale.ROOT));
+		}
+		String matchSummary = eventPolicyMatchSummary(upsert.match());
+		if (matchSummary != null) {
+			builder.append(" on ").append(matchSummary);
+		}
+		return builder.append('.').toString();
+	}
+
+	private static String eventPolicyMatchSummary(EventPolicyMatch match) {
+		if (match == null || !match.isValid()) {
+			return null;
+		}
+		ArrayList<String> filters = new ArrayList<>();
+		appendMatchFilter(filters, "player", match.player());
+		appendMatchFilter(filters, "speaker", match.speaker());
+		appendMatchFilter(filters, "actor", match.actor());
+		appendMatchFilter(filters, "itemId", match.itemId());
+		appendMatchFilter(filters, "damageTypeId", match.damageTypeId());
+		appendMatchFilter(filters, "attackerName", match.attackerName());
+		if (filters.isEmpty()) {
+			return match.eventType();
+		}
+		return match.eventType() + " [" + String.join(", ", filters) + "]";
+	}
+
+	private static void appendMatchFilter(List<String> filters, String key, String value) {
+		if (value != null && !value.isBlank()) {
+			filters.add(key + "=" + value);
+		}
 	}
 }

@@ -2,13 +2,19 @@ package ai.moeru.airicraft.agent.llm;
 
 import ai.moeru.airicraft.Airicraft;
 import ai.moeru.airicraft.agent.AgentConfig;
+import ai.moeru.airicraft.agent.events.EventPolicyChanges;
+import ai.moeru.airicraft.agent.events.EventPolicyMatch;
+import ai.moeru.airicraft.agent.events.EventPolicyRuleUpsert;
 import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParseException;
 import com.google.gson.JsonParser;
 
 import java.util.ArrayDeque;
 import java.util.Deque;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
 import java.util.Optional;
@@ -77,6 +83,9 @@ public final class OpenAiCompatibleLlmBackend implements LlmBackend {
 			JsonObject toolRequestObject = payload.has("toolRequest") && payload.get("toolRequest").isJsonObject()
 				? payload.getAsJsonObject("toolRequest")
 				: null;
+			JsonObject eventPolicyObject = payload.has("eventPolicyChanges") && payload.get("eventPolicyChanges").isJsonObject()
+				? payload.getAsJsonObject("eventPolicyChanges")
+				: null;
 
 			PlannerIntent intent = new PlannerIntent(
 				getString(intentObject, "type").orElse("none").toLowerCase(Locale.ROOT),
@@ -91,21 +100,69 @@ public final class OpenAiCompatibleLlmBackend implements LlmBackend {
 					getString(toolRequestObject, "type").orElse(null),
 					getString(toolRequestObject, "prompt").orElse(null)
 				);
+			EventPolicyChanges eventPolicyChanges = parseEventPolicyChanges(eventPolicyObject);
 			Airicraft.LOGGER.info(
-				"Planner parsed response intentType={} goalType={} targetPlayer={} replyText={} toolRequestType={} toolPrompt={}",
+				"Planner parsed response intentType={} goalType={} targetPlayer={} replyText={} toolRequestType={} toolPrompt={} policyChangeCount={}",
 				intent.type(),
 				intent.goalType(),
 				intent.targetPlayer(),
 				summarizeForLog(replyText),
 				toolRequest == null ? null : toolRequest.type(),
-				toolRequest == null ? null : summarizeForLog(toolRequest.prompt())
+				toolRequest == null ? null : summarizeForLog(toolRequest.prompt()),
+				eventPolicyChanges == null ? 0 : eventPolicyChanges.upserts().size()
 			);
-			return new PlannerResponse(replyText, intent, toolRequest);
+			return new PlannerResponse(replyText, intent, toolRequest, eventPolicyChanges);
 		}
 		catch (IllegalArgumentException | JsonParseException exception) {
 			Airicraft.LOGGER.warn("Failed to parse planner response body={}", summarizeForLog(responseBody), exception);
 			throw new LlmBackendException(LlmFailureType.PARSE_ERROR, "Failed to parse planner response", exception);
 		}
+	}
+
+	private static EventPolicyChanges parseEventPolicyChanges(JsonObject object) {
+		if (object == null) {
+			return null;
+		}
+
+		boolean clearAll = getBoolean(object, "clearAll").orElse(false);
+		List<String> removeRuleIds = getStringArray(object, "removeRuleIds");
+		List<EventPolicyRuleUpsert> upserts = new ArrayList<>();
+		JsonArray upsertArray = object.has("upserts") && object.get("upserts").isJsonArray()
+			? object.getAsJsonArray("upserts")
+			: null;
+		if (upsertArray != null) {
+			for (JsonElement element : upsertArray) {
+				if (!element.isJsonObject()) {
+					continue;
+				}
+				JsonObject upsertObject = element.getAsJsonObject();
+				JsonObject matchObject = upsertObject.has("match") && upsertObject.get("match").isJsonObject()
+					? upsertObject.getAsJsonObject("match")
+					: null;
+				upserts.add(new EventPolicyRuleUpsert(
+					getString(upsertObject, "ruleId").orElse(null),
+					getString(upsertObject, "effect").orElse(null),
+					parseEventPolicyMatch(matchObject),
+					getString(upsertObject, "reason").orElse(null)
+				));
+			}
+		}
+		return new EventPolicyChanges(clearAll, removeRuleIds, upserts);
+	}
+
+	private static EventPolicyMatch parseEventPolicyMatch(JsonObject object) {
+		if (object == null) {
+			return null;
+		}
+		return new EventPolicyMatch(
+			getString(object, "eventType").orElse(null),
+			getString(object, "player").orElse(null),
+			getString(object, "speaker").orElse(null),
+			getString(object, "actor").orElse(null),
+			getString(object, "itemId").orElse(null),
+			getString(object, "damageTypeId").orElse(null),
+			getString(object, "attackerName").orElse(null)
+		);
 	}
 
 	private static Optional<String> getString(JsonObject object, String fieldName) {
@@ -114,6 +171,33 @@ public final class OpenAiCompatibleLlmBackend implements LlmBackend {
 		}
 		String value = object.get(fieldName).getAsString();
 		return value == null || value.isBlank() ? Optional.empty() : Optional.of(value);
+	}
+
+	private static Optional<Boolean> getBoolean(JsonObject object, String fieldName) {
+		if (object == null || !object.has(fieldName) || object.get(fieldName).isJsonNull()) {
+			return Optional.empty();
+		}
+		return Optional.of(object.get(fieldName).getAsBoolean());
+	}
+
+	private static List<String> getStringArray(JsonObject object, String fieldName) {
+		JsonArray array = object == null || !object.has(fieldName) || !object.get(fieldName).isJsonArray()
+			? null
+			: object.getAsJsonArray(fieldName);
+		if (array == null) {
+			return List.of();
+		}
+		ArrayList<String> values = new ArrayList<>();
+		for (JsonElement element : array) {
+			if (element == null || element.isJsonNull()) {
+				continue;
+			}
+			String value = element.getAsString();
+			if (value != null && !value.isBlank()) {
+				values.add(value);
+			}
+		}
+		return List.copyOf(values);
 	}
 
 	private static String summarizeForLog(String text) {

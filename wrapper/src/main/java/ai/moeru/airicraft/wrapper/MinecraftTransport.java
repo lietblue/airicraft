@@ -58,4 +58,26 @@ interface MinecraftTransport {
 	Map<String, Object> listRecentAgentEvents(Long sinceSeqNo);
 
 	Map<String, Object> triggerAgentCompaction(boolean wait, Integer timeoutMs);
+
+	Map<String, Object> getAgentEventPolicy();
+
+	Map<String, Object> clearAgentEventPolicy();
+
+	Map<String, Object> getVerificationStatus();
+
+	Map<String, Object> getVerificationPlayerState();
+
+	Map<String, Object> teleportVerificationPlayer(double x, double y, double z);
+
+	Map<String, Object> setVerificationPlayerVelocity(double x, double y, double z);
+
+	Map<String, Object> respawnVerificationPlayer();
+
+	Map<String, Object> setVerificationPlayerGameMode(String mode);
+
+	Map<String, Object> runVerificationCommand(String command);
+
+	Map<String, Object> runVerificationScenario(String scenario);
+
+	Map<String, Object> getVerificationResults();
 }

@@ -1,0 +1,235 @@
+package ai.moeru.airicraft.agent.llm;
+
+import java.time.Clock;
+import java.util.ArrayDeque;
+import java.util.Objects;
+
+public final class PlannerSessionCoordinator {
+	@FunctionalInterface
+	public interface SubmissionObserver {
+		void onSubmitted(long generation, int attempt, PlannerSessionPhase phase, PlannerRequest request, LlmConversation conversation);
+	}
+
+	private static final SubmissionObserver NO_OP_SUBMISSION_OBSERVER = (generation, attempt, phase, request, conversation) -> {
+	};
+
+	private final PlannerExecutor plannerExecutor;
+	private final Clock clock;
+	private final int maxConcurrentAttempts;
+	private final int maxAttempts;
+	private final long retryBackoffMs;
+	private final SubmissionObserver submissionObserver;
+	private final ArrayDeque<PlannerExecutionResult> readyResults = new ArrayDeque<>();
+
+	private PlannerSession activeSession;
+	private long nextGeneration = 1L;
+	private long supersededCount;
+
+	public PlannerSessionCoordinator(PlannerExecutor plannerExecutor, Clock clock, int maxConcurrentAttempts, int maxAttempts, long retryBackoffMs) {
+		this(plannerExecutor, clock, maxConcurrentAttempts, maxAttempts, retryBackoffMs, NO_OP_SUBMISSION_OBSERVER);
+	}
+
+	public PlannerSessionCoordinator(
+		PlannerExecutor plannerExecutor,
+		Clock clock,
+		int maxConcurrentAttempts,
+		int maxAttempts,
+		long retryBackoffMs,
+		SubmissionObserver submissionObserver
+	) {
+		this.plannerExecutor = Objects.requireNonNull(plannerExecutor, "plannerExecutor");
+		this.clock = Objects.requireNonNull(clock, "clock");
+		this.maxConcurrentAttempts = Math.max(1, maxConcurrentAttempts);
+		this.maxAttempts = Math.max(1, maxAttempts);
+		this.retryBackoffMs = Math.max(0L, retryBackoffMs);
+		this.submissionObserver = Objects.requireNonNull(submissionObserver, "submissionObserver");
+	}
+
+	public boolean hasInFlight() {
+		return activeSession != null || plannerExecutor.hasInFlight() || !readyResults.isEmpty();
+	}
+
+	public int activeAttemptCount() {
+		return plannerExecutor.activeAttemptCount();
+	}
+
+	public long activeGeneration() {
+		return activeSession == null ? 0L : activeSession.generation();
+	}
+
+	public long pendingNewestGeneration() {
+		return activeSession != null && activeSession.awaitingLaunch() ? activeSession.generation() : 0L;
+	}
+
+	public long supersededCount() {
+		return supersededCount;
+	}
+
+	public PlannerSessionSnapshot activeSnapshot() {
+		return activeSession == null ? null : activeSession.snapshot();
+	}
+
+	public PlannerContextSnapshot contextSnapshotFor(long generation) {
+		if (activeSession == null || activeSession.generation() != generation) {
+			return null;
+		}
+		return activeSession.contextSnapshot();
+	}
+
+	public boolean hasReplaceableActiveSession() {
+		return activeSession != null && activeSession.replaceable();
+	}
+
+	public boolean hasReadyResultForActiveSession() {
+		return activeSession != null
+			&& !readyResults.isEmpty()
+			&& readyResults.peekFirst().generation() == activeSession.generation();
+	}
+
+	public PlannerContextSnapshot supersedeActiveSessionIfReplaceable() {
+		if (activeSession == null || !activeSession.replaceable()) {
+			return null;
+		}
+		PlannerContextSnapshot contextSnapshot = activeSession.contextSnapshot();
+		activeSession.markSuperseded();
+		supersededCount++;
+		activeSession = null;
+		return contextSnapshot;
+	}
+
+	public void submit(PlannerContextSnapshot contextSnapshot) {
+		Objects.requireNonNull(contextSnapshot, "contextSnapshot");
+		activeSession = new PlannerSession(nextGeneration++, contextSnapshot);
+		launchIfPossible(activeSession);
+	}
+
+	public PlannerExecutionResult poll() {
+		drainCompletedResults();
+		if (!readyResults.isEmpty()) {
+			return readyResults.pollFirst();
+		}
+		if (activeSession != null) {
+			if (
+				activeSession.readyForRetry(clock.millis())
+				&& plannerExecutor.activeAttemptCount() < maxConcurrentAttempts
+				&& activeSession.conversation() != null
+			) {
+				activeSession.clearRetry();
+				activeSession.beginAttempt();
+				submissionObserver.onSubmitted(
+					activeSession.generation(),
+					activeSession.attemptCount(),
+					activeSession.phase(),
+					activeSession.request(),
+					activeSession.conversation()
+				);
+				plannerExecutor.submit(
+					activeSession.generation(),
+					activeSession.attemptCount(),
+					activeSession.phase(),
+					activeSession.request(),
+					activeSession.conversation()
+				);
+			}
+			else if (activeSession.awaitingLaunch()) {
+				launchIfPossible(activeSession);
+			}
+		}
+		if (!readyResults.isEmpty()) {
+			return readyResults.pollFirst();
+		}
+		return null;
+	}
+
+	public void markToolWait(long generation) {
+		if (activeSession == null || activeSession.generation() != generation) {
+			return;
+		}
+		activeSession.moveToToolWait();
+	}
+
+	public boolean submitToolFollowUp(long generation, PlannerRequest request, LlmConversation conversation) {
+		if (activeSession == null || activeSession.generation() != generation || !activeSession.replaceable()) {
+			return false;
+		}
+		activeSession.moveToToolFollowUp(request, conversation);
+		launchIfPossible(activeSession);
+		return true;
+	}
+
+	public void finishGeneration(long generation, boolean failed) {
+		if (activeSession == null || activeSession.generation() != generation) {
+			return;
+		}
+		if (failed) {
+			activeSession.markFailed();
+		}
+		else {
+			activeSession.markCompleted();
+		}
+		activeSession = null;
+	}
+
+	public void reset() {
+		activeSession = null;
+		nextGeneration = 1L;
+		supersededCount = 0L;
+		readyResults.clear();
+		plannerExecutor.reset();
+	}
+
+	public void shutdown() {
+		activeSession = null;
+		readyResults.clear();
+		plannerExecutor.shutdown();
+	}
+
+	private void launchIfPossible(PlannerSession session) {
+		if (session == null || !session.awaitingLaunch() || plannerExecutor.activeAttemptCount() >= maxConcurrentAttempts) {
+			return;
+		}
+		session.beginAttempt();
+		submissionObserver.onSubmitted(
+			session.generation(),
+			session.attemptCount(),
+			session.phase(),
+			session.request(),
+			session.conversation()
+		);
+		plannerExecutor.submit(session.generation(), session.attemptCount(), session.phase(), session.request(), session.conversation());
+	}
+
+	public void drainCompletedResults() {
+		PlannerExecutionResult result;
+		while ((result = plannerExecutor.poll()) != null) {
+			handleCompletedResult(result);
+		}
+	}
+
+	private void handleCompletedResult(PlannerExecutionResult result) {
+		if (
+			activeSession == null
+			|| result.generation() != activeSession.generation()
+			|| result.phase() != activeSession.phase()
+		) {
+			return;
+		}
+
+		if (!result.succeeded() && shouldRetry(result.failureType()) && result.attempt() < maxAttempts) {
+			activeSession.scheduleRetry(clock.millis() + retryBackoffMs);
+			return;
+		}
+
+		readyResults.addLast(result);
+	}
+
+	private static boolean shouldRetry(LlmFailureType failureType) {
+		if (failureType == null) {
+			return false;
+		}
+		return switch (failureType) {
+			case TIMEOUT, PROVIDER_UNAVAILABLE -> true;
+			case PARSE_ERROR, PROVIDER_ERROR -> false;
+		};
+	}
+}

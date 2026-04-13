@@ -29,16 +29,18 @@ public final class VerificationRunner {
 				VerificationStatus.FAILED,
 				scenarioName,
 				"Unknown scenario: " + scenarioName,
-				List.of()
+				List.of(),
+				Map.of("failureReason", "Unknown scenario: " + scenarioName)
 			);
 			return false;
 		}
 
+		scenario.onStart();
 		currentScenario = scenario;
 		currentStepIndex = 0;
 		ticksOnCurrentStep = 0;
 		stepResults.clear();
-		report = new VerificationReport(VerificationStatus.RUNNING, scenario.name(), null, List.of());
+		report = new VerificationReport(VerificationStatus.RUNNING, scenario.name(), null, List.of(), diagnosticsFor(scenario, null));
 		return true;
 	}
 
@@ -53,7 +55,8 @@ public final class VerificationRunner {
 				VerificationStatus.PASSED,
 				currentScenario.name(),
 				null,
-				List.copyOf(stepResults)
+				List.copyOf(stepResults),
+				diagnosticsFor(currentScenario, null)
 			);
 			currentScenario = null;
 			return;
@@ -69,7 +72,16 @@ public final class VerificationRunner {
 	}
 
 	public VerificationReport report() {
-		return report;
+		if (currentScenario == null) {
+			return report;
+		}
+		return new VerificationReport(
+			report.status(),
+			report.scenarioName(),
+			report.message(),
+			report.steps(),
+			diagnosticsFor(currentScenario, report.message())
+		);
 	}
 
 	public void reset() {
@@ -143,12 +155,33 @@ public final class VerificationRunner {
 			VerificationStatus.FAILED,
 			currentScenario != null ? currentScenario.name() : null,
 			message,
-			List.copyOf(stepResults)
+			List.copyOf(stepResults),
+			diagnosticsFor(currentScenario, message)
 		);
 		currentScenario = null;
 	}
 
 	private void recordStep(VerificationStep step, VerificationStatus status, int waitedTicks, String message) {
 		stepResults.add(new VerificationStepResult(step.description(), status, waitedTicks, message));
+		if (currentScenario != null) {
+			report = new VerificationReport(
+				VerificationStatus.RUNNING,
+				currentScenario.name(),
+				null,
+				List.copyOf(stepResults),
+				diagnosticsFor(currentScenario, null)
+			);
+		}
+	}
+
+	private static Map<String, Object> diagnosticsFor(VerificationScenario scenario, String failureReason) {
+		LinkedHashMap<String, Object> diagnostics = new LinkedHashMap<>();
+		if (scenario != null) {
+			diagnostics.putAll(scenario.diagnostics());
+		}
+		if (failureReason != null && !failureReason.isBlank()) {
+			diagnostics.put("failureReason", failureReason);
+		}
+		return Map.copyOf(diagnostics);
 	}
 }

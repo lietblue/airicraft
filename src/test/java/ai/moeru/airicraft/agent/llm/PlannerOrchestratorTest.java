@@ -4,6 +4,11 @@ import ai.moeru.airicraft.BridgeUnavailableException;
 import ai.moeru.airicraft.FirstPersonScreenshotService;
 import ai.moeru.airicraft.agent.AgentConfig;
 import ai.moeru.airicraft.agent.dialogue.DialogueTurn;
+import ai.moeru.airicraft.agent.events.EventPolicyChanges;
+import ai.moeru.airicraft.agent.events.EventPolicyMatch;
+import ai.moeru.airicraft.agent.events.EventPolicyRuleUpsert;
+import ai.moeru.airicraft.agent.events.SemanticEvent;
+import ai.moeru.airicraft.agent.events.SemanticEventQueryResult;
 import ai.moeru.airicraft.agent.goals.GoalType;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
@@ -17,11 +22,16 @@ import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.ZoneId;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.Executors;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -281,6 +291,664 @@ class PlannerOrchestratorTest {
 		}
 	}
 
+	@Test
+	void firstSubmitStartsImmediatelyWithoutCoalesce() {
+		RecordingBackend backend = new RecordingBackend();
+		MutableClock clock = new MutableClock(Instant.ofEpochMilli(1_000L), ZoneId.of("Asia/Taipei"));
+		PlannerOrchestrator orchestrator = newOrchestrator(
+			backend,
+			CurrentViewVisionTool.disabled(),
+			PlannerVisionMode.EXTERNAL_SUMMARY,
+			3,
+			clock
+		);
+
+		orchestrator.submit(requestAt(10L, 1_000L, "Alice", "A"));
+		backend.awaitCalls(1, Duration.ofSeconds(1));
+
+		PlannerOrchestratorDebugSnapshot snapshot = orchestrator.debugSnapshot();
+		assertFalse(snapshot.coalescePending());
+		assertEquals(-1L, snapshot.coalesceReadyAtMs());
+		assertEquals(0L, snapshot.coalesceWindowMs());
+	}
+
+	@Test
+	void supersedesUnfinishedPlannerRequestsAndKeepsOnlyLatestBatchedReply() {
+		RecordingBackend backend = new RecordingBackend();
+		MutableClock clock = new MutableClock(Instant.ofEpochMilli(1_000L), ZoneId.of("Asia/Taipei"));
+		PlannerOrchestrator orchestrator = newOrchestrator(
+			backend,
+			CurrentViewVisionTool.disabled(),
+			PlannerVisionMode.EXTERNAL_SUMMARY,
+			3,
+			clock
+		);
+
+		orchestrator.submit(requestAt(10L, 1_000L, "Alice", "A"));
+		backend.awaitCalls(1, Duration.ofSeconds(1));
+
+		orchestrator.submit(requestAt(11L, 1_100L, "Alice", "B"));
+		assertEquals(1, backend.callCount());
+		PlannerOrchestratorDebugSnapshot firstCoalesce = orchestrator.debugSnapshot();
+		assertTrue(firstCoalesce.coalescePending());
+		assertEquals(1_010L, firstCoalesce.coalesceReadyAtMs());
+		assertEquals(10L, firstCoalesce.coalesceWindowMs());
+
+		clock.advanceMillis(9L);
+		assertNull(orchestrator.poll());
+		assertEquals(1, backend.callCount());
+
+		clock.advanceMillis(1L);
+		awaitBackendCallCount(orchestrator, backend, 2, Duration.ofSeconds(1));
+
+		orchestrator.submit(requestAt(12L, 1_200L, "Alice", "C"));
+		assertEquals(2, backend.callCount());
+		PlannerOrchestratorDebugSnapshot secondCoalesce = orchestrator.debugSnapshot();
+		assertTrue(secondCoalesce.coalescePending());
+		assertEquals(20L, secondCoalesce.coalesceWindowMs());
+
+		clock.advanceMillis(19L);
+		assertNull(orchestrator.poll());
+		assertEquals(2, backend.callCount());
+
+		clock.advanceMillis(1L);
+		awaitBackendCallCount(orchestrator, backend, 3, Duration.ofSeconds(1));
+
+		assertPromptContains(backend.conversation(0), "[chat][Alice] A");
+		assertPromptContains(backend.conversation(1), "[chat][Alice] A", "[chat][Alice] B");
+		assertPromptContains(backend.conversation(2), "[chat][Alice] A", "[chat][Alice] B", "[chat][Alice] C");
+
+		backend.succeed(0, replyOnly("old A"));
+		backend.succeed(1, replyOnly("old AB"));
+		assertNull(orchestrator.poll());
+
+		backend.succeed(2, replyOnly("latest ABC"));
+		PlannerExecutionResult result = awaitResult(orchestrator);
+
+		assertEquals("latest ABC", result.response().replyText());
+		assertEquals(3L, result.generation());
+		assertEquals(3, result.request().triggerBatch().size());
+		assertEquals(2L, orchestrator.debugSnapshot().supersededCount());
+	}
+
+	@Test
+	void coalesceWindowResetsFromLatestTriggerAndBatchesQueuedTriggersOnce() {
+		RecordingBackend backend = new RecordingBackend();
+		MutableClock clock = new MutableClock(Instant.ofEpochMilli(1_000L), ZoneId.of("Asia/Taipei"));
+		PlannerOrchestrator orchestrator = newOrchestrator(
+			backend,
+			CurrentViewVisionTool.disabled(),
+			PlannerVisionMode.EXTERNAL_SUMMARY,
+			3,
+			clock
+		);
+
+		orchestrator.submit(requestAt(10L, 1_000L, "Alice", "A"));
+		backend.awaitCalls(1, Duration.ofSeconds(1));
+
+		orchestrator.submit(requestAt(11L, 1_100L, "Alice", "B"));
+		PlannerOrchestratorDebugSnapshot firstWindow = orchestrator.debugSnapshot();
+		assertTrue(firstWindow.coalescePending());
+		assertEquals(1_010L, firstWindow.coalesceReadyAtMs());
+		assertEquals(10L, firstWindow.coalesceWindowMs());
+
+		clock.advanceMillis(5L);
+		orchestrator.submit(requestAt(12L, 1_200L, "Alice", "C"));
+		PlannerOrchestratorDebugSnapshot resetWindow = orchestrator.debugSnapshot();
+		assertTrue(resetWindow.coalescePending());
+		assertEquals(20L, resetWindow.coalesceWindowMs());
+		assertEquals(1_025L, resetWindow.coalesceReadyAtMs());
+
+		clock.advanceMillis(19L);
+		assertNull(orchestrator.poll());
+		assertEquals(1, backend.callCount());
+
+		clock.advanceMillis(1L);
+		awaitBackendCallCount(orchestrator, backend, 2, Duration.ofSeconds(1));
+		assertPromptContains(backend.conversation(1), "[chat][Alice] A", "[chat][Alice] B", "[chat][Alice] C");
+
+		backend.succeed(0, replyOnly("old A"));
+		assertNull(orchestrator.poll());
+		backend.succeed(1, replyOnly("latest ABC"));
+
+		PlannerExecutionResult result = awaitResult(orchestrator);
+		assertEquals("latest ABC", result.response().replyText());
+		assertEquals(2L, result.generation());
+		assertEquals(3, result.request().triggerBatch().size());
+	}
+
+	@Test
+	void coalesceWindowClampsAtConfiguredMaximum() {
+		RecordingBackend backend = new RecordingBackend();
+		MutableClock clock = new MutableClock(Instant.ofEpochMilli(1_000L), ZoneId.of("Asia/Taipei"));
+		PlannerOrchestrator orchestrator = newOrchestrator(
+			backend,
+			CurrentViewVisionTool.disabled(),
+			PlannerVisionMode.EXTERNAL_SUMMARY,
+			3,
+			clock
+		);
+
+		orchestrator.submit(requestAt(10L, 1_000L, "Alice", "A"));
+		backend.awaitCalls(1, Duration.ofSeconds(1));
+
+		for (int index = 0; index < 15; index++) {
+			clock.advanceMillis(1L);
+			orchestrator.submit(requestAt(11L + index, 1_100L + index, "Alice", "T" + index));
+		}
+
+		PlannerOrchestratorDebugSnapshot snapshot = orchestrator.debugSnapshot();
+		assertTrue(snapshot.coalescePending());
+		assertEquals(100L, snapshot.coalesceWindowMs());
+		assertEquals(clock.instant().toEpochMilli() + 100L, snapshot.coalesceReadyAtMs());
+
+		clock.advanceMillis(99L);
+		assertNull(orchestrator.poll());
+		assertEquals(1, backend.callCount());
+
+		clock.advanceMillis(1L);
+		awaitBackendCallCount(orchestrator, backend, 2, Duration.ofSeconds(1));
+	}
+
+	@Test
+	void completedGenerationWinsOverLaterSubmitUntilAcceptedReplyIsRecorded() {
+		RecordingBackend backend = new RecordingBackend();
+		PlannerOrchestrator orchestrator = newOrchestrator(backend, CurrentViewVisionTool.disabled(), PlannerVisionMode.EXTERNAL_SUMMARY);
+
+		orchestrator.submit(requestAt(10L, 1_000L, "Alice", "A"));
+		backend.awaitCalls(1, Duration.ofSeconds(1));
+		backend.succeed(0, replyOnly("reply A"));
+		backend.awaitCompletions(1, Duration.ofSeconds(1));
+
+		orchestrator.submit(requestAt(11L, 1_100L, "Alice", "B"));
+		assertEquals(1, backend.callCount());
+
+		PlannerExecutionResult first = awaitResult(orchestrator);
+		assertEquals("reply A", first.response().replyText());
+		assertEquals(1L, first.generation());
+		assertEquals(1, first.request().triggerBatch().size());
+		assertEquals("A", first.request().triggerBatch().triggers().getFirst().text());
+
+		orchestrator.recordAssistantTurn(new DialogueTurn("agent", "reply A", 20L, 2_000L));
+		orchestrator.onAcceptedReplyRecorded();
+		backend.awaitCalls(2, Duration.ofSeconds(1));
+
+		String secondPrompt = terminalPrompt(backend.conversation(1));
+		assertTrue(secondPrompt.contains("[chat][Alice] B"));
+		assertFalse(secondPrompt.contains("[chat][Alice] A"));
+
+		backend.succeed(1, replyOnly("reply B"));
+		PlannerExecutionResult second = awaitResult(orchestrator);
+		assertEquals("reply B", second.response().replyText());
+		assertEquals(2L, second.generation());
+	}
+
+	@Test
+	void timeoutRetriesOnceUsingTheSameFrozenSnapshot() {
+		RecordingBackend backend = new RecordingBackend();
+		MutableClock clock = new MutableClock(Instant.ofEpochMilli(1_000L), ZoneId.of("Asia/Taipei"));
+		PlannerOrchestrator orchestrator = newOrchestrator(
+			backend,
+			CurrentViewVisionTool.disabled(),
+			PlannerVisionMode.EXTERNAL_SUMMARY,
+			3,
+			clock
+		);
+
+		orchestrator.submit(requestAt(10L, 1_000L, "Alice", "retry please"));
+		backend.awaitCalls(1, Duration.ofSeconds(1));
+		String firstPrompt = terminalPrompt(backend.conversation(0));
+
+		backend.fail(0, LlmFailureType.TIMEOUT, "Injected timeout");
+		awaitRetryPending(orchestrator, Duration.ofSeconds(1));
+
+		clock.advanceMillis(250L);
+		awaitBackendCallCount(orchestrator, backend, 2, Duration.ofSeconds(1));
+
+		assertEquals(firstPrompt, terminalPrompt(backend.conversation(1)));
+
+		backend.succeed(1, replyOnly("retried"));
+		PlannerExecutionResult result = awaitResult(orchestrator);
+
+		assertEquals("retried", result.response().replyText());
+		assertEquals(1L, result.generation());
+		assertEquals(2, result.attempt());
+	}
+
+	@Test
+	void conversationSnapshotTracksOutboundMessagesAndAssistantReplyCard() {
+		RecordingBackend backend = new RecordingBackend();
+		PlannerOrchestrator orchestrator = newOrchestrator(backend, CurrentViewVisionTool.disabled(), PlannerVisionMode.EXTERNAL_SUMMARY);
+
+		orchestrator.submit(requestAt(10L, 1_000L, "Alice", "A"));
+		backend.awaitCalls(1, Duration.ofSeconds(1));
+
+		PlannerConversationDebugSnapshot submitted = orchestrator.conversationDebugSnapshot();
+		assertEquals(1L, submitted.generation());
+		assertEquals("PLANNER_REQUEST", submitted.phase());
+		assertEquals(1, submitted.attempt());
+		assertTrue(submitted.messages().stream().anyMatch(message -> message.kind() == PlannerConversationDebugKind.SYSTEM));
+		PlannerConversationDebugMessage terminalMessage = lastConversationMessage(submitted);
+		assertEquals(PlannerConversationDebugKind.USER_TURN, terminalMessage.kind());
+		assertTrue(terminalMessage.text().contains("[chat][Alice] A"));
+
+		backend.succeed(0, replyOnly("reply A"));
+		PlannerExecutionResult result = awaitResult(orchestrator);
+
+		assertEquals("reply A", result.response().replyText());
+		PlannerConversationDebugMessage replyCard = lastConversationMessage(orchestrator.conversationDebugSnapshot());
+		assertEquals(PlannerConversationDebugKind.ASSISTANT_TURN, replyCard.kind());
+		assertEquals("reply A", replyCard.text());
+	}
+
+	@Test
+	void conversationSnapshotShowsGoalSetOutcomeWhenReplyTextIsBlank() {
+		RecordingBackend backend = new RecordingBackend();
+		PlannerOrchestrator orchestrator = newOrchestrator(backend, CurrentViewVisionTool.disabled(), PlannerVisionMode.EXTERNAL_SUMMARY);
+
+		orchestrator.submit(requestAt(10L, 1_000L, "Alice", "@agent follow me"));
+		backend.awaitCalls(1, Duration.ofSeconds(1));
+		backend.succeed(0, new PlannerResponse(
+			"",
+			new PlannerIntent("set_goal", GoalType.FOLLOW_PLAYER, "Alice")
+		));
+
+		PlannerExecutionResult result = awaitResult(orchestrator);
+		assertTrue(result.succeeded());
+
+		PlannerConversationDebugMessage outcomeCard = lastConversationMessage(orchestrator.conversationDebugSnapshot());
+		assertEquals(PlannerConversationDebugKind.TASK, outcomeCard.kind());
+		assertTrue(outcomeCard.text().contains("Goal call: FOLLOW_PLAYER -> Alice."));
+	}
+
+	@Test
+	void conversationSnapshotShowsReplyAndOperationCardsForGoalAndEventFilters() {
+		RecordingBackend backend = new RecordingBackend();
+		PlannerOrchestrator orchestrator = newOrchestrator(backend, CurrentViewVisionTool.disabled(), PlannerVisionMode.EXTERNAL_SUMMARY);
+
+		orchestrator.submit(requestAt(10L, 1_000L, "Alice", "@agent follow me but mute system spam"));
+		backend.awaitCalls(1, Duration.ofSeconds(1));
+		backend.succeed(0, new PlannerResponse(
+			"On it.",
+			new PlannerIntent("set_goal", GoalType.FOLLOW_PLAYER, "Alice"),
+			null,
+			new EventPolicyChanges(
+				true,
+				List.of("old-noise-rule"),
+				List.of(new EventPolicyRuleUpsert(
+					"mute-system-server",
+					"ignore",
+					new EventPolicyMatch("social.system_message", null, "server", null, null, null, null),
+					"system chatter"
+				))
+			)
+		));
+
+		PlannerExecutionResult result = awaitResult(orchestrator);
+		assertTrue(result.succeeded());
+
+		PlannerConversationDebugSnapshot snapshot = orchestrator.conversationDebugSnapshot();
+		assertNotNull(findConversationMessage(snapshot, PlannerConversationDebugKind.ASSISTANT_TURN, "On it."));
+		assertNotNull(findConversationMessage(snapshot, PlannerConversationDebugKind.TASK, "Goal call: FOLLOW_PLAYER -> Alice."));
+		assertNotNull(findConversationMessage(snapshot, PlannerConversationDebugKind.TASK, "Event filter: clear all rules."));
+		assertNotNull(findConversationMessage(snapshot, PlannerConversationDebugKind.TASK, "Event filter: remove old-noise-rule."));
+		assertNotNull(findConversationMessage(snapshot, PlannerConversationDebugKind.TASK, "Event filter: upsert mute-system-server -> IGNORE on social.system_message [speaker=server]."));
+	}
+
+	@Test
+	void conversationSnapshotKeepsPreviousOperationCardsAcrossLaterPlannerSubmits() {
+		RecordingBackend backend = new RecordingBackend();
+		PlannerOrchestrator orchestrator = newOrchestrator(backend, CurrentViewVisionTool.disabled(), PlannerVisionMode.EXTERNAL_SUMMARY);
+
+		orchestrator.submit(requestAt(10L, 1_000L, "Alice", "@agent follow me"));
+		backend.awaitCalls(1, Duration.ofSeconds(1));
+		backend.succeed(0, new PlannerResponse(
+			"",
+			new PlannerIntent("set_goal", GoalType.FOLLOW_PLAYER, "Alice")
+		));
+		PlannerExecutionResult firstResult = awaitResult(orchestrator);
+		assertTrue(firstResult.succeeded());
+		assertNotNull(findConversationMessage(
+			orchestrator.conversationDebugSnapshot(),
+			PlannerConversationDebugKind.TASK,
+			"Goal call: FOLLOW_PLAYER -> Alice."
+		));
+
+		orchestrator.submit(requestAt(11L, 1_100L, "Alice", "status?"));
+		backend.awaitCalls(2, Duration.ofSeconds(1));
+
+		PlannerConversationDebugSnapshot submitted = orchestrator.conversationDebugSnapshot();
+		assertNotNull(findConversationMessage(submitted, PlannerConversationDebugKind.TASK, "Goal call: FOLLOW_PLAYER -> Alice."));
+		assertNotNull(findConversationMessage(submitted, PlannerConversationDebugKind.USER_TURN, "[chat][Alice] status?"));
+	}
+
+	@Test
+	void conversationSnapshotKeepsOperationCardsWhenLaterPromptHasManyNotices() {
+		RecordingBackend backend = new RecordingBackend();
+		PlannerOrchestrator orchestrator = newOrchestrator(backend, CurrentViewVisionTool.disabled(), PlannerVisionMode.EXTERNAL_SUMMARY);
+
+		orchestrator.submit(requestAt(10L, 1_000L, "Alice", "@agent ignore noisy system messages"));
+		backend.awaitCalls(1, Duration.ofSeconds(1));
+		backend.succeed(0, new PlannerResponse(
+			"",
+			new PlannerIntent("reply_only", null, null),
+			null,
+			new EventPolicyChanges(
+				false,
+				List.of(),
+				List.of(new EventPolicyRuleUpsert(
+					"mute-system-server",
+					"ignore",
+					new EventPolicyMatch("social.system_message", null, "server", null, null, null, null),
+					"noise"
+				))
+			)
+		));
+		PlannerExecutionResult firstResult = awaitResult(orchestrator);
+		assertTrue(firstResult.succeeded());
+
+		List<SemanticEvent> noisyEvents = new ArrayList<>();
+		for (int index = 0; index < 64; index++) {
+			noisyEvents.add(new SemanticEvent(
+				index + 1L,
+				200L + index,
+				2_000L + index,
+				"pickup.item_picked_up",
+				Map.of("actor", "self", "itemId", "minecraft:item_" + index, "count", 1)
+			));
+		}
+		orchestrator.recordEvents(
+			new SemanticEventQueryResult(1L, 64L, false, noisyEvents),
+			new PlannerRequestSeed(20L, 2_100L, SessionMode.OUT_OF_WORLD, "Alice", null)
+		);
+		orchestrator.submit(requestAt(21L, 2_100L, "Alice", "status?"));
+		backend.awaitCalls(2, Duration.ofSeconds(1));
+
+		PlannerConversationDebugSnapshot submitted = orchestrator.conversationDebugSnapshot();
+		assertNotNull(findConversationMessage(submitted, PlannerConversationDebugKind.TASK, "Event filter: upsert mute-system-server -> IGNORE on social.system_message [speaker=server]."));
+		assertNotNull(findConversationMessage(submitted, PlannerConversationDebugKind.USER_TURN, "[chat][Alice] status?"));
+	}
+
+	@Test
+	void conversationSnapshotShowsCoalescedSemanticNoticesInOutboundPrompt() {
+		RecordingBackend backend = new RecordingBackend();
+		PlannerOrchestrator orchestrator = newOrchestrator(backend, CurrentViewVisionTool.disabled(), PlannerVisionMode.EXTERNAL_SUMMARY);
+
+		orchestrator.recordEvents(new SemanticEventQueryResult(
+			1L,
+			3L,
+			false,
+			List.of(
+				new SemanticEvent(1L, 100L, 1_000L, "pickup.item_picked_up", Map.of("actor", "self", "itemId", "minecraft:dirt", "count", 1)),
+				new SemanticEvent(2L, 101L, 1_010L, "pickup.item_picked_up", Map.of("actor", "self", "itemId", "minecraft:dirt", "count", 1)),
+				new SemanticEvent(3L, 102L, 1_020L, "pickup.item_picked_up", Map.of("actor", "self", "itemId", "minecraft:dirt", "count", 1))
+			)
+		), 1_020L);
+		orchestrator.submit(requestAt(10L, 1_020L, "Alice", "A"));
+		backend.awaitCalls(1, Duration.ofSeconds(1));
+
+		PlannerConversationDebugSnapshot submitted = orchestrator.conversationDebugSnapshot();
+		List<PlannerConversationDebugMessage> dirtNotices = submitted.messages().stream()
+			.filter(message -> message.kind() == PlannerConversationDebugKind.NOTICE)
+			.filter(message -> message.text().contains("minecraft:dirt"))
+			.toList();
+		assertEquals(1, dirtNotices.size());
+		assertTrue(dirtNotices.getFirst().text().contains("3x minecraft:dirt"));
+	}
+
+	@Test
+	void conversationSnapshotCoalescesRepeatedPickupNoticesAcrossMultipleRecordCalls() {
+		RecordingBackend backend = new RecordingBackend();
+		PlannerOrchestrator orchestrator = newOrchestrator(backend, CurrentViewVisionTool.disabled(), PlannerVisionMode.EXTERNAL_SUMMARY);
+
+		orchestrator.recordEvents(new SemanticEventQueryResult(
+			1L,
+			1L,
+			false,
+			List.of(new SemanticEvent(1L, 100L, 1_000L, "pickup.item_picked_up", Map.of("actor", "self", "itemId", "minecraft:sunflower", "count", 1)))
+		), 1_000L);
+		orchestrator.recordEvents(new SemanticEventQueryResult(
+			2L,
+			2L,
+			false,
+			List.of(new SemanticEvent(2L, 101L, 1_010L, "pickup.item_picked_up", Map.of("actor", "self", "itemId", "minecraft:sunflower", "count", 1)))
+		), 1_010L);
+		orchestrator.recordEvents(new SemanticEventQueryResult(
+			3L,
+			3L,
+			false,
+			List.of(new SemanticEvent(3L, 102L, 1_020L, "pickup.item_picked_up", Map.of("actor", "self", "itemId", "minecraft:wheat_seeds", "count", 1)))
+		), 1_020L);
+		orchestrator.recordEvents(new SemanticEventQueryResult(
+			4L,
+			4L,
+			false,
+			List.of(new SemanticEvent(4L, 103L, 1_030L, "pickup.item_picked_up", Map.of("actor", "self", "itemId", "minecraft:sunflower", "count", 1)))
+		), 1_030L);
+
+		orchestrator.submit(requestAt(10L, 1_030L, "Alice", "A"));
+		backend.awaitCalls(1, Duration.ofSeconds(1));
+
+		PlannerConversationDebugSnapshot submitted = orchestrator.conversationDebugSnapshot();
+		List<PlannerConversationDebugMessage> pickupNotices = submitted.messages().stream()
+			.filter(message -> message.kind() == PlannerConversationDebugKind.NOTICE)
+			.filter(message -> message.text().contains("picked up"))
+			.toList();
+		assertEquals(2, pickupNotices.size());
+		assertTrue(pickupNotices.get(0).text().contains("3x minecraft:sunflower"));
+		assertTrue(pickupNotices.get(1).text().contains("1x minecraft:wheat_seeds"));
+	}
+
+	@Test
+	void pendingSemanticOverflowAutoSubmitsFlushWithoutPersistingSyntheticPrompt() {
+		RecordingBackend backend = new RecordingBackend();
+		PlannerOrchestrator orchestrator = newOrchestrator(
+			backend,
+			CurrentViewVisionTool.disabled(),
+			PlannerVisionMode.EXTERNAL_SUMMARY,
+			3,
+			10,
+			10,
+			100,
+			2,
+			Clock.systemDefaultZone()
+		);
+
+		PlannerRequestSeed seed = new PlannerRequestSeed(10L, 1_000L, SessionMode.OUT_OF_WORLD, "Alice", null);
+		orchestrator.recordEvents(new SemanticEventQueryResult(
+			1L,
+			2L,
+			false,
+			List.of(
+				new SemanticEvent(1L, 100L, 1_000L, "pickup.item_picked_up", Map.of("actor", "self", "itemId", "minecraft:dirt", "count", 1)),
+				new SemanticEvent(2L, 101L, 1_010L, "pickup.item_picked_up", Map.of("actor", "self", "itemId", "minecraft:dirt", "count", 1))
+			)
+		), seed);
+		backend.awaitCalls(1, Duration.ofSeconds(1));
+
+		PlannerConversationDebugSnapshot submitted = orchestrator.conversationDebugSnapshot();
+		assertEquals(PlannerConversationDebugKind.TASK, lastConversationMessage(submitted).kind());
+		assertTrue(lastConversationMessage(submitted).text().contains("Pending semantic context reached capacity"));
+		assertTrue(submitted.messages().stream().anyMatch(message ->
+			message.kind() == PlannerConversationDebugKind.NOTICE && message.text().contains("2x minecraft:dirt")
+		));
+
+		backend.succeed(0, replyOnly("noted"));
+		PlannerExecutionResult result = awaitResult(orchestrator);
+
+		assertEquals("noted", result.response().replyText());
+		assertNull(result.request().triggerBatch());
+
+		orchestrator.recordAssistantTurn(new DialogueTurn("agent", "noted", 11L, 1_100L));
+		orchestrator.onAcceptedReplyRecorded();
+		orchestrator.submit(requestAt(12L, 1_200L, "Alice", "status?"));
+		backend.awaitCalls(2, Duration.ofSeconds(1));
+
+		String secondPrompt = terminalPrompt(backend.conversation(1));
+		assertFalse(secondPrompt.contains("Pending semantic context reached capacity"));
+	}
+
+	@Test
+	void toolRequestAddsTaskCardWhileWaitingForToolResult() {
+		RecordingBackend backend = new RecordingBackend();
+		StubVisionTool visionTool = new StubVisionTool(
+			true,
+			new CompletableFuture<>(),
+			CompletableFuture.failedFuture(new AssertionError("External summary should not be requested"))
+		);
+		PlannerOrchestrator orchestrator = newOrchestrator(
+			backend,
+			visionTool,
+			PlannerVisionMode.NATIVE_TOOL_IMAGE
+		);
+
+		orchestrator.submit(requestAt(10L, 1_000L, "Alice", "@agent what do you see?"));
+		backend.awaitCalls(1, Duration.ofSeconds(1));
+		backend.succeed(0, new PlannerResponse(
+			"",
+			new PlannerIntent("none", null, null),
+			new PlannerToolRequest("take_a_look", null)
+		));
+		backend.awaitCompletions(1, Duration.ofSeconds(1));
+
+		assertNull(awaitNullPoll(orchestrator));
+		PlannerConversationDebugMessage taskCard = lastConversationMessage(orchestrator.conversationDebugSnapshot());
+		assertEquals(PlannerConversationDebugKind.TASK, taskCard.kind());
+		assertTrue(taskCard.text().contains("Tool call: take_a_look"));
+	}
+
+	@Test
+	void toolFollowUpConversationShowsToolResultAndRetainsToolCallCard() {
+		RecordingBackend backend = new RecordingBackend();
+		StubVisionTool visionTool = new StubVisionTool(
+			true,
+			CompletableFuture.completedFuture(capturedScreenshot()),
+			CompletableFuture.failedFuture(new AssertionError("External summary should not be requested"))
+		);
+		PlannerOrchestrator orchestrator = newOrchestrator(
+			backend,
+			visionTool,
+			PlannerVisionMode.NATIVE_TOOL_IMAGE
+		);
+
+		orchestrator.submit(requestAt(10L, 1_000L, "Alice", "@agent what do you see?"));
+		backend.awaitCalls(1, Duration.ofSeconds(1));
+		backend.succeed(0, new PlannerResponse(
+			"",
+			new PlannerIntent("none", null, null),
+			new PlannerToolRequest("take_a_look", null)
+		));
+		backend.awaitCompletions(1, Duration.ofSeconds(1));
+
+		awaitBackendCallCount(orchestrator, backend, 2, Duration.ofSeconds(1));
+		PlannerConversationDebugSnapshot followUp = orchestrator.conversationDebugSnapshot();
+		assertEquals(1L, followUp.generation());
+		assertEquals("TOOL_FOLLOW_UP", followUp.phase());
+		PlannerConversationDebugMessage toolResultMessage = findConversationMessage(followUp, PlannerConversationDebugKind.TOOL_RESULT, "current first-person view attached");
+		assertNotNull(toolResultMessage);
+		assertTrue(toolResultMessage.hasImageAttachment());
+		PlannerConversationDebugMessage toolCallCard = lastConversationMessage(followUp);
+		assertEquals(PlannerConversationDebugKind.TASK, toolCallCard.kind());
+		assertTrue(toolCallCard.text().contains("Tool call: take_a_look"));
+	}
+
+	@Test
+	void failureAppendsFailureCardToVisibleConversation() {
+		RecordingBackend backend = new RecordingBackend();
+		PlannerOrchestrator orchestrator = newOrchestrator(backend, CurrentViewVisionTool.disabled(), PlannerVisionMode.EXTERNAL_SUMMARY);
+
+		orchestrator.submit(requestAt(10L, 1_000L, "Alice", "A"));
+		backend.awaitCalls(1, Duration.ofSeconds(1));
+		backend.fail(0, LlmFailureType.PROVIDER_ERROR, "Injected provider error");
+
+		PlannerExecutionResult result = awaitResult(orchestrator);
+		assertEquals(LlmFailureType.PROVIDER_ERROR, result.failureType());
+
+		PlannerConversationDebugMessage failureCard = lastConversationMessage(orchestrator.conversationDebugSnapshot());
+		assertEquals(PlannerConversationDebugKind.FAILURE, failureCard.kind());
+		assertTrue(failureCard.text().contains("PROVIDER_ERROR"));
+		assertTrue(failureCard.text().contains("Injected provider error"));
+	}
+
+	@Test
+	void resetAndShutdownClearVisibleConversationSnapshot() {
+		RecordingBackend resetBackend = new RecordingBackend();
+		PlannerOrchestrator resetOrchestrator = newOrchestrator(
+			resetBackend,
+			CurrentViewVisionTool.disabled(),
+			PlannerVisionMode.EXTERNAL_SUMMARY
+		);
+		resetOrchestrator.submit(requestAt(10L, 1_000L, "Alice", "A"));
+		resetBackend.awaitCalls(1, Duration.ofSeconds(1));
+		resetBackend.succeed(0, replyOnly("reply A"));
+		awaitResult(resetOrchestrator);
+		assertFalse(resetOrchestrator.conversationDebugSnapshot().isEmpty());
+		resetOrchestrator.reset();
+		assertTrue(resetOrchestrator.conversationDebugSnapshot().isEmpty());
+
+		RecordingBackend shutdownBackend = new RecordingBackend();
+		PlannerOrchestrator shutdownOrchestrator = newOrchestrator(
+			shutdownBackend,
+			CurrentViewVisionTool.disabled(),
+			PlannerVisionMode.EXTERNAL_SUMMARY
+		);
+		shutdownOrchestrator.submit(requestAt(11L, 1_100L, "Alice", "B"));
+		shutdownBackend.awaitCalls(1, Duration.ofSeconds(1));
+		shutdownBackend.succeed(0, replyOnly("reply B"));
+		awaitResult(shutdownOrchestrator);
+		assertFalse(shutdownOrchestrator.conversationDebugSnapshot().isEmpty());
+		shutdownOrchestrator.shutdown();
+		assertTrue(shutdownOrchestrator.conversationDebugSnapshot().isEmpty());
+	}
+
+	@Test
+	void supersededToolExecutionDoesNotFeedOldFollowUpBackIntoPlanner() {
+		RecordingBackend backend = new RecordingBackend();
+		MutableClock clock = new MutableClock(Instant.ofEpochMilli(1_000L), ZoneId.of("Asia/Taipei"));
+		StubVisionTool visionTool = new StubVisionTool(
+			true,
+			new CompletableFuture<>(),
+			CompletableFuture.failedFuture(new AssertionError("External summary should not be requested"))
+		);
+		PlannerOrchestrator orchestrator = newOrchestrator(
+			backend,
+			visionTool,
+			PlannerVisionMode.NATIVE_TOOL_IMAGE,
+			3,
+			clock
+		);
+
+		orchestrator.submit(requestAt(10L, 1_000L, "Alice", "@agent what do you see?"));
+		backend.awaitCalls(1, Duration.ofSeconds(1));
+		backend.succeed(0, new PlannerResponse(
+			"",
+			new PlannerIntent("none", null, null),
+			new PlannerToolRequest("take_a_look", null)
+		));
+		backend.awaitCompletions(1, Duration.ofSeconds(1));
+
+		assertNull(awaitNullPoll(orchestrator));
+		assertEquals(1, visionTool.captureRequestCount());
+
+		orchestrator.submit(requestAt(11L, 1_100L, "Alice", "B"));
+		assertEquals(1, backend.callCount());
+		PlannerOrchestratorDebugSnapshot snapshot = orchestrator.debugSnapshot();
+		assertTrue(snapshot.coalescePending());
+		assertEquals(10L, snapshot.coalesceWindowMs());
+
+		visionTool.captureFuture().complete(capturedScreenshot());
+		assertNull(awaitNullPoll(orchestrator));
+		assertEquals(1, backend.callCount());
+
+		clock.advanceMillis(10L);
+		awaitBackendCallCount(orchestrator, backend, 2, Duration.ofSeconds(1));
+
+		backend.succeed(1, replyOnly("reply B"));
+		PlannerExecutionResult result = awaitResult(orchestrator);
+		assertEquals("reply B", result.response().replyText());
+		assertEquals(2L, result.generation());
+	}
+
 	private static PlannerRequest baseRequest(String toolResult) {
 		return new PlannerRequest(
 			10L,
@@ -294,15 +962,72 @@ class PlannerOrchestratorTest {
 		);
 	}
 
-	private static PlannerOrchestrator newOrchestrator(OpenAiCompatibleLlmBackend backend, CurrentViewVisionTool visionTool, PlannerVisionMode visionMode) {
+	private static PlannerRequest requestAt(long tick, long timestampMs, String sender, String message) {
+		return new PlannerRequest(
+			tick,
+			timestampMs,
+			SessionMode.OUT_OF_WORLD,
+			"Alice",
+			null,
+			sender,
+			message,
+			null
+		);
+	}
+
+	private static PlannerResponse replyOnly(String text) {
+		return new PlannerResponse(text, new PlannerIntent("reply_only", null, null));
+	}
+
+	private static PlannerOrchestrator newOrchestrator(LlmBackend backend, CurrentViewVisionTool visionTool, PlannerVisionMode visionMode) {
+		return newOrchestrator(backend, visionTool, visionMode, 3, Clock.systemDefaultZone());
+	}
+
+	private static PlannerOrchestrator newOrchestrator(
+		LlmBackend backend,
+		CurrentViewVisionTool visionTool,
+		PlannerVisionMode visionMode,
+		int plannerSessionMaxConcurrentAttempts,
+		Clock clock
+	) {
+		AgentConfig.LlmConfig config = AgentConfig.LlmConfig.defaults();
+		return newOrchestrator(
+			backend,
+			visionTool,
+			visionMode,
+			plannerSessionMaxConcurrentAttempts,
+			config.plannerSessionCoalesceStepMillis(),
+			config.plannerSessionCoalesceMinMillis(),
+			config.plannerSessionCoalesceMaxMillis(),
+			config.plannerPendingSemanticEventCap(),
+			clock
+		);
+	}
+
+	private static PlannerOrchestrator newOrchestrator(
+		LlmBackend backend,
+		CurrentViewVisionTool visionTool,
+		PlannerVisionMode visionMode,
+		int plannerSessionMaxConcurrentAttempts,
+		int plannerSessionCoalesceStepMillis,
+		int plannerSessionCoalesceMinMillis,
+		int plannerSessionCoalesceMaxMillis,
+		int plannerPendingSemanticEventCap,
+		Clock clock
+	) {
 		AgentConfig.LlmConfig config = AgentConfig.LlmConfig.defaults();
 		return new PlannerOrchestrator(
 			new PlannerExecutor(backend),
 			new PlannerCompactionService(new OpenAiCompatibleChatClient(config)),
-			new PlannerContextAggregator(Clock.systemDefaultZone(), config.plannerCompactionTriggerTokens(), visionMode),
+			new PlannerContextAggregator(clock, config.plannerCompactionTriggerTokens(), plannerPendingSemanticEventCap, visionMode),
 			visionTool,
 			visionMode,
-			config.visionImageDetail()
+			config.visionImageDetail(),
+			plannerSessionMaxConcurrentAttempts,
+			plannerSessionCoalesceStepMillis,
+			plannerSessionCoalesceMinMillis,
+			plannerSessionCoalesceMaxMillis,
+			clock
 		);
 	}
 
@@ -322,6 +1047,66 @@ class PlannerOrchestratorTest {
 			}
 		}
 		throw new AssertionError("Timed out waiting for planner result");
+	}
+
+	private static PlannerExecutionResult awaitNullPoll(PlannerOrchestrator orchestrator) {
+		Instant deadline = Instant.now().plus(Duration.ofSeconds(1));
+		while (Instant.now().isBefore(deadline)) {
+			PlannerExecutionResult result = orchestrator.poll();
+			if (result == null) {
+				return null;
+			}
+		}
+		throw new AssertionError("Expected orchestrator.poll() to return null");
+	}
+
+	private static void awaitBackendCallCount(
+		PlannerOrchestrator orchestrator,
+		RecordingBackend backend,
+		int expectedCount,
+		Duration timeout
+	) {
+		Instant deadline = Instant.now().plus(timeout);
+		while (Instant.now().isBefore(deadline)) {
+			orchestrator.poll();
+			if (backend.callCount() >= expectedCount) {
+				return;
+			}
+			try {
+				Thread.sleep(10L);
+			}
+			catch (InterruptedException exception) {
+				Thread.currentThread().interrupt();
+				throw new AssertionError("Interrupted while waiting for backend call count", exception);
+			}
+		}
+		throw new AssertionError(
+			"Timed out waiting for backend call count "
+				+ expectedCount
+				+ ", actual="
+				+ backend.callCount()
+				+ ", snapshot="
+				+ orchestrator.debugSnapshot()
+		);
+	}
+
+	private static void awaitRetryPending(PlannerOrchestrator orchestrator, Duration timeout) {
+		Instant deadline = Instant.now().plus(timeout);
+		while (Instant.now().isBefore(deadline)) {
+			orchestrator.poll();
+			PlannerOrchestratorDebugSnapshot snapshot = orchestrator.debugSnapshot();
+			if (snapshot.retryPending()) {
+				return;
+			}
+			try {
+				Thread.sleep(10L);
+			}
+			catch (InterruptedException exception) {
+				Thread.currentThread().interrupt();
+				throw new AssertionError("Interrupted while waiting for retry scheduling", exception);
+			}
+		}
+		throw new AssertionError("Timed out waiting for retry scheduling. snapshot=" + orchestrator.debugSnapshot());
 	}
 
 	private static void awaitDebugCompaction(PlannerOrchestrator orchestrator) {
@@ -388,6 +1173,140 @@ class PlannerOrchestratorTest {
 		private int descriptionRequestCount() {
 			return descriptionRequestCount;
 		}
+
+		private CompletableFuture<FirstPersonScreenshotService.CapturedScreenshot> captureFuture() {
+			return captureFuture;
+		}
+	}
+
+	private static final class RecordingBackend implements LlmBackend {
+		private final List<LlmConversation> conversations = new ArrayList<>();
+		private final List<CompletableFuture<LlmCallResult<PlannerResponse>>> responses = new ArrayList<>();
+		private int completedCallCount;
+
+		@Override
+		public LlmCallResult<PlannerResponse> generate(LlmConversation conversation) throws LlmBackendException {
+			CompletableFuture<LlmCallResult<PlannerResponse>> future = new CompletableFuture<>();
+			synchronized (this) {
+				conversations.add(conversation);
+				responses.add(future);
+				notifyAll();
+			}
+			try {
+				return future.join();
+			}
+			catch (CompletionException exception) {
+				Throwable cause = exception.getCause();
+				if (cause instanceof LlmBackendException backendException) {
+					throw backendException;
+				}
+				throw exception;
+			}
+			finally {
+				synchronized (this) {
+					completedCallCount++;
+					notifyAll();
+				}
+			}
+		}
+
+		@Override
+		public void injectMockResponse(PlannerResponse response) {
+			throw new UnsupportedOperationException("Use succeed(index, response) in tests");
+		}
+
+		@Override
+		public void injectTimeout() {
+			throw new UnsupportedOperationException("Use fail(index, TIMEOUT, ...) in tests");
+		}
+
+		@Override
+		public boolean isConfigured() {
+			return true;
+		}
+
+		private synchronized void awaitCalls(int expectedCount, Duration timeout) {
+			long deadline = System.nanoTime() + timeout.toNanos();
+			while (conversations.size() < expectedCount) {
+				long remainingNanos = deadline - System.nanoTime();
+				if (remainingNanos <= 0L) {
+					throw new AssertionError("Timed out waiting for backend calls. expected=" + expectedCount + " actual=" + conversations.size());
+				}
+				long waitMillis = Math.max(1L, remainingNanos / 1_000_000L);
+				try {
+					wait(waitMillis);
+				}
+				catch (InterruptedException exception) {
+					Thread.currentThread().interrupt();
+					throw new AssertionError("Interrupted while waiting for backend calls", exception);
+				}
+			}
+		}
+
+		private synchronized int callCount() {
+			return conversations.size();
+		}
+
+		private synchronized void awaitCompletions(int expectedCount, Duration timeout) {
+			long deadline = System.nanoTime() + timeout.toNanos();
+			while (completedCallCount < expectedCount) {
+				long remainingNanos = deadline - System.nanoTime();
+				if (remainingNanos <= 0L) {
+					throw new AssertionError(
+						"Timed out waiting for backend completions. expected=" + expectedCount + " actual=" + completedCallCount
+					);
+				}
+				long waitMillis = Math.max(1L, remainingNanos / 1_000_000L);
+				try {
+					wait(waitMillis);
+				}
+				catch (InterruptedException exception) {
+					Thread.currentThread().interrupt();
+					throw new AssertionError("Interrupted while waiting for backend completions", exception);
+				}
+			}
+		}
+
+		private synchronized LlmConversation conversation(int index) {
+			return conversations.get(index);
+		}
+
+		private synchronized void succeed(int index, PlannerResponse response) {
+			responses.get(index).complete(LlmCallResult.of(response, LlmUsageSnapshot.unknown()));
+		}
+
+		private synchronized void fail(int index, LlmFailureType failureType, String message) {
+			responses.get(index).completeExceptionally(new LlmBackendException(failureType, message));
+		}
+	}
+
+	private static final class MutableClock extends Clock {
+		private Instant instant;
+		private final ZoneId zoneId;
+
+		private MutableClock(Instant instant, ZoneId zoneId) {
+			this.instant = instant;
+			this.zoneId = zoneId;
+		}
+
+		@Override
+		public ZoneId getZone() {
+			return zoneId;
+		}
+
+		@Override
+		public Clock withZone(ZoneId zone) {
+			return new MutableClock(instant, zone);
+		}
+
+		@Override
+		public Instant instant() {
+			return instant;
+		}
+
+		private void advanceMillis(long millis) {
+			instant = instant.plusMillis(millis);
+		}
 	}
 
 	private static final class CompactionTestServer implements AutoCloseable {
@@ -447,5 +1366,33 @@ class PlannerOrchestratorTest {
 		exchange.sendResponseHeaders(statusCode, bytes.length);
 		exchange.getResponseBody().write(bytes);
 		exchange.close();
+	}
+
+	private static void assertPromptContains(LlmConversation conversation, String... expectedFragments) {
+		String prompt = terminalPrompt(conversation);
+		for (String expectedFragment : expectedFragments) {
+			assertTrue(prompt.contains(expectedFragment), () -> "Prompt missing fragment: " + expectedFragment + "\nPrompt was:\n" + prompt);
+		}
+	}
+
+	private static PlannerConversationDebugMessage lastConversationMessage(PlannerConversationDebugSnapshot snapshot) {
+		assertFalse(snapshot.messages().isEmpty(), "Expected visible conversation messages");
+		return snapshot.messages().get(snapshot.messages().size() - 1);
+	}
+
+	private static PlannerConversationDebugMessage findConversationMessage(
+		PlannerConversationDebugSnapshot snapshot,
+		PlannerConversationDebugKind kind,
+		String textFragment
+	) {
+		return snapshot.messages().stream()
+			.filter(message -> kind == null || message.kind() == kind)
+			.filter(message -> textFragment == null || message.text().contains(textFragment))
+			.findFirst()
+			.orElse(null);
+	}
+
+	private static String terminalPrompt(LlmConversation conversation) {
+		return conversation.messages().get(conversation.messages().size() - 1).content();
 	}
 }

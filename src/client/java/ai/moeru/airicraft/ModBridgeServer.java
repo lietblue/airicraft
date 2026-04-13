@@ -1,6 +1,7 @@
 package ai.moeru.airicraft;
 
 import ai.moeru.airicraft.agent.EmbodiedAgentRuntime;
+import ai.moeru.airicraft.agent.verification.VerificationPlayerProbe;
 import ai.moeru.airicraft.agent.llm.CurrentViewVisionService;
 import ai.moeru.airicraft.agent.llm.LlmBackendException;
 import ai.moeru.airicraft.agent.session.LanHostingService;
@@ -54,6 +55,18 @@ public final class ModBridgeServer {
 	private static final long DEBUG_COMPACTION_DEFAULT_TIMEOUT_MILLIS = 30_000L;
 	private static final long DEBUG_COMPACTION_MAX_TIMEOUT_MILLIS = 120_000L;
 	private static final long DEBUG_COMPACTION_POLL_INTERVAL_MILLIS = 25L;
+	private static final long VERIFICATION_RESPAWN_TIMEOUT_MILLIS = 5_000L;
+	private static final long VERIFICATION_RESPAWN_POLL_INTERVAL_MILLIS = 25L;
+	private static final List<String> VERIFICATION_CAPABILITIES = List.of(
+		"player_state",
+		"player_teleport",
+		"player_velocity",
+		"player_respawn",
+		"player_gamemode",
+		"command",
+		"scenario_run",
+		"results"
+	);
 
 	private final HighlightManager highlightManager;
 	private final EmbodiedAgentRuntime agentRuntime;
@@ -103,9 +116,18 @@ public final class ModBridgeServer {
 				httpServer.createContext("/v1/agent/events/recent", exchange -> handleJson(exchange, () -> createRecentAgentEventsResponse(exchange)));
 				httpServer.createContext("/v1/agent/goals", exchange -> handleJson(exchange, this::createAgentGoalsResponse));
 				httpServer.createContext("/v1/agent/tree", exchange -> handleJson(exchange, this::createAgentTreeResponse));
-				httpServer.createContext("/v1/agent/dialogue", exchange -> handleJson(exchange, this::createAgentDialogueResponse));
-				httpServer.createContext("/v1/agent/context", exchange -> handleJson(exchange, this::createAgentContextResponse));
-				httpServer.createContext("/v1/agent/debug/compact", this::handleAgentDebugCompact);
+			httpServer.createContext("/v1/agent/dialogue", exchange -> handleJson(exchange, this::createAgentDialogueResponse));
+			httpServer.createContext("/v1/agent/context", exchange -> handleJson(exchange, this::createAgentContextResponse));
+			httpServer.createContext("/v1/agent/event-policy", exchange -> handleJson(exchange, this::createAgentEventPolicyResponse));
+			httpServer.createContext("/v1/agent/event-policy/clear", this::handleAgentEventPolicyClear);
+			httpServer.createContext("/v1/agent/debug/compact", this::handleAgentDebugCompact);
+				httpServer.createContext("/v1/verification/status", exchange -> handleJson(exchange, this::createVerificationStatusResponse));
+				httpServer.createContext("/v1/verification/player", exchange -> handleJson(exchange, this::createVerificationPlayerResponse));
+				httpServer.createContext("/v1/verification/player/teleport", this::handleVerificationPlayerTeleport);
+				httpServer.createContext("/v1/verification/player/velocity", this::handleVerificationPlayerVelocity);
+				httpServer.createContext("/v1/verification/player/respawn", this::handleVerificationPlayerRespawn);
+				httpServer.createContext("/v1/verification/player/gamemode", this::handleVerificationPlayerGameMode);
+				httpServer.createContext("/v1/verification/command", this::handleVerificationCommand);
 				httpServer.createContext("/v1/verification/results", exchange -> handleJson(exchange, this::createVerificationResultsResponse));
 			httpServer.createContext("/v1/verification/run", this::handleVerificationRun);
 			httpServer.start();
@@ -361,6 +383,94 @@ public final class ModBridgeServer {
 		});
 	}
 
+	private void handleVerificationPlayerTeleport(HttpExchange exchange) throws IOException {
+		handleJsonBody(exchange, "POST", VerificationPlayerTeleportRequest.class, request -> {
+			if (request == null || !isFinite(request.x()) || !isFinite(request.y()) || !isFinite(request.z())) {
+				throw new BridgeUnavailableException("invalid_request", "x, y, and z must be finite numbers");
+			}
+			return onClientThread(() -> verificationPlayerActionResponse(
+				agentRuntime.verificationTeleportPlayer(request.x(), request.y(), request.z()),
+				"teleported",
+				true
+			));
+		});
+	}
+
+	private void handleVerificationPlayerVelocity(HttpExchange exchange) throws IOException {
+		handleJsonBody(exchange, "POST", VerificationPlayerVelocityRequest.class, request -> {
+			if (request == null || !isFinite(request.x()) || !isFinite(request.y()) || !isFinite(request.z())) {
+				throw new BridgeUnavailableException("invalid_request", "x, y, and z must be finite numbers");
+			}
+			return onClientThread(() -> verificationPlayerActionResponse(
+				agentRuntime.verificationSetPlayerVelocity(request.x(), request.y(), request.z()),
+				"applied",
+				true
+			));
+		});
+	}
+
+	private void handleVerificationPlayerGameMode(HttpExchange exchange) throws IOException {
+		handleJsonBody(exchange, "POST", VerificationPlayerGameModeRequest.class, request -> {
+			if (request == null || request.mode() == null || request.mode().isBlank()) {
+				throw new BridgeUnavailableException("invalid_request", "Missing mode");
+			}
+			return onClientThread(() -> verificationPlayerActionResponse(
+				agentRuntime.verificationSetGameMode(request.mode()),
+				"changed",
+				true
+			));
+		});
+	}
+
+	private void handleVerificationPlayerRespawn(HttpExchange exchange) throws IOException {
+		handleJsonBody(exchange, "POST", Object.class, request -> {
+			onClientThread(() -> agentRuntime.verificationRequestRespawn());
+			long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(VERIFICATION_RESPAWN_TIMEOUT_MILLIS);
+			while (System.nanoTime() < deadline) {
+				Map<String, Object> response = onClientThread(() -> {
+					MinecraftClient client = getClient();
+					if (client.currentScreen != null && "DeathScreen".equals(client.currentScreen.getClass().getSimpleName())) {
+						return null;
+					}
+					VerificationPlayerProbe probe = agentRuntime.verificationPlayerProbe();
+					LinkedHashMap<String, Object> payload = verificationPlayerActionResponse(probe, "respawned", true);
+					payload.put("currentScreen", currentScreenName(client));
+					return payload;
+				});
+				if (response != null) {
+					return response;
+				}
+				try {
+					Thread.sleep(VERIFICATION_RESPAWN_POLL_INTERVAL_MILLIS);
+				}
+				catch (InterruptedException exception) {
+					Thread.currentThread().interrupt();
+					throw new BridgeUnavailableException("bridge_interrupted", "Respawn wait interrupted");
+				}
+			}
+			throw new BridgeUnavailableException("verification_unavailable", "Timed out waiting for player respawn");
+		});
+	}
+
+	private void handleVerificationCommand(HttpExchange exchange) throws IOException {
+		handleJsonBody(exchange, "POST", VerificationCommandRequest.class, request -> {
+			if (request == null || request.command() == null || request.command().isBlank()) {
+				throw new BridgeUnavailableException("invalid_request", "Missing command");
+			}
+			return onClientThread(() -> {
+				VerificationPlayerProbe probe = agentRuntime.verificationRunCommand(request.command());
+				LinkedHashMap<String, Object> response = new LinkedHashMap<>();
+				response.put("available", true);
+				response.put("sessionMode", agentRuntime.sessionSnapshot().mode().name());
+				response.put("worldLoaded", agentRuntime.sessionSnapshot().worldLoaded());
+				response.put("executed", true);
+				response.put("command", request.command().trim());
+				response.putAll(verificationPlayerPayload(probe));
+				return response;
+			});
+		});
+	}
+
 	private void handleAgentOpenLan(HttpExchange exchange) throws IOException {
 		handleJsonBody(exchange, "POST", Object.class, request -> {
 			try {
@@ -413,6 +523,15 @@ public final class ModBridgeServer {
 				}
 			}
 			throw new BridgeUnavailableException("compaction_timeout", "Timed out waiting for planner compaction");
+		});
+	}
+
+	private void handleAgentEventPolicyClear(HttpExchange exchange) throws IOException {
+		handleJsonBody(exchange, "POST", Object.class, request -> {
+			return onClientThread(() -> {
+				agentRuntime.clearEventPolicy();
+				return createAgentEventPolicyPayload();
+			});
 		});
 	}
 
@@ -546,6 +665,7 @@ public final class ModBridgeServer {
 			response.put("visionAvailable", agentRuntime.visionAvailable());
 			response.put("plannerVisionMode", plannerSnapshot.plannerVisionMode());
 			response.put("degraded", agentRuntime.isDegraded());
+			response.put("eventPolicy", eventPolicySummaryPayload());
 			response.put("verification", snapshot.verification());
 			return response;
 		});
@@ -557,6 +677,29 @@ public final class ModBridgeServer {
 			response.put("available", true);
 			response.put("scenarios", agentRuntime.verificationScenarioNames());
 			response.put("report", agentRuntime.verificationReport());
+			return response;
+		});
+	}
+
+	private Object createVerificationStatusResponse() {
+		return onClientThread(() -> {
+			Map<String, Object> response = new LinkedHashMap<>();
+			response.put("available", agentRuntime.verificationAvailable());
+			response.put("sessionMode", agentRuntime.sessionSnapshot().mode().name());
+			response.put("worldLoaded", agentRuntime.sessionSnapshot().worldLoaded());
+			response.put("capabilities", VERIFICATION_CAPABILITIES);
+			return response;
+		});
+	}
+
+	private Object createVerificationPlayerResponse() {
+		return onClientThread(() -> {
+			VerificationPlayerProbe probe = agentRuntime.verificationPlayerProbe();
+			LinkedHashMap<String, Object> response = new LinkedHashMap<>();
+			response.put("available", true);
+			response.put("sessionMode", agentRuntime.sessionSnapshot().mode().name());
+			response.put("worldLoaded", agentRuntime.sessionSnapshot().worldLoaded());
+			response.putAll(verificationPlayerPayload(probe));
 			return response;
 		});
 	}
@@ -625,8 +768,36 @@ public final class ModBridgeServer {
 			Map<String, Object> response = new LinkedHashMap<>();
 			response.put("available", true);
 			response.put("planner", agentRuntime.plannerDebugSnapshot());
+			response.put("contextExcerpt", agentRuntime.plannerContextExcerpt());
+			response.put("eventPolicy", eventPolicySummaryPayload());
 			return response;
 		});
+	}
+
+	private Object createAgentEventPolicyResponse() {
+		return onClientThread(this::createAgentEventPolicyPayload);
+	}
+
+	private Map<String, Object> createAgentEventPolicyPayload() {
+		LinkedHashMap<String, Object> response = new LinkedHashMap<>();
+		response.put("available", true);
+		response.put("activeRuleCount", agentRuntime.activeEventPolicyRuleCount());
+		response.put("recentInterventionCount", agentRuntime.recentEventPolicyInterventionCount());
+		response.put("lastDecision", agentRuntime.lastEventPolicyDecision());
+		response.put("activeRules", agentRuntime.activeEventPolicyRules());
+		response.put("recentInterventions", agentRuntime.recentEventPolicyInterventions());
+		return response;
+	}
+
+	private Map<String, Object> eventPolicySummaryPayload() {
+		LinkedHashMap<String, Object> payload = new LinkedHashMap<>();
+		payload.put("activeRuleCount", agentRuntime.activeEventPolicyRuleCount());
+		payload.put("recentInterventionCount", agentRuntime.recentEventPolicyInterventionCount());
+		if (agentRuntime.lastEventPolicyDecision() != null) {
+			payload.put("lastMatchedRuleId", agentRuntime.lastEventPolicyDecision().matchedRuleId());
+			payload.put("lastMatchedEffect", agentRuntime.lastEventPolicyDecision().effect().name());
+		}
+		return payload;
 	}
 
 	private Object createFocusResponse() {
@@ -1039,6 +1210,24 @@ public final class ModBridgeServer {
 		throw new BridgeUnavailableException("invalid_request", "kind must be block or region");
 	}
 
+	private LinkedHashMap<String, Object> verificationPlayerActionResponse(
+		VerificationPlayerProbe probe,
+		String resultKey,
+		boolean resultValue
+	) {
+		LinkedHashMap<String, Object> response = new LinkedHashMap<>();
+		response.put("available", true);
+		response.put("sessionMode", agentRuntime.sessionSnapshot().mode().name());
+		response.put("worldLoaded", agentRuntime.sessionSnapshot().worldLoaded());
+		response.put(resultKey, resultValue);
+		response.putAll(verificationPlayerPayload(probe));
+		return response;
+	}
+
+	private static Map<String, Object> verificationPlayerPayload(VerificationPlayerProbe probe) {
+		return probe == null ? Map.of() : probe.asMap();
+	}
+
 	private static boolean isFinite(Double value) {
 		return value != null && Double.isFinite(value);
 	}
@@ -1077,6 +1266,18 @@ public final class ModBridgeServer {
 	}
 
 	private record VerificationRunRequest(String scenario) {
+	}
+
+	private record VerificationPlayerTeleportRequest(Double x, Double y, Double z) {
+	}
+
+	private record VerificationPlayerVelocityRequest(Double x, Double y, Double z) {
+	}
+
+	private record VerificationPlayerGameModeRequest(String mode) {
+	}
+
+	private record VerificationCommandRequest(String command) {
 	}
 
 	private record VisionDescribeRequest(String prompt) {

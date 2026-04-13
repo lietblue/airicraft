@@ -2,6 +2,7 @@ package ai.moeru.airicraft.agent;
 
 import ai.moeru.airicraft.AiricraftConfig;
 import ai.moeru.airicraft.AiricraftConfigLoader;
+import ai.moeru.airicraft.BridgeUnavailableException;
 import ai.moeru.airicraft.FirstPersonScreenshotService;
 import ai.moeru.airicraft.SingleplayerWorldService;
 import ai.moeru.airicraft.agent.behavior.BehaviorTreeRuntime;
@@ -12,7 +13,18 @@ import ai.moeru.airicraft.agent.dialogue.DialogueResponse;
 import ai.moeru.airicraft.agent.dialogue.DialogueSpeakerLabels;
 import ai.moeru.airicraft.agent.dialogue.DialogueSnapshot;
 import ai.moeru.airicraft.agent.dialogue.DialogueRuntime;
+import ai.moeru.airicraft.agent.events.AgentEventPipeline;
+import ai.moeru.airicraft.agent.events.EventPolicyChanges;
+import ai.moeru.airicraft.agent.events.EventPolicyDecision;
+import ai.moeru.airicraft.agent.events.EventPolicyEffect;
+import ai.moeru.airicraft.agent.events.EventPolicyIntervention;
+import ai.moeru.airicraft.agent.events.EventPolicyMatch;
+import ai.moeru.airicraft.agent.events.EventPolicyRule;
+import ai.moeru.airicraft.agent.events.EventPolicyRuleUpsert;
+import ai.moeru.airicraft.agent.events.EventPolicyState;
+import ai.moeru.airicraft.agent.events.EventRoutingProfile;
 import ai.moeru.airicraft.agent.events.SemanticEventBuffer;
+import ai.moeru.airicraft.agent.events.SemanticEvent;
 import ai.moeru.airicraft.agent.events.SemanticEventQueryResult;
 import ai.moeru.airicraft.agent.follow.FollowCapability;
 import ai.moeru.airicraft.agent.follow.FollowState;
@@ -25,6 +37,7 @@ import ai.moeru.airicraft.agent.llm.LlmBackendException;
 import ai.moeru.airicraft.agent.llm.OpenAiCompatibleChatClient;
 import ai.moeru.airicraft.agent.llm.OpenAiCompatibleLlmBackend;
 import ai.moeru.airicraft.agent.llm.OpenAiCompatibleVisionBackend;
+import ai.moeru.airicraft.agent.llm.PlannerConversationDebugSnapshot;
 import ai.moeru.airicraft.agent.llm.PlannerContextAggregator;
 import ai.moeru.airicraft.agent.llm.PlannerExecutor;
 import ai.moeru.airicraft.agent.llm.PlannerIntent;
@@ -32,6 +45,7 @@ import ai.moeru.airicraft.agent.llm.PlannerCompactionService;
 import ai.moeru.airicraft.agent.llm.PlannerOrchestratorDebugSnapshot;
 import ai.moeru.airicraft.agent.llm.PlannerOrchestrator;
 import ai.moeru.airicraft.agent.llm.PlannerResponse;
+import ai.moeru.airicraft.agent.llm.PlannerTriggerType;
 import ai.moeru.airicraft.agent.llm.VisionDescription;
 import ai.moeru.airicraft.agent.session.LanHostingService;
 import ai.moeru.airicraft.agent.session.SessionSnapshot;
@@ -43,10 +57,13 @@ import ai.moeru.airicraft.agent.social.PrimaryInteractionPlayer;
 import ai.moeru.airicraft.agent.social.PrimaryInteractionResolver;
 import ai.moeru.airicraft.agent.verification.VerificationReport;
 import ai.moeru.airicraft.agent.verification.VerificationRunner;
+import ai.moeru.airicraft.agent.verification.VerificationPlayerProbe;
 import ai.moeru.airicraft.agent.verification.scenarios.DialogueVerification;
 import ai.moeru.airicraft.agent.verification.scenarios.DialogueChatSanitizationVerification;
 import ai.moeru.airicraft.agent.verification.scenarios.DialogueClearGoalVerification;
 import ai.moeru.airicraft.agent.verification.scenarios.DialogueProactiveSocialModeVerification;
+import ai.moeru.airicraft.agent.verification.scenarios.DamageFallContextVerification;
+import ai.moeru.airicraft.agent.verification.scenarios.EventPolicyIgnoreSystemVerification;
 import ai.moeru.airicraft.agent.verification.scenarios.FollowVerification;
 import ai.moeru.airicraft.agent.verification.scenarios.FollowSingleplayerLocalPauseVerification;
 import ai.moeru.airicraft.agent.verification.scenarios.FollowReacquireTargetVerification;
@@ -60,9 +77,14 @@ import ai.moeru.airicraft.agent.verification.scenarios.SocialPrimaryInteractionT
 import ai.moeru.airicraft.agent.verification.scenarios.SocialChatIngestVerification;
 import ai.moeru.airicraft.agent.session.SessionMode;
 import net.minecraft.client.MinecraftClient;
+import net.minecraft.entity.damage.DamageSource;
+import net.minecraft.server.integrated.IntegratedServer;
+import net.minecraft.server.network.ServerPlayerEntity;
 import net.minecraft.text.Text;
 import net.minecraft.util.math.Vec3d;
+import net.minecraft.world.GameMode;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -70,9 +92,14 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
 import java.time.Clock;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.function.BiFunction;
 
 public final class EmbodiedAgentRuntime {
 	static final long CHAT_ECHO_SUPPRESSION_TICKS = 40L;
+	private static final Map<String, EventRoutingProfile> EVENT_ROUTING_PROFILES = createEventRoutingProfiles();
 
 	private final AiricraftConfig airicraftConfig;
 	private final AgentConfig config;
@@ -81,7 +108,11 @@ public final class EmbodiedAgentRuntime {
 	private final SessionRuntime sessionRuntime = new SessionRuntime();
 	private final LanHostingService lanHostingService = new LanHostingService();
 	private final SemanticEventBuffer eventBuffer = new SemanticEventBuffer(512);
+	private final SemanticEventBuffer plannerEventBuffer = new SemanticEventBuffer(512);
+	private final EventPolicyState eventPolicyState = new EventPolicyState();
+	private final AgentEventPipeline eventPipeline = new AgentEventPipeline(eventBuffer, plannerEventBuffer, eventPolicyState, EVENT_ROUTING_PROFILES);
 	private final ChatIngestService chatIngestService = new ChatIngestService();
+	private final LocalDamageTracker localDamageTracker = new LocalDamageTracker();
 	private final NearbyPlayerTracker nearbyPlayerTracker;
 	private final PrimaryInteractionResolver primaryInteractionResolver = new PrimaryInteractionResolver(200L);
 	private final GoalDirector goalDirector = new GoalDirector();
@@ -99,6 +130,7 @@ public final class EmbodiedAgentRuntime {
 	private FollowState followState = FollowState.idle();
 	private long lastSystemChatTick = -1L;
 	private String lastSystemChatText;
+	private Float lastKnownPlayerHealth;
 	private final Map<UUID, String> seenPlayerNames = new LinkedHashMap<>();
 
 	public EmbodiedAgentRuntime(AiricraftConfig airicraftConfig, AgentConfig config, FirstPersonScreenshotService screenshotService) {
@@ -115,10 +147,19 @@ public final class EmbodiedAgentRuntime {
 			new PlannerOrchestrator(
 				new PlannerExecutor(new OpenAiCompatibleLlmBackend(config.llm())),
 				new PlannerCompactionService(new OpenAiCompatibleChatClient(config.llm())),
-				new PlannerContextAggregator(clock, config.llm().plannerCompactionTriggerTokens(), config.llm().plannerVisionMode()),
+				new PlannerContextAggregator(
+					clock,
+					config.llm().plannerCompactionTriggerTokens(),
+					config.llm().plannerPendingSemanticEventCap(),
+					config.llm().plannerVisionMode()
+				),
 				visionService,
 				config.llm().plannerVisionMode(),
-				config.llm().visionImageDetail()
+				config.llm().visionImageDetail(),
+				config.llm().plannerSessionMaxConcurrentAttempts(),
+				config.llm().plannerSessionCoalesceStepMillis(),
+				config.llm().plannerSessionCoalesceMinMillis(),
+				config.llm().plannerSessionCoalesceMaxMillis()
 			),
 			config.llm().maxRecentConversationTurns(),
 			clock
@@ -155,8 +196,11 @@ public final class EmbodiedAgentRuntime {
 	public void onWorldLeave() {
 		sessionRuntime.onWorldLeave(tickCount, eventBuffer);
 		sessionSnapshot = sessionRuntime.snapshot();
+		localDamageTracker.clear();
 		nearbyPlayerTracker.clear(tickCount, eventBuffer);
 		primaryInteractionResolver.clear();
+		eventPolicyState.clear();
+		eventPipeline.clearPlannerFeed();
 		dialogueRuntime.clear();
 		goalDirector.clear();
 		followCapability.clear();
@@ -166,17 +210,20 @@ public final class EmbodiedAgentRuntime {
 		proactiveSocialModeOverride = null;
 		lastSystemChatTick = -1L;
 		lastSystemChatText = null;
+		lastKnownPlayerHealth = null;
 		seenPlayerNames.clear();
 	}
 
 	public void onClientTick(MinecraftClient client) {
 		tickCount++;
+		localDamageTracker.pruneStale(tickCount);
 		FollowState previousFollowState = followState;
 		BehaviorTreeSnapshot previousTreeSnapshot = behaviorTreeRuntime.snapshot();
 		boolean wasWorldLoaded = sessionSnapshot.worldLoaded();
 		sessionSnapshot = sessionRuntime.poll(client, tickCount, eventBuffer);
 		if (!wasWorldLoaded && sessionSnapshot.worldLoaded()) {
 			worldLoadTick = tickCount;
+			localDamageTracker.onLifecycleReset(tickCount);
 		}
 
 		nearbyPlayerTracker.poll(client, tickCount, eventBuffer);
@@ -184,12 +231,15 @@ public final class EmbodiedAgentRuntime {
 			primaryInteractionResolver.clearIfNotNearby(current.uuid(), nearbyPlayerTracker.isNearby(current.uuid()))
 		);
 		primaryInteractionResolver.expireInactive(tickCount);
+		drainEventPipeline();
 
 		DialogueResponse completedDialogueResponse = dialogueRuntime.poll(tickCount, eventBuffer);
 		if (completedDialogueResponse != null) {
 			Optional<GoalSnapshot> previousGoal = goalDirector.activeGoal();
+			applyPlannerEventPolicyChanges(completedDialogueResponse.eventPolicyChanges());
 			goalDirector.onPlannerResponse(completedDialogueResponse);
 			recordPlannerOutcome(completedDialogueResponse, previousGoal, goalDirector.activeGoal());
+			drainEventPipeline();
 		}
 
 		followState = followCapability.tick(
@@ -225,8 +275,10 @@ public final class EmbodiedAgentRuntime {
 				"distanceToTarget", followState.distanceToTarget()
 			));
 		}
+		drainEventPipeline();
 
 		verificationRunner.onTick();
+		lastKnownPlayerHealth = currentPlayerHealth(client);
 	}
 
 	public void shutdown() {
@@ -234,8 +286,9 @@ public final class EmbodiedAgentRuntime {
 		tickCount = 0L;
 		worldLoadTick = -1L;
 		verificationRunner.reset();
+		localDamageTracker.clear();
 		nearbyPlayerTracker.clear(tickCount, eventBuffer);
-		eventBuffer.clear();
+		eventPipeline.clear();
 		primaryInteractionResolver.clear();
 		dialogueRuntime.shutdown();
 		visionService.shutdown();
@@ -247,6 +300,7 @@ public final class EmbodiedAgentRuntime {
 		proactiveSocialModeOverride = null;
 		lastSystemChatTick = -1L;
 		lastSystemChatText = null;
+		lastKnownPlayerHealth = null;
 		seenPlayerNames.clear();
 		sessionSnapshot = SessionSnapshot.initial();
 	}
@@ -300,6 +354,122 @@ public final class EmbodiedAgentRuntime {
 		return dialogueRuntime.plannerDebugSnapshot();
 	}
 
+	public PlannerConversationDebugSnapshot plannerConversationDebugSnapshot() {
+		return dialogueRuntime.plannerConversationDebugSnapshot();
+	}
+
+	public List<String> plannerContextExcerpt() {
+		return dialogueRuntime.plannerContextExcerpt();
+	}
+
+	public int activeEventPolicyRuleCount() {
+		return eventPolicyState.activeRuleCount();
+	}
+
+	public int recentEventPolicyInterventionCount() {
+		return eventPolicyState.recentInterventionCount();
+	}
+
+	public EventPolicyDecision lastEventPolicyDecision() {
+		return eventPolicyState.lastDecision().orElse(null);
+	}
+
+	public List<EventPolicyRule> activeEventPolicyRules() {
+		return eventPolicyState.activeRules();
+	}
+
+	public List<EventPolicyIntervention> recentEventPolicyInterventions() {
+		return eventPolicyState.recentInterventions();
+	}
+
+	public void clearEventPolicy() {
+		eventPolicyState.clear();
+	}
+
+	public boolean verificationAvailable() {
+		MinecraftClient client = MinecraftClient.getInstance();
+		return sessionSnapshot.mode() == SessionMode.SINGLEPLAYER_LOCAL
+			&& sessionSnapshot.worldLoaded()
+			&& client != null
+			&& client.player != null
+			&& client.isIntegratedServerRunning()
+			&& client.getServer() != null;
+	}
+
+	public long latestEventSeqNo() {
+		return eventBuffer.latestSeqNo();
+	}
+
+	public VerificationPlayerProbe verificationPlayerProbe() {
+		prepareClientForVerification();
+		return onVerificationServer((server, player) -> verificationPlayerProbe(player));
+	}
+
+	public VerificationPlayerProbe verificationTeleportPlayer(double x, double y, double z) {
+		if (!Double.isFinite(x) || !Double.isFinite(y) || !Double.isFinite(z)) {
+			throw new BridgeUnavailableException("invalid_request", "x, y, and z must be finite numbers");
+		}
+		prepareClientForVerification();
+		return onVerificationServer((server, player) -> {
+			player.requestTeleport(x, y, z);
+			return verificationPlayerProbe(player);
+		});
+	}
+
+	public VerificationPlayerProbe verificationSetPlayerVelocity(double x, double y, double z) {
+		if (!Double.isFinite(x) || !Double.isFinite(y) || !Double.isFinite(z)) {
+			throw new BridgeUnavailableException("invalid_request", "x, y, and z must be finite numbers");
+		}
+		prepareClientForVerification();
+		MinecraftClient client = MinecraftClient.getInstance();
+		if (client == null || client.player == null) {
+			throw new BridgeUnavailableException("verification_unavailable", "Local verification player is unavailable");
+		}
+		client.player.setVelocityClient(new Vec3d(x, y, z));
+		client.player.setOnGround(false);
+		return onVerificationServer((server, player) -> {
+			player.setVelocity(x, y, z);
+			player.velocityDirty = true;
+			player.setOnGround(false);
+			return verificationPlayerProbe(player);
+		});
+	}
+
+	public VerificationPlayerProbe verificationSetGameMode(String modeId) {
+		GameMode gameMode = verificationGameMode(modeId);
+		prepareClientForVerification();
+		return onVerificationServer((server, player) -> {
+			player.changeGameMode(gameMode);
+			return verificationPlayerProbe(player);
+		});
+	}
+
+	public VerificationPlayerProbe verificationRunCommand(String command) {
+		String normalizedCommand = normalizedVerificationCommand(command);
+		prepareClientForVerification();
+		return onVerificationServer((server, player) -> {
+			server.getCommandManager().parseAndExecute(
+				server.getCommandSource()
+					.withEntity(player)
+					.withPosition(new Vec3d(player.getX(), player.getY(), player.getZ()))
+					.withWorld(player.getEntityWorld())
+					.withSilent(),
+				normalizedCommand
+			);
+			return verificationPlayerProbe(player);
+		});
+	}
+
+	public boolean verificationRequestRespawn() {
+		prepareClientForVerification();
+		MinecraftClient client = MinecraftClient.getInstance();
+		if (client == null || client.player == null) {
+			throw new BridgeUnavailableException("verification_unavailable", "Local verification player is unavailable");
+		}
+		client.player.requestRespawn();
+		return true;
+	}
+
 	public boolean startDebugCompaction() {
 		return dialogueRuntime.startDebugCompaction();
 	}
@@ -318,6 +488,7 @@ public final class EmbodiedAgentRuntime {
 
 	public boolean startVerification(String scenarioName) {
 		proactiveSocialModeOverride = null;
+		prepareClientForVerification();
 		return verificationRunner.start(scenarioName);
 	}
 
@@ -341,20 +512,13 @@ public final class EmbodiedAgentRuntime {
 
 			String plannerSender = DialogueSpeakerLabels.SAME_CLIENT_ADMIN;
 			if (dialogueRuntime.handleResetCommand(plannerSender, plainTextMessage, tickCount, eventBuffer)) {
+				eventPolicyState.clear();
+				drainEventPipeline();
 				return;
 			}
-
-				dialogueRuntime.onPlayerChat(
-					plannerSender,
-					plainTextMessage,
-					tickCount,
-					sessionSnapshot,
-					primaryInteractionResolver.current().map(PrimaryInteractionPlayer::name).orElse(null),
-					goalDirector.activeGoal(),
-					eventBuffer
-				);
-				return;
-			}
+			drainEventPipeline();
+			return;
+		}
 
 		chatIngestService.ingest(
 			senderName,
@@ -366,23 +530,12 @@ public final class EmbodiedAgentRuntime {
 		);
 
 		if (dialogueRuntime.handleResetCommand(senderName, plainTextMessage, tickCount, eventBuffer)) {
+			eventPolicyState.clear();
+			drainEventPipeline();
 			return;
 		}
-
-		boolean plannerEligibleChat = ChatIngestService.isAddressedToAgent(plainTextMessage)
-			|| proactiveSocialModeEnabled();
-		if (plannerEligibleChat && playerChatWithinConfiguredDistance(senderName)) {
-				dialogueRuntime.onPlayerChat(
-					senderName,
-					plainTextMessage,
-					tickCount,
-					sessionSnapshot,
-					primaryInteractionResolver.current().map(PrimaryInteractionPlayer::name).orElse(null),
-					goalDirector.activeGoal(),
-					eventBuffer
-				);
-			}
-		}
+		drainEventPipeline();
+	}
 
 	public void onSystemChatReceived(String plainTextMessage) {
 		if (!airicraftConfig.readSystemChatMessages()) {
@@ -393,20 +546,55 @@ public final class EmbodiedAgentRuntime {
 		}
 
 		chatIngestService.ingestSystemMessage(plainTextMessage, tickCount, eventBuffer);
-		if (!proactiveSocialModeEnabled()) {
+		drainEventPipeline();
+	}
+
+	public void onPlayerCraftedItem(String itemId, int count) {
+		if (itemId == null || itemId.isBlank() || count <= 0) {
 			return;
 		}
 
-			dialogueRuntime.onPlayerChat(
-				"server",
-				plainTextMessage,
-				tickCount,
-				sessionSnapshot,
-				primaryInteractionResolver.current().map(PrimaryInteractionPlayer::name).orElse(null),
-				goalDirector.activeGoal(),
-				eventBuffer
-			);
+		eventBuffer.append(tickCount, "crafting.item_crafted", Map.of(
+			"actor", "self",
+			"itemId", itemId,
+			"count", count
+		));
+		drainEventPipeline();
+	}
+
+	public void onPlayerPickedUpItem(String itemId, int count) {
+		if (itemId == null || itemId.isBlank() || count <= 0) {
+			return;
 		}
+
+		eventBuffer.append(tickCount, "pickup.item_picked_up", Map.of(
+			"actor", "self",
+			"itemId", itemId,
+			"count", count
+		));
+		drainEventPipeline();
+	}
+
+	public void onPlayerDamageObserved(DamageSource damageSource) {
+		localDamageTracker.observeDamageSource(tickCount, damageSource);
+	}
+
+	public void onPlayerHealthUpdated(boolean healthInitialized, float healthBefore, float healthAfter) {
+		float effectiveHealthBefore = resolveEffectiveHealthBefore(healthBefore, healthAfter);
+		Map<String, Object> payload = localDamageTracker.consumeDamage(healthInitialized, tickCount, effectiveHealthBefore, healthAfter);
+		lastKnownPlayerHealth = healthAfter;
+		if (payload == null) {
+			return;
+		}
+
+		eventBuffer.append(tickCount, "combat.damage_taken", payload);
+		drainEventPipeline();
+	}
+
+	public void onPlayerRespawned() {
+		localDamageTracker.onLifecycleReset(tickCount);
+		lastKnownPlayerHealth = null;
+	}
 
 	public void onPlayerJoinedGame(UUID playerUuid, String playerName) {
 		if (playerUuid == null || playerName == null || playerName.isBlank()) {
@@ -424,6 +612,7 @@ public final class EmbodiedAgentRuntime {
 			"player", playerName
 		));
 		forwardSyntheticPresenceMessage(playerName + " joined the game");
+		drainEventPipeline();
 	}
 
 	public void onPlayerLeftGame(UUID playerUuid) {
@@ -440,6 +629,7 @@ public final class EmbodiedAgentRuntime {
 			"player", playerName
 		));
 		forwardSyntheticPresenceMessage(playerName + " left the game");
+		drainEventPipeline();
 	}
 
 	public SemanticEventQueryResult recentEvents(Long sinceSeqNo) {
@@ -566,20 +756,8 @@ public final class EmbodiedAgentRuntime {
 		}
 
 		chatIngestService.ingestSystemMessage(plainTextMessage, tickCount, eventBuffer);
-		if (!proactiveSocialModeEnabled()) {
-			return;
-		}
-
-			dialogueRuntime.onPlayerChat(
-				"server",
-				plainTextMessage,
-				tickCount,
-				sessionSnapshot,
-				primaryInteractionResolver.current().map(PrimaryInteractionPlayer::name).orElse(null),
-				goalDirector.activeGoal(),
-				eventBuffer
-			);
-		}
+		drainEventPipeline();
+	}
 
 	private boolean isLocalPlayer(UUID playerUuid, String playerName) {
 		MinecraftClient client = MinecraftClient.getInstance();
@@ -630,6 +808,255 @@ public final class EmbodiedAgentRuntime {
 				"source", previousGoal.get().source()
 			));
 		}
+	}
+
+	private void drainEventPipeline() {
+		List<ai.moeru.airicraft.agent.llm.PlannerTrigger> triggers = eventPipeline.drain(this::createPlannerTrigger);
+		if (triggers.isEmpty()) {
+			return;
+		}
+		String primaryInteractionPlayer = primaryInteractionResolver.current().map(PrimaryInteractionPlayer::name).orElse(null);
+		Optional<GoalSnapshot> activeGoal = goalDirector.activeGoal();
+		for (ai.moeru.airicraft.agent.llm.PlannerTrigger trigger : triggers) {
+			dialogueRuntime.onPlannerTrigger(
+				trigger,
+				sessionSnapshot,
+				primaryInteractionPlayer,
+				activeGoal,
+				plannerEventBuffer
+			);
+		}
+	}
+
+	private ai.moeru.airicraft.agent.llm.PlannerTrigger createPlannerTrigger(SemanticEvent event, EventRoutingProfile profile) {
+		String eventType = event.type();
+		if (eventType == null) {
+			return null;
+		}
+		return switch (eventType) {
+			case "social.player_spoke" -> createPlayerSpokeTrigger(event);
+			case "social.player_addressed_agent" -> createAddressedChatTrigger(event);
+			case "social.local_controller_spoke" -> createLocalControllerTrigger(event);
+			case "social.system_message" -> createSystemTrigger(event);
+			case "pickup.item_picked_up" -> createPickupTrigger(event);
+			case "crafting.item_crafted" -> createCraftTrigger(event);
+			case "combat.damage_taken" -> createDamageTrigger(event);
+			default -> null;
+		};
+	}
+
+	private ai.moeru.airicraft.agent.llm.PlannerTrigger createPlayerSpokeTrigger(SemanticEvent event) {
+		String player = stringPayloadValue(event.payload(), "player");
+		String message = stringPayloadValue(event.payload(), "message");
+		if (player == null || message == null) {
+			return null;
+		}
+		if (ChatIngestService.isAddressedToAgent(message)) {
+			return null;
+		}
+		if (!proactiveSocialModeEnabled() || !playerChatWithinConfiguredDistance(player)) {
+			return null;
+		}
+		return ai.moeru.airicraft.agent.llm.PlannerTrigger.pending(PlannerTriggerType.CHAT, player, message, event.tick(), event.timestampMs());
+	}
+
+	private ai.moeru.airicraft.agent.llm.PlannerTrigger createAddressedChatTrigger(SemanticEvent event) {
+		String player = stringPayloadValue(event.payload(), "player");
+		String message = stringPayloadValue(event.payload(), "message");
+		if (player == null || message == null) {
+			return null;
+		}
+		if (DialogueRuntime.isResetCommand(message) || !playerChatWithinConfiguredDistance(player)) {
+			return null;
+		}
+		return ai.moeru.airicraft.agent.llm.PlannerTrigger.pending(PlannerTriggerType.CHAT, player, message, event.tick(), event.timestampMs());
+	}
+
+	private ai.moeru.airicraft.agent.llm.PlannerTrigger createLocalControllerTrigger(SemanticEvent event) {
+		String message = stringPayloadValue(event.payload(), "message");
+		if (message == null || DialogueRuntime.isResetCommand(message)) {
+			return null;
+		}
+		return ai.moeru.airicraft.agent.llm.PlannerTrigger.pending(
+			PlannerTriggerType.CHAT,
+			DialogueSpeakerLabels.SAME_CLIENT_ADMIN,
+			message,
+			event.tick(),
+			event.timestampMs()
+		);
+	}
+
+	private ai.moeru.airicraft.agent.llm.PlannerTrigger createSystemTrigger(SemanticEvent event) {
+		String message = stringPayloadValue(event.payload(), "message");
+		if (message == null || !proactiveSocialModeEnabled()) {
+			return null;
+		}
+		return ai.moeru.airicraft.agent.llm.PlannerTrigger.pending(PlannerTriggerType.SYSTEM, "server", message, event.tick(), event.timestampMs());
+	}
+
+	private ai.moeru.airicraft.agent.llm.PlannerTrigger createPickupTrigger(SemanticEvent event) {
+		String itemId = stringPayloadValue(event.payload(), "itemId");
+		Float count = floatPayloadValue(event.payload(), "count");
+		if (itemId == null || count == null) {
+			return null;
+		}
+		return ai.moeru.airicraft.agent.llm.PlannerTrigger.pending(
+			PlannerTriggerType.PICKUP,
+			"self",
+			"Picked up " + formatDecimal(count) + "x " + itemId + ".",
+			event.tick(),
+			event.timestampMs()
+		);
+	}
+
+	private ai.moeru.airicraft.agent.llm.PlannerTrigger createCraftTrigger(SemanticEvent event) {
+		String itemId = stringPayloadValue(event.payload(), "itemId");
+		Float count = floatPayloadValue(event.payload(), "count");
+		if (itemId == null || count == null) {
+			return null;
+		}
+		return ai.moeru.airicraft.agent.llm.PlannerTrigger.pending(
+			PlannerTriggerType.CRAFT,
+			"self",
+			"I crafted " + formatDecimal(count) + "x " + itemId + ".",
+			event.tick(),
+			event.timestampMs()
+		);
+	}
+
+	private ai.moeru.airicraft.agent.llm.PlannerTrigger createDamageTrigger(SemanticEvent event) {
+		Map<String, Object> payload = event.payload();
+		String damageTypeId = stringPayloadValue(payload, "damageTypeId");
+		String attackerName = stringPayloadValue(payload, "attackerName");
+		Float amount = floatPayloadValue(payload, "amount");
+		Float resultingHealth = floatPayloadValue(payload, "healthAfter");
+		if (amount == null && resultingHealth == null) {
+			return null;
+		}
+
+		StringBuilder message = new StringBuilder("I took ")
+			.append(formatDecimal(amount == null ? 0.0F : amount))
+			.append(" damage");
+		if (attackerName != null) {
+			message.append(" from ").append(attackerName);
+		}
+		else if (damageTypeId != null) {
+			message.append(" from ").append(damageTypeId);
+		}
+		if (resultingHealth != null) {
+			message.append(" and dropped to ").append(formatDecimal(resultingHealth)).append(" health");
+		}
+		message.append('.');
+		return ai.moeru.airicraft.agent.llm.PlannerTrigger.pending(
+			PlannerTriggerType.DAMAGE,
+			"self",
+			message.toString(),
+			event.tick(),
+			event.timestampMs()
+		);
+	}
+
+	private void applyPlannerEventPolicyChanges(EventPolicyChanges changes) {
+		if (changes == null) {
+			return;
+		}
+		long timestampMs = System.currentTimeMillis();
+		if (changes.clearAll()) {
+			eventPolicyState.clear();
+		}
+		eventPolicyState.removeRuleIds(changes.removeRuleIds());
+		for (EventPolicyRuleUpsert upsert : changes.upserts()) {
+			applyPlannerEventPolicyUpsert(upsert, timestampMs);
+		}
+	}
+
+	private void applyPlannerEventPolicyUpsert(EventPolicyRuleUpsert upsert, long timestampMs) {
+		if (upsert == null) {
+			return;
+		}
+		EventPolicyMatch match = upsert.match();
+		String eventType = match == null ? null : match.eventType();
+		EventPolicyEffect effect = EventPolicyEffect.parse(upsert.effect());
+		String ruleId = normalizeRuleId(upsert.ruleId());
+		if (ruleId == null) {
+			ruleId = "planner-rule-" + timestampMs + "-" + eventPolicyState.activeRuleCount();
+		}
+		if (match == null || !match.isValid()) {
+			recordPolicyRuleRejected(ruleId, eventType, upsert.effect(), "eventType is required");
+			return;
+		}
+		EventRoutingProfile profile = EVENT_ROUTING_PROFILES.get(eventType);
+		if (profile != null && profile.policyBypass()) {
+			recordPolicyRuleRejected(ruleId, eventType, upsert.effect(), "event type bypasses planner-authored policy");
+			return;
+		}
+		if (effect == null) {
+			recordPolicyRuleRejected(ruleId, eventType, upsert.effect(), "effect must be allow, ignore, semantic_only, or trigger_only");
+			return;
+		}
+		eventPolicyState.upsert(new EventPolicyRule(
+			ruleId,
+			effect,
+			match,
+			upsert.reason(),
+			timestampMs,
+			null,
+			0L,
+			"planner"
+		));
+	}
+
+	private void recordPolicyRuleRejected(String ruleId, String eventType, String effect, String reason) {
+		LinkedHashMap<String, Object> payload = new LinkedHashMap<>();
+		if (ruleId != null) {
+			payload.put("ruleId", ruleId);
+		}
+		if (eventType != null) {
+			payload.put("eventType", eventType);
+		}
+		if (effect != null && !effect.isBlank()) {
+			payload.put("effect", effect);
+		}
+		payload.put("reason", reason == null || reason.isBlank() ? "rule rejected" : reason);
+		eventBuffer.append(tickCount, "policy.rule_rejected", payload);
+	}
+
+	private static String normalizeRuleId(String ruleId) {
+		if (ruleId == null) {
+			return null;
+		}
+		String trimmed = ruleId.trim();
+		return trimmed.isEmpty() ? null : trimmed;
+	}
+
+	private static Map<String, EventRoutingProfile> createEventRoutingProfiles() {
+		LinkedHashMap<String, EventRoutingProfile> profiles = new LinkedHashMap<>();
+		profiles.put("social.player_spoke", new EventRoutingProfile("social.player_spoke", false, PlannerTriggerType.CHAT, false));
+		profiles.put("social.player_addressed_agent", new EventRoutingProfile("social.player_addressed_agent", false, PlannerTriggerType.CHAT, true));
+		profiles.put("social.local_controller_spoke", new EventRoutingProfile("social.local_controller_spoke", false, PlannerTriggerType.CHAT, true));
+		profiles.put("social.system_message", new EventRoutingProfile("social.system_message", false, PlannerTriggerType.SYSTEM, false));
+		profiles.put("pickup.item_picked_up", new EventRoutingProfile("pickup.item_picked_up", true, PlannerTriggerType.PICKUP, false));
+		profiles.put("crafting.item_crafted", new EventRoutingProfile("crafting.item_crafted", true, PlannerTriggerType.CRAFT, false));
+		profiles.put("combat.damage_taken", new EventRoutingProfile("combat.damage_taken", true, PlannerTriggerType.DAMAGE, false));
+		profiles.put("session.world_loaded", new EventRoutingProfile("session.world_loaded", true, null, false));
+		profiles.put("session.world_unloaded", new EventRoutingProfile("session.world_unloaded", true, null, false));
+		profiles.put("session.connection_lost", new EventRoutingProfile("session.connection_lost", true, null, false));
+		profiles.put("session.lan_opened", new EventRoutingProfile("session.lan_opened", true, null, false));
+		profiles.put("social.player_joined_game", new EventRoutingProfile("social.player_joined_game", true, null, false));
+		profiles.put("social.player_left_game", new EventRoutingProfile("social.player_left_game", true, null, false));
+		profiles.put("social.player_joined_nearby", new EventRoutingProfile("social.player_joined_nearby", true, null, false));
+		profiles.put("social.player_left_nearby", new EventRoutingProfile("social.player_left_nearby", true, null, false));
+		profiles.put("follow.target_acquired", new EventRoutingProfile("follow.target_acquired", true, null, false));
+		profiles.put("follow.target_lost", new EventRoutingProfile("follow.target_lost", true, null, false));
+		profiles.put("follow.stuck", new EventRoutingProfile("follow.stuck", true, null, false));
+		profiles.put("planner.goal_set", new EventRoutingProfile("planner.goal_set", true, null, false));
+		profiles.put("planner.goal_cleared", new EventRoutingProfile("planner.goal_cleared", true, null, false));
+		profiles.put("planner.degraded_entered", new EventRoutingProfile("planner.degraded_entered", true, null, false));
+		profiles.put("planner.degraded_cleared", new EventRoutingProfile("planner.degraded_cleared", true, null, false));
+		profiles.put("planner.reset_requested", new EventRoutingProfile("planner.reset_requested", true, null, true));
+		profiles.put("policy.event_intervened", EventRoutingProfile.rawOnly("policy.event_intervened"));
+		profiles.put("policy.rule_rejected", EventRoutingProfile.rawOnly("policy.rule_rejected"));
+		return Map.copyOf(profiles);
 	}
 
 	private void registerDefaultScenarios() {
@@ -824,6 +1251,16 @@ public final class EmbodiedAgentRuntime {
 			sinceSeqNo -> eventBuffer.containsTypeForPlayerSince(sinceSeqNo, "follow.target_acquired", "ReacquireAlice"),
 			() -> activeGoal().map(goal -> goal.type() == GoalType.FOLLOW_PLAYER && "ReacquireAlice".equals(goal.targetPlayer())).orElse(false)
 		));
+		verificationRunner.register(new DamageFallContextVerification(
+			this::verificationAvailable,
+			this::verificationPlayerProbe,
+			() -> verificationSetGameMode("survival"),
+			() -> verificationRunCommand("effect give @s resistance 10 3 true"),
+			(x, y, z) -> verificationSetPlayerVelocity(x, y, z),
+			this::latestEventSeqNo,
+			sinceSeqNo -> recentEvents(sinceSeqNo),
+			this::plannerContextExcerpt
+		));
 		verificationRunner.register(new PlannerObservabilityVerification(
 			() -> sessionSnapshot.worldLoaded(),
 			() -> nearbyPlayerTracker.injectPlayerNearby("ObserveAlice", playerOffset(5.0D), tickCount, eventBuffer),
@@ -848,6 +1285,191 @@ public final class EmbodiedAgentRuntime {
 			() -> onChatReceived("ObserveAlice", "@agent stop"),
 			sinceSeqNo -> eventBuffer.containsTypeSince(sinceSeqNo, "planner.goal_cleared")
 		));
+		verificationRunner.register(new EventPolicyIgnoreSystemVerification(
+			() -> sessionSnapshot.worldLoaded(),
+			() -> nearbyPlayerTracker.injectPlayerNearby("PolicyAlice", playerOffset(5.0D), tickCount, eventBuffer),
+			() -> injectMockPlannerResponse(new PlannerResponse(
+				"Okay, I'll ignore repeated system messages for now.",
+				new PlannerIntent("reply_only", null, null),
+				null,
+				new EventPolicyChanges(
+					false,
+					List.of(),
+					List.of(new EventPolicyRuleUpsert(
+						"mute-system-server",
+						"ignore",
+						new EventPolicyMatch("social.system_message", null, "server", null, null, null, null),
+						"Ignore repeated server system chatter for this session."
+					))
+				)
+			)),
+			() -> onChatReceived("PolicyAlice", "@agent ignore repeated server system messages"),
+			this::activeEventPolicyRules,
+			this::recentEventPolicyInterventions,
+			() -> onSystemChatReceived("Policy harness system noise"),
+			() -> injectMockPlannerResponse(new PlannerResponse(
+				"Bypass chat still works.",
+				new PlannerIntent("reply_only", null, null)
+			)),
+			() -> onChatReceived("PolicyAlice", "@agent say hi again"),
+			this::latestEventSeqNo,
+			sinceSeqNo -> eventBuffer.containsTypeSince(sinceSeqNo, "planner.response_applied"),
+			sinceSeqNo -> eventBuffer.containsTypeSince(sinceSeqNo, "social.system_message"),
+			sinceSeqNo -> eventBuffer.containsTypeSince(sinceSeqNo, "policy.event_intervened")
+		));
+	}
+
+	private static String stringPayloadValue(Map<String, Object> payload, String key) {
+		if (payload == null) {
+			return null;
+		}
+		Object value = payload.get(key);
+		if (value == null) {
+			return null;
+		}
+		String text = String.valueOf(value);
+		return text.isBlank() ? null : text;
+	}
+
+	private static Float floatPayloadValue(Map<String, Object> payload, String key) {
+		if (payload == null) {
+			return null;
+		}
+		Object value = payload.get(key);
+		if (value instanceof Number number) {
+			return number.floatValue();
+		}
+		if (value == null) {
+			return null;
+		}
+		try {
+			return Float.parseFloat(String.valueOf(value));
+		}
+		catch (NumberFormatException ignored) {
+			return null;
+		}
+	}
+
+	private static String formatDecimal(float value) {
+		if (Math.abs(value - Math.round(value)) < 0.001F) {
+			return Integer.toString(Math.round(value));
+		}
+		String text = String.format(java.util.Locale.ROOT, "%.2f", value);
+		int trimIndex = text.length();
+		while (trimIndex > 0 && text.charAt(trimIndex - 1) == '0') {
+			trimIndex--;
+		}
+		if (trimIndex > 0 && text.charAt(trimIndex - 1) == '.') {
+			trimIndex--;
+		}
+		return text.substring(0, trimIndex);
+	}
+
+	private void ensureVerificationSessionAvailable() {
+		if (sessionSnapshot.mode() != SessionMode.SINGLEPLAYER_LOCAL) {
+			throw new BridgeUnavailableException("unsupported_session_state", "Verification actions require a singleplayer local world");
+		}
+		if (!sessionSnapshot.worldLoaded()) {
+			throw new BridgeUnavailableException("verification_unavailable", "No singleplayer local world is loaded for verification");
+		}
+		MinecraftClient client = MinecraftClient.getInstance();
+		if (client == null || client.player == null || !client.isIntegratedServerRunning() || client.getServer() == null) {
+			throw new BridgeUnavailableException("verification_unavailable", "Integrated singleplayer verification controls are unavailable");
+		}
+	}
+
+	private void prepareClientForVerification() {
+		MinecraftClient client = MinecraftClient.getInstance();
+		if (client == null) {
+			return;
+		}
+		if (client.options != null && client.options.pauseOnLostFocus) {
+			client.options.pauseOnLostFocus = false;
+			client.options.write();
+		}
+		if (client.currentScreen != null && "GameMenuScreen".equals(client.currentScreen.getClass().getSimpleName())) {
+			client.setScreen(null);
+		}
+	}
+
+	private <T> T onVerificationServer(BiFunction<IntegratedServer, ServerPlayerEntity, T> action) {
+		ensureVerificationSessionAvailable();
+		MinecraftClient client = MinecraftClient.getInstance();
+		if (client == null || client.player == null) {
+			throw new BridgeUnavailableException("verification_unavailable", "Local verification player is unavailable");
+		}
+		IntegratedServer server = client.getServer();
+		if (server == null) {
+			throw new BridgeUnavailableException("verification_unavailable", "Integrated server is unavailable");
+		}
+		UUID playerUuid = client.player.getUuid();
+		CompletableFuture<T> future = new CompletableFuture<>();
+		server.executeSync(() -> {
+			try {
+				ServerPlayerEntity serverPlayer = server.getPlayerManager().getPlayer(playerUuid);
+				if (serverPlayer == null) {
+					throw new BridgeUnavailableException("verification_unavailable", "Server-side verification player is unavailable");
+				}
+				future.complete(action.apply(server, serverPlayer));
+			}
+			catch (Throwable throwable) {
+				future.completeExceptionally(throwable);
+			}
+		});
+
+		try {
+			return future.get(5L, TimeUnit.SECONDS);
+		}
+		catch (ExecutionException exception) {
+			if (exception.getCause() instanceof RuntimeException runtimeException) {
+				throw runtimeException;
+			}
+			throw new IllegalStateException("Verification action failed on integrated server thread", exception.getCause());
+		}
+		catch (Exception exception) {
+			throw new BridgeUnavailableException("verification_unavailable", "Timed out waiting for integrated server verification action");
+		}
+	}
+
+	private static VerificationPlayerProbe verificationPlayerProbe(ServerPlayerEntity player) {
+		return new VerificationPlayerProbe(
+			player.getX(),
+			player.getY(),
+			player.getZ(),
+			player.getHealth(),
+			player.getMaxHealth(),
+			player.getHungerManager().getFoodLevel(),
+			player.getHungerManager().getSaturationLevel(),
+			player.isOnGround(),
+			player.fallDistance,
+			player.getGameMode().asString(),
+			player.getEntityWorld().getRegistryKey().getValue().toString()
+		);
+	}
+
+	private static GameMode verificationGameMode(String modeId) {
+		if (modeId == null || modeId.isBlank()) {
+			throw new BridgeUnavailableException("invalid_request", "mode must be survival, creative, or spectator");
+		}
+		GameMode mode = GameMode.byId(modeId.trim().toLowerCase(java.util.Locale.ROOT), null);
+		if (mode != GameMode.SURVIVAL && mode != GameMode.CREATIVE && mode != GameMode.SPECTATOR) {
+			throw new BridgeUnavailableException("invalid_request", "mode must be survival, creative, or spectator");
+		}
+		return mode;
+	}
+
+	private static String normalizedVerificationCommand(String command) {
+		if (command == null) {
+			throw new BridgeUnavailableException("invalid_request", "Missing command");
+		}
+		String normalized = command.trim();
+		if (normalized.startsWith("/")) {
+			normalized = normalized.substring(1).trim();
+		}
+		if (normalized.isBlank()) {
+			throw new BridgeUnavailableException("invalid_request", "Missing command");
+		}
+		return normalized;
 	}
 
 	private void joinFirstWorld() {
@@ -907,5 +1529,26 @@ public final class EmbodiedAgentRuntime {
 		return client != null
 			&& client.options != null
 			&& client.options.forwardKey.isPressed();
+	}
+
+	private float resolveEffectiveHealthBefore(float observedHealthBefore, float healthAfter) {
+		return effectiveHealthBefore(lastKnownPlayerHealth, observedHealthBefore, healthAfter);
+	}
+
+	private static Float currentPlayerHealth(MinecraftClient client) {
+		if (client == null || client.player == null || !client.isOnThread()) {
+			return null;
+		}
+		return client.player.getHealth();
+	}
+
+	static float effectiveHealthBefore(Float lastKnownPlayerHealth, float observedHealthBefore, float healthAfter) {
+		if (lastKnownPlayerHealth != null
+			&& Float.isFinite(lastKnownPlayerHealth.floatValue())
+			&& lastKnownPlayerHealth.floatValue() > healthAfter
+		) {
+			return lastKnownPlayerHealth.floatValue();
+		}
+		return observedHealthBefore;
 	}
 }

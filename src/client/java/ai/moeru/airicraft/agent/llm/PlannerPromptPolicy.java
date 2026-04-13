@@ -32,11 +32,34 @@ public final class PlannerPromptPolicy {
 			  "toolRequest": {
 			    "type": "take_a_look",
 			    "prompt": string | null
+			  } | null,
+			  "eventPolicyChanges": {
+			    "clearAll": boolean,
+			    "removeRuleIds": string[],
+			    "upserts": [
+			      {
+			        "ruleId": string | null,
+			        "effect": "allow" | "ignore" | "semantic_only" | "trigger_only",
+			        "match": {
+			          "eventType": string,
+			          "player": string | null,
+			          "speaker": string | null,
+			          "actor": string | null,
+			          "itemId": string | null,
+			          "damageTypeId": string | null,
+			          "attackerName": string | null
+			        },
+			        "reason": string | null
+			      }
+			    ]
 			  } | null
 			}
 			If the final user message begins with "COMPACTION TASK:", ignore the normal planner output format for this response and follow that final compaction task instead.
 			Only choose FOLLOW_PLAYER when the player explicitly asks the companion to follow.
 			If the current session mode is singleplayer local and someone asks you to follow, you may keep a FOLLOW_PLAYER goal, but make it clear movement is paused until LAN is opened or multiplayer is active.
+			Use eventPolicyChanges sparingly to suppress repeated noisy future events during the current session.
+			Never try to suppress direct addressed chat, same-client admin messages, or reset commands.
+			eventPolicyChanges affect future events only; they do not rewrite already observed context.
 			%s
 			When a tool result is already present in the conversation, do not request another tool.
 			If a message comes from "%s", it is not another in-world player. It is the developer/admin on the very same client you run on, and they share controls with you.

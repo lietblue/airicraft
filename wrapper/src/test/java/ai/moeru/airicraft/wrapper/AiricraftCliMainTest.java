@@ -55,15 +55,21 @@ class AiricraftCliMainTest {
 				"captureInFlight", false,
 				"toolInFlight", false,
 				"toolUsed", false,
+				"coalescePending", true,
+				"coalesceReadyAtMs", 123456999L,
+				"coalesceWindowMs", 20L,
 				"context", linkedMap(
 					"compactionTriggerTokens", 65536,
 					"compactionPending", true,
-					"rawArchiveEntryCount", 12,
-					"canonicalMessageCount", 8,
-					"pendingEntryCount", 1,
+					"acceptedTurnCount", 8,
+					"pendingSemanticEventCount", 3,
+					"projectedPendingNoticeCount", 2,
 					"frozenPlannerMessageCount", 0,
+					"queuedTriggerCount", 3,
 					"lastObservedEventSeqNo", 42,
-					"lastTimeBeaconAtMs", 123456789L
+					"lastAcceptedTimeContextAtMs", 123456789L,
+					"pendingSemanticGap", false,
+					"overflowFlushPending", true
 				)
 			)
 		);
@@ -74,7 +80,35 @@ class AiricraftCliMainTest {
 		assertTrue(result.output().contains("command: agent context\n"));
 		assertTrue(result.output().contains("plannerVisionMode: native_tool_image\n"));
 		assertTrue(result.output().contains("compactionPending: true\n"));
-		assertTrue(result.output().contains("canonicalMessageCount: 8\n"));
+		assertTrue(result.output().contains("coalescePending: true\n"));
+		assertTrue(result.output().contains("coalesceWindowMs: 20\n"));
+		assertTrue(result.output().contains("queuedTriggerCount: 3\n"));
+		assertTrue(result.output().contains("acceptedTurnCount: 8\n"));
+		assertTrue(result.output().contains("projectedPendingNoticeCount: 2\n"));
+		assertTrue(result.output().contains("overflowFlushPending: true\n"));
+	}
+
+	@Test
+	void agentContextVerboseIncludesContextExcerpt() {
+		TestTransport transport = new TestTransport();
+		transport.agentContextPayload = linkedMap(
+			"available", true,
+			"planner", linkedMap(
+				"configured", true,
+				"context", linkedMap(
+					"acceptedTurnCount", 1
+				)
+			),
+			"contextExcerpt", List.of(
+				"Context update: You took 4 damage from minecraft:fall and dropped to 16 health just now."
+			)
+		);
+
+		CliResult result = execute(transport, "agent", "context", "--verbose");
+
+		assertEquals(0, result.exitCode());
+		assertTrue(result.output().contains("contextExcerptLineCount: 1\n"));
+		assertTrue(result.output().contains("value: Context update: You took 4 damage from minecraft:fall and dropped to 16 health just now.\n"));
 	}
 
 	@Test
@@ -98,6 +132,54 @@ class AiricraftCliMainTest {
 	}
 
 	@Test
+	void agentEventPolicyShowsRuleSummary() {
+		TestTransport transport = new TestTransport();
+		transport.agentEventPolicyPayload = linkedMap(
+			"available", true,
+			"activeRuleCount", 2,
+			"recentInterventionCount", 1,
+			"lastDecision", linkedMap(
+				"matchedRuleId", "mute-system",
+				"effect", "IGNORE",
+				"reason", "suppress noisy system spam",
+				"bypassed", false
+			),
+			"activeRules", List.of(
+				linkedMap("ruleId", "mute-system", "effect", "IGNORE")
+			),
+			"recentInterventions", List.of(
+				linkedMap("matchedRuleId", "mute-system", "effect", "IGNORE")
+			)
+		);
+
+		CliResult result = execute(transport, "agent", "event-policy");
+
+		assertEquals(0, result.exitCode());
+		assertTrue(result.output().contains("command: agent event-policy\n"));
+		assertTrue(result.output().contains("activeRuleCount: 2\n"));
+		assertTrue(result.output().contains("matchedRuleId: mute-system\n"));
+	}
+
+	@Test
+	void agentEventPolicyClearCallsTransport() {
+		TestTransport transport = new TestTransport();
+		transport.agentEventPolicyPayload = linkedMap(
+			"available", true,
+			"activeRuleCount", 0,
+			"recentInterventionCount", 0,
+			"activeRules", List.of(),
+			"recentInterventions", List.of()
+		);
+
+		CliResult result = execute(transport, "agent", "event-policy", "clear");
+
+		assertEquals(0, result.exitCode());
+		assertTrue(transport.agentEventPolicyCleared);
+		assertTrue(result.output().contains("command: agent event-policy clear\n"));
+		assertTrue(result.output().contains("activeRuleCount: 0\n"));
+	}
+
+	@Test
 	void agentCompactPassesWaitAndTimeout() {
 		TestTransport transport = new TestTransport();
 		transport.agentCompactPayload = linkedMap(
@@ -115,8 +197,7 @@ class AiricraftCliMainTest {
 				"toolInFlight", false,
 				"context", linkedMap(
 					"compactionPending", false,
-					"canonicalMessageCount", 5,
-					"rawArchiveEntryCount", 9
+					"acceptedTurnCount", 5
 				)
 			)
 		);
@@ -128,6 +209,152 @@ class AiricraftCliMainTest {
 		assertEquals(Integer.valueOf(7000), transport.lastCompactTimeoutMs);
 		assertTrue(result.output().contains("command: agent compact\n"));
 		assertTrue(result.output().contains("completed: false\n"));
+	}
+
+	@Test
+	void verificationStatusShowsCapabilities() {
+		TestTransport transport = new TestTransport();
+		transport.verificationStatusPayload = linkedMap(
+			"available", true,
+			"sessionMode", "SINGLEPLAYER_LOCAL",
+			"worldLoaded", true,
+			"capabilities", List.of("player_state", "scenario_run")
+		);
+
+		CliResult result = execute(transport, "verification", "status", "--verbose");
+
+		assertEquals(0, result.exitCode());
+		assertTrue(result.output().contains("command: verification status\n"));
+		assertTrue(result.output().contains("capabilityCount: 2\n"));
+		assertTrue(result.output().contains("[capability 1]\n"));
+		assertTrue(result.output().contains("value: player_state\n"));
+	}
+
+	@Test
+	void verificationPlayerTeleportPassesCoordinates() {
+		TestTransport transport = new TestTransport();
+		transport.verificationPlayerPayload = linkedMap(
+			"available", true,
+			"sessionMode", "SINGLEPLAYER_LOCAL",
+			"worldLoaded", true,
+			"teleported", true,
+			"x", 10.5D,
+			"y", 94.0D,
+			"z", -3.0D,
+			"health", 20.0D,
+			"maxHealth", 20.0D,
+			"food", 20,
+			"saturation", 5.0D,
+			"onGround", false,
+			"fallDistance", 0.0D,
+			"gameMode", "survival",
+			"dimensionId", "minecraft:overworld"
+		);
+
+		CliResult result = execute(transport, "verification", "player", "teleport", "--x", "10.5", "--y", "94", "--z", "-3");
+
+		assertEquals(0, result.exitCode());
+		assertEquals(10.5D, transport.lastTeleportX);
+		assertEquals(94.0D, transport.lastTeleportY);
+		assertEquals(-3.0D, transport.lastTeleportZ);
+		assertTrue(result.output().contains("teleported: true\n"));
+		assertTrue(result.output().contains("gameMode: survival\n"));
+	}
+
+	@Test
+	void verificationPlayerVelocityPassesComponents() {
+		TestTransport transport = new TestTransport();
+		transport.verificationPlayerPayload = linkedMap(
+			"available", true,
+			"sessionMode", "SINGLEPLAYER_LOCAL",
+			"worldLoaded", true,
+			"applied", true,
+			"x", 10.5D,
+			"y", 94.0D,
+			"z", -3.0D,
+			"health", 20.0D,
+			"maxHealth", 20.0D,
+			"food", 20,
+			"saturation", 5.0D,
+			"onGround", false,
+			"fallDistance", 0.0D,
+			"gameMode", "survival",
+			"dimensionId", "minecraft:overworld"
+		);
+
+		CliResult result = execute(transport, "verification", "player", "velocity", "--x", "0", "--y", "1.5", "--z", "-0.25");
+
+		assertEquals(0, result.exitCode());
+		assertEquals(0.0D, transport.lastVelocityX);
+		assertEquals(1.5D, transport.lastVelocityY);
+		assertEquals(-0.25D, transport.lastVelocityZ);
+		assertTrue(result.output().contains("applied: true\n"));
+	}
+
+	@Test
+	void verificationPlayerRespawnCallsTransport() {
+		TestTransport transport = new TestTransport();
+		transport.verificationPlayerPayload = linkedMap(
+			"available", true,
+			"sessionMode", "SINGLEPLAYER_LOCAL",
+			"worldLoaded", true,
+			"respawned", true,
+			"health", 20.0D,
+			"currentScreen", "in_game"
+		);
+
+		CliResult result = execute(transport, "verification", "player", "respawn");
+
+		assertEquals(0, result.exitCode());
+		assertTrue(transport.verificationRespawnCalled);
+		assertTrue(result.output().contains("respawned: true\n"));
+	}
+
+	@Test
+	void verificationRunPassesScenarioName() {
+		TestTransport transport = new TestTransport();
+		transport.verificationRunPayload = linkedMap(
+			"accepted", true,
+			"scenario", "damage.fall_context",
+			"running", true
+		);
+
+		CliResult result = execute(transport, "verification", "run", "--scenario", "damage.fall_context");
+
+		assertEquals(0, result.exitCode());
+		assertEquals("damage.fall_context", transport.lastVerificationScenario);
+		assertTrue(result.output().contains("scenario: damage.fall_context\n"));
+	}
+
+	@Test
+	void verificationResultsVerboseShowsDiagnostics() {
+		TestTransport transport = new TestTransport();
+		transport.verificationResultsPayload = linkedMap(
+			"available", true,
+			"scenarios", List.of("damage.fall_context"),
+			"report", linkedMap(
+				"status", "FAILED",
+				"scenarioName", "damage.fall_context",
+				"message", "Timed out after 300 ticks",
+				"steps", List.of(linkedMap(
+					"description", "planner context shows new damage notice",
+					"status", "FAILED",
+					"waitedTicks", 300,
+					"message", "Timed out after 300 ticks"
+				)),
+				"diagnostics", linkedMap(
+					"failureReason", "Timed out after 300 ticks"
+				)
+			)
+		);
+
+		CliResult result = execute(transport, "verification", "results", "--verbose");
+
+		assertEquals(0, result.exitCode());
+		assertTrue(result.output().contains("reportStatus: FAILED\n"));
+		assertTrue(result.output().contains("[report]\n"));
+		assertTrue(result.output().contains("[diagnostics]\n"));
+		assertTrue(result.output().contains("failureReason: Timed out after 300 ticks\n"));
 	}
 
 	@Test
@@ -335,6 +562,11 @@ class AiricraftCliMainTest {
 		private Map<String, Object> agentContextPayload = Map.of();
 		private Map<String, Object> agentEventsPayload = Map.of("events", List.of());
 		private Map<String, Object> agentCompactPayload = Map.of("started", true);
+		private Map<String, Object> agentEventPolicyPayload = Map.of("activeRules", List.of(), "recentInterventions", List.of());
+		private Map<String, Object> verificationStatusPayload = Map.of("capabilities", List.of());
+		private Map<String, Object> verificationPlayerPayload = Map.of();
+		private Map<String, Object> verificationRunPayload = Map.of("accepted", true);
+		private Map<String, Object> verificationResultsPayload = Map.of("scenarios", List.of(), "report", Map.of());
 		private Map<String, Object> blockHighlightPayload = Map.of("highlightId", "highlight-1");
 		private Map<String, Object> regionHighlightPayload = Map.of("highlightId", "highlight-2");
 		private Map<String, Object> highlightsPayload = Map.of("highlights", List.of());
@@ -349,6 +581,17 @@ class AiricraftCliMainTest {
 		private Long lastEventSince;
 		private boolean lastCompactWait = true;
 		private Integer lastCompactTimeoutMs;
+		private String lastVerificationScenario;
+		private Double lastTeleportX;
+		private Double lastTeleportY;
+		private Double lastTeleportZ;
+		private Double lastVelocityX;
+		private Double lastVelocityY;
+		private Double lastVelocityZ;
+		private String lastVerificationGameMode;
+		private String lastVerificationCommand;
+		private boolean verificationRespawnCalled;
+		private boolean agentEventPolicyCleared;
 
 		private RuntimeException worldsJoinFailure;
 		private RuntimeException serversListFailure;
@@ -480,6 +723,72 @@ class AiricraftCliMainTest {
 			lastCompactWait = wait;
 			lastCompactTimeoutMs = timeoutMs;
 			return agentCompactPayload;
+		}
+
+		@Override
+		public Map<String, Object> getAgentEventPolicy() {
+			return agentEventPolicyPayload;
+		}
+
+		@Override
+		public Map<String, Object> clearAgentEventPolicy() {
+			agentEventPolicyCleared = true;
+			return agentEventPolicyPayload;
+		}
+
+		@Override
+		public Map<String, Object> getVerificationStatus() {
+			return verificationStatusPayload;
+		}
+
+		@Override
+		public Map<String, Object> getVerificationPlayerState() {
+			return verificationPlayerPayload;
+		}
+
+		@Override
+		public Map<String, Object> teleportVerificationPlayer(double x, double y, double z) {
+			lastTeleportX = x;
+			lastTeleportY = y;
+			lastTeleportZ = z;
+			return verificationPlayerPayload;
+		}
+
+		@Override
+		public Map<String, Object> setVerificationPlayerVelocity(double x, double y, double z) {
+			lastVelocityX = x;
+			lastVelocityY = y;
+			lastVelocityZ = z;
+			return verificationPlayerPayload;
+		}
+
+		@Override
+		public Map<String, Object> respawnVerificationPlayer() {
+			verificationRespawnCalled = true;
+			return verificationPlayerPayload;
+		}
+
+		@Override
+		public Map<String, Object> setVerificationPlayerGameMode(String mode) {
+			lastVerificationGameMode = mode;
+			return verificationPlayerPayload;
+		}
+
+		@Override
+		public Map<String, Object> runVerificationCommand(String command) {
+			lastVerificationCommand = command;
+			return verificationPlayerPayload;
+		}
+
+		@Override
+		public Map<String, Object> runVerificationScenario(String scenario) {
+			lastVerificationScenario = scenario;
+			return verificationRunPayload;
+		}
+
+		@Override
+		public Map<String, Object> getVerificationResults() {
+			return verificationResultsPayload;
 		}
 	}
 }

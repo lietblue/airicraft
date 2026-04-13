@@ -89,24 +89,63 @@ class OpenAiCompatibleLlmBackendTest {
 		}
 	}
 
+	@Test
+	void generateParsesEventPolicyChanges() throws Exception {
+		AtomicReference<String> bodyRef = new AtomicReference<>();
+		try (TestServer server = TestServer.start(bodyRef, """
+			{
+			  "choices": [
+			    {
+			      "message": {
+			        "content": "{\\"replyText\\":\\"\\",\\"intent\\":{\\"type\\":\\"none\\",\\"goalType\\":null,\\"targetPlayer\\":null},\\"toolRequest\\":null,\\"eventPolicyChanges\\":{\\"clearAll\\":false,\\"removeRuleIds\\":[\\"old-rule\\"],\\"upserts\\":[{\\"ruleId\\":\\"mute-system\\",\\"effect\\":\\"ignore\\",\\"match\\":{\\"eventType\\":\\"social.system_message\\",\\"speaker\\":\\"server\\"},\\"reason\\":\\"Mute repeated system spam\\"}]}}"
+			      }
+			    }
+			  ],
+			  "usage": {
+			    "prompt_tokens": 10,
+			    "completion_tokens": 5,
+			    "total_tokens": 15
+			  }
+			}
+			""")) {
+			OpenAiCompatibleLlmBackend backend = new OpenAiCompatibleLlmBackend(new AgentConfig.LlmConfig(
+				"http://127.0.0.1:" + server.port(),
+				"planner-key",
+				"planner-model",
+				"https://api.openai.com/v1",
+				"",
+				"",
+				15_000,
+				10_000,
+				8,
+				65_536,
+				"low",
+				false
+			));
+
+			LlmCallResult<PlannerResponse> result = backend.generate(LlmConversation.of(List.of(
+				LlmChatMessage.system("system"),
+				LlmChatMessage.user("Recent updates", LlmMessageKind.USER_TURN)
+			)));
+
+			assertEquals(List.of("old-rule"), result.payload().eventPolicyChanges().removeRuleIds());
+			assertEquals(1, result.payload().eventPolicyChanges().upserts().size());
+			assertEquals("mute-system", result.payload().eventPolicyChanges().upserts().getFirst().ruleId());
+			assertEquals("social.system_message", result.payload().eventPolicyChanges().upserts().getFirst().match().eventType());
+		}
+	}
+
 	private static final class TestServer implements AutoCloseable {
 		private final HttpServer server;
+		private final String responseBody;
 
-		private TestServer(HttpServer server) {
+		private TestServer(HttpServer server, String responseBody) {
 			this.server = server;
+			this.responseBody = responseBody;
 		}
 
 		private static TestServer start(AtomicReference<String> bodyRef) throws IOException {
-			HttpServer server = HttpServer.create(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0);
-			server.setExecutor(Executors.newCachedThreadPool());
-			server.createContext("/chat/completions", exchange -> handle(exchange, bodyRef));
-			server.start();
-			return new TestServer(server);
-		}
-
-		private static void handle(HttpExchange exchange, AtomicReference<String> bodyRef) throws IOException {
-			bodyRef.set(new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
-			writeResponse(exchange, 200, """
+			return start(bodyRef, """
 				{
 				  "choices": [
 				    {
@@ -122,6 +161,19 @@ class OpenAiCompatibleLlmBackendTest {
 				  }
 				}
 				""");
+		}
+
+		private static TestServer start(AtomicReference<String> bodyRef, String responseBody) throws IOException {
+			HttpServer server = HttpServer.create(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0);
+			server.setExecutor(Executors.newCachedThreadPool());
+			server.createContext("/chat/completions", exchange -> handle(exchange, bodyRef, responseBody));
+			server.start();
+			return new TestServer(server, responseBody);
+		}
+
+		private static void handle(HttpExchange exchange, AtomicReference<String> bodyRef, String responseBody) throws IOException {
+			bodyRef.set(new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
+			writeResponse(exchange, 200, responseBody);
 		}
 
 		private int port() {

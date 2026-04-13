@@ -3,14 +3,17 @@ package ai.moeru.airicraft.agent.llm;
 public record PlannerContextDebugSnapshot(
 	int compactionTriggerTokens,
 	boolean compactionPending,
-	int rawArchiveEntryCount,
-	int canonicalMessageCount,
-	int pendingEntryCount,
+	int acceptedTurnCount,
+	int pendingSemanticEventCount,
+	int projectedPendingNoticeCount,
 	int frozenPlannerMessageCount,
+	int queuedTriggerCount,
 	long lastObservedEventSeqNo,
-	long lastTimeBeaconAtMs,
+	long lastAcceptedTimeContextAtMs,
+	boolean pendingSemanticGap,
+	boolean overflowFlushPending,
 	LlmUsageSnapshot lastObservedUsage,
-	PlannerAmbientContext ambientContext,
+	PlannerAmbientContext acceptedAmbientContext,
 	CompactionCheckpoint activeCheckpoint
 ) {
 }

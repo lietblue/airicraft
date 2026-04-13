@@ -7,6 +7,7 @@ import ai.moeru.airicraft.agent.llm.CompactionExecutionResult;
 import ai.moeru.airicraft.agent.llm.LlmFailureType;
 import ai.moeru.airicraft.agent.llm.OpenAiCompatibleChatClient;
 import ai.moeru.airicraft.agent.llm.OpenAiCompatibleLlmBackend;
+import ai.moeru.airicraft.agent.llm.PlannerConversationDebugSnapshot;
 import ai.moeru.airicraft.agent.llm.PlannerContextAggregator;
 import ai.moeru.airicraft.agent.llm.PlannerExecutionResult;
 import ai.moeru.airicraft.agent.llm.PlannerExecutor;
@@ -14,7 +15,10 @@ import ai.moeru.airicraft.agent.llm.PlannerCompactionService;
 import ai.moeru.airicraft.agent.llm.PlannerOrchestratorDebugSnapshot;
 import ai.moeru.airicraft.agent.llm.PlannerOrchestrator;
 import ai.moeru.airicraft.agent.llm.PlannerRequest;
+import ai.moeru.airicraft.agent.llm.PlannerRequestSeed;
 import ai.moeru.airicraft.agent.llm.PlannerResponse;
+import ai.moeru.airicraft.agent.llm.PlannerTrigger;
+import ai.moeru.airicraft.agent.llm.PlannerTriggerType;
 import ai.moeru.airicraft.agent.session.SessionSnapshot;
 
 import java.time.Clock;
@@ -65,11 +69,16 @@ public final class DialogueRuntime {
 				new PlannerContextAggregator(
 					Clock.systemDefaultZone(),
 					ai.moeru.airicraft.agent.AgentConfig.LlmConfig.defaults().plannerCompactionTriggerTokens(),
+					ai.moeru.airicraft.agent.AgentConfig.LlmConfig.defaults().plannerPendingSemanticEventCap(),
 					ai.moeru.airicraft.agent.AgentConfig.LlmConfig.defaults().plannerVisionMode()
 				),
 				CurrentViewVisionTool.disabled(),
 				ai.moeru.airicraft.agent.AgentConfig.LlmConfig.defaults().plannerVisionMode(),
-				ai.moeru.airicraft.agent.AgentConfig.LlmConfig.defaults().visionImageDetail()
+				ai.moeru.airicraft.agent.AgentConfig.LlmConfig.defaults().visionImageDetail(),
+				ai.moeru.airicraft.agent.AgentConfig.LlmConfig.defaults().plannerSessionMaxConcurrentAttempts(),
+				ai.moeru.airicraft.agent.AgentConfig.LlmConfig.defaults().plannerSessionCoalesceStepMillis(),
+				ai.moeru.airicraft.agent.AgentConfig.LlmConfig.defaults().plannerSessionCoalesceMinMillis(),
+				ai.moeru.airicraft.agent.AgentConfig.LlmConfig.defaults().plannerSessionCoalesceMaxMillis()
 			),
 			maxRecentTurns,
 			Clock.systemDefaultZone()
@@ -103,6 +112,14 @@ public final class DialogueRuntime {
 
 	public PlannerOrchestratorDebugSnapshot plannerDebugSnapshot() {
 		return plannerOrchestrator.debugSnapshot();
+	}
+
+	public PlannerConversationDebugSnapshot plannerConversationDebugSnapshot() {
+		return plannerOrchestrator.conversationDebugSnapshot();
+	}
+
+	public List<String> plannerContextExcerpt() {
+		return plannerOrchestrator.contextExcerpt();
 	}
 
 	public boolean startDebugCompaction() {
@@ -174,21 +191,76 @@ public final class DialogueRuntime {
 	) {
 		long timestampMs = clock.millis();
 		appendTurn(new DialogueTurn(senderName, plainTextMessage, tick, timestampMs));
-		if (degraded || plannerOrchestrator.hasInFlight()) {
+		submitPlannerTrigger(
+			PlannerRequest.ofTrigger(
+				tick,
+				timestampMs,
+				sessionSnapshot.mode(),
+				primaryInteractionPlayer,
+				activeGoal.orElse(null),
+				PlannerTriggerType.CHAT,
+				senderName,
+				plainTextMessage,
+				null
+			),
+			eventBuffer,
+			timestampMs
+		);
+	}
+
+	public void onContextTrigger(
+		PlannerTriggerType triggerType,
+		String senderName,
+		String plainTextMessage,
+		long tick,
+		SessionSnapshot sessionSnapshot,
+		String primaryInteractionPlayer,
+		Optional<GoalSnapshot> activeGoal,
+		SemanticEventBuffer eventBuffer
+	) {
+		long timestampMs = clock.millis();
+		submitPlannerTrigger(
+			PlannerRequest.ofTrigger(
+				tick,
+				timestampMs,
+				sessionSnapshot.mode(),
+				primaryInteractionPlayer,
+				activeGoal.orElse(null),
+				triggerType,
+				senderName,
+				plainTextMessage,
+				null
+			),
+			eventBuffer,
+			timestampMs
+		);
+	}
+
+	public void onPlannerTrigger(
+		PlannerTrigger trigger,
+		SessionSnapshot sessionSnapshot,
+		String primaryInteractionPlayer,
+		Optional<GoalSnapshot> activeGoal,
+		SemanticEventBuffer plannerEventBuffer
+	) {
+		if (trigger == null) {
 			return;
 		}
-		plannerOrchestrator.recordEvents(eventBuffer.query(null).events(), timestampMs);
-
-		plannerOrchestrator.submit(new PlannerRequest(
-			tick,
-			timestampMs,
-			sessionSnapshot.mode(),
-			primaryInteractionPlayer,
-			activeGoal.orElse(null),
-			senderName,
-			plainTextMessage,
-			null
-		));
+		submitPlannerTrigger(
+			PlannerRequest.ofTrigger(
+				trigger.tick(),
+				trigger.timestampMs(),
+				sessionSnapshot.mode(),
+				primaryInteractionPlayer,
+				activeGoal.orElse(null),
+				trigger.type(),
+				trigger.speaker(),
+				trigger.text(),
+				null
+			),
+			plannerEventBuffer,
+			trigger.timestampMs()
+		);
 	}
 
 	public DialogueResponse poll(long tick, SemanticEventBuffer eventBuffer) {
@@ -221,12 +293,14 @@ public final class DialogueRuntime {
 		DialogueResponse response = new DialogueResponse(
 			plannerResponse.replyText() == null ? "" : plannerResponse.replyText(),
 			new DialogueIntent(mappedIntentType, plannerResponse.intent().goalType(), plannerResponse.intent().targetPlayer()),
-			tick
+			tick,
+			plannerResponse.eventPolicyChanges()
 		);
 		recordResponse(response);
 		if (response.text() != null && !response.text().isBlank()) {
 			recordAgentTurn(response.text(), tick);
 		}
+		plannerOrchestrator.onAcceptedReplyRecorded();
 		return response;
 	}
 
@@ -265,6 +339,28 @@ public final class DialogueRuntime {
 			return false;
 		}
 		return plainTextMessage.stripLeading().equalsIgnoreCase(RESET_COMMAND);
+	}
+
+	private void submitPlannerTrigger(
+		PlannerRequest request,
+		SemanticEventBuffer eventBuffer,
+		long timestampMs
+	) {
+		if (degraded) {
+			return;
+		}
+		Long sinceSeqNo = plannerOrchestrator.lastObservedEventSeqNo();
+		plannerOrchestrator.recordEvents(
+			eventBuffer.query(sinceSeqNo <= 0L ? null : sinceSeqNo),
+			new PlannerRequestSeed(
+				request.tick(),
+				timestampMs,
+				request.sessionMode(),
+				request.primaryInteractionPlayer(),
+				request.activeGoal()
+			)
+		);
+		plannerOrchestrator.submit(request);
 	}
 
 	private void onFailure(LlmFailureType failureType, String failureMessage, long tick, SemanticEventBuffer eventBuffer) {
@@ -323,10 +419,14 @@ public final class DialogueRuntime {
 		return new PlannerOrchestrator(
 			new PlannerExecutor(new OpenAiCompatibleLlmBackend(config)),
 			new PlannerCompactionService(new OpenAiCompatibleChatClient(config)),
-			new PlannerContextAggregator(clock, config.plannerCompactionTriggerTokens(), config.plannerVisionMode()),
+			new PlannerContextAggregator(clock, config.plannerCompactionTriggerTokens(), config.plannerPendingSemanticEventCap(), config.plannerVisionMode()),
 			CurrentViewVisionTool.disabled(),
 			config.plannerVisionMode(),
-			config.visionImageDetail()
+			config.visionImageDetail(),
+			config.plannerSessionMaxConcurrentAttempts(),
+			config.plannerSessionCoalesceStepMillis(),
+			config.plannerSessionCoalesceMinMillis(),
+			config.plannerSessionCoalesceMaxMillis()
 		);
 	}
 }
