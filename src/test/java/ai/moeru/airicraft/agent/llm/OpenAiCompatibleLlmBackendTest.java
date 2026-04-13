@@ -522,6 +522,65 @@ class OpenAiCompatibleLlmBackendTest {
 	}
 
 	@Test
+	void stripMarkdownCodeFencesRemovesJsonFences() {
+		String fenced = "```json\n{\"replyText\": \"hi\"}\n```";
+		assertEquals("{\"replyText\": \"hi\"}", OpenAiCompatibleLlmBackend.stripMarkdownCodeFences(fenced));
+	}
+
+	@Test
+	void stripMarkdownCodeFencesPassesThroughPlainJson() {
+		String plain = "{\"replyText\": \"hi\"}";
+		assertEquals(plain, OpenAiCompatibleLlmBackend.stripMarkdownCodeFences(plain));
+	}
+
+	@Test
+	void generateParsesMarkdownWrappedContent() throws Exception {
+		String innerJson = "{\"replyText\":\"Hey!\",\"intent\":{\"type\":\"none\",\"taskLedger\":null},\"toolRequest\":null,\"eventPolicyChanges\":null}";
+		String wrappedContent = "```json\\n" + innerJson.replace("\"", "\\\"") + "\\n```";
+		String responseBody = """
+			{
+			  "choices": [
+			    {
+			      "message": {
+			        "content": "%s"
+			      }
+			    }
+			  ],
+			  "usage": {
+			    "prompt_tokens": 100,
+			    "completion_tokens": 50,
+			    "total_tokens": 150
+			  }
+			}
+			""".formatted(wrappedContent);
+		AtomicReference<String> bodyRef = new AtomicReference<>();
+		try (TestServer server = TestServer.start(bodyRef, responseBody)) {
+			OpenAiCompatibleLlmBackend backend = new OpenAiCompatibleLlmBackend(new AgentConfig.LlmConfig(
+				"http://127.0.0.1:" + server.port(),
+				"planner-key",
+				"planner-model",
+				"https://api.openai.com/v1",
+				"",
+				"",
+				15_000,
+				10_000,
+				8,
+				65_536,
+				"low",
+				false
+			));
+
+			LlmCallResult<PlannerResponse> result = backend.generate(LlmConversation.of(List.of(
+				LlmChatMessage.system("system"),
+				LlmChatMessage.user("Alice said just now: @agent hi", LlmMessageKind.USER_TURN)
+			)));
+
+			assertEquals("Hey!", result.payload().replyText());
+			assertEquals("none", result.payload().intent().type());
+		}
+	}
+
+	@Test
 	void generateParsesEventPolicyChanges() throws Exception {
 		AtomicReference<String> bodyRef = new AtomicReference<>();
 		try (TestServer server = TestServer.start(bodyRef, """

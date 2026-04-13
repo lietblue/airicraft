@@ -98,7 +98,7 @@ public final class OpenAiCompatibleLlmBackend implements LlmBackend {
 			}
 
 			String content = OpenAiCompatibleMessageContent.extract(message.get("content"));
-			JsonObject payload = JsonParser.parseString(content).getAsJsonObject();
+			JsonObject payload = JsonParser.parseString(stripMarkdownCodeFences(content)).getAsJsonObject();
 			String replyText = getString(payload, "replyText").orElse("");
 			JsonObject intentObject = payload.has("intent") && payload.get("intent").isJsonObject()
 				? payload.getAsJsonObject("intent")
@@ -559,6 +559,21 @@ public final class OpenAiCompatibleLlmBackend implements LlmBackend {
 			}
 		}
 		return Optional.of(values);
+	}
+
+	static String stripMarkdownCodeFences(String text) {
+		String trimmed = text.strip();
+		if (trimmed.startsWith("```")) {
+			int firstNewline = trimmed.indexOf('\n');
+			if (firstNewline >= 0) {
+				trimmed = trimmed.substring(firstNewline + 1);
+			}
+			if (trimmed.endsWith("```")) {
+				trimmed = trimmed.substring(0, trimmed.length() - 3);
+			}
+			return trimmed.strip();
+		}
+		return text;
 	}
 
 	private static String summarizeForLog(String text) {
