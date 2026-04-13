@@ -740,6 +740,7 @@ class AiricraftCliMainTest {
 	private static CliResult execute(MinecraftTransport transport, String... args) {
 		StringWriter writer = new StringWriter();
 		CommandLine commandLine = AiricraftCliMain.createCommandLine(transport, new PrintWriter(writer, true));
+		commandLine.setColorScheme(new CommandLine.Help.ColorScheme.Builder().ansi(CommandLine.Help.Ansi.OFF).build());
 		int exitCode = commandLine.execute(args);
 		return new CliResult(exitCode, writer.toString().replace("\r\n", "\n"));
 	}

@@ -240,6 +240,9 @@ class PlannerDebugOverlayTest {
 			true,
 			120L,
 			new SessionSnapshot(mode, true, false, null, false, 0, 120L),
+			null,
+			null,
+			null,
 			null
 		);
 	}
