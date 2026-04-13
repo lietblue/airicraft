@@ -2,6 +2,8 @@ package ai.moeru.airicraft.agent.llm;
 
 import ai.moeru.airicraft.agent.goals.GoalSnapshot;
 import ai.moeru.airicraft.agent.session.SessionMode;
+import ai.moeru.airicraft.agent.tasks.MissionExecutionSnapshot;
+import ai.moeru.airicraft.agent.tasks.TaskSnapshot;
 
 import java.util.List;
 
@@ -11,6 +13,8 @@ public record PlannerRequest(
 	SessionMode sessionMode,
 	String primaryInteractionPlayer,
 	GoalSnapshot activeGoal,
+	TaskSnapshot activeTask,
+	MissionExecutionSnapshot missionExecution,
 	PlannerTriggerBatch triggerBatch,
 	String toolResult
 ) {
@@ -30,6 +34,35 @@ public record PlannerRequest(
 			sessionMode,
 			primaryInteractionPlayer,
 			activeGoal,
+			null,
+			null,
+			PlannerTriggerBatch.of(List.of(
+				PlannerTrigger.pending(PlannerTriggerType.CHAT, senderName, message, tick, timestampMs)
+			)),
+			toolResult
+		);
+	}
+
+	public PlannerRequest(
+		long tick,
+		long timestampMs,
+		SessionMode sessionMode,
+		String primaryInteractionPlayer,
+		GoalSnapshot activeGoal,
+		TaskSnapshot activeTask,
+		MissionExecutionSnapshot missionExecution,
+		String senderName,
+		String message,
+		String toolResult
+	) {
+		this(
+			tick,
+			timestampMs,
+			sessionMode,
+			primaryInteractionPlayer,
+			activeGoal,
+			activeTask,
+			missionExecution,
 			PlannerTriggerBatch.of(List.of(
 				PlannerTrigger.pending(PlannerTriggerType.CHAT, senderName, message, tick, timestampMs)
 			)),
@@ -54,6 +87,8 @@ public record PlannerRequest(
 			sessionMode,
 			primaryInteractionPlayer,
 			activeGoal,
+			null,
+			null,
 			PlannerTriggerBatch.of(List.of(
 				PlannerTrigger.pending(triggerType, speaker, message, tick, timestampMs)
 			)),
@@ -62,11 +97,11 @@ public record PlannerRequest(
 	}
 
 	public PlannerRequest withTriggerBatch(PlannerTriggerBatch replacementBatch) {
-		return new PlannerRequest(tick, timestampMs, sessionMode, primaryInteractionPlayer, activeGoal, replacementBatch, toolResult);
+		return new PlannerRequest(tick, timestampMs, sessionMode, primaryInteractionPlayer, activeGoal, activeTask, missionExecution, replacementBatch, toolResult);
 	}
 
 	public PlannerRequest withToolResult(String replacementToolResult) {
-		return new PlannerRequest(tick, timestampMs, sessionMode, primaryInteractionPlayer, activeGoal, triggerBatch, replacementToolResult);
+		return new PlannerRequest(tick, timestampMs, sessionMode, primaryInteractionPlayer, activeGoal, activeTask, missionExecution, triggerBatch, replacementToolResult);
 	}
 
 	public String senderName() {

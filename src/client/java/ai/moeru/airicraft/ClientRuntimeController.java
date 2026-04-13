@@ -1,7 +1,10 @@
 package ai.moeru.airicraft;
 
 import ai.moeru.airicraft.agent.EmbodiedAgentRuntime;
-import net.fabricmc.fabric.api.client.rendering.v1.world.WorldRenderContext;
+import ai.moeru.airicraft.agent.baritone.LiveBaritoneFacade;
+import ai.moeru.airicraft.agent.tasks.BaritoneTaskExecutor;
+import ai.moeru.airicraft.agent.tasks.WorldTaskExecutor;
+import net.fabricmc.fabric.api.client.rendering.v1.WorldRenderContext;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.gui.DrawContext;
 import net.minecraft.client.render.RenderTickCounter;
@@ -13,7 +16,8 @@ public final class ClientRuntimeController {
 	private final AiricraftConfig config = AiricraftConfigLoader.load();
 	private final HighlightManager highlightManager = new HighlightManager();
 	private final FirstPersonScreenshotService screenshotService = new FirstPersonScreenshotService();
-	private final EmbodiedAgentRuntime agentRuntime = EmbodiedAgentRuntime.createDefault(config, screenshotService);
+	private final WorldTaskExecutor worldTaskExecutor = new BaritoneTaskExecutor(new LiveBaritoneFacade());
+	private final EmbodiedAgentRuntime agentRuntime = EmbodiedAgentRuntime.createDefault(config, screenshotService, worldTaskExecutor);
 	private final ModBridgeServer bridgeServer = new ModBridgeServer(highlightManager, agentRuntime, screenshotService);
 	private final PlannerDebugOverlay plannerDebugOverlay = new PlannerDebugOverlay();
 

@@ -210,6 +210,155 @@ class HttpBridgeTransportTest {
 	}
 
 	@Test
+	void openAgentSessionLanPostsPayload(@TempDir Path tempDir) throws Exception {
+		try (TestBridgeServer server = TestBridgeServer.start()) {
+			server.respondJson("/v1/agent/session/open-lan", 0, 200, """
+				{"opened":true,"port":25565}
+				""");
+			writeBridgeState(tempDir, server.port());
+			System.setProperty("user.home", tempDir.toString());
+
+			HttpBridgeTransport transport = new HttpBridgeTransport();
+			Map<String, Object> payload = transport.openAgentSessionLan();
+
+			assertEquals(true, payload.get("opened"));
+			assertEquals(25565, ((Number) payload.get("port")).intValue());
+			assertEquals(1, server.requestCount("/v1/agent/session/open-lan"));
+			assertEquals("POST", server.lastMethod("/v1/agent/session/open-lan"));
+		}
+	}
+
+	@Test
+	void sendAgentDebugChatPostsJsonPayload(@TempDir Path tempDir) throws Exception {
+		try (TestBridgeServer server = TestBridgeServer.start()) {
+			server.respondJson("/v1/agent/debug/chat", 0, 200, """
+				{"available":true,"accepted":true,"senderName":"Player688","message":"@agent get me 4 wood logs"}
+				""");
+			writeBridgeState(tempDir, server.port());
+			System.setProperty("user.home", tempDir.toString());
+
+			HttpBridgeTransport transport = new HttpBridgeTransport();
+			Map<String, Object> payload = transport.sendAgentDebugChat("@agent get me 4 wood logs");
+
+			assertEquals(true, payload.get("accepted"));
+			assertEquals(1, server.requestCount("/v1/agent/debug/chat"));
+			assertEquals("POST", server.lastMethod("/v1/agent/debug/chat"));
+			assertEquals("{\"message\":\"@agent get me 4 wood logs\"}", server.lastRequestBody("/v1/agent/debug/chat"));
+		}
+	}
+
+	@Test
+	void getAgentTasksReadsPayload(@TempDir Path tempDir) throws Exception {
+		try (TestBridgeServer server = TestBridgeServer.start()) {
+			server.respondJson("/v1/agent/tasks", 0, 200, """
+				{"available":true,"task":{"state":"RUNNING","spec":{"type":"COLLECT_RESOURCE","resourceKind":"WOOD_LOGS","quantity":4}}}
+				""");
+			writeBridgeState(tempDir, server.port());
+			System.setProperty("user.home", tempDir.toString());
+
+			HttpBridgeTransport transport = new HttpBridgeTransport();
+			Map<String, Object> payload = transport.getAgentTasks();
+
+			assertEquals(true, payload.get("available"));
+			assertEquals(1, server.requestCount("/v1/agent/tasks"));
+		}
+	}
+
+	@Test
+	void getAgentLedgerReadsPayload(@TempDir Path tempDir) throws Exception {
+		try (TestBridgeServer server = TestBridgeServer.start()) {
+			server.respondJson("/v1/agent/ledger", 0, 200, """
+				{"available":true,"ledger":{"missionId":"mission-wood-1","activeStepId":"collect_logs"}}
+				""");
+			writeBridgeState(tempDir, server.port());
+			System.setProperty("user.home", tempDir.toString());
+
+			HttpBridgeTransport transport = new HttpBridgeTransport();
+			Map<String, Object> payload = transport.getAgentLedger();
+
+			assertEquals(true, payload.get("available"));
+			assertEquals(1, server.requestCount("/v1/agent/ledger"));
+		}
+	}
+
+	@Test
+	void getAgentEvidenceReadsPayload(@TempDir Path tempDir) throws Exception {
+		try (TestBridgeServer server = TestBridgeServer.start()) {
+			server.respondJson("/v1/agent/evidence", 0, 200, """
+				{"available":true,"evidence":{"dimension":"minecraft:overworld"}}
+				""");
+			writeBridgeState(tempDir, server.port());
+			System.setProperty("user.home", tempDir.toString());
+
+			HttpBridgeTransport transport = new HttpBridgeTransport();
+			Map<String, Object> payload = transport.getAgentEvidence();
+
+			assertEquals(true, payload.get("available"));
+			assertEquals(1, server.requestCount("/v1/agent/evidence"));
+		}
+	}
+
+	@Test
+	void getAgentStepExecutionReadsPayload(@TempDir Path tempDir) throws Exception {
+		try (TestBridgeServer server = TestBridgeServer.start()) {
+			server.respondJson("/v1/agent/step-execution", 0, 200, """
+				{"available":true,"stepExecution":{"stepId":"craft_sticks","status":"RUNNING"}}
+				""");
+			writeBridgeState(tempDir, server.port());
+			System.setProperty("user.home", tempDir.toString());
+
+			HttpBridgeTransport transport = new HttpBridgeTransport();
+			Map<String, Object> payload = transport.getAgentStepExecution();
+
+			assertEquals(true, payload.get("available"));
+			assertEquals(1, server.requestCount("/v1/agent/step-execution"));
+		}
+	}
+
+	@Test
+	void submitAgentMissionPostsPayload(@TempDir Path tempDir) throws Exception {
+		try (TestBridgeServer server = TestBridgeServer.start()) {
+			server.respondJson("/v1/agent/tasks", 0, 200, """
+				{"available":true,"task":{"state":"QUEUED"}}
+				""");
+			writeBridgeState(tempDir, server.port());
+			System.setProperty("user.home", tempDir.toString());
+
+			HttpBridgeTransport transport = new HttpBridgeTransport();
+			Map<String, Object> payload = transport.submitAgentMission(Map.of(
+				"type", "COLLECT_RESOURCE",
+				"resourceKind", "WOOD_LOGS",
+				"quantity", 4
+			));
+
+			assertEquals(true, payload.get("available"));
+			assertEquals(1, server.requestCount("/v1/agent/tasks"));
+			assertEquals("POST", server.lastMethod("/v1/agent/tasks"));
+		}
+	}
+
+	@Test
+	void submitAgentTaskPostsJsonPayload(@TempDir Path tempDir) throws Exception {
+		try (TestBridgeServer server = TestBridgeServer.start()) {
+			server.respondJson("/v1/agent/tasks", 0, 200, """
+				{"available":true,"task":{"state":"QUEUED"}}
+				""");
+			writeBridgeState(tempDir, server.port());
+			System.setProperty("user.home", tempDir.toString());
+
+			HttpBridgeTransport transport = new HttpBridgeTransport();
+			Map<String, Object> payload = transport.submitAgentTask(Map.of(
+				"type", "COLLECT_RESOURCE",
+				"resourceKind", "WOOD_LOGS",
+				"quantity", 4
+			));
+
+			assertEquals(true, payload.get("available"));
+			assertEquals(1, server.requestCount("/v1/agent/tasks"));
+		}
+	}
+
+	@Test
 	void agentDebugCompactUsesLongerTimeout(@TempDir Path tempDir) throws Exception {
 		try (TestBridgeServer server = TestBridgeServer.start()) {
 			server.respondJson("/v1/agent/debug/compact", 2500, 200, """
@@ -362,7 +511,8 @@ class HttpBridgeTransportTest {
 	private static final class TestBridgeServer implements AutoCloseable {
 		private final HttpServer server;
 		private final Map<String, Integer> requestCounts = new java.util.concurrent.ConcurrentHashMap<>();
-		private final Map<String, String> requestBodies = new java.util.concurrent.ConcurrentHashMap<>();
+		private final Map<String, String> lastMethods = new java.util.concurrent.ConcurrentHashMap<>();
+		private final Map<String, String> lastRequestBodies = new java.util.concurrent.ConcurrentHashMap<>();
 
 		private TestBridgeServer(HttpServer server) {
 			this.server = server;
@@ -382,7 +532,8 @@ class HttpBridgeTransportTest {
 		private void respondJson(String path, long delayMillis, int statusCode, String body) {
 			server.createContext(path, exchange -> {
 				requestCounts.merge(path, 1, Integer::sum);
-				requestBodies.put(path, new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
+				lastMethods.put(path, exchange.getRequestMethod());
+				lastRequestBodies.put(path, new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
 				if (!"Bearer test-token".equals(exchange.getRequestHeaders().getFirst("Authorization"))) {
 					writeResponse(exchange, 401, "{\"error\":\"unauthorized\"}");
 					return;
@@ -403,8 +554,12 @@ class HttpBridgeTransportTest {
 			return requestCounts.getOrDefault(path, 0);
 		}
 
+		private String lastMethod(String path) {
+			return lastMethods.get(path);
+		}
+
 		private String lastRequestBody(String path) {
-			return requestBodies.get(path);
+			return lastRequestBodies.get(path);
 		}
 
 		@Override

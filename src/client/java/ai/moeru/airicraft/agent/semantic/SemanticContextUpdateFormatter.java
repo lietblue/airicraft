@@ -54,6 +54,20 @@ public final class SemanticContextUpdateFormatter {
 			case "planner.degraded_entered" -> "The planner entered degraded mode " + relativeTime + ".";
 			case "planner.degraded_cleared" -> "The planner recovered from degraded mode " + relativeTime + ".";
 			case "planner.reset_requested" -> "A planner reset was requested " + relativeTime + ".";
+			case "mission.ledger_updated" -> {
+				Object missionId = event.payload().get("missionId");
+				Object activeStepId = event.payload().get("activeStepId");
+				Object previousActiveStepId = event.payload().get("previousActiveStepId");
+				yield "The mission ledger for "
+					+ (missionId == null ? "the active mission" : missionId)
+					+ " changed "
+					+ relativeTime
+					+ ", active step moved from "
+					+ (previousActiveStepId == null || String.valueOf(previousActiveStepId).isBlank() ? "none" : previousActiveStepId)
+					+ " to "
+					+ (activeStepId == null || String.valueOf(activeStepId).isBlank() ? "none" : activeStepId)
+					+ ".";
+			}
 			default -> null;
 		};
 	}

@@ -11,7 +11,7 @@ public record PlannerRequestSeed(
 	GoalSnapshot activeGoal
 ) {
 	public PlannerRequest toPlannerRequest() {
-		return new PlannerRequest(tick, timestampMs, sessionMode, primaryInteractionPlayer, activeGoal, (PlannerTriggerBatch) null, null);
+		return new PlannerRequest(tick, timestampMs, sessionMode, primaryInteractionPlayer, activeGoal, null, null, (PlannerTriggerBatch) null, null);
 	}
 
 	public static PlannerRequestSeed fromRequest(PlannerRequest request) {

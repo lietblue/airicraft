@@ -200,8 +200,48 @@ final class HttpBridgeTransport implements MinecraftTransport {
 	}
 
 	@Override
+	public Map<String, Object> openAgentSessionLan() {
+		return send("POST", "/v1/agent/session/open-lan", null);
+	}
+
+	@Override
 	public Map<String, Object> getAgentGoals() {
 		return get("/v1/agent/goals");
+	}
+
+	@Override
+	public Map<String, Object> getAgentTasks() {
+		return get("/v1/agent/tasks");
+	}
+
+	@Override
+	public Map<String, Object> getAgentLedger() {
+		return get("/v1/agent/ledger");
+	}
+
+	@Override
+	public Map<String, Object> getAgentEvidence() {
+		return get("/v1/agent/evidence");
+	}
+
+	@Override
+	public Map<String, Object> getAgentStepExecution() {
+		return get("/v1/agent/step-execution");
+	}
+
+	@Override
+	public Map<String, Object> submitAgentTask(Map<String, Object> taskPayload) {
+		return send("POST", "/v1/agent/tasks", taskPayload);
+	}
+
+	@Override
+	public Map<String, Object> submitAgentMission(Map<String, Object> missionPayload) {
+		return send("POST", "/v1/agent/tasks", missionPayload);
+	}
+
+	@Override
+	public Map<String, Object> cancelAgentTask() {
+		return send("DELETE", "/v1/agent/tasks", null);
 	}
 
 	@Override
@@ -212,6 +252,11 @@ final class HttpBridgeTransport implements MinecraftTransport {
 	@Override
 	public Map<String, Object> getAgentDialogue() {
 		return get("/v1/agent/dialogue");
+	}
+
+	@Override
+	public Map<String, Object> sendAgentDebugChat(String message) {
+		return send("POST", "/v1/agent/debug/chat", Map.of("message", message));
 	}
 
 	@Override

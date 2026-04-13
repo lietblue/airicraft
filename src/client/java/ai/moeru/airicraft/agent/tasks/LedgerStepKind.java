@@ -1,0 +1,16 @@
+package ai.moeru.airicraft.agent.tasks;
+
+public enum LedgerStepKind {
+	COLLECT_RESOURCE,
+	NAVIGATE_TO_POSITION,
+	NAVIGATE_TO_BLOCK_KIND,
+	MINE_BLOCKS,
+	CRAFT_RECIPE,
+	OPEN_CONTAINER,
+	TRANSFER_ITEMS,
+	PLACE_BLOCK,
+	DROP_ITEMS,
+	WAIT,
+	ASK_USER,
+	FINISH
+}

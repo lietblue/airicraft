@@ -8,6 +8,7 @@ import ai.moeru.airicraft.SingleplayerWorldService;
 import ai.moeru.airicraft.agent.behavior.BehaviorTreeRuntime;
 import ai.moeru.airicraft.agent.behavior.BehaviorTreeSnapshot;
 import ai.moeru.airicraft.agent.chat.ChatService;
+import ai.moeru.airicraft.agent.dialogue.DialogueIntent;
 import ai.moeru.airicraft.agent.dialogue.DialogueIntentType;
 import ai.moeru.airicraft.agent.dialogue.DialogueResponse;
 import ai.moeru.airicraft.agent.dialogue.DialogueSpeakerLabels;
@@ -29,6 +30,8 @@ import ai.moeru.airicraft.agent.events.SemanticEventQueryResult;
 import ai.moeru.airicraft.agent.follow.FollowCapability;
 import ai.moeru.airicraft.agent.follow.FollowState;
 import ai.moeru.airicraft.agent.goals.GoalDirector;
+import ai.moeru.airicraft.agent.goals.GoalMineSpec;
+import ai.moeru.airicraft.agent.goals.GoalPosition;
 import ai.moeru.airicraft.agent.goals.GoalSnapshot;
 import ai.moeru.airicraft.agent.goals.GoalType;
 import ai.moeru.airicraft.agent.llm.CompactionExecutionResult;
@@ -55,6 +58,20 @@ import ai.moeru.airicraft.agent.social.NearbyPlayerSnapshot;
 import ai.moeru.airicraft.agent.social.NearbyPlayerTracker;
 import ai.moeru.airicraft.agent.social.PrimaryInteractionPlayer;
 import ai.moeru.airicraft.agent.social.PrimaryInteractionResolver;
+import ai.moeru.airicraft.agent.tasks.TaskExecutionSnapshot;
+import ai.moeru.airicraft.agent.tasks.TaskExecutionState;
+import ai.moeru.airicraft.agent.tasks.CollectResourceTaskHandler;
+import ai.moeru.airicraft.agent.tasks.InventoryItemCounter;
+import ai.moeru.airicraft.agent.tasks.InventoryResourceCounter;
+import ai.moeru.airicraft.agent.tasks.MissionExecutionSnapshot;
+import ai.moeru.airicraft.agent.tasks.TaskRuntime;
+import ai.moeru.airicraft.agent.tasks.TaskSnapshot;
+import ai.moeru.airicraft.agent.tasks.TaskState;
+import ai.moeru.airicraft.agent.tasks.TaskSpec;
+import ai.moeru.airicraft.agent.tasks.TaskLedger;
+import ai.moeru.airicraft.agent.tasks.TaskTerminalEvent;
+import ai.moeru.airicraft.agent.tasks.WorldEvidence;
+import ai.moeru.airicraft.agent.tasks.WorldTaskExecutor;
 import ai.moeru.airicraft.agent.verification.VerificationReport;
 import ai.moeru.airicraft.agent.verification.VerificationRunner;
 import ai.moeru.airicraft.agent.verification.VerificationPlayerProbe;
@@ -70,6 +87,8 @@ import ai.moeru.airicraft.agent.verification.scenarios.FollowReacquireTargetVeri
 import ai.moeru.airicraft.agent.verification.scenarios.LlmDegradationVerification;
 import ai.moeru.airicraft.agent.verification.scenarios.LlmDegradationGoalPreservedVerification;
 import ai.moeru.airicraft.agent.verification.scenarios.ManualInputIdlePassthroughVerification;
+import ai.moeru.airicraft.agent.verification.scenarios.MineBlocksVerification;
+import ai.moeru.airicraft.agent.verification.scenarios.NavigateVerification;
 import ai.moeru.airicraft.agent.verification.scenarios.PlannerObservabilityVerification;
 import ai.moeru.airicraft.agent.verification.scenarios.SessionLanVerification;
 import ai.moeru.airicraft.agent.verification.scenarios.SessionVerification;
@@ -78,9 +97,12 @@ import ai.moeru.airicraft.agent.verification.scenarios.SocialChatIngestVerificat
 import ai.moeru.airicraft.agent.session.SessionMode;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.entity.damage.DamageSource;
+import net.minecraft.registry.Registries;
 import net.minecraft.server.integrated.IntegratedServer;
 import net.minecraft.server.network.ServerPlayerEntity;
 import net.minecraft.text.Text;
+import net.minecraft.util.math.BlockPos;
+import net.minecraft.util.math.Direction;
 import net.minecraft.util.math.Vec3d;
 import net.minecraft.world.GameMode;
 
@@ -121,21 +143,34 @@ public final class EmbodiedAgentRuntime {
 	private final ChatService chatService = new ChatService();
 	private final CurrentViewVisionService visionService;
 	private final DialogueRuntime dialogueRuntime;
+	private final WorldTaskExecutor worldTaskExecutor;
+	private final InventoryResourceCounter inventoryResourceCounter = new InventoryResourceCounter();
+	private final InventoryItemCounter inventoryItemCounter = new InventoryItemCounter();
+	private final TaskRuntime taskRuntime = new TaskRuntime();
 
 	private boolean initialized;
 	private long tickCount;
 	private long worldLoadTick = -1L;
 	private Boolean proactiveSocialModeOverride;
 	private SessionSnapshot sessionSnapshot = SessionSnapshot.initial();
+	private SessionSnapshot sessionSnapshotOverrideForTests;
 	private FollowState followState = FollowState.idle();
+	private TaskSnapshot taskSnapshot = TaskSnapshot.idle();
+	private TaskExecutionSnapshot taskExecutionSnapshot = TaskExecutionSnapshot.idle();
 	private long lastSystemChatTick = -1L;
 	private String lastSystemChatText;
 	private Float lastKnownPlayerHealth;
 	private final Map<UUID, String> seenPlayerNames = new LinkedHashMap<>();
 
-	public EmbodiedAgentRuntime(AiricraftConfig airicraftConfig, AgentConfig config, FirstPersonScreenshotService screenshotService) {
+	public EmbodiedAgentRuntime(
+		AiricraftConfig airicraftConfig,
+		AgentConfig config,
+		FirstPersonScreenshotService screenshotService,
+		WorldTaskExecutor worldTaskExecutor
+	) {
 		this.airicraftConfig = Objects.requireNonNull(airicraftConfig, "airicraftConfig");
 		this.config = Objects.requireNonNull(config, "config");
+		this.worldTaskExecutor = Objects.requireNonNull(worldTaskExecutor, "worldTaskExecutor");
 		this.nearbyPlayerTracker = new NearbyPlayerTracker(resolveNearbyPlayerTrackingRadius(airicraftConfig));
 		this.visionService = new CurrentViewVisionService(
 			Objects.requireNonNull(screenshotService, "screenshotService"),
@@ -167,12 +202,33 @@ public final class EmbodiedAgentRuntime {
 		registerDefaultScenarios();
 	}
 
+	public EmbodiedAgentRuntime(AiricraftConfig airicraftConfig, AgentConfig config, FirstPersonScreenshotService screenshotService) {
+		this(airicraftConfig, config, screenshotService, NoopWorldTaskExecutor.INSTANCE);
+	}
+
+	public static EmbodiedAgentRuntime createDefault(
+		AiricraftConfig airicraftConfig,
+		FirstPersonScreenshotService screenshotService,
+		WorldTaskExecutor worldTaskExecutor
+	) {
+		return new EmbodiedAgentRuntime(airicraftConfig, AgentConfigLoader.load(), screenshotService, worldTaskExecutor);
+	}
+
 	public static EmbodiedAgentRuntime createDefault(AiricraftConfig airicraftConfig, FirstPersonScreenshotService screenshotService) {
-		return new EmbodiedAgentRuntime(airicraftConfig, AgentConfigLoader.load(), screenshotService);
+		return createDefault(airicraftConfig, screenshotService, NoopWorldTaskExecutor.INSTANCE);
 	}
 
 	public static EmbodiedAgentRuntime createDefault(FirstPersonScreenshotService screenshotService) {
 		return createDefault(AiricraftConfigLoader.load(), screenshotService);
+	}
+
+	static EmbodiedAgentRuntime createForTests(WorldTaskExecutor worldTaskExecutor) {
+		return new EmbodiedAgentRuntime(
+			AiricraftConfig.defaults(),
+			AgentConfig.defaults(),
+			new FirstPersonScreenshotService(),
+			worldTaskExecutor
+		);
 	}
 
 	public AgentConfig config() {
@@ -197,14 +253,19 @@ public final class EmbodiedAgentRuntime {
 		sessionRuntime.onWorldLeave(tickCount, eventBuffer);
 		sessionSnapshot = sessionRuntime.snapshot();
 		localDamageTracker.clear();
+		sessionSnapshotOverrideForTests = null;
 		nearbyPlayerTracker.clear(tickCount, eventBuffer);
 		primaryInteractionResolver.clear();
 		eventPolicyState.clear();
 		eventPipeline.clearPlannerFeed();
 		dialogueRuntime.clear();
+		worldTaskExecutor.onWorldLeave();
+		taskRuntime.clear();
 		goalDirector.clear();
 		followCapability.clear();
 		followState = FollowState.idle();
+		taskSnapshot = TaskSnapshot.idle();
+		taskExecutionSnapshot = TaskExecutionSnapshot.idle();
 		behaviorTreeRuntime.stop(MinecraftClient.getInstance());
 		chatService.clear();
 		proactiveSocialModeOverride = null;
@@ -220,7 +281,9 @@ public final class EmbodiedAgentRuntime {
 		FollowState previousFollowState = followState;
 		BehaviorTreeSnapshot previousTreeSnapshot = behaviorTreeRuntime.snapshot();
 		boolean wasWorldLoaded = sessionSnapshot.worldLoaded();
-		sessionSnapshot = sessionRuntime.poll(client, tickCount, eventBuffer);
+		sessionSnapshot = sessionSnapshotOverrideForTests != null
+			? sessionSnapshotOverrideForTests.withTickCount(tickCount)
+			: sessionRuntime.poll(client, tickCount, eventBuffer);
 		if (!wasWorldLoaded && sessionSnapshot.worldLoaded()) {
 			worldLoadTick = tickCount;
 			localDamageTracker.onLifecycleReset(tickCount);
@@ -237,26 +300,47 @@ public final class EmbodiedAgentRuntime {
 		if (completedDialogueResponse != null) {
 			Optional<GoalSnapshot> previousGoal = goalDirector.activeGoal();
 			applyPlannerEventPolicyChanges(completedDialogueResponse.eventPolicyChanges());
+			applyTaskIntent(completedDialogueResponse);
 			goalDirector.onPlannerResponse(completedDialogueResponse);
 			recordPlannerOutcome(completedDialogueResponse, previousGoal, goalDirector.activeGoal());
 			drainEventPipeline();
 		}
 
+		TaskSnapshot previousTaskSnapshot = taskSnapshot;
+		WorldEvidence worldEvidence = currentWorldEvidence(client);
+		taskRuntime.tick(
+			taskExecutionSnapshot,
+			worldEvidence,
+			sessionSnapshot.companionActuationAllowed(),
+			hasNearbyTaskResourceTarget(client, taskSnapshot.spec()),
+			tickCount
+		);
+		taskSnapshot = taskRuntime.snapshot();
+		recordSemanticTaskTransition(previousTaskSnapshot, taskSnapshot);
+		Optional<GoalSnapshot> activeGoal = activeGoal();
+
 		followState = followCapability.tick(
 			client,
 			sessionSnapshot,
-			goalDirector.activeGoal(),
+			activeGoal,
 			nearbyPlayerTracker,
 			tickCount,
 			eventBuffer
 		);
+		TaskExecutionSnapshot previousTaskExecutionSnapshot = taskExecutionSnapshot;
+		Optional<TaskTerminalEvent> terminalTaskEvent = worldTaskExecutor.tick(sessionSnapshot, activeGoal);
+		taskExecutionSnapshot = worldTaskExecutor.snapshot();
+		boolean semanticTaskContext = hasSemanticTaskContext(previousTaskSnapshot, taskSnapshot);
+		recordTaskStateTransition(previousTaskExecutionSnapshot, taskExecutionSnapshot, semanticTaskContext);
+		terminalTaskEvent.ifPresent(event -> handleTerminalTaskEvent(event, semanticTaskContext));
 		behaviorTreeRuntime.tick(
 			client,
 			sessionSnapshot,
 			dialogueRuntime,
 			chatService,
-			goalDirector.activeGoal(),
+			activeGoal,
 			followState,
+			taskExecutionSnapshot,
 			tickCount
 		);
 		if (previousFollowState.targetNearby() && !followState.targetNearby() && previousFollowState.targetPlayer() != null) {
@@ -285,6 +369,7 @@ public final class EmbodiedAgentRuntime {
 		initialized = false;
 		tickCount = 0L;
 		worldLoadTick = -1L;
+		sessionSnapshotOverrideForTests = null;
 		verificationRunner.reset();
 		localDamageTracker.clear();
 		nearbyPlayerTracker.clear(tickCount, eventBuffer);
@@ -292,9 +377,13 @@ public final class EmbodiedAgentRuntime {
 		primaryInteractionResolver.clear();
 		dialogueRuntime.shutdown();
 		visionService.shutdown();
+		worldTaskExecutor.shutdown();
+		taskRuntime.clear();
 		goalDirector.clear();
 		followCapability.clear();
 		followState = FollowState.idle();
+		taskSnapshot = TaskSnapshot.idle();
+		taskExecutionSnapshot = TaskExecutionSnapshot.idle();
 		behaviorTreeRuntime.stop(MinecraftClient.getInstance());
 		chatService.clear();
 		proactiveSocialModeOverride = null;
@@ -314,6 +403,9 @@ public final class EmbodiedAgentRuntime {
 			initialized,
 			tickCount,
 			sessionSnapshot(),
+			taskSnapshot,
+			taskExecutionSnapshot,
+			taskRuntime.executionSnapshot(),
 			verificationRunner.report()
 		);
 	}
@@ -323,11 +415,24 @@ public final class EmbodiedAgentRuntime {
 	}
 
 	public Optional<GoalSnapshot> activeGoal() {
-		return goalDirector.activeGoal();
+		Optional<GoalSnapshot> taskOwnedGoal = taskRuntime.currentGoal();
+		return taskOwnedGoal.isPresent() ? taskOwnedGoal : goalDirector.activeGoal();
 	}
 
 	public BehaviorTreeSnapshot behaviorTreeSnapshot() {
 		return behaviorTreeRuntime.snapshot();
+	}
+
+	public TaskExecutionSnapshot taskExecutionSnapshot() {
+		return taskExecutionSnapshot;
+	}
+
+	public TaskSnapshot taskSnapshot() {
+		return taskSnapshot;
+	}
+
+	public MissionExecutionSnapshot missionExecutionSnapshot() {
+		return taskRuntime.executionSnapshot();
 	}
 
 	public Optional<DialogueResponse> lastDialogueResponse() {
@@ -656,6 +761,192 @@ public final class EmbodiedAgentRuntime {
 		dialogueRuntime.injectTimeout();
 	}
 
+	public TaskSnapshot submitTask(TaskSpec spec, String source) {
+		Objects.requireNonNull(spec, "spec");
+		goalDirector.clear();
+		taskRuntime.submit(spec, tickCount, source == null || source.isBlank() ? "bridge_debug" : source);
+		taskSnapshot = taskRuntime.snapshot();
+		eventBuffer.append(tickCount, "task.submitted", Map.of(
+			"type", spec.type().name(),
+			"resourceKind", spec.resourceKind().name(),
+			"quantity", spec.quantity(),
+			"source", taskSnapshot.source()
+		));
+		return taskSnapshot;
+	}
+
+	public TaskSnapshot submitMissionLedger(TaskLedger ledger, String source) {
+		Objects.requireNonNull(ledger, "ledger");
+		TaskLedger previousLedger = taskSnapshot.ledger();
+		goalDirector.clear();
+		taskRuntime.applyPlannerLedger(ledger, tickCount, source == null || source.isBlank() ? "bridge_debug_mission" : source);
+		taskSnapshot = taskRuntime.snapshot();
+		eventBuffer.append(tickCount, "mission.submitted", Map.of(
+			"missionId", ledger.missionId(),
+			"missionType", ledger.missionType().name(),
+			"activeStepId", ledger.activeStepId() == null ? "" : ledger.activeStepId(),
+			"source", taskSnapshot.source()
+		));
+		recordMissionLedgerUpdate(previousLedger, taskSnapshot.ledger(), taskSnapshot.source());
+		return taskSnapshot;
+	}
+
+	public TaskSnapshot cancelTask(String reason) {
+		TaskSnapshot previousTaskSnapshot = taskSnapshot;
+		taskRuntime.cancel(tickCount, reason == null || reason.isBlank() ? "cancelled" : reason);
+		taskSnapshot = taskRuntime.snapshot();
+		recordSemanticTaskTransition(previousTaskSnapshot, taskSnapshot);
+		return taskSnapshot;
+	}
+
+	void injectDialogueResponseForTests(DialogueResponse response) {
+		Optional<GoalSnapshot> previousGoal = goalDirector.activeGoal();
+		applyTaskIntent(response);
+		goalDirector.onPlannerResponse(response);
+		recordPlannerOutcome(response, previousGoal, goalDirector.activeGoal());
+	}
+
+	void overrideSessionSnapshotForTests(SessionSnapshot sessionSnapshot) {
+		sessionSnapshotOverrideForTests = sessionSnapshot;
+		this.sessionSnapshot = sessionSnapshot == null ? SessionSnapshot.initial() : sessionSnapshot;
+	}
+
+	void injectGoalForTests(GoalSnapshot goalSnapshot) {
+		goalDirector.clear();
+		if (goalSnapshot == null) {
+			return;
+		}
+		goalDirector.onPlannerResponse(new DialogueResponse(
+			"",
+			new DialogueIntent(
+				DialogueIntentType.SET_GOAL,
+				goalSnapshot.type(),
+				goalSnapshot.targetPlayer(),
+				goalSnapshot.position(),
+				goalSnapshot.mineSpec()
+			),
+			goalSnapshot.updatedTick()
+		));
+	}
+
+	private void applyTaskIntent(DialogueResponse response) {
+		if (response == null || response.intent() == null || response.intent().type() == null) {
+			return;
+		}
+		if (response.intent().type() == DialogueIntentType.MISSION_UPDATE && response.intent().taskLedger() != null) {
+			TaskLedger previousLedger = taskSnapshot.ledger();
+			goalDirector.clear();
+			taskRuntime.applyPlannerLedger(response.intent().taskLedger(), response.tick(), "planner_response");
+			taskSnapshot = taskRuntime.snapshot();
+			recordMissionLedgerUpdate(previousLedger, taskSnapshot.ledger(), taskSnapshot.source());
+			return;
+		}
+		if (response.intent().type() == DialogueIntentType.SUBMIT_TASK && response.intent().taskSpec() != null) {
+			goalDirector.clear();
+			taskRuntime.submit(response.intent().taskSpec(), response.tick(), "planner_response");
+			taskSnapshot = taskRuntime.snapshot();
+			return;
+		}
+		if (response.intent().type() == DialogueIntentType.CANCEL_TASK) {
+			taskRuntime.cancel(response.tick(), "planner_cancel_task");
+			taskSnapshot = taskRuntime.snapshot();
+			return;
+		}
+		if (response.intent().type() == DialogueIntentType.SET_GOAL && taskRuntime.hasActiveTask()) {
+			taskRuntime.cancel(response.tick(), "preempted_by_direct_goal");
+			taskSnapshot = taskRuntime.snapshot();
+		}
+	}
+
+	private int currentTaskResourceCount(MinecraftClient client) {
+		if (client == null || client.player == null || taskSnapshot.spec() == null) {
+			return 0;
+		}
+		java.util.ArrayList<net.minecraft.item.ItemStack> stacks = new java.util.ArrayList<>();
+		for (int slot = 0; slot < client.player.getInventory().size(); slot++) {
+			stacks.add(client.player.getInventory().getStack(slot));
+		}
+		return inventoryResourceCounter.count(stacks, taskSnapshot.spec().resourceKind());
+	}
+
+	private WorldEvidence currentWorldEvidence(MinecraftClient client) {
+		if (client == null || client.player == null) {
+			return new WorldEvidence(Map.of(), Map.of(), Map.of(), null, 0, 0, 0, null, tickCount);
+		}
+
+		java.util.ArrayList<net.minecraft.item.ItemStack> stacks = new java.util.ArrayList<>();
+		for (int slot = 0; slot < client.player.getInventory().size(); slot++) {
+			stacks.add(client.player.getInventory().getStack(slot));
+		}
+
+		java.util.EnumMap<ai.moeru.airicraft.agent.tasks.TaskResourceKind, Integer> resourceCounts =
+			new java.util.EnumMap<>(ai.moeru.airicraft.agent.tasks.TaskResourceKind.class);
+		for (ai.moeru.airicraft.agent.tasks.TaskResourceKind kind : ai.moeru.airicraft.agent.tasks.TaskResourceKind.values()) {
+			resourceCounts.put(kind, inventoryResourceCounter.count(stacks, kind));
+		}
+
+		String equippedItemId = Registries.ITEM.getId(client.player.getMainHandStack().getItem()).toString();
+		BlockPos origin = client.player.getBlockPos();
+		return new WorldEvidence(
+			resourceCounts,
+			inventoryItemCounter.count(client.player.getInventory()),
+			collectNearbyBlocks(client, origin),
+			client.world == null ? null : client.world.getRegistryKey().getValue().toString(),
+			origin.getX(),
+			origin.getY(),
+			origin.getZ(),
+			equippedItemId,
+			tickCount
+		);
+	}
+
+	private boolean hasNearbyTaskResourceTarget(MinecraftClient client, TaskSpec spec) {
+		if (client == null || client.world == null || client.player == null || spec == null) {
+			return false;
+		}
+		List<String> targetBlockIds = CollectResourceTaskHandler.targetBlockIds(spec);
+		if (targetBlockIds.isEmpty()) {
+			return false;
+		}
+
+		BlockPos origin = client.player.getBlockPos();
+		for (int dx = -12; dx <= 12; dx++) {
+			for (int dy = -6; dy <= 6; dy++) {
+				for (int dz = -12; dz <= 12; dz++) {
+					BlockPos pos = origin.add(dx, dy, dz);
+					if (!client.world.isChunkLoaded(pos)) {
+						continue;
+					}
+					String blockId = Registries.BLOCK.getId(client.world.getBlockState(pos).getBlock()).toString();
+					if (targetBlockIds.contains(blockId)) {
+						return true;
+					}
+				}
+			}
+		}
+		return false;
+	}
+
+	private Map<String, Integer> collectNearbyBlocks(MinecraftClient client, BlockPos origin) {
+		if (client == null || client.world == null) {
+			return Map.of();
+		}
+		java.util.HashMap<String, Integer> counts = new java.util.HashMap<>();
+		for (int dx = -8; dx <= 8; dx++) {
+			for (int dy = -4; dy <= 4; dy++) {
+				for (int dz = -8; dz <= 8; dz++) {
+					BlockPos pos = origin.add(dx, dy, dz);
+					if (!client.world.isChunkLoaded(pos)) {
+						continue;
+					}
+					String blockId = Registries.BLOCK.getId(client.world.getBlockState(pos).getBlock()).toString();
+					counts.merge(blockId, 1, Integer::sum);
+				}
+			}
+		}
+		return Map.copyOf(counts);
+	}
+
 	public VisionDescription describeCapturedView(FirstPersonScreenshotService.CapturedScreenshot screenshot, String prompt) throws LlmBackendException {
 		return visionService.describe(screenshot, prompt);
 	}
@@ -787,26 +1078,37 @@ public final class EmbodiedAgentRuntime {
 		if (response.intent().goalType() != null) {
 			payload.put("goalType", response.intent().goalType().name());
 		}
+		if (response.intent().taskLedger() != null) {
+			payload.put("missionId", response.intent().taskLedger().missionId());
+			payload.put("missionType", response.intent().taskLedger().missionType().name());
+			if (response.intent().taskLedger().activeStepId() != null) {
+				payload.put("activeStepId", response.intent().taskLedger().activeStepId());
+			}
+		}
 		if (response.text() != null && !response.text().isBlank()) {
 			payload.put("replyText", response.text());
 		}
 		eventBuffer.append(tickCount, "planner.response_applied", payload);
 
 		if (response.intent().type() == DialogueIntentType.SET_GOAL && currentGoal.isPresent()) {
-			eventBuffer.append(tickCount, "planner.goal_set", Map.of(
-				"goalType", currentGoal.get().type().name(),
-				"targetPlayer", currentGoal.get().targetPlayer(),
-				"source", currentGoal.get().source()
-			));
+			java.util.LinkedHashMap<String, Object> goalPayload = new java.util.LinkedHashMap<>();
+			goalPayload.put("goalType", currentGoal.get().type().name());
+			if (currentGoal.get().targetPlayer() != null && !currentGoal.get().targetPlayer().isBlank()) {
+				goalPayload.put("targetPlayer", currentGoal.get().targetPlayer());
+			}
+			goalPayload.put("source", currentGoal.get().source());
+			eventBuffer.append(tickCount, "planner.goal_set", goalPayload);
 			return;
 		}
 
 		if (response.intent().type() == DialogueIntentType.CLEAR_GOAL && previousGoal.isPresent() && currentGoal.isEmpty()) {
-			eventBuffer.append(tickCount, "planner.goal_cleared", Map.of(
-				"goalType", previousGoal.get().type().name(),
-				"targetPlayer", previousGoal.get().targetPlayer(),
-				"source", previousGoal.get().source()
-			));
+			java.util.LinkedHashMap<String, Object> goalPayload = new java.util.LinkedHashMap<>();
+			goalPayload.put("goalType", previousGoal.get().type().name());
+			if (previousGoal.get().targetPlayer() != null && !previousGoal.get().targetPlayer().isBlank()) {
+				goalPayload.put("targetPlayer", previousGoal.get().targetPlayer());
+			}
+			goalPayload.put("source", previousGoal.get().source());
+			eventBuffer.append(tickCount, "planner.goal_cleared", goalPayload);
 		}
 	}
 
@@ -1059,6 +1361,193 @@ public final class EmbodiedAgentRuntime {
 		return Map.copyOf(profiles);
 	}
 
+	private void recordMissionLedgerUpdate(TaskLedger previousLedger, TaskLedger currentLedger, String source) {
+		if (currentLedger == null) {
+			return;
+		}
+		java.util.LinkedHashMap<String, Object> payload = new java.util.LinkedHashMap<>();
+		payload.put("missionId", currentLedger.missionId());
+		payload.put("missionType", currentLedger.missionType().name());
+		payload.put("source", source == null ? "" : source);
+		payload.put("previousActiveStepId", previousLedger == null || previousLedger.activeStepId() == null ? "" : previousLedger.activeStepId());
+		payload.put("activeStepId", currentLedger.activeStepId() == null ? "" : currentLedger.activeStepId());
+		if (currentLedger.replanReason() != null && !currentLedger.replanReason().isBlank()) {
+			payload.put("replanReason", currentLedger.replanReason());
+		}
+		if (currentLedger.plannerNotes() != null && !currentLedger.plannerNotes().isBlank()) {
+			payload.put("plannerNotes", currentLedger.plannerNotes());
+		}
+		payload.put("stepStatusChanges", describeLedgerStatusChanges(previousLedger, currentLedger));
+		eventBuffer.append(tickCount, "mission.ledger_updated", payload);
+	}
+
+	private static java.util.Map<String, String> describeLedgerStatusChanges(TaskLedger previousLedger, TaskLedger currentLedger) {
+		java.util.LinkedHashMap<String, String> changes = new java.util.LinkedHashMap<>();
+		java.util.LinkedHashMap<String, ai.moeru.airicraft.agent.tasks.LedgerStepStatus> previousStatuses = new java.util.LinkedHashMap<>();
+		if (previousLedger != null) {
+			for (var step : previousLedger.steps()) {
+				previousStatuses.put(step.id(), step.status());
+			}
+		}
+		for (var step : currentLedger.steps()) {
+			ai.moeru.airicraft.agent.tasks.LedgerStepStatus previousStatus = previousStatuses.remove(step.id());
+			if (previousStatus == null) {
+				changes.put(step.id(), "ADDED:" + step.status().name());
+			}
+			else if (previousStatus != step.status()) {
+				changes.put(step.id(), previousStatus.name() + "->" + step.status().name());
+			}
+		}
+		for (String removedStepId : previousStatuses.keySet()) {
+			changes.put(removedStepId, "REMOVED");
+		}
+		return java.util.Map.copyOf(changes);
+	}
+
+	private void recordTaskStateTransition(TaskExecutionSnapshot previous, TaskExecutionSnapshot current, boolean semanticTaskContext) {
+		if (current == null || previous == null || current.state() == previous.state()) {
+			return;
+		}
+		if (semanticTaskContext) {
+			return;
+		}
+
+		java.util.LinkedHashMap<String, Object> payload = new java.util.LinkedHashMap<>();
+		if (current.activeGoal() != null) {
+			payload.put("goalType", current.activeGoal().type().name());
+		}
+		if (current.processName() != null && !current.processName().isBlank()) {
+			payload.put("process", current.processName());
+		}
+
+		if (current.state() == TaskExecutionState.RUNNING) {
+			eventBuffer.append(tickCount, "task.started", payload);
+			return;
+		}
+		if (current.state() == TaskExecutionState.PAUSED_BY_SESSION_GATE) {
+			eventBuffer.append(tickCount, "task.paused_by_session_gate", payload);
+		}
+	}
+
+	private void recordSemanticTaskTransition(TaskSnapshot previous, TaskSnapshot current) {
+		if (previous == null || current == null || current.state() == previous.state()) {
+			return;
+		}
+
+			java.util.LinkedHashMap<String, Object> payload = new java.util.LinkedHashMap<>();
+			if (current.spec() != null) {
+				payload.put("taskType", current.spec().type().name());
+				payload.put("resourceKind", current.spec().resourceKind().name());
+				payload.put("quantity", current.spec().quantity());
+			}
+			if (current.mission() != null) {
+				payload.put("missionId", current.mission().missionId());
+				payload.put("missionType", current.mission().missionType().name());
+			}
+			if (current.activeStepId() != null) {
+				payload.put("activeStepId", current.activeStepId());
+			}
+			if (current.activeStepKind() != null) {
+				payload.put("activeStepKind", current.activeStepKind().name());
+			}
+			payload.put("state", current.state().name());
+			payload.put("collected", current.progress().collected());
+			payload.put("remaining", current.progress().remaining());
+		if (current.source() != null && !current.source().isBlank()) {
+			payload.put("source", current.source());
+		}
+		if (current.lastFailure() != null && !current.lastFailure().isBlank()) {
+			payload.put("failure", current.lastFailure());
+		}
+
+		String eventType = switch (current.state()) {
+			case RUNNING -> "task.started";
+			case PAUSED_BY_SESSION_GATE -> "task.paused_by_session_gate";
+			case COMPLETED -> "task.completed";
+			case FAILED -> "task.failed";
+			case CANCELLED -> "task.cancelled";
+			default -> null;
+		};
+		if (eventType != null) {
+			eventBuffer.append(tickCount, eventType, payload);
+		}
+
+		if (
+			current.state() == TaskState.PAUSED_BY_SESSION_GATE
+				|| current.state() == TaskState.COMPLETED
+				|| current.state() == TaskState.FAILED
+				|| current.state() == TaskState.CANCELLED
+		) {
+				dialogueRuntime.onInternalTaskUpdate(
+					"TASK UPDATE: state=" + current.state().name()
+						+ " missionId=" + (current.mission() == null ? "" : current.mission().missionId())
+						+ " missionType=" + (current.mission() == null ? "" : current.mission().missionType().name())
+						+ " activeStepId=" + (current.activeStepId() == null ? "" : current.activeStepId())
+						+ " activeStepKind=" + (current.activeStepKind() == null ? "" : current.activeStepKind().name())
+						+ " taskType=" + (current.spec() == null ? "" : current.spec().type().name())
+						+ " resourceKind=" + (current.spec() == null ? "" : current.spec().resourceKind().name())
+						+ " collected=" + current.progress().collected()
+					+ " remaining=" + current.progress().remaining()
+					+ " failure=" + (current.lastFailure() == null ? "" : current.lastFailure()),
+					tickCount,
+					sessionSnapshot,
+					goalDirector.activeGoal(),
+					current,
+					taskRuntime.executionSnapshot(),
+					eventBuffer
+				);
+		}
+	}
+
+	private static boolean hasSemanticTaskContext(TaskSnapshot previous, TaskSnapshot current) {
+		return (previous != null && isActiveSemanticTaskState(previous.state()))
+			|| (current != null && isActiveSemanticTaskState(current.state()));
+	}
+
+	private static boolean isActiveSemanticTaskState(TaskState state) {
+		return state == TaskState.QUEUED
+			|| state == TaskState.RUNNING
+			|| state == TaskState.WAITING_FOR_PICKUP
+			|| state == TaskState.PAUSED_BY_SESSION_GATE;
+	}
+
+	private void handleTerminalTaskEvent(TaskTerminalEvent event, boolean semanticTaskContext) {
+		if (event == null || event.goal() == null || event.terminalState() == null) {
+			return;
+		}
+		if (semanticTaskContext) {
+			return;
+		}
+
+		String eventType = switch (event.terminalState()) {
+			case COMPLETED -> "task.completed";
+			case FAILED -> "task.failed";
+			case CANCELLED -> "task.cancelled";
+			default -> null;
+		};
+		if (eventType != null) {
+			java.util.LinkedHashMap<String, Object> payload = new java.util.LinkedHashMap<>();
+			payload.put("goalType", event.goal().type().name());
+			payload.put("message", event.message() == null ? "" : event.message());
+			if (event.goal().targetPlayer() != null && !event.goal().targetPlayer().isBlank()) {
+				payload.put("targetPlayer", event.goal().targetPlayer());
+			}
+			eventBuffer.append(tickCount, eventType, payload);
+		}
+
+			dialogueRuntime.onInternalTaskUpdate(
+				"TASK UPDATE: state=" + event.terminalState().name()
+					+ " goalType=" + event.goal().type().name()
+					+ " message=" + (event.message() == null ? "" : event.message()),
+				tickCount,
+				sessionSnapshot,
+				goalDirector.activeGoal(),
+				taskSnapshot,
+				taskRuntime.executionSnapshot(),
+				eventBuffer
+			);
+	}
+
 	private void registerDefaultScenarios() {
 		verificationRunner.register(new SessionVerification(
 			() -> sessionSnapshot.mode(),
@@ -1129,6 +1618,49 @@ public final class EmbodiedAgentRuntime {
 			() -> behaviorTreeSnapshot().activeNodePath().stream().anyMatch(node -> node.contains("MoveCloser")),
 			() -> nearbyPlayerTracker.injectPlayerDisconnect("LanAlice", tickCount, eventBuffer),
 			() -> eventBuffer.containsTypeForPlayer("follow.target_lost", "LanAlice")
+		));
+		GoalPosition[] navigateTarget = new GoalPosition[1];
+		long[] navigateTaskBaselineSeqNo = new long[1];
+		verificationRunner.register(new NavigateVerification(
+			() -> sessionSnapshot.mode() == SessionMode.SINGLEPLAYER_LOCAL,
+			this::openLan,
+			() -> sessionSnapshot.mode() == SessionMode.SINGLEPLAYER_LAN_HOST,
+			() -> navigateTarget[0] = findNearbyNavigationTarget(),
+			() -> navigateTaskBaselineSeqNo[0] = eventBuffer.latestSeqNo(),
+			() -> injectGoalForTests(new GoalSnapshot(
+				GoalType.NAVIGATE_TO,
+				null,
+				navigateTarget[0],
+				null,
+				tickCount,
+				"verification"
+			)),
+			() -> activeGoal()
+				.map(goal -> goal.type() == GoalType.NAVIGATE_TO && Objects.equals(goal.position(), navigateTarget[0]))
+				.orElse(false),
+			() -> taskExecutionSnapshot.state() == TaskExecutionState.RUNNING
+				&& behaviorTreeSnapshot().activeNodePath().contains("NavigateToSubtree"),
+			() -> eventBuffer.containsTypeSince(navigateTaskBaselineSeqNo[0], "task.completed")
+				|| taskExecutionSnapshot.state() == TaskExecutionState.COMPLETED,
+			() -> playerNear(navigateTarget[0], 1.75D)
+		));
+		verificationRunner.register(new MineBlocksVerification(
+			() -> sessionSnapshot.worldLoaded(),
+			() -> sessionSnapshot.companionActuationAllowed(),
+			() -> injectGoalForTests(new GoalSnapshot(
+				GoalType.MINE_BLOCKS,
+				null,
+				null,
+				new GoalMineSpec(List.of("minecraft:oak_log"), 1),
+				tickCount,
+				"verification"
+			)),
+			() -> activeGoal()
+				.map(goal -> goal.type() == GoalType.MINE_BLOCKS
+					&& goal.mineSpec() != null
+					&& List.of("minecraft:oak_log").equals(goal.mineSpec().blockIds()))
+				.orElse(false),
+			() -> taskExecutionSnapshot.state() == TaskExecutionState.RUNNING
 		));
 		verificationRunner.register(new DialogueVerification(
 			() -> sessionSnapshot.worldLoaded(),
@@ -1478,18 +2010,12 @@ public final class EmbodiedAgentRuntime {
 			throw new IllegalStateException("No singleplayer worlds are available for session.basic");
 		}
 
-		Object worldName = worlds.get(0).get("name");
-		if (!(worldName instanceof String worldNameValue) || worldNameValue.isBlank()) {
-			throw new IllegalStateException("First singleplayer world is missing a valid internal name");
+		Object worldId = worlds.get(0).get("worldId");
+		if (!(worldId instanceof String worldIdValue) || worldIdValue.isBlank()) {
+			throw new IllegalStateException("First singleplayer world is missing a valid worldId");
 		}
 
-		MinecraftClient client = MinecraftClient.getInstance();
-		if (client == null) {
-			throw new IllegalStateException("Minecraft client is not initialized");
-		}
-
-		client.createIntegratedServerLoader().start(worldNameValue, () -> {
-		});
+		singleplayerWorldService.joinWorld(worldIdValue);
 	}
 
 	private void leaveCurrentWorld() {
@@ -1501,7 +2027,74 @@ public final class EmbodiedAgentRuntime {
 			return;
 		}
 
-		client.disconnect(Text.empty());
+		client.disconnect(null, false);
+	}
+
+	private GoalPosition findNearbyNavigationTarget() {
+		MinecraftClient client = MinecraftClient.getInstance();
+		if (client == null || client.world == null || client.player == null) {
+			throw new IllegalStateException("Minecraft world is not loaded");
+		}
+
+		BlockPos origin = client.player.getBlockPos();
+		for (int radius = 1; radius <= 8; radius++) {
+			for (int dx = -radius; dx <= radius; dx++) {
+				for (int dz = -radius; dz <= radius; dz++) {
+					if (Math.abs(dx) != radius && Math.abs(dz) != radius) {
+						continue;
+					}
+					GoalPosition candidate = findWalkableNavigationTargetInColumn(
+						client,
+						origin.getX() + dx,
+						origin.getZ() + dz,
+						origin.getY()
+					);
+					if (candidate != null) {
+						return candidate;
+					}
+				}
+			}
+		}
+
+		throw new IllegalStateException("No nearby walkable navigation target was found");
+	}
+
+	private GoalPosition findWalkableNavigationTargetInColumn(
+		MinecraftClient client,
+		int x,
+		int z,
+		int originY
+	) {
+		for (int y = originY + 1; y >= originY - 6; y--) {
+			BlockPos candidate = new BlockPos(x, y, z);
+			if (isWalkableNavigationTarget(client, candidate)) {
+				return new GoalPosition(candidate.getX(), candidate.getY(), candidate.getZ(), true);
+			}
+		}
+		return null;
+	}
+
+	private boolean isWalkableNavigationTarget(MinecraftClient client, BlockPos target) {
+		if (client.world == null || client.player == null) {
+			return false;
+		}
+		if (target.equals(client.player.getBlockPos())) {
+			return false;
+		}
+		BlockPos below = target.down();
+		BlockPos above = target.up();
+		return client.world.isAir(target)
+			&& client.world.isAir(above)
+			&& client.world.getBlockState(below).isSideSolidFullSquare(client.world, below, Direction.UP);
+	}
+
+	private boolean playerNear(GoalPosition target, double maxDistance) {
+		MinecraftClient client = MinecraftClient.getInstance();
+		if (target == null || client == null || client.player == null) {
+			return false;
+		}
+		Vec3d center = new Vec3d(target.x() + 0.5D, target.y(), target.z() + 0.5D);
+		return client.player.getPos().squaredDistanceTo(center) <= maxDistance * maxDistance;
 	}
 
 	private Vec3d playerOffset(double xOffset) {
@@ -1550,5 +2143,27 @@ public final class EmbodiedAgentRuntime {
 			return lastKnownPlayerHealth.floatValue();
 		}
 		return observedHealthBefore;
+	}
+
+	private static final class NoopWorldTaskExecutor implements WorldTaskExecutor {
+		private static final NoopWorldTaskExecutor INSTANCE = new NoopWorldTaskExecutor();
+
+		@Override
+		public Optional<TaskTerminalEvent> tick(SessionSnapshot sessionSnapshot, Optional<GoalSnapshot> activeGoal) {
+			return Optional.empty();
+		}
+
+		@Override
+		public TaskExecutionSnapshot snapshot() {
+			return TaskExecutionSnapshot.idle();
+		}
+
+		@Override
+		public void onWorldLeave() {
+		}
+
+		@Override
+		public void shutdown() {
+		}
 	}
 }
