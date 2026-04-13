@@ -93,8 +93,7 @@ public final class OpenAiCompatibleLlmBackend implements LlmBackend {
 				throw new JsonParseException("Missing message");
 			}
 
-			String content = OpenAiCompatibleMessageContent.extract(message.get("content"));
-			JsonObject payload = JsonParser.parseString(content).getAsJsonObject();
+			JsonObject payload = OpenAiCompatibleMessageContent.extractJsonObject(message.get("content"));
 			String replyText = getString(payload, "replyText").orElse("");
 			JsonObject intentObject = payload.has("intent") && payload.get("intent").isJsonObject()
 				? payload.getAsJsonObject("intent")

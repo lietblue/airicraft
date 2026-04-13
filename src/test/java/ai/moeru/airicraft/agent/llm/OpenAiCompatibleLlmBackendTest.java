@@ -31,6 +31,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class OpenAiCompatibleLlmBackendTest {
@@ -482,6 +483,53 @@ class OpenAiCompatibleLlmBackendTest {
 			assertEquals(GoalType.NAVIGATE_TO, result.payload().intent().goalType());
 			assertEquals(null, result.payload().intent().position());
 			assertEquals(null, result.payload().intent().mineSpec());
+		}
+	}
+
+	@Test
+	void generateParsesPlannerPayloadWhenProviderPrependsThoughtBlock() throws Exception {
+		String responseBody = """
+			{
+			  "choices": [
+			    {
+			      "message": {
+			        "content": "<thought>The user said hi. Casual greeting. Intent reply_only.</thought>{\\"replyText\\":\\"Hello there! How can I help you today? :3\\",\\"intent\\":{\\"type\\":\\"reply_only\\",\\"taskLedger\\":null},\\"toolRequest\\":null}"
+			      }
+			    }
+			  ],
+			  "usage": {
+			    "prompt_tokens": 1716,
+			    "completion_tokens": 57,
+			    "total_tokens": 1826
+			  }
+			}
+			""";
+		AtomicReference<String> bodyRef = new AtomicReference<>();
+		try (TestServer server = TestServer.start(bodyRef, responseBody)) {
+			OpenAiCompatibleLlmBackend backend = new OpenAiCompatibleLlmBackend(new AgentConfig.LlmConfig(
+				"http://127.0.0.1:" + server.port(),
+				"planner-key",
+				"planner-model",
+				"https://api.openai.com/v1",
+				"",
+				"",
+				15_000,
+				10_000,
+				8,
+				65_536,
+				"low",
+				false
+			));
+
+			LlmCallResult<PlannerResponse> result = backend.generate(LlmConversation.of(List.of(
+				LlmChatMessage.system("system"),
+				LlmChatMessage.user("hhiii", LlmMessageKind.USER_TURN)
+			)));
+
+			assertEquals("Hello there! How can I help you today? :3", result.payload().replyText());
+			assertEquals("reply_only", result.payload().intent().type());
+			assertNull(result.payload().intent().taskLedger());
+			assertNull(result.payload().toolRequest());
 		}
 	}
 

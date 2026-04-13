@@ -98,7 +98,7 @@ public final class PlannerCompactionService {
 			if (message == null) {
 				throw new JsonParseException("Missing message");
 			}
-			JsonObject payload = JsonParser.parseString(OpenAiCompatibleMessageContent.extract(message.get("content"))).getAsJsonObject();
+			JsonObject payload = OpenAiCompatibleMessageContent.extractJsonObject(message.get("content"));
 			return new CompactionCheckpoint(
 				getString(payload, "time_anchor"),
 				getString(payload, "session_state"),
