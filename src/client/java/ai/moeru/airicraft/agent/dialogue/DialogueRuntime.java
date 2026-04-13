@@ -293,7 +293,7 @@ public final class DialogueRuntime {
 		if (degraded || plannerOrchestrator.hasInFlight() || !plannerOrchestrator.isConfigured()) {
 			return;
 		}
-		plannerOrchestrator.recordEvents(eventBuffer.query(null).events(), timestampMs);
+		plannerOrchestrator.recordEvents(eventBuffer.query(null), timestampMs);
 		plannerOrchestrator.submit(new PlannerRequest(
 			tick,
 			timestampMs,

@@ -10,7 +10,7 @@ import net.fabricmc.fabric.api.client.rendering.v1.hud.HudElementRegistry;
 import net.fabricmc.fabric.api.client.rendering.v1.hud.VanillaHudElements;
 import net.fabricmc.fabric.api.client.screen.v1.ScreenEvents;
 import net.fabricmc.fabric.api.client.screen.v1.ScreenMouseEvents;
-import net.fabricmc.fabric.api.client.rendering.v1.world.WorldRenderEvents;
+import net.fabricmc.fabric.api.client.rendering.v1.WorldRenderEvents;
 import net.minecraft.client.gui.screen.Screen;
 import net.minecraft.text.Text;
 import net.minecraft.util.Identifier;

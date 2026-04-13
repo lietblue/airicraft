@@ -530,7 +530,7 @@ public final class EmbodiedAgentRuntime {
 		if (client == null || client.player == null) {
 			throw new BridgeUnavailableException("verification_unavailable", "Local verification player is unavailable");
 		}
-		client.player.setVelocityClient(new Vec3d(x, y, z));
+		client.player.setVelocityClient(x, y, z);
 		client.player.setOnGround(false);
 		return onVerificationServer((server, player) -> {
 			player.setVelocity(x, y, z);
@@ -557,7 +557,7 @@ public final class EmbodiedAgentRuntime {
 				server.getCommandSource()
 					.withEntity(player)
 					.withPosition(new Vec3d(player.getX(), player.getY(), player.getZ()))
-					.withWorld(player.getEntityWorld())
+					.withWorld(player.getServerWorld())
 					.withSilent(),
 				normalizedCommand
 			);
@@ -1975,7 +1975,7 @@ public final class EmbodiedAgentRuntime {
 			player.isOnGround(),
 			player.fallDistance,
 			player.getGameMode().asString(),
-			player.getEntityWorld().getRegistryKey().getValue().toString()
+			player.getServerWorld().getRegistryKey().getValue().toString()
 		);
 	}
 
