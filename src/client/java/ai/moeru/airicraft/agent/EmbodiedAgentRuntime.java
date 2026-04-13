@@ -554,7 +554,7 @@ public final class EmbodiedAgentRuntime {
 		String normalizedCommand = normalizedVerificationCommand(command);
 		prepareClientForVerification();
 		return onVerificationServer((server, player) -> {
-			server.getCommandManager().parseAndExecute(
+			server.getCommandManager().executeWithPrefix(
 				server.getCommandSource()
 					.withEntity(player)
 					.withPosition(new Vec3d(player.getX(), player.getY(), player.getZ()))
