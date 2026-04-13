@@ -100,6 +100,7 @@ import net.minecraft.entity.damage.DamageSource;
 import net.minecraft.registry.Registries;
 import net.minecraft.server.integrated.IntegratedServer;
 import net.minecraft.server.network.ServerPlayerEntity;
+import net.minecraft.server.world.ServerWorld;
 import net.minecraft.text.Text;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Direction;
@@ -557,7 +558,7 @@ public final class EmbodiedAgentRuntime {
 				server.getCommandSource()
 					.withEntity(player)
 					.withPosition(new Vec3d(player.getX(), player.getY(), player.getZ()))
-					.withWorld(player.getServerWorld())
+					.withWorld((ServerWorld) player.getWorld())
 					.withSilent(),
 				normalizedCommand
 			);
@@ -1975,7 +1976,7 @@ public final class EmbodiedAgentRuntime {
 			player.isOnGround(),
 			player.fallDistance,
 			player.getGameMode().asString(),
-			player.getServerWorld().getRegistryKey().getValue().toString()
+			player.getWorld().getRegistryKey().getValue().toString()
 		);
 	}
 
