@@ -581,6 +581,51 @@ class OpenAiCompatibleLlmBackendTest {
 	}
 
 	@Test
+	void generateTreatsPlainTextContentAsReplyOnly() throws Exception {
+		String responseBody = """
+			{
+			  "choices": [
+			    {
+			      "message": {
+			        "content": "I'm ready and waiting for your next command!"
+			      }
+			    }
+			  ],
+			  "usage": {
+			    "prompt_tokens": 100,
+			    "completion_tokens": 13,
+			    "total_tokens": 113
+			  }
+			}
+			""";
+		AtomicReference<String> bodyRef = new AtomicReference<>();
+		try (TestServer server = TestServer.start(bodyRef, responseBody)) {
+			OpenAiCompatibleLlmBackend backend = new OpenAiCompatibleLlmBackend(new AgentConfig.LlmConfig(
+				"http://127.0.0.1:" + server.port(),
+				"planner-key",
+				"planner-model",
+				"https://api.openai.com/v1",
+				"",
+				"",
+				15_000,
+				10_000,
+				8,
+				65_536,
+				"low",
+				false
+			));
+
+			LlmCallResult<PlannerResponse> result = backend.generate(LlmConversation.of(List.of(
+				LlmChatMessage.system("system"),
+				LlmChatMessage.user("Alice said just now: @agent hello", LlmMessageKind.USER_TURN)
+			)));
+
+			assertEquals("I'm ready and waiting for your next command!", result.payload().replyText());
+			assertEquals("reply_only", result.payload().intent().type());
+		}
+	}
+
+	@Test
 	void generateParsesEventPolicyChanges() throws Exception {
 		AtomicReference<String> bodyRef = new AtomicReference<>();
 		try (TestServer server = TestServer.start(bodyRef, """

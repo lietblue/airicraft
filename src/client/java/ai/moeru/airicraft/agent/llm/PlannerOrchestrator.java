@@ -673,7 +673,7 @@ public final class PlannerOrchestrator {
 
 	private static boolean hasToolCompatibleIntent(PlannerResponse response) {
 		return switch (toolIntentType(response)) {
-			case "none", "reply_only", "ask_clarification", "acknowledge_failure" -> true;
+			case "none", "reply_only", "ask_clarification", "acknowledge_failure", "mission_update" -> true;
 			default -> false;
 		};
 	}

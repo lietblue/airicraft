@@ -98,7 +98,15 @@ public final class OpenAiCompatibleLlmBackend implements LlmBackend {
 			}
 
 			String content = OpenAiCompatibleMessageContent.extract(message.get("content"));
-			JsonObject payload = JsonParser.parseString(stripMarkdownCodeFences(content)).getAsJsonObject();
+			String stripped = stripMarkdownCodeFences(content);
+			JsonObject payload;
+			try {
+				payload = JsonParser.parseString(stripped).getAsJsonObject();
+			}
+			catch (JsonParseException contentParseException) {
+				Airicraft.LOGGER.info("LLM returned plain text instead of JSON, treating as reply_only content={}", summarizeForLog(content));
+				return new PlannerResponse(content.strip(), new PlannerIntent("reply_only", null, null));
+			}
 			String replyText = getString(payload, "replyText").orElse("");
 			JsonObject intentObject = payload.has("intent") && payload.get("intent").isJsonObject()
 				? payload.getAsJsonObject("intent")
