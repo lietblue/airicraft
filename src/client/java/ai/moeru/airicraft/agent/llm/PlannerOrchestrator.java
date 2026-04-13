@@ -3,12 +3,16 @@ package ai.moeru.airicraft.agent.llm;
 import ai.moeru.airicraft.Airicraft;
 import ai.moeru.airicraft.BridgeUnavailableException;
 import ai.moeru.airicraft.FirstPersonScreenshotService;
+import ai.moeru.airicraft.agent.observability.AgentObservability;
+import ai.moeru.airicraft.agent.observability.NoopObservability;
 import ai.moeru.airicraft.agent.dialogue.DialogueTurn;
 import ai.moeru.airicraft.agent.events.EventPolicyChanges;
 import ai.moeru.airicraft.agent.events.EventPolicyMatch;
 import ai.moeru.airicraft.agent.events.EventPolicyRuleUpsert;
 import ai.moeru.airicraft.agent.events.SemanticEventQueryResult;
 import ai.moeru.airicraft.agent.session.SessionMode;
+import io.opentelemetry.context.Context;
+import io.opentelemetry.context.Scope;
 
 import java.time.Clock;
 import java.util.ArrayList;
@@ -39,6 +43,7 @@ public final class PlannerOrchestrator {
 	private final long coalesceStepMs;
 	private final long coalesceMinMs;
 	private final long coalesceMaxMs;
+	private final AgentObservability observability;
 
 	private PlannerRequest pendingSubmitRequest;
 	private PendingToolExecution pendingToolExecution;
@@ -50,6 +55,7 @@ public final class PlannerOrchestrator {
 	private long coalesceWindowMs;
 	private PlannerContextSnapshot coalesceSupersededSnapshot;
 	private PlannerConversationDebugSnapshot lastVisibleConversation = PlannerConversationDebugSnapshot.empty();
+	private Context turnContext;
 
 	public PlannerOrchestrator(
 		PlannerExecutor plannerExecutor,
@@ -70,7 +76,8 @@ public final class PlannerOrchestrator {
 			SESSION_COALESCE_STEP_MS,
 			SESSION_COALESCE_MIN_MS,
 			SESSION_COALESCE_MAX_MS,
-			Clock.systemDefaultZone()
+			Clock.systemDefaultZone(),
+			NoopObservability.INSTANCE
 		);
 	}
 
@@ -94,7 +101,8 @@ public final class PlannerOrchestrator {
 			SESSION_COALESCE_STEP_MS,
 			SESSION_COALESCE_MIN_MS,
 			SESSION_COALESCE_MAX_MS,
-			Clock.systemDefaultZone()
+			Clock.systemDefaultZone(),
+			NoopObservability.INSTANCE
 		);
 	}
 
@@ -121,7 +129,37 @@ public final class PlannerOrchestrator {
 			plannerSessionCoalesceStepMillis,
 			plannerSessionCoalesceMinMillis,
 			plannerSessionCoalesceMaxMillis,
-			Clock.systemDefaultZone()
+			Clock.systemDefaultZone(),
+			NoopObservability.INSTANCE
+		);
+	}
+
+	public PlannerOrchestrator(
+		PlannerExecutor plannerExecutor,
+		PlannerCompactionService compactionService,
+		PlannerContextAggregator contextAggregator,
+		CurrentViewVisionTool visionTool,
+		PlannerVisionMode visionMode,
+		String imageDetail,
+		int plannerSessionMaxConcurrentAttempts,
+		int plannerSessionCoalesceStepMillis,
+		int plannerSessionCoalesceMinMillis,
+		int plannerSessionCoalesceMaxMillis,
+		AgentObservability observability
+	) {
+		this(
+			plannerExecutor,
+			compactionService,
+			contextAggregator,
+			visionTool,
+			visionMode,
+			imageDetail,
+			plannerSessionMaxConcurrentAttempts,
+			plannerSessionCoalesceStepMillis,
+			plannerSessionCoalesceMinMillis,
+			plannerSessionCoalesceMaxMillis,
+			Clock.systemDefaultZone(),
+			observability
 		);
 	}
 
@@ -136,7 +174,8 @@ public final class PlannerOrchestrator {
 		int plannerSessionCoalesceStepMillis,
 		int plannerSessionCoalesceMinMillis,
 		int plannerSessionCoalesceMaxMillis,
-		Clock clock
+		Clock clock,
+		AgentObservability observability
 	) {
 		this.plannerExecutor = Objects.requireNonNull(plannerExecutor, "plannerExecutor");
 		this.compactionService = Objects.requireNonNull(compactionService, "compactionService");
@@ -156,6 +195,7 @@ public final class PlannerOrchestrator {
 		this.coalesceStepMs = Math.max(0L, plannerSessionCoalesceStepMillis);
 		this.coalesceMinMs = Math.max(0L, plannerSessionCoalesceMinMillis);
 		this.coalesceMaxMs = Math.max(this.coalesceMinMs, plannerSessionCoalesceMaxMillis);
+		this.observability = Objects.requireNonNull(observability, "observability");
 	}
 
 	public boolean isConfigured() {
@@ -230,6 +270,7 @@ public final class PlannerOrchestrator {
 		}
 		contextAggregator.recordPlannerRequestSeed(PlannerRequestSeed.fromRequest(request));
 		contextAggregator.cancelPendingOverflowFlush();
+		turnContext = observability.startTurnSpan(request, buildTurnId(request));
 		for (PlannerTrigger trigger : request.triggerBatch().triggers()) {
 			contextAggregator.enqueueTrigger(trigger);
 		}
@@ -285,7 +326,9 @@ public final class PlannerOrchestrator {
 		}
 		if (!plannerResult.succeeded()) {
 			appendFailureCard(plannerResult);
+			observability.recordFailure(turnContext, plannerResult.failureType().name(), plannerResult.failureMessage(), null);
 			sessionCoordinator.finishGeneration(plannerResult.generation(), true);
+			endTurnSpan();
 			return plannerResult;
 		}
 
@@ -418,6 +461,7 @@ public final class PlannerOrchestrator {
 		awaitingAcceptedReplyRecord = false;
 		lastVisibleConversation = PlannerConversationDebugSnapshot.empty();
 		clearCoalesceState();
+		endTurnSpan();
 	}
 
 	public void shutdown() {
@@ -430,6 +474,7 @@ public final class PlannerOrchestrator {
 		awaitingAcceptedReplyRecord = false;
 		lastVisibleConversation = PlannerConversationDebugSnapshot.empty();
 		clearCoalesceState();
+		endTurnSpan();
 	}
 
 	private boolean startQueuedWorkIfPossible() {
@@ -498,6 +543,7 @@ public final class PlannerOrchestrator {
 			pendingSubmitRequest = null;
 			awaitingAcceptedReplyRecord = hasVisibleReply;
 			clearCoalesceState();
+			endTurnSpan();
 			if (!awaitingAcceptedReplyRecord && contextAggregator.hasPendingOverflowFlush()) {
 				startQueuedWorkIfPossible();
 			}
@@ -546,42 +592,45 @@ public final class PlannerOrchestrator {
 	}
 
 	private CompletableFuture<ToolExecutionOutcome> requestVisionTool(PlannerToolRequest toolRequest) {
-		if (visionMode == PlannerVisionMode.EXTERNAL_SUMMARY) {
-			if (!visionTool.isConfigured()) {
-				return CompletableFuture.completedFuture(new TextToolExecutionOutcome("VISION_UNAVAILABLE: vision_provider_unavailable"));
+		Context parentContext = currentTurnContext();
+		try (Scope scope = parentContext.makeCurrent()) {
+			if (visionMode == PlannerVisionMode.EXTERNAL_SUMMARY) {
+				if (!visionTool.isConfigured()) {
+					return CompletableFuture.completedFuture(new TextToolExecutionOutcome("VISION_UNAVAILABLE: vision_provider_unavailable"));
+				}
+
+				return requestCapture()
+					.handle((capture, throwable) -> {
+						if (throwable != null) {
+							String code = visionFailureCode(throwable);
+							Airicraft.LOGGER.warn("Vision tool capture failed code={}", code, throwable);
+							return CompletableFuture.<ToolExecutionOutcome>completedFuture(new TextToolExecutionOutcome("VISION_UNAVAILABLE: " + code));
+						}
+						return visionTool.requestDescription(capture, toolRequest.prompt())
+							.<ToolExecutionOutcome>handle((description, throwable2) -> {
+								if (throwable2 == null) {
+									return new TextToolExecutionOutcome(description.text());
+								}
+								String code = visionFailureCode(throwable2);
+								Airicraft.LOGGER.warn("Vision tool failed code={}", code, throwable2);
+								return new TextToolExecutionOutcome("VISION_UNAVAILABLE: " + code);
+							});
+					})
+					.thenCompose(future -> future);
 			}
 
-			return requestCapture()
-				.handle((capture, throwable) -> {
-					if (throwable != null) {
-						String code = visionFailureCode(throwable);
-						Airicraft.LOGGER.warn("Vision tool capture failed code={}", code, throwable);
-						return CompletableFuture.<ToolExecutionOutcome>completedFuture(new TextToolExecutionOutcome("VISION_UNAVAILABLE: " + code));
-					}
-					return visionTool.requestDescription(capture, toolRequest.prompt())
-						.<ToolExecutionOutcome>handle((description, throwable2) -> {
-							if (throwable2 == null) {
-								return new TextToolExecutionOutcome(description.text());
-							}
-							String code = visionFailureCode(throwable2);
-							Airicraft.LOGGER.warn("Vision tool failed code={}", code, throwable2);
-							return new TextToolExecutionOutcome("VISION_UNAVAILABLE: " + code);
-						});
-				})
-				.thenCompose(future -> future);
+			return requestCapture().handle((capture, throwable) -> {
+				if (throwable == null) {
+					return new ImageToolExecutionOutcome(
+						NATIVE_TOOL_RESULT_TEXT,
+						new LlmImageAttachment(mimeType(capture), capture.imageBytes(), imageDetail)
+					);
+				}
+				String code = visionFailureCode(throwable);
+				Airicraft.LOGGER.warn("Vision tool capture failed code={}", code, throwable);
+				return new TextToolExecutionOutcome("VISION_UNAVAILABLE: " + code);
+			});
 		}
-
-		return requestCapture().handle((capture, throwable) -> {
-			if (throwable == null) {
-				return new ImageToolExecutionOutcome(
-					NATIVE_TOOL_RESULT_TEXT,
-					new LlmImageAttachment(mimeType(capture), capture.imageBytes(), imageDetail)
-				);
-			}
-			String code = visionFailureCode(throwable);
-			Airicraft.LOGGER.warn("Vision tool capture failed code={}", code, throwable);
-			return new TextToolExecutionOutcome("VISION_UNAVAILABLE: " + code);
-		});
 	}
 
 	private CompletableFuture<FirstPersonScreenshotService.CapturedScreenshot> requestCapture() {
@@ -695,6 +744,26 @@ public final class PlannerOrchestrator {
 			baseResult.phase(),
 			false
 		);
+	}
+
+	private static String buildTurnId(PlannerRequest request) {
+		if (request == null) {
+			return "session:none";
+		}
+		String sender = request.senderName() == null || request.senderName().isBlank() ? "unknown" : request.senderName();
+		String mode = request.sessionMode() == null ? "unknown_mode" : request.sessionMode().name();
+		return "session:" + mode + ":sender=" + sender + ":tick=" + request.tick();
+	}
+
+	private Context currentTurnContext() {
+		return turnContext == null ? Context.current() : turnContext;
+	}
+
+	private void endTurnSpan() {
+		if (turnContext != null) {
+			observability.endSpan(turnContext);
+			turnContext = null;
+		}
 	}
 
 	private void appendAssistantOutcomeCard(PlannerExecutionResult result) {

@@ -4,6 +4,7 @@ import ai.moeru.airicraft.BridgeUnavailableException;
 import ai.moeru.airicraft.FirstPersonScreenshotService;
 import ai.moeru.airicraft.agent.AgentConfig;
 import ai.moeru.airicraft.agent.dialogue.DialogueTurn;
+import ai.moeru.airicraft.agent.observability.NoopObservability;
 import ai.moeru.airicraft.agent.events.EventPolicyChanges;
 import ai.moeru.airicraft.agent.events.EventPolicyMatch;
 import ai.moeru.airicraft.agent.events.EventPolicyRuleUpsert;
@@ -1029,7 +1030,8 @@ class PlannerOrchestratorTest {
 			plannerSessionCoalesceStepMillis,
 			plannerSessionCoalesceMinMillis,
 			plannerSessionCoalesceMaxMillis,
-			clock
+			clock,
+			NoopObservability.INSTANCE
 		);
 	}
 

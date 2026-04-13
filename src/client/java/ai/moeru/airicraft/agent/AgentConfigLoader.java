@@ -76,7 +76,21 @@ public final class AgentConfigLoader {
 			readString(root, "visionImageDetail", defaults.llm().visionImageDetail()),
 			readBoolean(root, "plannerNativeVisionEnabled", defaults.llm().plannerNativeVisionEnabled())
 		);
-		return new AgentConfig(defaults.verificationEnabled(), defaults.verificationAutoRunAll(), llm);
+		warnIfMalformedObject(root, "observability");
+		Map<String, Object> observabilityRoot = readObjectMap(root, "observability");
+		AgentConfig.ObservabilityConfig observability = new AgentConfig.ObservabilityConfig(
+			readBoolean(observabilityRoot, "enabled", defaults.observability().enabled()),
+			readString(observabilityRoot, "exporter", defaults.observability().exporter()),
+			readString(observabilityRoot, "otlpEndpoint", defaults.observability().otlpEndpoint()),
+			readStringMap(observabilityRoot, "otlpHeaders", defaults.observability().otlpHeaders()),
+			readStringMap(observabilityRoot, "resourceAttributes", defaults.observability().resourceAttributes()),
+			readString(observabilityRoot, "vendorProfile", defaults.observability().vendorProfile()),
+			readBoolean(observabilityRoot, "debugLogExports", defaults.observability().debugLogExports()),
+			readBoolean(observabilityRoot, "captureInputs", defaults.observability().captureInputs()),
+			readBoolean(observabilityRoot, "captureOutputs", defaults.observability().captureOutputs()),
+			readBoolean(observabilityRoot, "captureImages", defaults.observability().captureImages())
+		);
+		return new AgentConfig(defaults.verificationEnabled(), defaults.verificationAutoRunAll(), llm, observability);
 	}
 
 	private static void ensureFile(Path path) throws IOException {
@@ -132,7 +146,58 @@ public final class AgentConfigLoader {
 		yamlData.put("plannerSessionCoalesceMaxMillis", readInt(root, "plannerSessionCoalesceMaxMillis", defaults.llm().plannerSessionCoalesceMaxMillis()));
 		yamlData.put("visionImageDetail", readString(root, "visionImageDetail", defaults.llm().visionImageDetail()));
 		yamlData.put("plannerNativeVisionEnabled", readBoolean(root, "plannerNativeVisionEnabled", defaults.llm().plannerNativeVisionEnabled()));
+		yamlData.put("observability", Map.of(
+			"enabled", defaults.observability().enabled(),
+			"exporter", defaults.observability().exporter(),
+			"otlpEndpoint", defaults.observability().otlpEndpoint(),
+			"otlpHeaders", defaults.observability().otlpHeaders(),
+			"resourceAttributes", defaults.observability().resourceAttributes(),
+			"vendorProfile", defaults.observability().vendorProfile(),
+			"debugLogExports", defaults.observability().debugLogExports(),
+			"captureInputs", defaults.observability().captureInputs(),
+			"captureOutputs", defaults.observability().captureOutputs(),
+			"captureImages", defaults.observability().captureImages()
+		));
 		Files.writeString(yamlConfigPath, dumpYaml(yamlData), StandardCharsets.UTF_8);
+	}
+
+	private static void warnIfMalformedObject(Map<String, Object> root, String fieldName) {
+		if (root == null || !root.containsKey(fieldName)) {
+			return;
+		}
+		Object value = root.get(fieldName);
+		if (value == null || value instanceof Map<?, ?>) {
+			return;
+		}
+		Airicraft.LOGGER.warn("Expected {} to be a YAML mapping; ignoring malformed value and using defaults for nested fields", fieldName);
+	}
+
+	@SuppressWarnings("unchecked")
+	private static Map<String, Object> readObjectMap(Map<String, Object> root, String fieldName) {
+		if (root == null || !root.containsKey(fieldName) || root.get(fieldName) == null) {
+			return Map.of();
+		}
+		Object value = root.get(fieldName);
+		if (!(value instanceof Map<?, ?> map)) {
+			return Map.of();
+		}
+		Map<String, Object> typed = new LinkedHashMap<>();
+		for (Map.Entry<?, ?> entry : map.entrySet()) {
+			typed.put(String.valueOf(entry.getKey()), entry.getValue());
+		}
+		return typed;
+	}
+
+	private static Map<String, String> readStringMap(Map<String, Object> root, String fieldName, Map<String, String> fallback) {
+		Map<String, Object> raw = readObjectMap(root, fieldName);
+		if (raw.isEmpty()) {
+			return fallback;
+		}
+		Map<String, String> typed = new LinkedHashMap<>();
+		for (Map.Entry<String, Object> entry : raw.entrySet()) {
+			typed.put(entry.getKey(), entry.getValue() == null ? "" : String.valueOf(entry.getValue()));
+		}
+		return typed;
 	}
 
 	private static String readString(Map<String, Object> root, String fieldName, String fallback) {

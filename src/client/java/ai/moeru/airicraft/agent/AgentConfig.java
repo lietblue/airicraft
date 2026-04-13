@@ -3,10 +3,11 @@ package ai.moeru.airicraft.agent;
 public record AgentConfig(
 	boolean verificationEnabled,
 	boolean verificationAutoRunAll,
-	LlmConfig llm
+	LlmConfig llm,
+	ObservabilityConfig observability
 ) {
 	public static AgentConfig defaults() {
-		return new AgentConfig(false, false, LlmConfig.defaults());
+		return new AgentConfig(false, false, LlmConfig.defaults(), ObservabilityConfig.defaults());
 	}
 
 	public record LlmConfig(
@@ -114,6 +115,42 @@ public record AgentConfig(
 			return plannerNativeVisionEnabled
 				? ai.moeru.airicraft.agent.llm.PlannerVisionMode.NATIVE_TOOL_IMAGE
 				: ai.moeru.airicraft.agent.llm.PlannerVisionMode.EXTERNAL_SUMMARY;
+		}
+	}
+
+	public record ObservabilityConfig(
+		boolean enabled,
+		String exporter,
+		String otlpEndpoint,
+		java.util.Map<String, String> otlpHeaders,
+		java.util.Map<String, String> resourceAttributes,
+		String vendorProfile,
+		boolean debugLogExports,
+		boolean captureInputs,
+		boolean captureOutputs,
+		boolean captureImages
+	) {
+		public ObservabilityConfig {
+			exporter = exporter == null ? "otlp_http" : exporter;
+			otlpEndpoint = otlpEndpoint == null ? "" : otlpEndpoint;
+			otlpHeaders = otlpHeaders == null ? java.util.Map.of() : java.util.Map.copyOf(otlpHeaders);
+			resourceAttributes = resourceAttributes == null ? java.util.Map.of() : java.util.Map.copyOf(resourceAttributes);
+			vendorProfile = vendorProfile == null ? "generic" : vendorProfile;
+		}
+
+		public static ObservabilityConfig defaults() {
+			return new ObservabilityConfig(
+				false,
+				"otlp_http",
+				"",
+				java.util.Map.of(),
+				java.util.Map.of(),
+				"generic",
+				false,
+				false,
+				false,
+				false
+			);
 		}
 	}
 }

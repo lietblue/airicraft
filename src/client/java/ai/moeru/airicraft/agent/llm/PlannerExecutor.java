@@ -1,5 +1,10 @@
 package ai.moeru.airicraft.agent.llm;
 
+import ai.moeru.airicraft.agent.observability.AgentObservability;
+import ai.moeru.airicraft.agent.observability.NoopObservability;
+import io.opentelemetry.context.Context;
+import io.opentelemetry.context.Scope;
+
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -11,13 +16,19 @@ import java.util.concurrent.Executors;
 
 public final class PlannerExecutor {
 	private final LlmBackend llmBackend;
+	private final AgentObservability observability;
 	private final ExecutorService executorService;
 	private final Map<Long, InFlightAttempt> inFlightAttempts = new LinkedHashMap<>();
 
 	private long nextSubmissionId = 1L;
 
 	public PlannerExecutor(LlmBackend llmBackend) {
+		this(llmBackend, NoopObservability.INSTANCE);
+	}
+
+	public PlannerExecutor(LlmBackend llmBackend, AgentObservability observability) {
 		this.llmBackend = Objects.requireNonNull(llmBackend, "llmBackend");
+		this.observability = Objects.requireNonNull(observability, "observability");
 		this.executorService = Executors.newCachedThreadPool(runnable -> {
 			Thread thread = new Thread(runnable, "airicraft-planner");
 			thread.setDaemon(true);
@@ -38,23 +49,38 @@ public final class PlannerExecutor {
 	}
 
 	public boolean submit(PlannerRequest request, LlmConversation conversation) {
-		return submit(0L, 1, PlannerSessionPhase.PLANNER_REQUEST, request, conversation);
+		return submit(0L, 1, PlannerSessionPhase.PLANNER_REQUEST, request, conversation, Context.current(), AgentObservability.PLANNER_REQUEST_SPAN_NAME);
+	}
+
+	public boolean submit(PlannerRequest request, LlmConversation conversation, Context parentContext) {
+		return submit(0L, 1, PlannerSessionPhase.PLANNER_REQUEST, request, conversation, parentContext, AgentObservability.PLANNER_REQUEST_SPAN_NAME);
+	}
+
+	public boolean submit(PlannerRequest request, LlmConversation conversation, Context parentContext, String spanName) {
+		return submit(0L, 1, PlannerSessionPhase.PLANNER_REQUEST, request, conversation, parentContext, spanName);
 	}
 
 	public boolean submit(long generation, int attempt, PlannerSessionPhase phase, PlannerRequest request, LlmConversation conversation) {
+		return submit(generation, attempt, phase, request, conversation, Context.current(), AgentObservability.PLANNER_REQUEST_SPAN_NAME);
+	}
+
+	public boolean submit(long generation, int attempt, PlannerSessionPhase phase, PlannerRequest request, LlmConversation conversation, Context parentContext, String spanName) {
 		Objects.requireNonNull(request, "request");
 		Objects.requireNonNull(conversation, "conversation");
+		Objects.requireNonNull(spanName, "spanName");
 
+		Context executionContext = parentContext == null ? Context.current() : parentContext;
+		Context plannerContext = observability.startChildSpan(spanName, executionContext);
 		long submissionId = nextSubmissionId++;
 		CompletableFuture<LlmCallResult<PlannerResponse>> future = CompletableFuture.supplyAsync(() -> {
-			try {
+			try (Scope scope = plannerContext.makeCurrent()) {
 				return llmBackend.generate(conversation);
 			}
 			catch (LlmBackendException exception) {
 				throw new CompletionException(exception);
 			}
 		}, executorService);
-		inFlightAttempts.put(submissionId, new InFlightAttempt(submissionId, generation, attempt, phase, request, future));
+		inFlightAttempts.put(submissionId, new InFlightAttempt(submissionId, generation, attempt, phase, request, future, plannerContext));
 		return true;
 	}
 
@@ -66,6 +92,8 @@ public final class PlannerExecutor {
 				continue;
 			}
 			iterator.remove();
+			endFlightSpan(attempt.context());
+			Context failureContext = attempt.context() == null ? Context.current() : attempt.context();
 			try {
 				LlmCallResult<PlannerResponse> result = attempt.future().join();
 				return new PlannerExecutionResult(
@@ -95,6 +123,12 @@ public final class PlannerExecutor {
 						false
 					);
 				}
+				observability.recordFailure(
+					failureContext,
+					LlmFailureType.PROVIDER_ERROR.name(),
+					cause == null ? exception.getMessage() : cause.getMessage(),
+					cause instanceof Throwable throwable ? throwable : exception
+				);
 				return new PlannerExecutionResult(
 					attempt.request(),
 					null,
@@ -122,6 +156,7 @@ public final class PlannerExecutor {
 	public void reset() {
 		for (InFlightAttempt attempt : inFlightAttempts.values()) {
 			attempt.future().cancel(true);
+			endFlightSpan(attempt.context());
 		}
 		inFlightAttempts.clear();
 	}
@@ -131,13 +166,20 @@ public final class PlannerExecutor {
 		executorService.shutdownNow();
 	}
 
+	private void endFlightSpan(Context context) {
+		if (context != null) {
+			observability.endSpan(context);
+		}
+	}
+
 	private record InFlightAttempt(
 		long submissionId,
 		long generation,
 		int attempt,
 		PlannerSessionPhase phase,
 		PlannerRequest request,
-		CompletableFuture<LlmCallResult<PlannerResponse>> future
+		CompletableFuture<LlmCallResult<PlannerResponse>> future,
+		Context context
 	) {
 	}
 }

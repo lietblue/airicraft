@@ -46,6 +46,9 @@ dependencies {
 	modImplementation files("libs/baritone-unoptimized-fabric-1.15.0.jar")
 	modImplementation files("libs/nether-pathfinder-1.4.1.jar")
 	implementation "org.yaml:snakeyaml:2.4"
+	implementation "io.opentelemetry:opentelemetry-api:1.60.1"
+	implementation "io.opentelemetry:opentelemetry-sdk:1.60.1"
+	implementation "io.opentelemetry:opentelemetry-exporter-otlp:1.60.1"
 
 	testImplementation platform("org.junit:junit-bom:5.11.4")
 	testImplementation "org.junit.jupiter:junit-jupiter"

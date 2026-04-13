@@ -24,6 +24,7 @@ import ai.moeru.airicraft.agent.events.EventPolicyRule;
 import ai.moeru.airicraft.agent.events.EventPolicyRuleUpsert;
 import ai.moeru.airicraft.agent.events.EventPolicyState;
 import ai.moeru.airicraft.agent.events.EventRoutingProfile;
+import ai.moeru.airicraft.agent.observability.AgentObservability;
 import ai.moeru.airicraft.agent.events.SemanticEventBuffer;
 import ai.moeru.airicraft.agent.events.SemanticEvent;
 import ai.moeru.airicraft.agent.events.SemanticEventQueryResult;
@@ -130,6 +131,7 @@ public final class EmbodiedAgentRuntime {
 	private final SingleplayerWorldService singleplayerWorldService = new SingleplayerWorldService();
 	private final SessionRuntime sessionRuntime = new SessionRuntime();
 	private final LanHostingService lanHostingService = new LanHostingService();
+	private final AgentObservability observability;
 	private final SemanticEventBuffer eventBuffer = new SemanticEventBuffer(512);
 	private final SemanticEventBuffer plannerEventBuffer = new SemanticEventBuffer(512);
 	private final EventPolicyState eventPolicyState = new EventPolicyState();
@@ -167,22 +169,25 @@ public final class EmbodiedAgentRuntime {
 		AiricraftConfig airicraftConfig,
 		AgentConfig config,
 		FirstPersonScreenshotService screenshotService,
-		WorldTaskExecutor worldTaskExecutor
+		WorldTaskExecutor worldTaskExecutor,
+		AgentObservability observability
 	) {
 		this.airicraftConfig = Objects.requireNonNull(airicraftConfig, "airicraftConfig");
 		this.config = Objects.requireNonNull(config, "config");
 		this.worldTaskExecutor = Objects.requireNonNull(worldTaskExecutor, "worldTaskExecutor");
+		this.observability = Objects.requireNonNull(observability, "observability");
 		this.nearbyPlayerTracker = new NearbyPlayerTracker(resolveNearbyPlayerTrackingRadius(airicraftConfig));
 		this.visionService = new CurrentViewVisionService(
 			Objects.requireNonNull(screenshotService, "screenshotService"),
-			new OpenAiCompatibleVisionBackend(config.llm()),
-			MinecraftClient::getInstance
+			new OpenAiCompatibleVisionBackend(config.llm(), this.observability),
+			MinecraftClient::getInstance,
+			this.observability
 		);
 		Clock clock = Clock.systemDefaultZone();
 		this.dialogueRuntime = new DialogueRuntime(
 			new PlannerOrchestrator(
-				new PlannerExecutor(new OpenAiCompatibleLlmBackend(config.llm())),
-				new PlannerCompactionService(new OpenAiCompatibleChatClient(config.llm())),
+				new PlannerExecutor(new OpenAiCompatibleLlmBackend(config.llm(), this.observability), this.observability),
+				new PlannerCompactionService(new OpenAiCompatibleChatClient(config.llm(), this.observability), this.observability),
 				new PlannerContextAggregator(
 					clock,
 					config.llm().plannerCompactionTriggerTokens(),
@@ -195,7 +200,8 @@ public final class EmbodiedAgentRuntime {
 				config.llm().plannerSessionMaxConcurrentAttempts(),
 				config.llm().plannerSessionCoalesceStepMillis(),
 				config.llm().plannerSessionCoalesceMinMillis(),
-				config.llm().plannerSessionCoalesceMaxMillis()
+				config.llm().plannerSessionCoalesceMaxMillis(),
+				this.observability
 			),
 			config.llm().maxRecentConversationTurns(),
 			clock
@@ -203,8 +209,27 @@ public final class EmbodiedAgentRuntime {
 		registerDefaultScenarios();
 	}
 
+	public EmbodiedAgentRuntime(
+		AiricraftConfig airicraftConfig,
+		AgentConfig config,
+		FirstPersonScreenshotService screenshotService,
+		WorldTaskExecutor worldTaskExecutor
+	) {
+		this(airicraftConfig, config, screenshotService, worldTaskExecutor,
+			AgentObservability.create(config == null ? null : config.observability()));
+	}
+
 	public EmbodiedAgentRuntime(AiricraftConfig airicraftConfig, AgentConfig config, FirstPersonScreenshotService screenshotService) {
 		this(airicraftConfig, config, screenshotService, NoopWorldTaskExecutor.INSTANCE);
+	}
+
+	public EmbodiedAgentRuntime(
+		AiricraftConfig airicraftConfig,
+		AgentConfig config,
+		FirstPersonScreenshotService screenshotService,
+		AgentObservability observability
+	) {
+		this(airicraftConfig, config, screenshotService, NoopWorldTaskExecutor.INSTANCE, observability);
 	}
 
 	public static EmbodiedAgentRuntime createDefault(
@@ -234,6 +259,20 @@ public final class EmbodiedAgentRuntime {
 
 	public AgentConfig config() {
 		return config;
+	}
+
+	public Map<String, Object> observabilityDebugSnapshot() {
+		Map<String, Object> snapshot = new LinkedHashMap<>();
+		snapshot.put("implementation", observability.getClass().getName());
+		snapshot.put("enabled", config.observability().enabled());
+		snapshot.put("exporter", config.observability().exporter());
+		snapshot.put("vendorProfile", config.observability().vendorProfile());
+		snapshot.put("otlpEndpoint", config.observability().otlpEndpoint());
+		snapshot.put("captureInputs", config.observability().captureInputs());
+		snapshot.put("captureOutputs", config.observability().captureOutputs());
+		snapshot.put("captureImages", config.observability().captureImages());
+		snapshot.put("debugLogExports", config.observability().debugLogExports());
+		return snapshot;
 	}
 
 	public VerificationRunner verificationRunner() {
@@ -377,6 +416,7 @@ public final class EmbodiedAgentRuntime {
 		eventPipeline.clear();
 		primaryInteractionResolver.clear();
 		dialogueRuntime.shutdown();
+		observability.shutdown();
 		visionService.shutdown();
 		worldTaskExecutor.shutdown();
 		taskRuntime.clear();
@@ -993,7 +1033,7 @@ public final class EmbodiedAgentRuntime {
 	private String localPlayerName() {
 		MinecraftClient client = MinecraftClient.getInstance();
 		if (client == null || client.player == null) {
-			return null;
+			return client != null && client.getSession() != null ? client.getSession().getUsername() : null;
 		}
 		Text playerName = client.player.getName();
 		return playerName == null ? null : playerName.getString();

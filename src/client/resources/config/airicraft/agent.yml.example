@@ -50,3 +50,41 @@ visionImageDetail: "low"
 # When true, planner visual tool follow-up attaches the captured image directly to the planner.
 # When false, the visual tool uses the external vision model to summarize the screenshot first.
 plannerNativeVisionEnabled: false
+
+observability:
+  # Enable vendor-neutral OpenTelemetry tracing for outbound planner and vision model calls.
+  enabled: false
+
+  # Supported values today: otlp_http
+  exporter: "otlp_http"
+
+  # Generic OTLP HTTP endpoint, for example: http://127.0.0.1:4318/v1/traces
+  otlpEndpoint: ""
+
+  # Optional headers sent to the OTLP endpoint.
+  otlpHeaders: {}
+
+  # Optional OTEL resource attributes attached to every emitted span.
+  resourceAttributes: {}
+
+  # Supported values today: generic | weave
+  vendorProfile: "generic"
+
+  # When true, traces include sanitized summarized inputs rather than only counts and flags.
+  captureInputs: false
+
+  # When true, traces include sanitized summarized outputs rather than only lengths and intent/tool metadata.
+  captureOutputs: false
+
+  # When true, screenshot/tool-capture spans may export image payloads for media-capable backends like Weave.
+  # Other LLM request traces still redact image bytes from logged request bodies.
+  captureImages: false
+
+  # Weave OTLP example:
+  # otlpEndpoint: "https://trace.wandb.ai/otel/v1/traces"
+  # otlpHeaders:
+  #   wandb-api-key: "<key>"
+  # resourceAttributes:
+  #   wandb.entity: "shinohara-rin"
+  #   wandb.project: "airicraft"
+  # vendorProfile: "weave"

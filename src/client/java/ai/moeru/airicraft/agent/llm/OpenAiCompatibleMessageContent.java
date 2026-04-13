@@ -3,11 +3,11 @@ package ai.moeru.airicraft.agent.llm;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 
-final class OpenAiCompatibleMessageContent {
+public final class OpenAiCompatibleMessageContent {
 	private OpenAiCompatibleMessageContent() {
 	}
 
-	static String extract(JsonElement contentElement) {
+	public static String extract(JsonElement contentElement) {
 		if (contentElement == null || contentElement.isJsonNull()) {
 			return "";
 		}

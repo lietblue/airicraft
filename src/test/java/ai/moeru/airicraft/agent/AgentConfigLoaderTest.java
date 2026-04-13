@@ -79,4 +79,25 @@ class AgentConfigLoaderTest {
 		assertEquals(50, reordered.llm().plannerSessionCoalesceMinMillis());
 		assertEquals(50, reordered.llm().plannerSessionCoalesceMaxMillis());
 	}
+
+	@Test
+	void fromMapReadsObservabilityResourceAttributes() {
+		AgentConfig defaults = AgentConfig.defaults();
+
+		AgentConfig parsed = AgentConfigLoader.fromMap(Map.of(
+			"observability", Map.of(
+				"enabled", true,
+				"vendorProfile", "weave",
+				"resourceAttributes", Map.of(
+					"wandb.entity", "shinohara-rin",
+					"wandb.project", "airicraft"
+				)
+			)
+		), defaults);
+
+		assertEquals(true, parsed.observability().enabled());
+		assertEquals("weave", parsed.observability().vendorProfile());
+		assertEquals("shinohara-rin", parsed.observability().resourceAttributes().get("wandb.entity"));
+		assertEquals("airicraft", parsed.observability().resourceAttributes().get("wandb.project"));
+	}
 }

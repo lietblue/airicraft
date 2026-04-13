@@ -553,12 +553,7 @@ public final class ModBridgeServer {
 			return onClientThread(() -> {
 				var client = getClient();
 				ensureWorldLoaded(client);
-				if (client.player == null || client.player.getName() == null || client.player.getName().getString().isBlank()) {
-					throw new BridgeUnavailableException("minecraft_unavailable", "Local player is not available");
-				}
-				String senderName = request.senderName() == null || request.senderName().isBlank()
-					? client.player.getName().getString()
-					: request.senderName().trim();
+				String senderName = nonEmpty(request.senderName(), defaultDebugSender(client));
 				String message = request.message().trim();
 				agentRuntime.onChatReceived(senderName, message);
 
@@ -570,10 +565,12 @@ public final class ModBridgeServer {
 				payload.put("task", agentRuntime.taskSnapshot());
 				payload.put("taskExecution", agentRuntime.taskExecutionSnapshot());
 				payload.put("lastDialogueResponse", agentRuntime.lastDialogueResponse().orElse(null));
+				payload.put("sessionMode", agentRuntime.sessionSnapshot().mode().name());
 				return payload;
 			});
 		});
 	}
+
 
 
 	private void handleAgentTasks(HttpExchange exchange) throws IOException {
@@ -660,6 +657,7 @@ public final class ModBridgeServer {
 	private static boolean isMissionLedgerRequest(JsonObject request) {
 		return request.has("missionId") && request.has("missionType") && request.has("steps");
 	}
+
 
 	private void handleJson(HttpExchange exchange, Supplier<Object> supplier) throws IOException {
 		if (!authorize(exchange)) {
@@ -793,6 +791,7 @@ public final class ModBridgeServer {
 			response.put("llmAvailable", agentRuntime.llmAvailable());
 			response.put("visionAvailable", agentRuntime.visionAvailable());
 			response.put("plannerVisionMode", plannerSnapshot.plannerVisionMode());
+			response.put("observability", agentRuntime.observabilityDebugSnapshot());
 			response.put("degraded", agentRuntime.isDegraded());
 			response.put("eventPolicy", eventPolicySummaryPayload());
 			response.put("verification", snapshot.verification());
@@ -1425,6 +1424,16 @@ public final class ModBridgeServer {
 
 	private static boolean isFinite(Double value) {
 		return value != null && Double.isFinite(value);
+	}
+
+	private static String defaultDebugSender(MinecraftClient client) {
+		if (client != null && client.player != null && client.player.getName() != null) {
+			return client.player.getName().getString();
+		}
+		if (client != null && client.getSession() != null && client.getSession().getUsername() != null) {
+			return client.getSession().getUsername();
+		}
+		throw new BridgeUnavailableException("minecraft_unavailable", "Minecraft session is not initialized");
 	}
 
 	private static BlockPos requiredBlockPos(Integer x, Integer y, Integer z, String fields) {
