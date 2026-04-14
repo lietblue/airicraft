@@ -145,9 +145,9 @@ public final class PlannerCompactionService {
 			if (message == null) {
 				throw new JsonParseException("Missing message");
 			}
-			JsonObject payload = JsonParser.parseString(OpenAiCompatibleLlmBackend.stripMarkdownCodeFences(
-				OpenAiCompatibleMessageContent.extract(message.get("content"))
-			)).getAsJsonObject();
+			JsonObject payload = OpenAiCompatibleMessageContent.extractJsonObject(message.get("content"))
+				.filter(PlannerCompactionService::looksLikeCompactionPayload)
+				.orElseThrow(() -> new JsonParseException("Missing compaction payload"));
 			return new CompactionCheckpoint(
 				getString(payload, "time_anchor"),
 				getString(payload, "session_state"),
@@ -164,6 +164,15 @@ public final class PlannerCompactionService {
 			observability.recordFailure(Context.current(), LlmFailureType.PARSE_ERROR.name(), "Failed to parse compaction response", exception);
 			throw new LlmBackendException(LlmFailureType.PARSE_ERROR, "Failed to parse compaction response", exception);
 		}
+	}
+
+	private static boolean looksLikeCompactionPayload(JsonObject payload) {
+		return payload.has("time_anchor")
+			|| payload.has("session_state")
+			|| payload.has("active_goal")
+			|| payload.has("active_commitments")
+			|| payload.has("durable_facts")
+			|| payload.has("recent_timeline");
 	}
 
 	private static String getString(JsonObject payload, String fieldName) {

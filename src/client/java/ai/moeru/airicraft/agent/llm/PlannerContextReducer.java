@@ -3,6 +3,7 @@ package ai.moeru.airicraft.agent.llm;
 import ai.moeru.airicraft.agent.dialogue.DialogueTurn;
 import ai.moeru.airicraft.agent.events.SemanticEvent;
 import ai.moeru.airicraft.agent.events.SemanticEventQueryResult;
+import com.google.gson.JsonElement;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -101,7 +102,7 @@ final class PlannerContextReducer {
 		);
 	}
 
-	static PlannerContextState recordAcceptedAssistantTurn(PlannerContextState state, DialogueTurn turn) {
+	static PlannerContextState recordAcceptedAssistantTurn(PlannerContextState state, DialogueTurn turn, JsonElement rawAssistantContent) {
 		if (turn == null) {
 			return state;
 		}
@@ -111,7 +112,9 @@ final class PlannerContextReducer {
 			turn.speaker(),
 			turn.text(),
 			turn.tick(),
-			turn.timestampMs()
+			turn.timestampMs(),
+			null,
+			rawAssistantContent
 		);
 		ArrayList<PlannerContextEntry> acceptedHistory = new ArrayList<>(state.acceptedHistoryTape());
 		acceptedHistory.add(acceptedEntry);

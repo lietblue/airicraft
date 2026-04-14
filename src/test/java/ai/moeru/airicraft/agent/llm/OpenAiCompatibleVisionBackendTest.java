@@ -55,6 +55,56 @@ class OpenAiCompatibleVisionBackendTest {
 		}
 	}
 
+	@Test
+	void describeIgnoresThoughtPartsAndReturnsVisibleText() throws Exception {
+		AtomicReference<String> bodyRef = new AtomicReference<>();
+		try (TestServer server = TestServer.start(bodyRef, """
+			{
+			  "choices": [
+			    {
+			      "message": {
+			        "content": [
+			          {
+			            "type": "reasoning",
+			            "text": "Need to inspect the screenshot.",
+			            "thought": true
+			          },
+			          {
+			            "type": "text",
+			            "text": "A birch forest under open sky."
+			          }
+			        ]
+			      }
+			    }
+			  ]
+			}
+			""")) {
+			OpenAiCompatibleVisionBackend backend = new OpenAiCompatibleVisionBackend(new AgentConfig.LlmConfig(
+				"http://127.0.0.1:1",
+				"planner-key",
+				"planner-model",
+				"http://127.0.0.1:" + server.port(),
+				"vision-key",
+				"gpt-4.1-mini",
+				15_000,
+				10_000,
+				8,
+				65_536,
+				"low",
+				false
+			));
+
+			VisionDescription description = backend.describe(new VisionRequest(
+				"Describe the current view.",
+				"image/png",
+				new byte[]{1, 2, 3},
+				1234L
+			));
+
+			assertEquals("A birch forest under open sky.", description.text());
+		}
+	}
+
 	private static final class TestServer implements AutoCloseable {
 		private final HttpServer server;
 
@@ -63,16 +113,7 @@ class OpenAiCompatibleVisionBackendTest {
 		}
 
 		private static TestServer start(AtomicReference<String> bodyRef) throws IOException {
-			HttpServer server = HttpServer.create(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0);
-			server.setExecutor(Executors.newCachedThreadPool());
-			server.createContext("/chat/completions", exchange -> handle(exchange, bodyRef));
-			server.start();
-			return new TestServer(server);
-		}
-
-		private static void handle(HttpExchange exchange, AtomicReference<String> bodyRef) throws IOException {
-			bodyRef.set(new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
-			writeResponse(exchange, 200, """
+			return start(bodyRef, """
 				{
 				  "choices": [
 				    {
@@ -83,6 +124,19 @@ class OpenAiCompatibleVisionBackendTest {
 				  ]
 				}
 				""");
+		}
+
+		private static TestServer start(AtomicReference<String> bodyRef, String responseBody) throws IOException {
+			HttpServer server = HttpServer.create(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0);
+			server.setExecutor(Executors.newCachedThreadPool());
+			server.createContext("/chat/completions", exchange -> handle(exchange, bodyRef, responseBody));
+			server.start();
+			return new TestServer(server);
+		}
+
+		private static void handle(HttpExchange exchange, AtomicReference<String> bodyRef, String responseBody) throws IOException {
+			bodyRef.set(new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
+			writeResponse(exchange, 200, responseBody);
 		}
 
 		private int port() {

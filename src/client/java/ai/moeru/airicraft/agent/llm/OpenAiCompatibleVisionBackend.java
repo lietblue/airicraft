@@ -185,7 +185,7 @@ public final class OpenAiCompatibleVisionBackend implements VisionBackend {
 				throw new JsonParseException("Missing message");
 			}
 
-			String content = OpenAiCompatibleMessageContent.extract(message.get("content")).trim();
+			String content = OpenAiCompatibleMessageContent.extractVisibleText(message.get("content")).trim();
 			if (content.isBlank()) {
 				throw new JsonParseException("Missing content");
 			}

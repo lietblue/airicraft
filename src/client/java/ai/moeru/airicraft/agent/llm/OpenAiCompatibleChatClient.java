@@ -141,7 +141,12 @@ public final class OpenAiCompatibleChatClient {
 	private Map<String, Object> toRequestMessage(LlmChatMessage message) {
 		LinkedHashMap<String, Object> payload = new LinkedHashMap<>();
 		payload.put("role", message.role());
-		payload.put("content", message.hasImageAttachment() ? multimodalContent(message) : message.content());
+		if (message.rawContentOverride() != null) {
+			payload.put("content", message.rawContentOverride());
+		}
+		else {
+			payload.put("content", message.hasImageAttachment() ? multimodalContent(message) : message.content());
+		}
 		return payload;
 	}
 

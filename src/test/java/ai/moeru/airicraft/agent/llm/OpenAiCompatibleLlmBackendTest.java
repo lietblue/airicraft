@@ -679,6 +679,108 @@ class OpenAiCompatibleLlmBackendTest {
 	}
 
 	@Test
+	void generateIgnoresThoughtOnlyPlainTextFallback() throws Exception {
+		String responseBody = """
+			{
+			  "choices": [
+			    {
+			      "message": {
+			        "content": "<thought>Need visual information before I can answer."
+			      }
+			    }
+			  ],
+			  "usage": {
+			    "prompt_tokens": 100,
+			    "completion_tokens": 13,
+			    "total_tokens": 113
+			  }
+			}
+			""";
+		AtomicReference<String> bodyRef = new AtomicReference<>();
+		try (TestServer server = TestServer.start(bodyRef, responseBody)) {
+			OpenAiCompatibleLlmBackend backend = new OpenAiCompatibleLlmBackend(new AgentConfig.LlmConfig(
+				"http://127.0.0.1:" + server.port(),
+				"planner-key",
+				"planner-model",
+				"https://api.openai.com/v1",
+				"",
+				"",
+				15_000,
+				10_000,
+				8,
+				65_536,
+				"low",
+				false
+			));
+
+			LlmCallResult<PlannerResponse> result = backend.generate(LlmConversation.of(List.of(
+				LlmChatMessage.system("system"),
+				LlmChatMessage.user("Alice said just now: @agent hello", LlmMessageKind.USER_TURN)
+			)));
+
+			assertEquals("", result.payload().replyText());
+			assertEquals("reply_only", result.payload().intent().type());
+		}
+	}
+
+	@Test
+	void generateParsesThinkingArrayContentAndRetainsRawAssistantContent() throws Exception {
+		String responseBody = """
+			{
+			  "choices": [
+			    {
+			      "message": {
+			        "content": [
+			          {
+			            "type": "reasoning",
+			            "text": "Need to inspect the scene first.",
+			            "thought": true,
+			            "thought_signature": "sig-123"
+			          },
+			          {
+			            "type": "text",
+			            "text": "{\\"replyText\\":\\"\\",\\"intent\\":{\\"type\\":\\"none\\"},\\"toolRequest\\":{\\"type\\":\\"take_a_look\\",\\"prompt\\":\\"Describe the scene.\\"},\\"eventPolicyChanges\\":null}"
+			          }
+			        ]
+			      }
+			    }
+			  ],
+			  "usage": {
+			    "prompt_tokens": 100,
+			    "completion_tokens": 13,
+			    "total_tokens": 113
+			  }
+			}
+			""";
+		AtomicReference<String> bodyRef = new AtomicReference<>();
+		try (TestServer server = TestServer.start(bodyRef, responseBody)) {
+			OpenAiCompatibleLlmBackend backend = new OpenAiCompatibleLlmBackend(new AgentConfig.LlmConfig(
+				"http://127.0.0.1:" + server.port(),
+				"planner-key",
+				"planner-model",
+				"https://api.openai.com/v1",
+				"",
+				"",
+				15_000,
+				10_000,
+				8,
+				65_536,
+				"low",
+				false
+			));
+
+			LlmCallResult<PlannerResponse> result = backend.generate(LlmConversation.of(List.of(
+				LlmChatMessage.system("system"),
+				LlmChatMessage.user("Alice said just now: @agent look", LlmMessageKind.USER_TURN)
+			)));
+
+			assertEquals("", result.payload().replyText());
+			assertEquals("take_a_look", result.payload().toolRequest().type());
+			assertTrue(result.payload().rawAssistantContent().isJsonArray());
+		}
+	}
+
+	@Test
 	void generateParsesEventPolicyChanges() throws Exception {
 		AtomicReference<String> bodyRef = new AtomicReference<>();
 		try (TestServer server = TestServer.start(bodyRef, """
@@ -762,6 +864,56 @@ class OpenAiCompatibleLlmBackendTest {
 			);
 			assertEquals("assistant", messages.get(2).getAsJsonObject().get("role").getAsString());
 			assertEquals("user", messages.get(3).getAsJsonObject().get("role").getAsString());
+		}
+	}
+
+	@Test
+	void generateSendsAssistantRawContentOverrideAsIs() throws Exception {
+		AtomicReference<String> bodyRef = new AtomicReference<>();
+		try (TestServer server = TestServer.start(bodyRef)) {
+			OpenAiCompatibleLlmBackend backend = new OpenAiCompatibleLlmBackend(new AgentConfig.LlmConfig(
+				"http://127.0.0.1:" + server.port(),
+				"planner-key",
+				"planner-model",
+				"https://api.openai.com/v1",
+				"",
+				"",
+				15_000,
+				10_000,
+				8,
+				65_536,
+				"low",
+				false
+			));
+
+			backend.generate(LlmConversation.of(List.of(
+				LlmChatMessage.system("system"),
+				LlmChatMessage.user("Alice said just now: @agent look", LlmMessageKind.USER_TURN),
+				LlmChatMessage.assistant(
+					"",
+					JsonParser.parseString("""
+						[
+						  {
+						    "type": "reasoning",
+						    "text": "Need to inspect the scene first.",
+						    "thought": true,
+						    "thought_signature": "sig-123"
+						  },
+						  {
+						    "type": "text",
+						    "text": "{\\"replyText\\":\\"\\",\\"intent\\":{\\"type\\":\\"none\\"},\\"toolRequest\\":{\\"type\\":\\"take_a_look\\",\\"prompt\\":\\"Describe the scene.\\"}}"
+						  }
+						]
+						""")
+				),
+				LlmChatMessage.user("Tool result: current first-person view attached.", LlmMessageKind.TOOL_RESULT)
+			)));
+
+			JsonObject body = JsonParser.parseString(bodyRef.get()).getAsJsonObject();
+			JsonArray messages = body.getAsJsonArray("messages");
+			JsonArray assistantContent = messages.get(2).getAsJsonObject().getAsJsonArray("content");
+			assertEquals("reasoning", assistantContent.get(0).getAsJsonObject().get("type").getAsString());
+			assertEquals("text", assistantContent.get(1).getAsJsonObject().get("type").getAsString());
 		}
 	}
 

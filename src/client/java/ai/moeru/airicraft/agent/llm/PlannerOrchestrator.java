@@ -11,6 +11,7 @@ import ai.moeru.airicraft.agent.events.EventPolicyMatch;
 import ai.moeru.airicraft.agent.events.EventPolicyRuleUpsert;
 import ai.moeru.airicraft.agent.events.SemanticEventQueryResult;
 import ai.moeru.airicraft.agent.session.SessionMode;
+import com.google.gson.JsonElement;
 import io.opentelemetry.context.Context;
 import io.opentelemetry.context.Scope;
 
@@ -50,6 +51,7 @@ public final class PlannerOrchestrator {
 	private PendingToolExecution pendingToolExecution;
 	private CompactionExecutionResult lastCompactionResult;
 	private boolean awaitingAcceptedReplyRecord;
+	private JsonElement pendingAcceptedAssistantRawContent;
 	private volatile boolean captureInFlight;
 	private boolean coalescePending;
 	private long coalesceReadyAtMs = -1L;
@@ -434,7 +436,8 @@ public final class PlannerOrchestrator {
 		pendingToolExecution = new PendingToolExecution(
 			plannerResult.generation(),
 			toolRequestSummary(toolRequest),
-			requestVisionTool(toolRequest)
+			requestVisionTool(toolRequest),
+			plannerResult.response().rawAssistantContent()
 		);
 		return null;
 	}
@@ -448,7 +451,8 @@ public final class PlannerOrchestrator {
 	}
 
 	public void recordAssistantTurn(DialogueTurn turn) {
-		contextAggregator.recordAgentTurn(turn);
+		contextAggregator.recordAgentTurn(turn, pendingAcceptedAssistantRawContent);
+		pendingAcceptedAssistantRawContent = null;
 	}
 
 	public void onAcceptedReplyRecorded() {
@@ -501,6 +505,7 @@ public final class PlannerOrchestrator {
 		pendingSubmitRequest = null;
 		lastCompactionResult = null;
 		awaitingAcceptedReplyRecord = false;
+		pendingAcceptedAssistantRawContent = null;
 		lastVisibleConversation = PlannerConversationDebugSnapshot.empty();
 		clearCoalesceState();
 		endTurnSpan();
@@ -515,6 +520,7 @@ public final class PlannerOrchestrator {
 		pendingSubmitRequest = null;
 		lastCompactionResult = null;
 		awaitingAcceptedReplyRecord = false;
+		pendingAcceptedAssistantRawContent = null;
 		lastVisibleConversation = PlannerConversationDebugSnapshot.empty();
 		clearCoalesceState();
 		endTurnSpan();
@@ -583,6 +589,9 @@ public final class PlannerOrchestrator {
 		boolean hasVisibleReply = acceptedResult.response() != null
 			&& acceptedResult.response().replyText() != null
 			&& !acceptedResult.response().replyText().isBlank();
+		pendingAcceptedAssistantRawContent = hasVisibleReply && acceptedResult.response() != null
+			? acceptedResult.response().rawAssistantContent()
+			: null;
 		if (!contextAggregator.hasQueuedTriggers()) {
 			pendingSubmitRequest = null;
 			awaitingAcceptedReplyRecord = hasVisibleReply;
@@ -629,7 +638,7 @@ public final class PlannerOrchestrator {
 		sessionCoordinator.submitToolFollowUp(
 			toolExecution.generation(),
 			followUpRequest,
-			toolOutcome.appendFollowUp(contextAggregator, snapshot)
+			toolOutcome.appendFollowUp(contextAggregator, snapshot, toolExecution.assistantRawContent())
 		);
 		lifecycleListener.onToolCompleted(toolExecution.generation(), toolOutcome.toolResultText(), toolOutcome instanceof ImageToolExecutionOutcome);
 		appendToolFollowUpCard(toolExecution);
@@ -969,24 +978,37 @@ public final class PlannerOrchestrator {
 	private sealed interface ToolExecutionOutcome permits TextToolExecutionOutcome, ImageToolExecutionOutcome {
 		String toolResultText();
 
-		LlmConversation appendFollowUp(PlannerContextAggregator contextAggregator, PlannerContextSnapshot snapshot);
+		LlmConversation appendFollowUp(PlannerContextAggregator contextAggregator, PlannerContextSnapshot snapshot, JsonElement assistantRawContent);
 	}
 
 	private record TextToolExecutionOutcome(String toolResultText) implements ToolExecutionOutcome {
 		@Override
-		public LlmConversation appendFollowUp(PlannerContextAggregator contextAggregator, PlannerContextSnapshot snapshot) {
-			return contextAggregator.buildPlannerFollowUpConversation(snapshot, toolResultText);
+		public LlmConversation appendFollowUp(
+			PlannerContextAggregator contextAggregator,
+			PlannerContextSnapshot snapshot,
+			JsonElement assistantRawContent
+		) {
+			return contextAggregator.buildPlannerFollowUpConversation(snapshot, assistantRawContent, toolResultText);
 		}
 	}
 
 	private record ImageToolExecutionOutcome(String toolResultText, LlmImageAttachment imageAttachment) implements ToolExecutionOutcome {
 		@Override
-		public LlmConversation appendFollowUp(PlannerContextAggregator contextAggregator, PlannerContextSnapshot snapshot) {
-			return contextAggregator.buildPlannerFollowUpConversation(snapshot, toolResultText, imageAttachment);
+		public LlmConversation appendFollowUp(
+			PlannerContextAggregator contextAggregator,
+			PlannerContextSnapshot snapshot,
+			JsonElement assistantRawContent
+		) {
+			return contextAggregator.buildPlannerFollowUpConversation(snapshot, assistantRawContent, toolResultText, imageAttachment);
 		}
 	}
 
-	private record PendingToolExecution(long generation, String toolSummary, CompletableFuture<ToolExecutionOutcome> future) {
+	private record PendingToolExecution(
+		long generation,
+		String toolSummary,
+		CompletableFuture<ToolExecutionOutcome> future,
+		JsonElement assistantRawContent
+	) {
 	}
 
 	private static String visionFailureCode(Throwable throwable) {

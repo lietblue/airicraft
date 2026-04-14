@@ -6,6 +6,7 @@ import ai.moeru.airicraft.agent.events.SemanticEventQueryResult;
 import ai.moeru.airicraft.agent.semantic.SemanticContextProjectionResult;
 import ai.moeru.airicraft.agent.semantic.SemanticContextProjector;
 import ai.moeru.airicraft.agent.semantic.SemanticContextUpdate;
+import com.google.gson.JsonElement;
 
 import java.time.Clock;
 import java.time.ZoneId;
@@ -197,20 +198,40 @@ public final class PlannerContextAggregator {
 		return snapshot == null ? composeConversation(request.timestampMs(), List.of(), null) : snapshot.plannerConversation();
 	}
 
-	public LlmConversation buildPlannerFollowUpConversation(PlannerContextSnapshot snapshot, String toolResult) {
+	public LlmConversation buildPlannerFollowUpConversation(PlannerContextSnapshot snapshot, JsonElement priorAssistantRawContent, String toolResult) {
 		if (snapshot == null) {
 			throw new IllegalStateException("No planner context snapshot");
 		}
-		return snapshot.plannerConversation().withAppended(
-			LlmChatMessage.user("Tool result: " + (toolResult == null || toolResult.isBlank() ? "none" : toolResult), LlmMessageKind.TOOL_RESULT)
-		);
+		LlmConversation conversation = snapshot.plannerConversation();
+		if (priorAssistantRawContent != null) {
+			conversation = conversation.withAppended(LlmChatMessage.assistant(
+				OpenAiCompatibleMessageContent.extractVisibleText(priorAssistantRawContent),
+				priorAssistantRawContent
+			));
+		}
+		return conversation.withAppended(LlmChatMessage.user(
+			"Tool result: " + (toolResult == null || toolResult.isBlank() ? "none" : toolResult),
+			LlmMessageKind.TOOL_RESULT
+		));
 	}
 
-	public LlmConversation buildPlannerFollowUpConversation(PlannerContextSnapshot snapshot, String toolResult, LlmImageAttachment imageAttachment) {
+	public LlmConversation buildPlannerFollowUpConversation(
+		PlannerContextSnapshot snapshot,
+		JsonElement priorAssistantRawContent,
+		String toolResult,
+		LlmImageAttachment imageAttachment
+	) {
 		if (snapshot == null) {
 			throw new IllegalStateException("No planner context snapshot");
 		}
-		return snapshot.plannerConversation().withAppended(
+		LlmConversation conversation = snapshot.plannerConversation();
+		if (priorAssistantRawContent != null) {
+			conversation = conversation.withAppended(LlmChatMessage.assistant(
+				OpenAiCompatibleMessageContent.extractVisibleText(priorAssistantRawContent),
+				priorAssistantRawContent
+			));
+		}
+		return conversation.withAppended(
 			LlmChatMessage.userWithImage(
 				toolResult == null || toolResult.isBlank() ? "Tool result: image attached." : toolResult,
 				LlmMessageKind.TOOL_RESULT,
@@ -223,14 +244,14 @@ public final class PlannerContextAggregator {
 		if (lastFrozenSnapshot == null) {
 			throw new IllegalStateException("No frozen planner conversation");
 		}
-		return buildPlannerFollowUpConversation(lastFrozenSnapshot, toolResult);
+		return buildPlannerFollowUpConversation(lastFrozenSnapshot, null, toolResult);
 	}
 
 	public LlmConversation buildPlannerFollowUpConversation(String toolResult, LlmImageAttachment imageAttachment) {
 		if (lastFrozenSnapshot == null) {
 			throw new IllegalStateException("No frozen planner conversation");
 		}
-		return buildPlannerFollowUpConversation(lastFrozenSnapshot, toolResult, imageAttachment);
+		return buildPlannerFollowUpConversation(lastFrozenSnapshot, null, toolResult, imageAttachment);
 	}
 
 	public LlmConversation buildCompactionConversation() {
@@ -241,9 +262,13 @@ public final class PlannerContextAggregator {
 		);
 	}
 
-	public void recordAgentTurn(DialogueTurn turn) {
+	public void recordAgentTurn(DialogueTurn turn, JsonElement rawAssistantContent) {
 		Objects.requireNonNull(turn, "turn");
-		state = PlannerContextReducer.recordAcceptedAssistantTurn(state, turn);
+		state = PlannerContextReducer.recordAcceptedAssistantTurn(state, turn, rawAssistantContent);
+	}
+
+	public void recordAgentTurn(DialogueTurn turn) {
+		recordAgentTurn(turn, null);
 	}
 
 	public void recordUsage(LlmUsageSnapshot usage) {
@@ -345,7 +370,7 @@ public final class PlannerContextAggregator {
 	private static LlmChatMessage renderAcceptedHistoryEntry(PlannerContextEntry entry, long anchorTimeMs) {
 		return switch (entry.type()) {
 			case USER_TURN -> LlmChatMessage.user(entry.text(), LlmMessageKind.USER_TURN);
-			case ASSISTANT_TURN -> LlmChatMessage.assistant(entry.text());
+			case ASSISTANT_TURN -> LlmChatMessage.assistant(entry.text(), entry.rawAssistantContent());
 			case NOTICE -> ContextMessageRenderer.renderEntry(entry, anchorTimeMs);
 		};
 	}

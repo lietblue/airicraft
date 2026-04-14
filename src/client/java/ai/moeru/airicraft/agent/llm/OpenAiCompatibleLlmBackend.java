@@ -113,15 +113,14 @@ public final class OpenAiCompatibleLlmBackend implements LlmBackend {
 				throw new JsonParseException("Missing message");
 			}
 
-			String content = OpenAiCompatibleMessageContent.extract(message.get("content"));
-			String stripped = stripMarkdownCodeFences(content);
-			JsonObject payload;
-			try {
-				payload = JsonParser.parseString(stripped).getAsJsonObject();
-			}
-			catch (JsonParseException contentParseException) {
-				Airicraft.LOGGER.info("LLM returned plain text instead of JSON, treating as reply_only content={}", summarizeForLog(content));
-				return new PlannerResponse(content.strip(), new PlannerIntent("reply_only", null, null));
+			JsonElement rawAssistantContent = OpenAiCompatibleMessageContent.rawContentForReplay(message.get("content"));
+			String visibleText = OpenAiCompatibleMessageContent.extractVisibleText(message.get("content"));
+			JsonObject payload = OpenAiCompatibleMessageContent.extractJsonObject(message.get("content"))
+				.filter(OpenAiCompatibleLlmBackend::looksLikePlannerPayload)
+				.orElse(null);
+			if (payload == null) {
+				Airicraft.LOGGER.info("LLM returned plain text instead of JSON, treating as reply_only content={}", summarizeForLog(visibleText));
+				return new PlannerResponse(visibleText.strip(), new PlannerIntent("reply_only", null, null), null, null, rawAssistantContent);
 			}
 			String replyText = getString(payload, "replyText").orElse("");
 			JsonObject intentObject = payload.has("intent") && payload.get("intent").isJsonObject()
@@ -165,7 +164,7 @@ public final class OpenAiCompatibleLlmBackend implements LlmBackend {
 				toolRequest == null ? null : summarizeForLog(toolRequest.prompt()),
 				eventPolicyChanges == null ? 0 : eventPolicyChanges.upserts().size()
 			);
-			return new PlannerResponse(replyText, intent, toolRequest, eventPolicyChanges);
+			return new PlannerResponse(replyText, intent, toolRequest, eventPolicyChanges, rawAssistantContent);
 		}
 		catch (IllegalArgumentException | JsonParseException exception) {
 			Airicraft.LOGGER.warn("Failed to parse planner response summary={}", TraceSanitizer.summarizeChatResponseForLog(responseBody), exception);
@@ -668,6 +667,13 @@ public final class OpenAiCompatibleLlmBackend implements LlmBackend {
 			return trimmed.strip();
 		}
 		return text;
+	}
+
+	private static boolean looksLikePlannerPayload(JsonObject object) {
+		return object.has("replyText")
+			|| object.has("intent")
+			|| object.has("toolRequest")
+			|| object.has("eventPolicyChanges");
 	}
 
 	private static String summarizeForLog(String text) {

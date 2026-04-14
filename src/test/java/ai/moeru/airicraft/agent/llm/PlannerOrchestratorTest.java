@@ -11,6 +11,7 @@ import ai.moeru.airicraft.agent.events.EventPolicyRuleUpsert;
 import ai.moeru.airicraft.agent.events.SemanticEvent;
 import ai.moeru.airicraft.agent.events.SemanticEventQueryResult;
 import ai.moeru.airicraft.agent.goals.GoalType;
+import com.google.gson.JsonParser;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import ai.moeru.airicraft.agent.session.SessionMode;
@@ -289,6 +290,67 @@ class PlannerOrchestratorTest {
 			assertTrue(snapshot.lastCompactionResult().succeeded());
 			assertEquals("follow Alice", snapshot.context().activeCheckpoint().activeGoal());
 			assertEquals(1, server.requestCount());
+		}
+	}
+
+	@Test
+	void debugCompactionParsesThinkingWrappedPayload() throws Exception {
+		try (CompactionTestServer server = CompactionTestServer.start("""
+			{
+			  "choices": [
+			    {
+			      "message": {
+			        "content": [
+			          {
+			            "type": "reasoning",
+			            "text": "Summarize important session facts.",
+			            "thought": true,
+			            "thought_signature": "sig-123"
+			          },
+			          {
+			            "type": "text",
+			            "text": "{\\"time_anchor\\":\\"Tuesday afternoon\\",\\"session_state\\":\\"in world\\",\\"active_goal\\":\\"follow Alice\\",\\"active_commitments\\":[\\"follow Alice\\"],\\"durable_facts\\":[\\"Alice is nearby\\"],\\"relevant_people\\":[\\"Alice\\"],\\"open_loops\\":[\\"keep following\\"],\\"recent_timeline\\":[\\"Alice asked for follow\\"],\\"forgettable_noise\\":[]}"
+			          }
+			        ]
+			      }
+			    }
+			  ],
+			  "usage": {
+			    "prompt_tokens": 2048,
+			    "completion_tokens": 128,
+			    "total_tokens": 2176
+			  }
+			}
+			""")) {
+			AgentConfig.LlmConfig config = new AgentConfig.LlmConfig(
+				"http://127.0.0.1:" + server.port(),
+				"planner-key",
+				"planner-model",
+				"https://api.openai.com/v1",
+				"",
+				"",
+				15_000,
+				10_000,
+				8,
+				65_536,
+				"low",
+				false
+			);
+			PlannerOrchestrator orchestrator = new PlannerOrchestrator(
+				new PlannerExecutor(new OpenAiCompatibleLlmBackend(config)),
+				new PlannerCompactionService(new OpenAiCompatibleChatClient(config)),
+				new PlannerContextAggregator(Clock.systemDefaultZone(), config.plannerCompactionTriggerTokens(), config.plannerVisionMode()),
+				CurrentViewVisionTool.disabled(),
+				config.plannerVisionMode(),
+				config.visionImageDetail()
+			);
+
+			assertTrue(orchestrator.startDebugCompaction());
+			CompactionExecutionResult result = awaitCompaction(orchestrator);
+
+			assertNotNull(result);
+			assertTrue(result.succeeded());
+			assertEquals("Tuesday afternoon", result.checkpoint().timeAnchor());
 		}
 	}
 
@@ -854,6 +916,51 @@ class PlannerOrchestratorTest {
 	}
 
 	@Test
+	void toolFollowUpConversationReplaysRawAssistantContentBeforeToolResult() {
+		RecordingBackend backend = new RecordingBackend();
+		StubVisionTool visionTool = new StubVisionTool(
+			true,
+			CompletableFuture.completedFuture(capturedScreenshot()),
+			CompletableFuture.failedFuture(new AssertionError("External summary should not be requested"))
+		);
+		PlannerOrchestrator orchestrator = newOrchestrator(
+			backend,
+			visionTool,
+			PlannerVisionMode.NATIVE_TOOL_IMAGE
+		);
+
+		orchestrator.submit(requestAt(10L, 1_000L, "Alice", "@agent what do you see?"));
+		backend.awaitCalls(1, Duration.ofSeconds(1));
+		backend.succeed(0, new PlannerResponse(
+			"",
+			new PlannerIntent("none", null, null),
+			new PlannerToolRequest("take_a_look", null),
+			null,
+			JsonParser.parseString("""
+				[
+				  {
+				    "type": "reasoning",
+				    "text": "Need to inspect the screenshot first.",
+				    "thought": true,
+				    "thought_signature": "sig-123"
+				  },
+				  {
+				    "type": "text",
+				    "text": "{\\"replyText\\":\\"\\",\\"intent\\":{\\"type\\":\\"none\\"},\\"toolRequest\\":{\\"type\\":\\"take_a_look\\",\\"prompt\\":null}}"
+				  }
+				]
+				""")
+		));
+
+		awaitBackendCallCount(orchestrator, backend, 2, Duration.ofSeconds(1));
+		LlmConversation followUpConversation = backend.conversation(1);
+		assertEquals("assistant", followUpConversation.messages().get(followUpConversation.messages().size() - 2).role());
+		assertTrue(followUpConversation.messages().get(followUpConversation.messages().size() - 2).rawContentOverride().isJsonArray());
+		assertEquals("user", followUpConversation.messages().get(followUpConversation.messages().size() - 1).role());
+		assertTrue(followUpConversation.messages().get(followUpConversation.messages().size() - 1).content().contains("current first-person view attached"));
+	}
+
+	@Test
 	void failureAppendsFailureCardToVisibleConversation() {
 		RecordingBackend backend = new RecordingBackend();
 		PlannerOrchestrator orchestrator = newOrchestrator(backend, CurrentViewVisionTool.disabled(), PlannerVisionMode.EXTERNAL_SUMMARY);
@@ -1052,6 +1159,24 @@ class PlannerOrchestratorTest {
 			}
 		}
 		throw new AssertionError("Timed out waiting for planner result");
+	}
+
+	private static CompactionExecutionResult awaitCompaction(PlannerOrchestrator orchestrator) {
+		Instant deadline = Instant.now().plus(Duration.ofSeconds(1));
+		while (Instant.now().isBefore(deadline)) {
+			CompactionExecutionResult result = orchestrator.pollDebugCompaction();
+			if (result != null) {
+				return result;
+			}
+			try {
+				Thread.sleep(10L);
+			}
+			catch (InterruptedException exception) {
+				Thread.currentThread().interrupt();
+				throw new AssertionError("Interrupted while waiting", exception);
+			}
+		}
+		throw new AssertionError("Timed out waiting for compaction result");
 	}
 
 	private static PlannerExecutionResult awaitNullPoll(PlannerOrchestrator orchestrator) {
@@ -1323,17 +1448,7 @@ class PlannerOrchestratorTest {
 		}
 
 		private static CompactionTestServer start() throws IOException {
-			HttpServer server = HttpServer.create(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0);
-			CompactionTestServer holder = new CompactionTestServer(server);
-			server.setExecutor(Executors.newCachedThreadPool());
-			server.createContext("/chat/completions", exchange -> holder.handle(exchange));
-			server.start();
-			return holder;
-		}
-
-		private void handle(HttpExchange exchange) throws IOException {
-			requestCount++;
-			writeResponse(exchange, 200, """
+			return start("""
 				{
 				  "choices": [
 				    {
@@ -1349,6 +1464,20 @@ class PlannerOrchestratorTest {
 				  }
 				}
 				""");
+		}
+
+		private static CompactionTestServer start(String responseBody) throws IOException {
+			HttpServer server = HttpServer.create(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0);
+			CompactionTestServer holder = new CompactionTestServer(server);
+			server.setExecutor(Executors.newCachedThreadPool());
+			server.createContext("/chat/completions", exchange -> holder.handle(exchange, responseBody));
+			server.start();
+			return holder;
+		}
+
+		private void handle(HttpExchange exchange, String responseBody) throws IOException {
+			requestCount++;
+			writeResponse(exchange, 200, responseBody);
 		}
 
 		private int port() {

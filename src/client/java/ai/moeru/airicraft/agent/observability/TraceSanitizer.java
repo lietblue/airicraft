@@ -61,8 +61,7 @@ public final class TraceSanitizer {
 		try {
 			JsonObject root = JsonParser.parseString(responseBody).getAsJsonObject();
 			String model = getString(root, "model").orElse("");
-			String content = extractMessageContent(root).orElse("");
-			Optional<JsonObject> payload = tryParseJsonObject(content);
+			Optional<JsonObject> payload = extractMessagePayload(root);
 			if (payload.isPresent()) {
 				JsonObject object = payload.get();
 				String replyText = getString(object, "replyText").orElse("");
@@ -72,9 +71,10 @@ public final class TraceSanitizer {
 					"model=" + model
 						+ " reply=" + replyText
 						+ " intentType=" + intentType
-						+ (toolType.isBlank() ? "" : " toolRequestType=" + toolType)
-				);
+							+ (toolType.isBlank() ? "" : " toolRequestType=" + toolType)
+					);
 			}
+			String content = extractMessageContent(root).orElse("");
 			return summarizeForLog("model=" + model + " text=" + content);
 		}
 		catch (IllegalStateException | JsonParseException exception) {
@@ -464,12 +464,24 @@ public final class TraceSanitizer {
 		if (root == null || !root.has("choices") || !root.get("choices").isJsonArray() || root.getAsJsonArray("choices").isEmpty()) {
 			return Optional.empty();
 		}
+			JsonObject choice = root.getAsJsonArray("choices").get(0).getAsJsonObject();
+			JsonObject message = choice.getAsJsonObject("message");
+			if (message == null || !message.has("content")) {
+				return Optional.empty();
+			}
+			return Optional.ofNullable(OpenAiCompatibleMessageContent.extractVisibleText(message.get("content")));
+		}
+
+	private static Optional<JsonObject> extractMessagePayload(JsonObject root) {
+		if (root == null || !root.has("choices") || !root.get("choices").isJsonArray() || root.getAsJsonArray("choices").isEmpty()) {
+			return Optional.empty();
+		}
 		JsonObject choice = root.getAsJsonArray("choices").get(0).getAsJsonObject();
 		JsonObject message = choice.getAsJsonObject("message");
 		if (message == null || !message.has("content")) {
 			return Optional.empty();
 		}
-		return Optional.ofNullable(OpenAiCompatibleMessageContent.extract(message.get("content")));
+		return OpenAiCompatibleMessageContent.extractJsonObject(message.get("content"));
 	}
 
 	private static Optional<JsonObject> tryParseJsonObject(String text) {

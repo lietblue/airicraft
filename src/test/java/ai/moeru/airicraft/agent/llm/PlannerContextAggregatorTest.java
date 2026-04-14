@@ -26,6 +26,7 @@ import ai.moeru.airicraft.agent.tasks.CollectResourceStepArgs;
 import ai.moeru.airicraft.agent.tasks.EvidenceKind;
 import ai.moeru.airicraft.agent.tasks.EvidenceRequirement;
 import ai.moeru.airicraft.agent.tasks.TaskResourceKind;
+import com.google.gson.JsonParser;
 import org.junit.jupiter.api.Test;
 
 import java.time.Clock;
@@ -302,6 +303,41 @@ class PlannerContextAggregatorTest {
 			"assistant".equals(message.role()) && "On it.".equals(message.content())
 		));
 		assertFalse(laterConversation.messages().stream().anyMatch(message -> message.content().contains("Agent replied just now")));
+	}
+
+	@Test
+	void acceptedAssistantHistoryRetainsRawAssistantContentOverride() {
+		MutableClock clock = new MutableClock(Instant.ofEpochMilli(1_000L), ZoneId.of("Asia/Taipei"));
+		PlannerContextAggregator aggregator = new PlannerContextAggregator(clock, 65_536, PlannerVisionMode.EXTERNAL_SUMMARY);
+
+		PlannerContextSnapshot firstSnapshot = freezeSnapshot(aggregator, requestAt(1_000L, "Alice", "@agent hi"));
+		aggregator.commitAcceptedTriggerBatch(firstSnapshot);
+		aggregator.recordAgentTurn(
+			new ai.moeru.airicraft.agent.dialogue.DialogueTurn("agent", "On it.", 20L, 1_000L),
+			JsonParser.parseString("""
+				[
+				  {
+				    "type": "reasoning",
+				    "text": "Think before responding.",
+				    "thought": true,
+				    "thought_signature": "sig-123"
+				  },
+				  {
+				    "type": "text",
+				    "text": "{\\"replyText\\":\\"On it.\\",\\"intent\\":{\\"type\\":\\"reply_only\\"},\\"toolRequest\\":null}"
+				  }
+				]
+				""")
+		);
+
+		LlmConversation laterConversation = freezeSnapshot(aggregator, requestAt(clock.millis() + 1_000L, "Alice", "@agent status")).plannerConversation();
+		LlmChatMessage assistantMessage = laterConversation.messages().stream()
+			.filter(message -> "assistant".equals(message.role()))
+			.findFirst()
+			.orElseThrow();
+
+		assertEquals("On it.", assistantMessage.content());
+		assertTrue(assistantMessage.rawContentOverride().isJsonArray());
 	}
 
 	private static PlannerRequest requestAt(long timestampMs, String sender, String message) {
