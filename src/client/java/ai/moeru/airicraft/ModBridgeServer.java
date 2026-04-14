@@ -788,11 +788,13 @@ public final class ModBridgeServer {
 			response.put("task", snapshot.task());
 			response.put("taskExecution", snapshot.taskExecution());
 			response.put("missionExecution", snapshot.missionExecution());
+			response.put("activeJob", agentRuntime.activeJob());
 			response.put("llmAvailable", agentRuntime.llmAvailable());
 			response.put("visionAvailable", agentRuntime.visionAvailable());
 			response.put("plannerVisionMode", plannerSnapshot.plannerVisionMode());
 			response.put("observability", agentRuntime.observabilityDebugSnapshot());
 			response.put("degraded", agentRuntime.isDegraded());
+			response.put("plannerJournal", agentRuntime.plannerShellJournal());
 			response.put("eventPolicy", eventPolicySummaryPayload());
 			response.put("verification", snapshot.verification());
 			return response;
@@ -866,6 +868,7 @@ public final class ModBridgeServer {
 			Map<String, Object> response = new LinkedHashMap<>();
 			response.put("available", true);
 			response.put("activeGoal", agentRuntime.activeGoal().orElse(null));
+			response.put("activeJob", agentRuntime.activeJob());
 			response.put("task", agentRuntime.taskSnapshot());
 			response.put("taskExecution", agentRuntime.taskExecutionSnapshot());
 			response.put("missionExecution", agentRuntime.missionExecutionSnapshot());
@@ -888,6 +891,7 @@ public final class ModBridgeServer {
 			Map<String, Object> response = new LinkedHashMap<>();
 			response.put("available", true);
 			response.put("dialogue", agentRuntime.dialogueSnapshot());
+			response.put("plannerJournal", agentRuntime.plannerShellJournal());
 			response.put("lastChatTick", agentRuntime.lastChatTick());
 			response.put("lastChatText", agentRuntime.lastChatText());
 			return response;
@@ -899,7 +903,9 @@ public final class ModBridgeServer {
 			Map<String, Object> response = new LinkedHashMap<>();
 			response.put("available", true);
 			response.put("planner", agentRuntime.plannerDebugSnapshot());
+			response.put("plannerJournal", agentRuntime.plannerShellJournal());
 			response.put("contextExcerpt", agentRuntime.plannerContextExcerpt());
+			response.put("activeJob", agentRuntime.activeJob());
 			response.put("eventPolicy", eventPolicySummaryPayload());
 			response.put("task", agentRuntime.taskSnapshot());
 			response.put("taskExecution", agentRuntime.taskExecutionSnapshot());
@@ -912,6 +918,7 @@ public final class ModBridgeServer {
 		return onClientThread(() -> {
 			Map<String, Object> response = new LinkedHashMap<>();
 			response.put("available", true);
+			response.put("activeJob", agentRuntime.activeJob());
 			response.put("task", agentRuntime.taskSnapshot());
 			response.put("taskExecution", agentRuntime.taskExecutionSnapshot());
 			response.put("missionExecution", agentRuntime.missionExecutionSnapshot());
@@ -923,6 +930,7 @@ public final class ModBridgeServer {
 		return onClientThread(() -> {
 			Map<String, Object> response = new LinkedHashMap<>();
 			response.put("available", true);
+			response.put("activeJob", agentRuntime.activeJob());
 			response.put("mission", agentRuntime.taskSnapshot().mission());
 			response.put("ledger", agentRuntime.missionExecutionSnapshot().ledger());
 			response.put("lastStepResult", agentRuntime.missionExecutionSnapshot().lastStepResult());
@@ -934,6 +942,7 @@ public final class ModBridgeServer {
 		return onClientThread(() -> {
 			Map<String, Object> response = new LinkedHashMap<>();
 			response.put("available", true);
+			response.put("activeJob", agentRuntime.activeJob());
 			response.put("evidence", agentRuntime.missionExecutionSnapshot().evidence());
 			response.put("task", agentRuntime.taskSnapshot());
 			return response;
@@ -944,6 +953,7 @@ public final class ModBridgeServer {
 		return onClientThread(() -> {
 			Map<String, Object> response = new LinkedHashMap<>();
 			response.put("available", true);
+			response.put("activeJob", agentRuntime.activeJob());
 			response.put("stepExecution", agentRuntime.missionExecutionSnapshot().lastStepResult());
 			response.put("taskExecution", agentRuntime.taskExecutionSnapshot());
 			return response;
@@ -1197,6 +1207,7 @@ public final class ModBridgeServer {
 		response.put("completed", completed);
 		response.put("timeoutMs", timeoutMillis);
 		response.put("planner", agentRuntime.plannerDebugSnapshot());
+		response.put("plannerJournal", agentRuntime.plannerShellJournal());
 		return response;
 	}
 

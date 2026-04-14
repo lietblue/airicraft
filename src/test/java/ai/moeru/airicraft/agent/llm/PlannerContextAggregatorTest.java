@@ -246,12 +246,12 @@ class PlannerContextAggregatorTest {
 			null
 		));
 
-		assertTrue(conversation.messages().stream().anyMatch(message -> message.content().contains("Active mission: Mission COLLECT_RESOURCE")));
-		assertTrue(conversation.messages().stream().anyMatch(message -> message.content().contains("Mission progress delta: collected=2, remaining=2.")));
-		assertTrue(conversation.messages().stream().anyMatch(message -> message.content().contains("Mission evidence snapshot:")));
-		assertTrue(conversation.messages().stream().anyMatch(message -> message.content().contains("Mission ledger snapshot:")));
+		assertTrue(conversation.messages().stream().anyMatch(message -> message.content().contains("Active job: Active job COLLECT_RESOURCE")));
+		assertTrue(conversation.messages().stream().anyMatch(message -> message.content().contains("Active job progress: collected=2, remaining=2.")));
+		assertTrue(conversation.messages().stream().anyMatch(message -> message.content().contains("Active job evidence snapshot:")));
+		assertTrue(conversation.messages().stream().anyMatch(message -> message.content().contains("Compatibility ledger snapshot:")));
 		assertTrue(conversation.messages().stream().anyMatch(message -> message.content().contains("Last step result:")));
-		assertTrue(conversation.messages().stream().anyMatch(message -> message.content().contains("Mission history summary:")));
+		assertTrue(conversation.messages().stream().anyMatch(message -> message.content().contains("Compatibility history summary:")));
 	}
 
 	@Test

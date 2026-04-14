@@ -1,0 +1,55 @@
+package ai.moeru.airicraft.agent.job;
+
+import ai.moeru.airicraft.agent.goals.GoalSnapshot;
+import ai.moeru.airicraft.agent.tasks.TaskSpec;
+
+import java.util.Objects;
+
+public record ActiveJob(
+	String jobId,
+	ActiveJobType type,
+	ActiveJobStatus status,
+	GoalSnapshot directGoal,
+	TaskSpec taskSpec,
+	String askPrompt,
+	long waitUntilTick,
+	int baselineResourceCount,
+	int collectedCount,
+	String source,
+	String blockedReason,
+	String lastError,
+	long updatedTick
+) {
+	public ActiveJob {
+		jobId = jobId == null || jobId.isBlank() ? "job-idle" : jobId;
+		type = Objects.requireNonNull(type, "type");
+		status = Objects.requireNonNull(status, "status");
+		source = source == null || source.isBlank() ? "runtime" : source;
+		askPrompt = askPrompt == null ? null : askPrompt.trim();
+		blockedReason = blockedReason == null || blockedReason.isBlank() ? null : blockedReason;
+		lastError = lastError == null || lastError.isBlank() ? null : lastError;
+		collectedCount = Math.max(0, collectedCount);
+	}
+
+	public static ActiveJob idle() {
+		return new ActiveJob(
+			"job-idle",
+			ActiveJobType.IDLE,
+			ActiveJobStatus.IDLE,
+			null,
+			null,
+			null,
+			-1L,
+			0,
+			0,
+			"runtime",
+			null,
+			null,
+			-1L
+		);
+	}
+
+	public boolean isIdle() {
+		return type == ActiveJobType.IDLE || status == ActiveJobStatus.IDLE;
+	}
+}

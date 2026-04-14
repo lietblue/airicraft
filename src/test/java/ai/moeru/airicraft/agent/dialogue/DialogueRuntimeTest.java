@@ -5,10 +5,17 @@ import ai.moeru.airicraft.agent.events.SemanticEventBuffer;
 import ai.moeru.airicraft.agent.goals.GoalMineSpec;
 import ai.moeru.airicraft.agent.goals.GoalPosition;
 import ai.moeru.airicraft.agent.goals.GoalType;
+import ai.moeru.airicraft.agent.job.ActiveJobProposal;
+import ai.moeru.airicraft.agent.llm.CurrentViewVisionTool;
 import ai.moeru.airicraft.agent.llm.OpenAiCompatibleLlmBackend;
+import ai.moeru.airicraft.agent.llm.OpenAiCompatibleChatClient;
+import ai.moeru.airicraft.agent.llm.PlannerCompactionService;
+import ai.moeru.airicraft.agent.llm.PlannerContextAggregator;
 import ai.moeru.airicraft.agent.llm.PlannerExecutor;
 import ai.moeru.airicraft.agent.llm.PlannerIntent;
+import ai.moeru.airicraft.agent.llm.PlannerOrchestrator;
 import ai.moeru.airicraft.agent.llm.PlannerResponse;
+import ai.moeru.airicraft.agent.llm.PlannerVisionMode;
 import ai.moeru.airicraft.agent.tasks.CollectResourceStepArgs;
 import ai.moeru.airicraft.agent.tasks.EvidenceKind;
 import ai.moeru.airicraft.agent.tasks.EvidenceRequirement;
@@ -27,6 +34,7 @@ import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.time.Clock;
 import java.util.List;
 import java.util.Optional;
 
@@ -38,7 +46,7 @@ class DialogueRuntimeTest {
 	@Test
 	void mockPlannerResponseProducesDialogueResponse() {
 		OpenAiCompatibleLlmBackend backend = new OpenAiCompatibleLlmBackend(AgentConfig.LlmConfig.defaults());
-		DialogueRuntime runtime = new DialogueRuntime(new PlannerExecutor(backend), 8);
+		DialogueRuntime runtime = newDialogueRuntime(backend);
 		SemanticEventBuffer eventBuffer = new SemanticEventBuffer(32);
 		backend.injectMockResponse(new PlannerResponse(
 			"Sure, I'll follow you!",
@@ -57,7 +65,7 @@ class DialogueRuntimeTest {
 	@Test
 	void structuredPlannerIntentSurvivesDialogueRuntimeMapping() {
 		OpenAiCompatibleLlmBackend backend = new OpenAiCompatibleLlmBackend(AgentConfig.LlmConfig.defaults());
-		DialogueRuntime runtime = new DialogueRuntime(new PlannerExecutor(backend), 8);
+		DialogueRuntime runtime = newDialogueRuntime(backend);
 		SemanticEventBuffer eventBuffer = new SemanticEventBuffer(32);
 		backend.injectMockResponse(new PlannerResponse(
 			"Heading there.",
@@ -84,7 +92,7 @@ class DialogueRuntimeTest {
 	@Test
 	void submitTaskPlannerIntentSurvivesDialogueRuntimeMapping() {
 		OpenAiCompatibleLlmBackend backend = new OpenAiCompatibleLlmBackend(AgentConfig.LlmConfig.defaults());
-		DialogueRuntime runtime = new DialogueRuntime(new PlannerExecutor(backend), 8);
+		DialogueRuntime runtime = newDialogueRuntime(backend);
 		SemanticEventBuffer eventBuffer = new SemanticEventBuffer(32);
 		backend.injectMockResponse(new PlannerResponse(
 			"On it.",
@@ -108,9 +116,29 @@ class DialogueRuntimeTest {
 	}
 
 	@Test
+	void jobUpdatePlannerIntentSurvivesDialogueRuntimeMapping() {
+		OpenAiCompatibleLlmBackend backend = new OpenAiCompatibleLlmBackend(AgentConfig.LlmConfig.defaults());
+		DialogueRuntime runtime = newDialogueRuntime(backend);
+		SemanticEventBuffer eventBuffer = new SemanticEventBuffer(32);
+		ActiveJobProposal proposal = ActiveJobProposal.collectResource(new TaskSpec(TaskType.COLLECT_RESOURCE, TaskResourceKind.WOOD_LOGS, 16));
+		backend.injectMockResponse(new PlannerResponse(
+			"On it.",
+			new PlannerIntent("job_update", proposal)
+		));
+
+		runtime.onPlayerChat("Alice", "@agent get wood", 10L, SessionSnapshot.initial(), "Alice", Optional.empty(), eventBuffer);
+		DialogueResponse response = awaitResponse(runtime, eventBuffer, Duration.ofSeconds(1));
+
+		assertEquals("On it.", response.text());
+		assertEquals(DialogueIntentType.JOB_UPDATE, response.intent().type());
+		assertEquals(proposal, response.intent().activeJob());
+		runtime.shutdown();
+	}
+
+	@Test
 	void cancelTaskPlannerIntentSurvivesDialogueRuntimeMapping() {
 		OpenAiCompatibleLlmBackend backend = new OpenAiCompatibleLlmBackend(AgentConfig.LlmConfig.defaults());
-		DialogueRuntime runtime = new DialogueRuntime(new PlannerExecutor(backend), 8);
+		DialogueRuntime runtime = newDialogueRuntime(backend);
 		SemanticEventBuffer eventBuffer = new SemanticEventBuffer(32);
 		backend.injectMockResponse(new PlannerResponse(
 			"Stopping the task.",
@@ -136,7 +164,7 @@ class DialogueRuntimeTest {
 	@Test
 	void missionUpdatePlannerIntentSurvivesDialogueRuntimeMapping() {
 		OpenAiCompatibleLlmBackend backend = new OpenAiCompatibleLlmBackend(AgentConfig.LlmConfig.defaults());
-		DialogueRuntime runtime = new DialogueRuntime(new PlannerExecutor(backend), 8);
+		DialogueRuntime runtime = newDialogueRuntime(backend);
 		SemanticEventBuffer eventBuffer = new SemanticEventBuffer(32);
 		TaskLedger ledger = new TaskLedger(
 			"mission-wood-1",
@@ -220,7 +248,7 @@ class DialogueRuntimeTest {
 	@Test
 	void threeTimeoutsEnterDegradedAndResetCommandClearsIt() {
 		OpenAiCompatibleLlmBackend backend = new OpenAiCompatibleLlmBackend(AgentConfig.LlmConfig.defaults());
-		DialogueRuntime runtime = new DialogueRuntime(new PlannerExecutor(backend), 8);
+		DialogueRuntime runtime = newDialogueRuntime(backend);
 		SemanticEventBuffer eventBuffer = new SemanticEventBuffer(32);
 
 		for (long tick = 1L; tick <= 3L; tick++) {
@@ -275,5 +303,24 @@ class DialogueRuntimeTest {
 			Thread.currentThread().interrupt();
 			throw new AssertionError("Interrupted while waiting", exception);
 		}
+	}
+
+	private static DialogueRuntime newDialogueRuntime(OpenAiCompatibleLlmBackend backend) {
+		AgentConfig.LlmConfig config = AgentConfig.LlmConfig.defaults();
+		Clock clock = Clock.systemDefaultZone();
+		PlannerOrchestrator orchestrator = new PlannerOrchestrator(
+			new PlannerExecutor(backend),
+			new PlannerCompactionService(new OpenAiCompatibleChatClient(config)),
+			new PlannerContextAggregator(
+				clock,
+				config.plannerCompactionTriggerTokens(),
+				config.plannerPendingSemanticEventCap(),
+				PlannerVisionMode.EXTERNAL_SUMMARY
+			),
+			CurrentViewVisionTool.disabled(),
+			PlannerVisionMode.EXTERNAL_SUMMARY,
+			config.visionImageDetail()
+		);
+		return new DialogueRuntime(orchestrator, 8, clock);
 	}
 }

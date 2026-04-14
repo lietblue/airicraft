@@ -1,0 +1,562 @@
+package ai.moeru.airicraft.agent.job;
+
+import ai.moeru.airicraft.agent.dialogue.DialogueIntentType;
+import ai.moeru.airicraft.agent.dialogue.DialogueResponse;
+import ai.moeru.airicraft.agent.goals.GoalMineSpec;
+import ai.moeru.airicraft.agent.goals.GoalSnapshot;
+import ai.moeru.airicraft.agent.goals.GoalType;
+import ai.moeru.airicraft.agent.tasks.AskUserStepArgs;
+import ai.moeru.airicraft.agent.tasks.CollectResourceStepArgs;
+import ai.moeru.airicraft.agent.tasks.CollectResourceTaskHandler;
+import ai.moeru.airicraft.agent.tasks.LedgerStep;
+import ai.moeru.airicraft.agent.tasks.LedgerStepKind;
+import ai.moeru.airicraft.agent.tasks.MissionExecutionSnapshot;
+import ai.moeru.airicraft.agent.tasks.MissionSpec;
+import ai.moeru.airicraft.agent.tasks.MissionType;
+import ai.moeru.airicraft.agent.tasks.StepExecutionResult;
+import ai.moeru.airicraft.agent.tasks.StepExecutionStatus;
+import ai.moeru.airicraft.agent.tasks.TaskLedger;
+import ai.moeru.airicraft.agent.tasks.TaskExecutionSnapshot;
+import ai.moeru.airicraft.agent.tasks.TaskExecutionState;
+import ai.moeru.airicraft.agent.tasks.TaskOwnership;
+import ai.moeru.airicraft.agent.tasks.TaskProgressSnapshot;
+import ai.moeru.airicraft.agent.tasks.TaskSnapshot;
+import ai.moeru.airicraft.agent.tasks.TaskSpec;
+import ai.moeru.airicraft.agent.tasks.TaskState;
+import ai.moeru.airicraft.agent.tasks.TaskStep;
+import ai.moeru.airicraft.agent.tasks.WaitStepArgs;
+import ai.moeru.airicraft.agent.tasks.WorldEvidence;
+
+import java.util.Map;
+import java.util.Objects;
+import java.util.Optional;
+import java.util.UUID;
+
+public final class ActiveJobRuntime {
+	private final CollectResourceTaskHandler collectResourceTaskHandler = new CollectResourceTaskHandler();
+
+	private ActiveJob activeJob = ActiveJob.idle();
+	private TaskExecutionSnapshot lastPrimitiveExecution = TaskExecutionSnapshot.idle();
+	private WorldEvidence lastEvidence = new WorldEvidence(Map.of(), Map.of(), Map.of(), null, 0, 0, 0, null, -1L);
+	private MissionSpec compatibilityMission;
+	private TaskLedger compatibilityLedger;
+
+	public void clear() {
+		activeJob = ActiveJob.idle();
+		lastPrimitiveExecution = TaskExecutionSnapshot.idle();
+		lastEvidence = new WorldEvidence(Map.of(), Map.of(), Map.of(), null, 0, 0, 0, null, -1L);
+		compatibilityMission = null;
+		compatibilityLedger = null;
+	}
+
+	public ActiveJob current() {
+		return activeJob;
+	}
+
+	public Optional<GoalSnapshot> activeGoal(long tick) {
+		if (activeJob.isIdle() || activeJob.status().terminal()) {
+			return Optional.empty();
+		}
+		if (activeJob.directGoal() != null) {
+			return Optional.of(activeJob.directGoal());
+		}
+		if (activeJob.type() == ActiveJobType.COLLECT_RESOURCE && activeJob.taskSpec() != null) {
+			if (activeJob.status() == ActiveJobStatus.QUEUED) {
+				return Optional.empty();
+			}
+			int remaining = Math.max(1, activeJob.taskSpec().quantity() - activeJob.collectedCount());
+			return Optional.of(collectResourceTaskHandler.start(activeJob.taskSpec(), remaining, tick));
+		}
+		return Optional.empty();
+	}
+
+	public void submitTask(TaskSpec spec, int currentResourceCount, String source, long tick) {
+		Objects.requireNonNull(spec, "spec");
+		activeJob = new ActiveJob(
+			newJobId(),
+			ActiveJobType.COLLECT_RESOURCE,
+			ActiveJobStatus.QUEUED,
+			null,
+			spec,
+			null,
+			-1L,
+			currentResourceCount,
+			0,
+			normalizeSource(source),
+			null,
+			null,
+			tick
+		);
+		compatibilityMission = new MissionSpec(activeJob.jobId(), MissionType.COLLECT_RESOURCE, goalText());
+		compatibilityLedger = null;
+	}
+
+	public void submitMissionLedger(TaskLedger ledger, int currentResourceCount, String source, long tick) {
+		Objects.requireNonNull(ledger, "ledger");
+		ActiveJob next = fromLedger(ledger, currentResourceCount, normalizeSource(source), tick);
+		activeJob = preserveProgressIfSame(next, tick);
+		compatibilityMission = missionFromLedger(ledger);
+		compatibilityLedger = ledger;
+	}
+
+	public void applyPlannerResponse(DialogueResponse response, int currentResourceCount, String source, long tick) {
+		if (response == null || response.intent() == null || response.intent().type() == null) {
+			return;
+		}
+
+		if (response.intent().type() == DialogueIntentType.MISSION_UPDATE && response.intent().taskLedger() != null) {
+			submitMissionLedger(response.intent().taskLedger(), currentResourceCount, source, tick);
+			return;
+		}
+		if (response.intent().type() == DialogueIntentType.JOB_UPDATE && response.intent().activeJob() != null) {
+			activeJob = preserveProgressIfSame(fromProposal(response.intent().activeJob(), currentResourceCount, normalizeSource(source), tick), tick);
+			compatibilityMission = missionSpec();
+			compatibilityLedger = null;
+			return;
+		}
+		if (response.intent().type() == DialogueIntentType.SUBMIT_TASK && response.intent().taskSpec() != null) {
+			submitTask(response.intent().taskSpec(), currentResourceCount, source, tick);
+			return;
+		}
+		if (response.intent().type() == DialogueIntentType.CANCEL_TASK || response.intent().type() == DialogueIntentType.CLEAR_GOAL) {
+			cancel("planner_cancelled", tick);
+			return;
+		}
+		if (response.intent().type() == DialogueIntentType.SET_GOAL && response.intent().goalType() != null) {
+			ActiveJob next = fromGoalResponse(response, normalizeSource(source));
+			activeJob = preserveProgressIfSame(next, tick);
+		}
+	}
+
+	public void cancel(String reason, long tick) {
+		if (activeJob.isIdle()) {
+			return;
+		}
+		activeJob = new ActiveJob(
+			activeJob.jobId(),
+			activeJob.type(),
+			ActiveJobStatus.CANCELLED,
+			activeJob.directGoal(),
+			activeJob.taskSpec(),
+			activeJob.askPrompt(),
+			activeJob.waitUntilTick(),
+			activeJob.baselineResourceCount(),
+			activeJob.collectedCount(),
+			activeJob.source(),
+			null,
+			reason,
+			tick
+		);
+	}
+
+	public void clearFollowTarget(String targetPlayer) {
+		if (activeJob.type() != ActiveJobType.FOLLOW_PLAYER || activeJob.directGoal() == null) {
+			return;
+		}
+		if (!Objects.equals(activeJob.directGoal().targetPlayer(), targetPlayer)) {
+			return;
+		}
+		activeJob = ActiveJob.idle();
+	}
+
+	public void tick(
+		TaskExecutionSnapshot primitiveExecution,
+		WorldEvidence evidence,
+		boolean actuationAllowed,
+		boolean nearbyResourceTargetAvailable,
+		long tick
+	) {
+		lastPrimitiveExecution = primitiveExecution == null ? TaskExecutionSnapshot.idle() : primitiveExecution;
+		lastEvidence = evidence == null ? new WorldEvidence(Map.of(), Map.of(), Map.of(), null, 0, 0, 0, null, tick) : evidence;
+
+		if (activeJob.isIdle() || activeJob.status().terminal()) {
+			return;
+		}
+
+		activeJob = switch (activeJob.type()) {
+			case COLLECT_RESOURCE -> tickCollectResource(activeJob, lastPrimitiveExecution, lastEvidence, actuationAllowed, nearbyResourceTargetAvailable, tick);
+			case WAIT -> tickWait(activeJob, tick);
+			case ASK_USER -> tickAskUser(activeJob, tick);
+			case FOLLOW_PLAYER, NAVIGATE_TO, MINE_BLOCKS -> tickGoalJob(activeJob, lastPrimitiveExecution, actuationAllowed, tick);
+			case IDLE -> ActiveJob.idle();
+		};
+	}
+
+	public TaskSnapshot taskSnapshot() {
+		TaskSpec spec = activeJob.taskSpec();
+		TaskProgressSnapshot progress = spec == null
+			? new TaskProgressSnapshot(0, 0)
+			: TaskProgressSnapshot.of(activeJob.collectedCount(), spec.quantity());
+		return new TaskSnapshot(
+			toTaskState(activeJob),
+			compatibilityMission,
+			compatibilityLedger,
+			spec,
+			progress,
+			TaskStep.NONE,
+			TaskOwnership.NONE,
+			activeJob.source(),
+			activeJob.lastError(),
+			compatibilityLedger == null ? activeStepId() : compatibilityLedger.activeStepId(),
+			compatibilityActiveStepKind(),
+			lastStepResult(),
+			activeJob.updatedTick()
+		);
+	}
+
+	public MissionExecutionSnapshot missionExecutionSnapshot() {
+		return new MissionExecutionSnapshot(
+			compatibilityMission,
+			compatibilityLedger,
+			null,
+			lastEvidence,
+			lastStepResult(),
+			lastPrimitiveExecution
+		);
+	}
+
+	private ActiveJob tickCollectResource(
+		ActiveJob job,
+		TaskExecutionSnapshot primitiveExecution,
+		WorldEvidence evidence,
+		boolean actuationAllowed,
+		boolean nearbyResourceTargetAvailable,
+		long tick
+	) {
+		TaskSpec spec = job.taskSpec();
+		int currentCount = evidence.inventoryCounts().getOrDefault(spec.resourceKind(), job.baselineResourceCount());
+		int collected = Math.max(0, currentCount - job.baselineResourceCount());
+		if (collected >= spec.quantity()) {
+			return updated(job, ActiveJobStatus.COMPLETED, null, null, collected, tick);
+		}
+		if (!actuationAllowed || primitiveExecution.state() == TaskExecutionState.PAUSED_BY_SESSION_GATE) {
+			return updated(job, ActiveJobStatus.BLOCKED, "session_gate", null, collected, tick);
+		}
+		if (primitiveExecution.state() == TaskExecutionState.FAILED) {
+			return updated(job, ActiveJobStatus.FAILED, null, nonEmpty(primitiveExecution.lastPathEvent(), "task_failed"), collected, tick);
+		}
+		if (primitiveExecution.state() == TaskExecutionState.CANCELLED) {
+			return updated(job, ActiveJobStatus.CANCELLED, null, nonEmpty(primitiveExecution.lastPathEvent(), "task_cancelled"), collected, tick);
+		}
+		if (!nearbyResourceTargetAvailable) {
+			return updated(job, ActiveJobStatus.BLOCKED, "target_missing", null, collected, tick);
+		}
+		return updated(job, ActiveJobStatus.RUNNING, null, null, collected, tick);
+	}
+
+	private static ActiveJob tickWait(ActiveJob job, long tick) {
+		if (job.waitUntilTick() >= 0L && tick >= job.waitUntilTick()) {
+			return updated(job, ActiveJobStatus.COMPLETED, null, null, job.collectedCount(), tick);
+		}
+		return updated(job, ActiveJobStatus.RUNNING, null, null, job.collectedCount(), tick);
+	}
+
+	private static ActiveJob tickAskUser(ActiveJob job, long tick) {
+		return updated(job, ActiveJobStatus.BLOCKED, "waiting_for_user", null, job.collectedCount(), tick);
+	}
+
+	private static ActiveJob tickGoalJob(
+		ActiveJob job,
+		TaskExecutionSnapshot primitiveExecution,
+		boolean actuationAllowed,
+		long tick
+	) {
+		if (!actuationAllowed || primitiveExecution.state() == TaskExecutionState.PAUSED_BY_SESSION_GATE) {
+			return updated(job, ActiveJobStatus.BLOCKED, "session_gate", null, job.collectedCount(), tick);
+		}
+		return switch (primitiveExecution.state()) {
+			case RUNNING -> updated(job, ActiveJobStatus.RUNNING, null, null, job.collectedCount(), tick);
+			case COMPLETED -> updated(job, ActiveJobStatus.COMPLETED, null, null, job.collectedCount(), tick);
+			case FAILED -> updated(job, ActiveJobStatus.FAILED, null, nonEmpty(primitiveExecution.lastPathEvent(), "task_failed"), job.collectedCount(), tick);
+			case CANCELLED -> updated(job, ActiveJobStatus.CANCELLED, null, nonEmpty(primitiveExecution.lastPathEvent(), "task_cancelled"), job.collectedCount(), tick);
+			case IDLE, PAUSED_BY_SESSION_GATE -> updated(job, ActiveJobStatus.QUEUED, null, null, job.collectedCount(), tick);
+		};
+	}
+
+	private ActiveJob fromLedger(TaskLedger ledger, int currentResourceCount, String source, long tick) {
+		if (ledger.activeStepId() == null) {
+			return new ActiveJob(ledger.missionId(), ActiveJobType.IDLE, ActiveJobStatus.COMPLETED, null, null, null, -1L, 0, 0, source, null, null, tick);
+		}
+		LedgerStep activeStep = ledger.steps().stream()
+			.filter(step -> Objects.equals(step.id(), ledger.activeStepId()))
+			.findFirst()
+			.orElse(null);
+		if (activeStep == null) {
+			return ActiveJob.idle();
+		}
+		return switch (activeStep.kind()) {
+			case COLLECT_RESOURCE -> fromCollectResourceStep(ledger.missionId(), activeStep.args().collectResource(), currentResourceCount, source, tick);
+			case NAVIGATE_TO_POSITION -> fromDirectGoal(
+				ledger.missionId(),
+				new GoalSnapshot(GoalType.NAVIGATE_TO, null, activeStep.args().navigateToPosition(), null, tick, source),
+				ActiveJobType.NAVIGATE_TO,
+				source,
+				tick
+			);
+			case MINE_BLOCKS -> fromDirectGoal(
+				ledger.missionId(),
+				new GoalSnapshot(GoalType.MINE_BLOCKS, null, null, activeStep.args().mineBlocks(), tick, source),
+				ActiveJobType.MINE_BLOCKS,
+				source,
+				tick
+			);
+			case WAIT -> fromWaitStep(ledger.missionId(), activeStep.args().waitStep(), source, tick);
+			case ASK_USER -> fromAskUserStep(ledger.missionId(), activeStep.args().askUser(), source, tick);
+			case FINISH -> new ActiveJob(ledger.missionId(), ActiveJobType.IDLE, ActiveJobStatus.COMPLETED, null, null, null, -1L, 0, 0, source, null, null, tick);
+			default -> new ActiveJob(ledger.missionId(), ActiveJobType.ASK_USER, ActiveJobStatus.BLOCKED, null, null, "Unsupported step: " + activeStep.kind().name(), -1L, 0, 0, source, "unsupported_step", null, tick);
+		};
+	}
+
+	private static ActiveJob fromWaitStep(String jobId, WaitStepArgs waitStep, String source, long tick) {
+		long untilTick = waitStep == null ? tick : tick + Math.max(0L, waitStep.ticks());
+		return new ActiveJob(jobId, ActiveJobType.WAIT, ActiveJobStatus.QUEUED, null, null, null, untilTick, 0, 0, source, null, null, tick);
+	}
+
+	private static ActiveJob fromAskUserStep(String jobId, AskUserStepArgs askUser, String source, long tick) {
+		return new ActiveJob(jobId, ActiveJobType.ASK_USER, ActiveJobStatus.BLOCKED, null, null, askUser == null ? null : askUser.prompt(), -1L, 0, 0, source, "waiting_for_user", null, tick);
+	}
+
+	private ActiveJob fromCollectResourceStep(String jobId, CollectResourceStepArgs args, int currentResourceCount, String source, long tick) {
+		if (args == null) {
+			return new ActiveJob(jobId, ActiveJobType.ASK_USER, ActiveJobStatus.FAILED, null, null, null, -1L, 0, 0, source, null, "missing_collect_resource_args", tick);
+		}
+		return new ActiveJob(
+			jobId,
+			ActiveJobType.COLLECT_RESOURCE,
+			ActiveJobStatus.QUEUED,
+			null,
+			new TaskSpec(ai.moeru.airicraft.agent.tasks.TaskType.COLLECT_RESOURCE, args.resourceKind(), args.quantity()),
+			null,
+			-1L,
+			currentResourceCount,
+			0,
+			source,
+			null,
+			null,
+			tick
+		);
+	}
+
+	private static ActiveJob fromGoalResponse(DialogueResponse response, String source) {
+		GoalSnapshot goal = new GoalSnapshot(
+			response.intent().goalType(),
+			response.intent().targetPlayer(),
+			response.intent().position(),
+			response.intent().mineSpec(),
+			response.tick(),
+			source
+		);
+		ActiveJobType type = switch (response.intent().goalType()) {
+			case FOLLOW_PLAYER -> ActiveJobType.FOLLOW_PLAYER;
+			case NAVIGATE_TO -> ActiveJobType.NAVIGATE_TO;
+			case MINE_BLOCKS -> ActiveJobType.MINE_BLOCKS;
+		};
+		return fromDirectGoal(newJobId(), goal, type, source, response.tick());
+	}
+
+	private static ActiveJob fromProposal(ActiveJobProposal proposal, int currentResourceCount, String source, long tick) {
+		return switch (proposal.type()) {
+			case FOLLOW_PLAYER -> fromDirectGoal(
+				newJobId(),
+				new GoalSnapshot(GoalType.FOLLOW_PLAYER, proposal.targetPlayer(), null, null, tick, source),
+				ActiveJobType.FOLLOW_PLAYER,
+				source,
+				tick
+			);
+			case NAVIGATE_TO -> fromDirectGoal(
+				newJobId(),
+				new GoalSnapshot(GoalType.NAVIGATE_TO, null, proposal.position(), null, tick, source),
+				ActiveJobType.NAVIGATE_TO,
+				source,
+				tick
+			);
+			case MINE_BLOCKS -> fromDirectGoal(
+				newJobId(),
+				new GoalSnapshot(GoalType.MINE_BLOCKS, null, null, proposal.mineSpec(), tick, source),
+				ActiveJobType.MINE_BLOCKS,
+				source,
+				tick
+			);
+			case COLLECT_RESOURCE -> new ActiveJob(
+				newJobId(),
+				ActiveJobType.COLLECT_RESOURCE,
+				ActiveJobStatus.QUEUED,
+				null,
+				proposal.taskSpec(),
+				null,
+				-1L,
+				currentResourceCount,
+				0,
+				source,
+				null,
+				null,
+				tick
+			);
+			case WAIT -> fromWaitStep(newJobId(), new WaitStepArgs(proposal.waitTicks() == null ? 0L : proposal.waitTicks(), null), source, tick);
+			case ASK_USER -> fromAskUserStep(newJobId(), new AskUserStepArgs(proposal.askPrompt()), source, tick);
+			case IDLE -> ActiveJob.idle();
+		};
+	}
+
+	private static ActiveJob fromDirectGoal(String jobId, GoalSnapshot goal, ActiveJobType type, String source, long tick) {
+		return new ActiveJob(jobId, type, ActiveJobStatus.QUEUED, goal, null, null, -1L, 0, 0, source, null, null, tick);
+	}
+
+	private ActiveJob preserveProgressIfSame(ActiveJob next, long tick) {
+		if (sameJobTarget(activeJob, next) && !activeJob.status().terminal()) {
+			return new ActiveJob(
+				activeJob.jobId(),
+				next.type(),
+				activeJob.status(),
+				next.directGoal(),
+				next.taskSpec(),
+				next.askPrompt(),
+				next.waitUntilTick(),
+				activeJob.baselineResourceCount(),
+				activeJob.collectedCount(),
+				next.source(),
+				activeJob.blockedReason(),
+				activeJob.lastError(),
+				tick
+			);
+		}
+		return next;
+	}
+
+	private static boolean sameJobTarget(ActiveJob left, ActiveJob right) {
+		if (left == null || right == null || left.type() != right.type()) {
+			return false;
+		}
+		if (left.directGoal() != null || right.directGoal() != null) {
+			return Objects.equals(left.directGoal(), right.directGoal());
+		}
+		if (left.taskSpec() != null || right.taskSpec() != null) {
+			return Objects.equals(left.taskSpec(), right.taskSpec());
+		}
+		return Objects.equals(left.askPrompt(), right.askPrompt()) && left.waitUntilTick() == right.waitUntilTick();
+	}
+
+	private MissionSpec missionSpec() {
+		if (activeJob.isIdle()) {
+			return null;
+		}
+		MissionType missionType = switch (activeJob.type()) {
+			case COLLECT_RESOURCE -> MissionType.COLLECT_RESOURCE;
+			default -> MissionType.COLLECT_RESOURCE;
+		};
+		return new MissionSpec(activeJob.jobId(), missionType, goalText());
+	}
+
+	private String goalText() {
+		return switch (activeJob.type()) {
+			case FOLLOW_PLAYER -> "Follow " + (activeJob.directGoal() == null ? "" : nonEmpty(activeJob.directGoal().targetPlayer(), "player"));
+			case NAVIGATE_TO -> "Navigate to target";
+			case MINE_BLOCKS -> "Mine blocks";
+			case COLLECT_RESOURCE -> activeJob.taskSpec() == null ? "Collect resource" : "Collect " + activeJob.taskSpec().quantity() + " " + activeJob.taskSpec().resourceKind().name().toLowerCase();
+			case WAIT -> "Wait";
+			case ASK_USER -> "Ask user";
+			case IDLE -> "";
+		};
+	}
+
+	private ai.moeru.airicraft.agent.tasks.LedgerStepKind activeStepKind() {
+		return switch (activeJob.type()) {
+			case FOLLOW_PLAYER, NAVIGATE_TO -> ai.moeru.airicraft.agent.tasks.LedgerStepKind.NAVIGATE_TO_POSITION;
+			case MINE_BLOCKS -> ai.moeru.airicraft.agent.tasks.LedgerStepKind.MINE_BLOCKS;
+			case COLLECT_RESOURCE -> ai.moeru.airicraft.agent.tasks.LedgerStepKind.COLLECT_RESOURCE;
+			case WAIT -> ai.moeru.airicraft.agent.tasks.LedgerStepKind.WAIT;
+			case ASK_USER -> ai.moeru.airicraft.agent.tasks.LedgerStepKind.ASK_USER;
+			case IDLE -> null;
+		};
+	}
+
+	private String activeStepId() {
+		return activeJob.isIdle() ? null : activeJob.type().name().toLowerCase();
+	}
+
+	private ai.moeru.airicraft.agent.tasks.LedgerStepKind compatibilityActiveStepKind() {
+		if (compatibilityLedger != null && compatibilityLedger.activeStepId() != null) {
+			return compatibilityLedger.steps().stream()
+				.filter(step -> Objects.equals(step.id(), compatibilityLedger.activeStepId()))
+				.map(LedgerStep::kind)
+				.findFirst()
+				.orElse(activeStepKind());
+		}
+		return activeStepKind();
+	}
+
+	private StepExecutionResult lastStepResult() {
+		if (activeJob.isIdle()) {
+			return StepExecutionResult.idle();
+		}
+		StepExecutionStatus status = switch (activeJob.status()) {
+			case IDLE, QUEUED -> StepExecutionStatus.IDLE;
+			case RUNNING -> StepExecutionStatus.RUNNING;
+			case BLOCKED -> StepExecutionStatus.WAITING;
+			case COMPLETED -> StepExecutionStatus.COMPLETED;
+			case FAILED -> StepExecutionStatus.FAILED;
+			case CANCELLED -> StepExecutionStatus.CANCELLED;
+		};
+		return new StepExecutionResult(
+			activeJob.type().name().toLowerCase(),
+			status,
+			activeJob.lastError(),
+			Map.of(),
+			Map.of("jobType", activeJob.type().name()),
+			activeJob.updatedTick()
+		);
+	}
+
+	private static TaskState toTaskState(ActiveJob job) {
+		return switch (job.status()) {
+			case IDLE -> TaskState.IDLE;
+			case QUEUED -> TaskState.QUEUED;
+			case RUNNING -> TaskState.RUNNING;
+			case BLOCKED -> "session_gate".equals(job.blockedReason()) ? TaskState.PAUSED_BY_SESSION_GATE : TaskState.WAITING_FOR_PICKUP;
+			case COMPLETED -> TaskState.COMPLETED;
+			case FAILED -> TaskState.FAILED;
+			case CANCELLED -> TaskState.CANCELLED;
+		};
+	}
+
+	private static ActiveJob updated(
+		ActiveJob job,
+		ActiveJobStatus status,
+		String blockedReason,
+		String lastError,
+		int collectedCount,
+		long tick
+	) {
+		return new ActiveJob(
+			job.jobId(),
+			job.type(),
+			status,
+			job.directGoal(),
+			job.taskSpec(),
+			job.askPrompt(),
+			job.waitUntilTick(),
+			job.baselineResourceCount(),
+			collectedCount,
+			job.source(),
+			blockedReason,
+			lastError,
+			tick
+		);
+	}
+
+	private static String normalizeSource(String source) {
+		return source == null || source.isBlank() ? "runtime" : source;
+	}
+
+	private static MissionSpec missionFromLedger(TaskLedger ledger) {
+		return new MissionSpec(ledger.missionId(), ledger.missionType(), ledger.goalText());
+	}
+
+	private static String newJobId() {
+		return "job-" + UUID.randomUUID();
+	}
+
+	private static String nonEmpty(String value, String fallback) {
+		return value == null || value.isBlank() ? fallback : value;
+	}
+}

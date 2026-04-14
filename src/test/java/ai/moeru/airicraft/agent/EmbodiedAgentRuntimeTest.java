@@ -7,6 +7,7 @@ import ai.moeru.airicraft.agent.goals.GoalType;
 import ai.moeru.airicraft.agent.dialogue.DialogueIntent;
 import ai.moeru.airicraft.agent.dialogue.DialogueIntentType;
 import ai.moeru.airicraft.agent.dialogue.DialogueResponse;
+import ai.moeru.airicraft.agent.job.ActiveJobProposal;
 import ai.moeru.airicraft.agent.session.SessionMode;
 import ai.moeru.airicraft.agent.session.SessionSnapshot;
 import ai.moeru.airicraft.agent.tasks.CollectResourceStepArgs;
@@ -320,6 +321,45 @@ class EmbodiedAgentRuntimeTest {
 				new GoalPosition(1, 64, 1, true),
 				null,
 				null
+			),
+			30L
+		));
+
+		assertEquals(TaskState.CANCELLED, runtime.snapshot().task().state());
+		assertEquals(GoalType.NAVIGATE_TO, runtime.activeGoal().orElseThrow().type());
+	}
+
+	@Test
+	void directJobUpdateCancelsActiveTaskFirst() {
+		FakeWorldTaskExecutor executor = new FakeWorldTaskExecutor();
+		EmbodiedAgentRuntime runtime = EmbodiedAgentRuntime.createForTests(executor);
+		runtime.overrideSessionSnapshotForTests(new SessionSnapshot(
+			SessionMode.REMOTE_MULTIPLAYER,
+			true,
+			true,
+			"minecraft:overworld",
+			false,
+			0,
+			0L
+		));
+		runtime.injectDialogueResponseForTests(new DialogueResponse(
+			"",
+			new DialogueIntent(
+				DialogueIntentType.SUBMIT_TASK,
+				null,
+				null,
+				null,
+				null,
+				new TaskSpec(TaskType.COLLECT_RESOURCE, TaskResourceKind.WOOD_LOGS, 4)
+			),
+			20L
+		));
+
+		runtime.injectDialogueResponseForTests(new DialogueResponse(
+			"",
+			new DialogueIntent(
+				DialogueIntentType.JOB_UPDATE,
+				ActiveJobProposal.navigateTo(new GoalPosition(1, 64, 1, true))
 			),
 			30L
 		));

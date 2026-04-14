@@ -56,18 +56,18 @@ public record PlannerAmbientContext(
 			return null;
 		}
 		StringBuilder description = new StringBuilder()
-			.append("Mission ")
+			.append("Active job ")
 			.append(task.mission().missionType().name())
 			.append(": ")
 			.append(task.mission().goalText() == null ? "no goal text" : task.mission().goalText());
 		if (task.activeStepId() != null && task.activeStepKind() != null) {
-			description.append(". Active step ").append(task.activeStepId()).append(" (").append(task.activeStepKind().name()).append(")");
+			description.append(". Current job step ").append(task.activeStepId()).append(" (").append(task.activeStepKind().name()).append(")");
 		}
 		if (missionExecution != null && missionExecution.lastStepResult() != null && missionExecution.lastStepResult().status() != null) {
 			description.append(". Last step result ").append(missionExecution.lastStepResult().status().name());
 		}
 		if (task.progress() != null) {
-			description.append(". Mission progress delta: collected=")
+			description.append(". Active job progress: collected=")
 				.append(task.progress().collected())
 				.append(", remaining=")
 				.append(task.progress().remaining());
@@ -82,13 +82,13 @@ public record PlannerAmbientContext(
 		}
 		StringBuilder description = new StringBuilder();
 		if (missionExecution.ledger() != null) {
-			description.append("Mission ledger snapshot: ").append(renderLedger(missionExecution.ledger()));
+			description.append("Compatibility ledger snapshot: ").append(renderLedger(missionExecution.ledger()));
 		}
 		if (missionExecution.evidence() != null) {
 			if (description.length() > 0) {
 				description.append(' ');
 			}
-			description.append("Mission evidence snapshot: ").append(renderEvidence(missionExecution.evidence()));
+			description.append("Active job evidence snapshot: ").append(renderEvidence(missionExecution.evidence()));
 		}
 		if (missionExecution.lastStepResult() != null && missionExecution.lastStepResult().status() != null
 			&& missionExecution.lastStepResult().status() != ai.moeru.airicraft.agent.tasks.StepExecutionStatus.IDLE) {
@@ -216,6 +216,6 @@ public record PlannerAmbientContext(
 			.filter(step -> step.status() == ai.moeru.airicraft.agent.tasks.LedgerStepStatus.CANCELLED)
 			.map(ai.moeru.airicraft.agent.tasks.LedgerStep::id)
 			.toList();
-		return "Mission history summary: completedSteps=" + completed + ", failedSteps=" + failed + ", cancelledSteps=" + cancelled + ".";
+		return "Compatibility history summary: completedSteps=" + completed + ", failedSteps=" + failed + ", cancelledSteps=" + cancelled + ".";
 	}
 }

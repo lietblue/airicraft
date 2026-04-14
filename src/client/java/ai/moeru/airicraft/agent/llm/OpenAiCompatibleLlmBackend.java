@@ -8,6 +8,8 @@ import ai.moeru.airicraft.agent.AgentConfig;
 import ai.moeru.airicraft.agent.events.EventPolicyChanges;
 import ai.moeru.airicraft.agent.events.EventPolicyMatch;
 import ai.moeru.airicraft.agent.events.EventPolicyRuleUpsert;
+import ai.moeru.airicraft.agent.job.ActiveJobProposal;
+import ai.moeru.airicraft.agent.job.ActiveJobType;
 import ai.moeru.airicraft.agent.observability.AgentObservability;
 import ai.moeru.airicraft.agent.observability.NoopObservability;
 import ai.moeru.airicraft.agent.observability.TraceSanitizer;
@@ -131,9 +133,11 @@ public final class OpenAiCompatibleLlmBackend implements LlmBackend {
 			JsonObject eventPolicyObject = payload.has("eventPolicyChanges") && payload.get("eventPolicyChanges").isJsonObject()
 				? payload.getAsJsonObject("eventPolicyChanges")
 				: null;
+			ActiveJobProposal activeJob = parseActiveJobProposal(intentObject, "activeJob");
+			String intentType = getString(intentObject, "type").orElse(activeJob == null ? "none" : "job_update").toLowerCase(Locale.ROOT);
 
 			PlannerIntent intent = new PlannerIntent(
-				getString(intentObject, "type").orElse("none").toLowerCase(Locale.ROOT),
+				intentType,
 				getString(intentObject, "goalType")
 					.map(value -> ai.moeru.airicraft.agent.goals.GoalType.valueOf(value.toUpperCase(Locale.ROOT)))
 					.orElse(null),
@@ -141,7 +145,8 @@ public final class OpenAiCompatibleLlmBackend implements LlmBackend {
 				parseGoalPosition(intentObject, "position"),
 				parseGoalMineSpec(intentObject, "mineSpec"),
 				parseTaskSpec(intentObject, "taskSpec"),
-				parseTaskLedger(intentObject, "taskLedger")
+				parseTaskLedger(intentObject, "taskLedger"),
+				activeJob
 			);
 			PlannerToolRequest toolRequest = toolRequestObject == null
 				? null
@@ -277,6 +282,51 @@ public final class OpenAiCompatibleLlmBackend implements LlmBackend {
 		catch (IllegalArgumentException exception) {
 			return null;
 		}
+	}
+
+	private static ActiveJobProposal parseActiveJobProposal(JsonObject object, String fieldName) {
+		if (object == null || !object.has(fieldName) || !object.get(fieldName).isJsonObject()) {
+			return null;
+		}
+		JsonObject jobObject = object.getAsJsonObject(fieldName);
+		Optional<ActiveJobType> type = getString(jobObject, "type").flatMap(OpenAiCompatibleLlmBackend::parseActiveJobType);
+		if (type.isEmpty()) {
+			return null;
+		}
+		return switch (type.get()) {
+			case FOLLOW_PLAYER -> getString(jobObject, "targetPlayer")
+				.map(ActiveJobProposal::followPlayer)
+				.orElse(null);
+			case NAVIGATE_TO -> Optional.ofNullable(parseGoalPosition(jobObject, "position"))
+				.map(ActiveJobProposal::navigateTo)
+				.orElse(null);
+			case MINE_BLOCKS -> Optional.ofNullable(parseGoalMineSpec(jobObject, "mineSpec"))
+				.map(ActiveJobProposal::mineBlocks)
+				.orElse(null);
+			case COLLECT_RESOURCE -> parseActiveCollectResourceProposal(jobObject);
+			case WAIT -> {
+				Long waitTicks = getLong(jobObject, "waitTicks").orElseGet(() -> getLong(jobObject, "ticks").orElse(0L));
+				yield ActiveJobProposal.waitFor(waitTicks);
+			}
+			case ASK_USER -> {
+				String prompt = getString(jobObject, "askPrompt").orElseGet(() -> getString(jobObject, "prompt").orElse(null));
+				yield prompt == null ? null : ActiveJobProposal.askUser(prompt);
+			}
+			case IDLE -> null;
+		};
+	}
+
+	private static ActiveJobProposal parseActiveCollectResourceProposal(JsonObject jobObject) {
+		TaskSpec nestedTaskSpec = parseTaskSpec(jobObject, "taskSpec");
+		if (nestedTaskSpec != null) {
+			return ActiveJobProposal.collectResource(nestedTaskSpec);
+		}
+		Optional<TaskResourceKind> resourceKind = getString(jobObject, "resourceKind").flatMap(OpenAiCompatibleLlmBackend::parseTaskResourceKind);
+		Optional<Integer> quantity = getInt(jobObject, "quantity");
+		if (resourceKind.isEmpty() || quantity.isEmpty()) {
+			return null;
+		}
+		return ActiveJobProposal.collectResource(new TaskSpec(TaskType.COLLECT_RESOURCE, resourceKind.get(), quantity.get()));
 	}
 
 	private static TaskLedger parseTaskLedger(JsonObject object, String fieldName) {
@@ -495,6 +545,15 @@ public final class OpenAiCompatibleLlmBackend implements LlmBackend {
 		}
 	}
 
+	private static Optional<ActiveJobType> parseActiveJobType(String value) {
+		try {
+			return Optional.of(ActiveJobType.valueOf(value.toUpperCase(Locale.ROOT)));
+		}
+		catch (IllegalArgumentException exception) {
+			return Optional.empty();
+		}
+	}
+
 	private static Optional<MissionType> parseMissionType(String value) {
 		try {
 			return Optional.of(MissionType.valueOf(value.toUpperCase(Locale.ROOT)));
@@ -546,6 +605,18 @@ public final class OpenAiCompatibleLlmBackend implements LlmBackend {
 		}
 		try {
 			return Optional.of(object.get(fieldName).getAsInt());
+		}
+		catch (RuntimeException exception) {
+			return Optional.empty();
+		}
+	}
+
+	private static Optional<Long> getLong(JsonObject object, String fieldName) {
+		if (object == null || !object.has(fieldName) || object.get(fieldName).isJsonNull() || !object.get(fieldName).isJsonPrimitive()) {
+			return Optional.empty();
+		}
+		try {
+			return Optional.of(object.get(fieldName).getAsLong());
 		}
 		catch (RuntimeException exception) {
 			return Optional.empty();

@@ -25,100 +25,24 @@ public final class PlannerPromptPolicy {
 			{
 			  "replyText": string,
 			  "intent": {
-			    "type": "mission_update" | "reply_only" | "ask_clarification" | "acknowledge_failure" | "none",
-			    "taskLedger": {
-			      "missionId": string,
-			      "missionType": "COLLECT_RESOURCE" | "CRAFT_TOOL" | "CRAFT_ITEM" | "SMELT_ITEM" | "DELIVER_ITEM",
-			      "goalText": string,
-			      "steps": [
-			        {
-			          "id": string,
-			          "kind": "COLLECT_RESOURCE" | "NAVIGATE_TO_POSITION" | "NAVIGATE_TO_BLOCK_KIND" | "MINE_BLOCKS" | "CRAFT_RECIPE" | "OPEN_CONTAINER" | "TRANSFER_ITEMS" | "PLACE_BLOCK" | "DROP_ITEMS" | "WAIT" | "ASK_USER" | "FINISH",
-			          "args": {
-			            "collectResource": {
-			              "resourceKind": "WOOD_LOGS",
-			              "quantity": number,
-			              "deliveryPolicy": string
-			            } | null,
-			            "navigateToPosition": {
-			              "x": number,
-			              "y": number,
-			              "z": number,
-			              "exactY": boolean
-			            } | null,
-			            "navigateToBlockKind": {
-			              "blockIds": string[]
-			            } | null,
-			            "mineBlocks": {
-			              "blockIds": string[],
-			              "quantity": number
-			            } | null,
-			            "craftRecipe": {
-			              "recipeId": string,
-			              "quantity": number
-			            } | null,
-			            "openContainer": {
-			              "containerRef": string
-			            } | null,
-			            "transferItems": {
-			              "direction": string,
-			              "itemFilters": string[],
-			              "quantity": number,
-			              "containerRef": string | null
-			            } | null,
-			            "placeBlock": {
-			              "itemId": string,
-			              "position": {
-			                "x": number,
-			                "y": number,
-			                "z": number,
-			                "exactY": boolean
-			              }
-			            } | null,
-			            "dropItems": {
-			              "itemFilters": string[],
-			              "quantity": number
-			            } | null,
-			            "waitStep": {
-			              "ticks": number,
-			              "reason": string | null
-			            } | null,
-			            "askUser": {
-			              "prompt": string
-			            } | null,
-			            "finish": {
-			              "reason": string | null
-			            } | null
-			          },
-			          "dependsOn": string[],
-			          "status": "PENDING" | "ACTIVE" | "COMPLETED" | "FAILED" | "CANCELLED",
-			          "expectedEvidence": [
-			            {
-			              "type": "INVENTORY_DELTA_AT_LEAST" | "ITEM_COUNT_AT_LEAST" | "ITEM_DELTA_AT_LEAST" | "STEP_COMPLETED" | "POSITION_REACHED" | "RECIPE_CRAFTED" | "ITEMS_TRANSFERRED" | "BLOCK_PLACED" | "MISSION_FINISHED",
-			              "resourceKind": "WOOD_LOGS" | null,
-			              "itemId": string | null,
-			              "quantity": number | null,
-			              "stepId": string | null,
-			              "detail": string | null
-			            }
-			          ],
-			          "retryBudget": number,
-			          "notes": string | null
-			        }
-			      ],
-			      "activeStepId": string | null,
-			      "completionCriteria": [
-			        {
-			          "type": "INVENTORY_DELTA_AT_LEAST" | "ITEM_COUNT_AT_LEAST" | "ITEM_DELTA_AT_LEAST" | "STEP_COMPLETED" | "POSITION_REACHED" | "RECIPE_CRAFTED" | "ITEMS_TRANSFERRED" | "BLOCK_PLACED" | "MISSION_FINISHED",
-			          "resourceKind": "WOOD_LOGS" | null,
-			          "itemId": string | null,
-			          "quantity": number | null,
-			          "stepId": string | null,
-			          "detail": string | null
-			        }
-			      ],
-			      "replanReason": string | null,
-			      "plannerNotes": string | null
+			    "type": "job_update" | "clear_goal" | "cancel_task" | "reply_only" | "ask_clarification" | "acknowledge_failure" | "none",
+			    "activeJob": {
+			      "type": "FOLLOW_PLAYER" | "NAVIGATE_TO" | "MINE_BLOCKS" | "COLLECT_RESOURCE" | "WAIT" | "ASK_USER",
+			      "targetPlayer": string | null,
+			      "position": {
+			        "x": number,
+			        "y": number,
+			        "z": number,
+			        "exactY": boolean
+			      } | null,
+			      "mineSpec": {
+			        "blockIds": string[],
+			        "quantity": number
+			      } | null,
+			      "resourceKind": "WOOD_LOGS" | null,
+			      "quantity": number | null,
+			      "waitTicks": number | null,
+			      "askPrompt": string | null
 			    } | null
 			  },
 			  "toolRequest": {
@@ -152,16 +76,16 @@ public final class PlannerPromptPolicy {
 			Use eventPolicyChanges sparingly to suppress repeated noisy future events during the current session.
 			Never try to suppress direct addressed chat, same-client admin messages, or reset commands.
 			eventPolicyChanges affect future events only; they do not rewrite already observed context.
-			Use mission_update for any execution plan. Return the full taskLedger every planning turn, not a patch.
-			Runtime notices describing the mission ledger, world evidence, and last step result are the source of truth for progress.
+			Use job_update for any new active job. There is only one active job at a time, so always propose the single current job, not a multi-step ledger.
+			Runtime notices describing the active job, world evidence, and last step result are the source of truth for progress.
 			INVENTORY_DELTA_AT_LEAST means items gained since the current mission started, not absolute inventory and not the current total inventory.
 			When runtime notices include collected/remaining progress, trust that delta progress over raw inventoryCounts.
-			Do not invent step kinds or ad-hoc args fields outside the schema above.
-			Currently implemented step executors are COLLECT_RESOURCE, CRAFT_RECIPE, WAIT, ASK_USER, and FINISH. Treat the other step kinds as reserved unless an operator explicitly directs otherwise.
-			Use collect_resource for gathering tasks like wood logs.
-			Use craft_recipe only when the required inputs are already available or a previous step in the same ledger will provide them.
-			Use askUser when a required decision or missing information cannot be safely inferred.
-			Do not mark a step completed unless the runtime evidence listed in expectedEvidence should prove it.
+			Do not invent ad-hoc fields outside the schema above.
+			Currently supported active job types are FOLLOW_PLAYER, NAVIGATE_TO, MINE_BLOCKS, COLLECT_RESOURCE, WAIT, and ASK_USER.
+			Use COLLECT_RESOURCE for gathering tasks like wood logs.
+			Use ASK_USER when a required decision or missing information cannot be safely inferred.
+			Use WAIT only for short explicit pauses.
+			Legacy compatibility fields such as taskLedger, taskSpec, set_goal, and submit_task may still work, but prefer activeJob with job_update.
 			For combat or unsupported autonomous survival behaviors, ask for clarification or acknowledge the limitation.
 			%s
 			When a tool result is already present in the conversation, do not request another tool.

@@ -30,11 +30,12 @@ import ai.moeru.airicraft.agent.events.SemanticEvent;
 import ai.moeru.airicraft.agent.events.SemanticEventQueryResult;
 import ai.moeru.airicraft.agent.follow.FollowCapability;
 import ai.moeru.airicraft.agent.follow.FollowState;
-import ai.moeru.airicraft.agent.goals.GoalDirector;
 import ai.moeru.airicraft.agent.goals.GoalMineSpec;
 import ai.moeru.airicraft.agent.goals.GoalPosition;
 import ai.moeru.airicraft.agent.goals.GoalSnapshot;
 import ai.moeru.airicraft.agent.goals.GoalType;
+import ai.moeru.airicraft.agent.job.ActiveJob;
+import ai.moeru.airicraft.agent.job.ActiveJobRuntime;
 import ai.moeru.airicraft.agent.llm.CompactionExecutionResult;
 import ai.moeru.airicraft.agent.llm.CurrentViewVisionService;
 import ai.moeru.airicraft.agent.llm.LlmBackendException;
@@ -54,6 +55,10 @@ import ai.moeru.airicraft.agent.llm.VisionDescription;
 import ai.moeru.airicraft.agent.session.LanHostingService;
 import ai.moeru.airicraft.agent.session.SessionSnapshot;
 import ai.moeru.airicraft.agent.session.SessionRuntime;
+import ai.moeru.airicraft.agent.shell.PlannerShellComponents;
+import ai.moeru.airicraft.agent.shell.PlannerShellEvent;
+import ai.moeru.airicraft.agent.shell.PlannerShellFactory;
+import ai.moeru.airicraft.agent.shell.PlannerShellJournal;
 import ai.moeru.airicraft.agent.social.ChatIngestService;
 import ai.moeru.airicraft.agent.social.NearbyPlayerSnapshot;
 import ai.moeru.airicraft.agent.social.NearbyPlayerTracker;
@@ -65,7 +70,7 @@ import ai.moeru.airicraft.agent.tasks.CollectResourceTaskHandler;
 import ai.moeru.airicraft.agent.tasks.InventoryItemCounter;
 import ai.moeru.airicraft.agent.tasks.InventoryResourceCounter;
 import ai.moeru.airicraft.agent.tasks.MissionExecutionSnapshot;
-import ai.moeru.airicraft.agent.tasks.TaskRuntime;
+import ai.moeru.airicraft.agent.tasks.TaskResourceKind;
 import ai.moeru.airicraft.agent.tasks.TaskSnapshot;
 import ai.moeru.airicraft.agent.tasks.TaskState;
 import ai.moeru.airicraft.agent.tasks.TaskSpec;
@@ -140,16 +145,16 @@ public final class EmbodiedAgentRuntime {
 	private final LocalDamageTracker localDamageTracker = new LocalDamageTracker();
 	private final NearbyPlayerTracker nearbyPlayerTracker;
 	private final PrimaryInteractionResolver primaryInteractionResolver = new PrimaryInteractionResolver(200L);
-	private final GoalDirector goalDirector = new GoalDirector();
+	private final ActiveJobRuntime activeJobRuntime = new ActiveJobRuntime();
 	private final FollowCapability followCapability = new FollowCapability();
 	private final BehaviorTreeRuntime behaviorTreeRuntime = new BehaviorTreeRuntime();
 	private final ChatService chatService = new ChatService();
 	private final CurrentViewVisionService visionService;
 	private final DialogueRuntime dialogueRuntime;
+	private final PlannerShellJournal plannerJournal;
 	private final WorldTaskExecutor worldTaskExecutor;
 	private final InventoryResourceCounter inventoryResourceCounter = new InventoryResourceCounter();
 	private final InventoryItemCounter inventoryItemCounter = new InventoryItemCounter();
-	private final TaskRuntime taskRuntime = new TaskRuntime();
 
 	private boolean initialized;
 	private long tickCount;
@@ -160,6 +165,7 @@ public final class EmbodiedAgentRuntime {
 	private FollowState followState = FollowState.idle();
 	private TaskSnapshot taskSnapshot = TaskSnapshot.idle();
 	private TaskExecutionSnapshot taskExecutionSnapshot = TaskExecutionSnapshot.idle();
+	private MissionExecutionSnapshot missionExecutionSnapshot = MissionExecutionSnapshot.idle();
 	private long lastSystemChatTick = -1L;
 	private String lastSystemChatText;
 	private Float lastKnownPlayerHealth;
@@ -177,35 +183,16 @@ public final class EmbodiedAgentRuntime {
 		this.worldTaskExecutor = Objects.requireNonNull(worldTaskExecutor, "worldTaskExecutor");
 		this.observability = Objects.requireNonNull(observability, "observability");
 		this.nearbyPlayerTracker = new NearbyPlayerTracker(resolveNearbyPlayerTrackingRadius(airicraftConfig));
-		this.visionService = new CurrentViewVisionService(
-			Objects.requireNonNull(screenshotService, "screenshotService"),
-			new OpenAiCompatibleVisionBackend(config.llm(), this.observability),
-			MinecraftClient::getInstance,
-			this.observability
-		);
 		Clock clock = Clock.systemDefaultZone();
-		this.dialogueRuntime = new DialogueRuntime(
-			new PlannerOrchestrator(
-				new PlannerExecutor(new OpenAiCompatibleLlmBackend(config.llm(), this.observability), this.observability),
-				new PlannerCompactionService(new OpenAiCompatibleChatClient(config.llm(), this.observability), this.observability),
-				new PlannerContextAggregator(
-					clock,
-					config.llm().plannerCompactionTriggerTokens(),
-					config.llm().plannerPendingSemanticEventCap(),
-					config.llm().plannerVisionMode()
-				),
-				visionService,
-				config.llm().plannerVisionMode(),
-				config.llm().visionImageDetail(),
-				config.llm().plannerSessionMaxConcurrentAttempts(),
-				config.llm().plannerSessionCoalesceStepMillis(),
-				config.llm().plannerSessionCoalesceMinMillis(),
-				config.llm().plannerSessionCoalesceMaxMillis(),
-				this.observability
-			),
-			config.llm().maxRecentConversationTurns(),
+		PlannerShellComponents plannerShell = PlannerShellFactory.create(
+			config,
+			Objects.requireNonNull(screenshotService, "screenshotService"),
+			this.observability,
 			clock
 		);
+		this.visionService = plannerShell.visionService();
+		this.dialogueRuntime = plannerShell.dialogueRuntime();
+		this.plannerJournal = plannerShell.plannerJournal();
 		registerDefaultScenarios();
 	}
 
@@ -300,12 +287,12 @@ public final class EmbodiedAgentRuntime {
 		eventPipeline.clearPlannerFeed();
 		dialogueRuntime.clear();
 		worldTaskExecutor.onWorldLeave();
-		taskRuntime.clear();
-		goalDirector.clear();
+		activeJobRuntime.clear();
 		followCapability.clear();
 		followState = FollowState.idle();
 		taskSnapshot = TaskSnapshot.idle();
 		taskExecutionSnapshot = TaskExecutionSnapshot.idle();
+		missionExecutionSnapshot = MissionExecutionSnapshot.idle();
 		behaviorTreeRuntime.stop(MinecraftClient.getInstance());
 		chatService.clear();
 		proactiveSocialModeOverride = null;
@@ -336,26 +323,29 @@ public final class EmbodiedAgentRuntime {
 		primaryInteractionResolver.expireInactive(tickCount);
 		drainEventPipeline();
 
+		WorldEvidence worldEvidence = currentWorldEvidence(client);
 		DialogueResponse completedDialogueResponse = dialogueRuntime.poll(tickCount, eventBuffer);
 		if (completedDialogueResponse != null) {
-			Optional<GoalSnapshot> previousGoal = goalDirector.activeGoal();
+			Optional<GoalSnapshot> previousGoal = activeGoal();
 			applyPlannerEventPolicyChanges(completedDialogueResponse.eventPolicyChanges());
-			applyTaskIntent(completedDialogueResponse);
-			goalDirector.onPlannerResponse(completedDialogueResponse);
-			recordPlannerOutcome(completedDialogueResponse, previousGoal, goalDirector.activeGoal());
+			applyTaskIntent(completedDialogueResponse, worldEvidence);
+			recordPlannerOutcome(completedDialogueResponse, previousGoal, activeGoal());
 			drainEventPipeline();
 		}
 
 		TaskSnapshot previousTaskSnapshot = taskSnapshot;
-		WorldEvidence worldEvidence = currentWorldEvidence(client);
-		taskRuntime.tick(
+		activeJobRuntime.tick(
 			taskExecutionSnapshot,
 			worldEvidence,
 			sessionSnapshot.companionActuationAllowed(),
-			hasNearbyTaskResourceTarget(client, taskSnapshot.spec()),
+			hasNearbyTaskResourceTarget(client, activeJobRuntime.current().taskSpec()),
 			tickCount
 		);
-		taskSnapshot = taskRuntime.snapshot();
+		TaskSnapshot projectedTaskSnapshot = activeJobRuntime.taskSnapshot();
+		if (isSemanticTaskSnapshot(projectedTaskSnapshot)) {
+			taskSnapshot = projectedTaskSnapshot;
+			missionExecutionSnapshot = activeJobRuntime.missionExecutionSnapshot();
+		}
 		recordSemanticTaskTransition(previousTaskSnapshot, taskSnapshot);
 		Optional<GoalSnapshot> activeGoal = activeGoal();
 
@@ -384,7 +374,7 @@ public final class EmbodiedAgentRuntime {
 			tickCount
 		);
 		if (previousFollowState.targetNearby() && !followState.targetNearby() && previousFollowState.targetPlayer() != null) {
-			goalDirector.clearFollowGoal(previousFollowState.targetPlayer());
+			activeJobRuntime.clearFollowTarget(previousFollowState.targetPlayer());
 		}
 
 		BehaviorTreeSnapshot currentTreeSnapshot = behaviorTreeRuntime.snapshot();
@@ -419,12 +409,12 @@ public final class EmbodiedAgentRuntime {
 		observability.shutdown();
 		visionService.shutdown();
 		worldTaskExecutor.shutdown();
-		taskRuntime.clear();
-		goalDirector.clear();
+		activeJobRuntime.clear();
 		followCapability.clear();
 		followState = FollowState.idle();
 		taskSnapshot = TaskSnapshot.idle();
 		taskExecutionSnapshot = TaskExecutionSnapshot.idle();
+		missionExecutionSnapshot = MissionExecutionSnapshot.idle();
 		behaviorTreeRuntime.stop(MinecraftClient.getInstance());
 		chatService.clear();
 		proactiveSocialModeOverride = null;
@@ -446,7 +436,7 @@ public final class EmbodiedAgentRuntime {
 			sessionSnapshot(),
 			taskSnapshot,
 			taskExecutionSnapshot,
-			taskRuntime.executionSnapshot(),
+			missionExecutionSnapshot,
 			verificationRunner.report()
 		);
 	}
@@ -456,12 +446,15 @@ public final class EmbodiedAgentRuntime {
 	}
 
 	public Optional<GoalSnapshot> activeGoal() {
-		Optional<GoalSnapshot> taskOwnedGoal = taskRuntime.currentGoal();
-		return taskOwnedGoal.isPresent() ? taskOwnedGoal : goalDirector.activeGoal();
+		return activeJobRuntime.activeGoal(tickCount);
 	}
 
 	public BehaviorTreeSnapshot behaviorTreeSnapshot() {
 		return behaviorTreeRuntime.snapshot();
+	}
+
+	public ActiveJob activeJob() {
+		return activeJobRuntime.current();
 	}
 
 	public TaskExecutionSnapshot taskExecutionSnapshot() {
@@ -473,7 +466,7 @@ public final class EmbodiedAgentRuntime {
 	}
 
 	public MissionExecutionSnapshot missionExecutionSnapshot() {
-		return taskRuntime.executionSnapshot();
+		return missionExecutionSnapshot;
 	}
 
 	public Optional<DialogueResponse> lastDialogueResponse() {
@@ -506,6 +499,10 @@ public final class EmbodiedAgentRuntime {
 
 	public List<String> plannerContextExcerpt() {
 		return dialogueRuntime.plannerContextExcerpt();
+	}
+
+	public List<PlannerShellEvent> plannerShellJournal() {
+		return plannerJournal.snapshot();
 	}
 
 	public int activeEventPolicyRuleCount() {
@@ -804,9 +801,14 @@ public final class EmbodiedAgentRuntime {
 
 	public TaskSnapshot submitTask(TaskSpec spec, String source) {
 		Objects.requireNonNull(spec, "spec");
-		goalDirector.clear();
-		taskRuntime.submit(spec, tickCount, source == null || source.isBlank() ? "bridge_debug" : source);
-		taskSnapshot = taskRuntime.snapshot();
+		activeJobRuntime.submitTask(
+			spec,
+			currentTaskResourceCount(MinecraftClient.getInstance(), spec),
+			source == null || source.isBlank() ? "bridge_debug" : source,
+			tickCount
+		);
+		taskSnapshot = activeJobRuntime.taskSnapshot();
+		missionExecutionSnapshot = activeJobRuntime.missionExecutionSnapshot();
 		eventBuffer.append(tickCount, "task.submitted", Map.of(
 			"type", spec.type().name(),
 			"resourceKind", spec.resourceKind().name(),
@@ -818,33 +820,36 @@ public final class EmbodiedAgentRuntime {
 
 	public TaskSnapshot submitMissionLedger(TaskLedger ledger, String source) {
 		Objects.requireNonNull(ledger, "ledger");
-		TaskLedger previousLedger = taskSnapshot.ledger();
-		goalDirector.clear();
-		taskRuntime.applyPlannerLedger(ledger, tickCount, source == null || source.isBlank() ? "bridge_debug_mission" : source);
-		taskSnapshot = taskRuntime.snapshot();
+		activeJobRuntime.submitMissionLedger(
+			ledger,
+			currentWorldEvidence(MinecraftClient.getInstance()).inventoryCounts().getOrDefault(TaskResourceKind.WOOD_LOGS, 0),
+			source == null || source.isBlank() ? "bridge_debug_mission" : source,
+			tickCount
+		);
+		taskSnapshot = activeJobRuntime.taskSnapshot();
+		missionExecutionSnapshot = activeJobRuntime.missionExecutionSnapshot();
 		eventBuffer.append(tickCount, "mission.submitted", Map.of(
 			"missionId", ledger.missionId(),
 			"missionType", ledger.missionType().name(),
 			"activeStepId", ledger.activeStepId() == null ? "" : ledger.activeStepId(),
 			"source", taskSnapshot.source()
 		));
-		recordMissionLedgerUpdate(previousLedger, taskSnapshot.ledger(), taskSnapshot.source());
 		return taskSnapshot;
 	}
 
 	public TaskSnapshot cancelTask(String reason) {
 		TaskSnapshot previousTaskSnapshot = taskSnapshot;
-		taskRuntime.cancel(tickCount, reason == null || reason.isBlank() ? "cancelled" : reason);
-		taskSnapshot = taskRuntime.snapshot();
+		activeJobRuntime.cancel(reason == null || reason.isBlank() ? "cancelled" : reason, tickCount);
+		taskSnapshot = activeJobRuntime.taskSnapshot();
+		missionExecutionSnapshot = activeJobRuntime.missionExecutionSnapshot();
 		recordSemanticTaskTransition(previousTaskSnapshot, taskSnapshot);
 		return taskSnapshot;
 	}
 
 	void injectDialogueResponseForTests(DialogueResponse response) {
-		Optional<GoalSnapshot> previousGoal = goalDirector.activeGoal();
-		applyTaskIntent(response);
-		goalDirector.onPlannerResponse(response);
-		recordPlannerOutcome(response, previousGoal, goalDirector.activeGoal());
+		Optional<GoalSnapshot> previousGoal = activeGoal();
+		applyTaskIntent(response, currentWorldEvidence(MinecraftClient.getInstance()));
+		recordPlannerOutcome(response, previousGoal, activeGoal());
 	}
 
 	void overrideSessionSnapshotForTests(SessionSnapshot sessionSnapshot) {
@@ -853,11 +858,13 @@ public final class EmbodiedAgentRuntime {
 	}
 
 	void injectGoalForTests(GoalSnapshot goalSnapshot) {
-		goalDirector.clear();
 		if (goalSnapshot == null) {
+			activeJobRuntime.clear();
+			taskSnapshot = activeJobRuntime.taskSnapshot();
+			missionExecutionSnapshot = activeJobRuntime.missionExecutionSnapshot();
 			return;
 		}
-		goalDirector.onPlannerResponse(new DialogueResponse(
+		activeJobRuntime.applyPlannerResponse(new DialogueResponse(
 			"",
 			new DialogueIntent(
 				DialogueIntentType.SET_GOAL,
@@ -867,47 +874,44 @@ public final class EmbodiedAgentRuntime {
 				goalSnapshot.mineSpec()
 			),
 			goalSnapshot.updatedTick()
-		));
+		), 0, "test", goalSnapshot.updatedTick());
 	}
 
-	private void applyTaskIntent(DialogueResponse response) {
+	private void applyTaskIntent(DialogueResponse response, WorldEvidence worldEvidence) {
 		if (response == null || response.intent() == null || response.intent().type() == null) {
 			return;
 		}
-		if (response.intent().type() == DialogueIntentType.MISSION_UPDATE && response.intent().taskLedger() != null) {
-			TaskLedger previousLedger = taskSnapshot.ledger();
-			goalDirector.clear();
-			taskRuntime.applyPlannerLedger(response.intent().taskLedger(), response.tick(), "planner_response");
-			taskSnapshot = taskRuntime.snapshot();
-			recordMissionLedgerUpdate(previousLedger, taskSnapshot.ledger(), taskSnapshot.source());
-			return;
+		int currentResourceCount = worldEvidence == null
+			? currentTaskResourceCount(MinecraftClient.getInstance())
+			: worldEvidence.inventoryCounts().getOrDefault(TaskResourceKind.WOOD_LOGS, 0);
+		if (isDirectGoalIntent(response.intent()) && isSemanticTaskSnapshot(taskSnapshot)) {
+			TaskSnapshot previousTaskSnapshot = taskSnapshot;
+			activeJobRuntime.cancel("preempted_by_direct_goal", response.tick());
+			taskSnapshot = activeJobRuntime.taskSnapshot();
+			missionExecutionSnapshot = activeJobRuntime.missionExecutionSnapshot();
+			recordSemanticTaskTransition(previousTaskSnapshot, taskSnapshot);
 		}
-		if (response.intent().type() == DialogueIntentType.SUBMIT_TASK && response.intent().taskSpec() != null) {
-			goalDirector.clear();
-			taskRuntime.submit(response.intent().taskSpec(), response.tick(), "planner_response");
-			taskSnapshot = taskRuntime.snapshot();
-			return;
-		}
-		if (response.intent().type() == DialogueIntentType.CANCEL_TASK) {
-			taskRuntime.cancel(response.tick(), "planner_cancel_task");
-			taskSnapshot = taskRuntime.snapshot();
-			return;
-		}
-		if (response.intent().type() == DialogueIntentType.SET_GOAL && taskRuntime.hasActiveTask()) {
-			taskRuntime.cancel(response.tick(), "preempted_by_direct_goal");
-			taskSnapshot = taskRuntime.snapshot();
+		activeJobRuntime.applyPlannerResponse(response, currentResourceCount, "planner_response", response.tick());
+		TaskSnapshot projectedTaskSnapshot = activeJobRuntime.taskSnapshot();
+		if (isSemanticTaskSnapshot(projectedTaskSnapshot)) {
+			taskSnapshot = projectedTaskSnapshot;
+			missionExecutionSnapshot = activeJobRuntime.missionExecutionSnapshot();
 		}
 	}
 
 	private int currentTaskResourceCount(MinecraftClient client) {
-		if (client == null || client.player == null || taskSnapshot.spec() == null) {
+		return currentTaskResourceCount(client, taskSnapshot.spec());
+	}
+
+	private int currentTaskResourceCount(MinecraftClient client, TaskSpec spec) {
+		if (client == null || client.player == null || spec == null) {
 			return 0;
 		}
 		java.util.ArrayList<net.minecraft.item.ItemStack> stacks = new java.util.ArrayList<>();
 		for (int slot = 0; slot < client.player.getInventory().size(); slot++) {
 			stacks.add(client.player.getInventory().getStack(slot));
 		}
-		return inventoryResourceCounter.count(stacks, taskSnapshot.spec().resourceKind());
+		return inventoryResourceCounter.count(stacks, spec.resourceKind());
 	}
 
 	private WorldEvidence currentWorldEvidence(MinecraftClient client) {
@@ -1119,6 +1123,9 @@ public final class EmbodiedAgentRuntime {
 		if (response.intent().goalType() != null) {
 			payload.put("goalType", response.intent().goalType().name());
 		}
+		if (response.intent().activeJob() != null) {
+			payload.put("activeJobType", response.intent().activeJob().type().name());
+		}
 		if (response.intent().taskLedger() != null) {
 			payload.put("missionId", response.intent().taskLedger().missionId());
 			payload.put("missionType", response.intent().taskLedger().missionType().name());
@@ -1131,7 +1138,7 @@ public final class EmbodiedAgentRuntime {
 		}
 		eventBuffer.append(tickCount, "planner.response_applied", payload);
 
-		if (response.intent().type() == DialogueIntentType.SET_GOAL && currentGoal.isPresent()) {
+		if (isDirectGoalIntent(response.intent()) && currentGoal.isPresent()) {
 			java.util.LinkedHashMap<String, Object> goalPayload = new java.util.LinkedHashMap<>();
 			goalPayload.put("goalType", currentGoal.get().type().name());
 			if (currentGoal.get().targetPlayer() != null && !currentGoal.get().targetPlayer().isBlank()) {
@@ -1159,7 +1166,7 @@ public final class EmbodiedAgentRuntime {
 			return;
 		}
 		String primaryInteractionPlayer = primaryInteractionResolver.current().map(PrimaryInteractionPlayer::name).orElse(null);
-		Optional<GoalSnapshot> activeGoal = goalDirector.activeGoal();
+		Optional<GoalSnapshot> activeGoal = activeGoal();
 		for (ai.moeru.airicraft.agent.llm.PlannerTrigger trigger : triggers) {
 			dialogueRuntime.onPlannerTrigger(
 				trigger,
@@ -1402,49 +1409,6 @@ public final class EmbodiedAgentRuntime {
 		return Map.copyOf(profiles);
 	}
 
-	private void recordMissionLedgerUpdate(TaskLedger previousLedger, TaskLedger currentLedger, String source) {
-		if (currentLedger == null) {
-			return;
-		}
-		java.util.LinkedHashMap<String, Object> payload = new java.util.LinkedHashMap<>();
-		payload.put("missionId", currentLedger.missionId());
-		payload.put("missionType", currentLedger.missionType().name());
-		payload.put("source", source == null ? "" : source);
-		payload.put("previousActiveStepId", previousLedger == null || previousLedger.activeStepId() == null ? "" : previousLedger.activeStepId());
-		payload.put("activeStepId", currentLedger.activeStepId() == null ? "" : currentLedger.activeStepId());
-		if (currentLedger.replanReason() != null && !currentLedger.replanReason().isBlank()) {
-			payload.put("replanReason", currentLedger.replanReason());
-		}
-		if (currentLedger.plannerNotes() != null && !currentLedger.plannerNotes().isBlank()) {
-			payload.put("plannerNotes", currentLedger.plannerNotes());
-		}
-		payload.put("stepStatusChanges", describeLedgerStatusChanges(previousLedger, currentLedger));
-		eventBuffer.append(tickCount, "mission.ledger_updated", payload);
-	}
-
-	private static java.util.Map<String, String> describeLedgerStatusChanges(TaskLedger previousLedger, TaskLedger currentLedger) {
-		java.util.LinkedHashMap<String, String> changes = new java.util.LinkedHashMap<>();
-		java.util.LinkedHashMap<String, ai.moeru.airicraft.agent.tasks.LedgerStepStatus> previousStatuses = new java.util.LinkedHashMap<>();
-		if (previousLedger != null) {
-			for (var step : previousLedger.steps()) {
-				previousStatuses.put(step.id(), step.status());
-			}
-		}
-		for (var step : currentLedger.steps()) {
-			ai.moeru.airicraft.agent.tasks.LedgerStepStatus previousStatus = previousStatuses.remove(step.id());
-			if (previousStatus == null) {
-				changes.put(step.id(), "ADDED:" + step.status().name());
-			}
-			else if (previousStatus != step.status()) {
-				changes.put(step.id(), previousStatus.name() + "->" + step.status().name());
-			}
-		}
-		for (String removedStepId : previousStatuses.keySet()) {
-			changes.put(removedStepId, "REMOVED");
-		}
-		return java.util.Map.copyOf(changes);
-	}
-
 	private void recordTaskStateTransition(TaskExecutionSnapshot previous, TaskExecutionSnapshot current, boolean semanticTaskContext) {
 		if (current == null || previous == null || current.state() == previous.state()) {
 			return;
@@ -1471,7 +1435,7 @@ public final class EmbodiedAgentRuntime {
 	}
 
 	private void recordSemanticTaskTransition(TaskSnapshot previous, TaskSnapshot current) {
-		if (previous == null || current == null || current.state() == previous.state()) {
+		if (previous == null || current == null || current.state() == previous.state() || !isSemanticTaskSnapshot(current)) {
 			return;
 		}
 
@@ -1532,17 +1496,45 @@ public final class EmbodiedAgentRuntime {
 					+ " failure=" + (current.lastFailure() == null ? "" : current.lastFailure()),
 					tickCount,
 					sessionSnapshot,
-					goalDirector.activeGoal(),
+					activeGoal(),
 					current,
-					taskRuntime.executionSnapshot(),
+					missionExecutionSnapshot,
 					eventBuffer
 				);
 		}
 	}
 
 	private static boolean hasSemanticTaskContext(TaskSnapshot previous, TaskSnapshot current) {
-		return (previous != null && isActiveSemanticTaskState(previous.state()))
-			|| (current != null && isActiveSemanticTaskState(current.state()));
+		return (previous != null && isSemanticTaskSnapshot(previous) && isActiveSemanticTaskState(previous.state()))
+			|| (current != null && isSemanticTaskSnapshot(current) && isActiveSemanticTaskState(current.state()));
+	}
+
+	private static boolean isDirectGoalIntent(DialogueIntent intent) {
+		if (intent == null || intent.type() == null) {
+			return false;
+		}
+		if (intent.type() == DialogueIntentType.SET_GOAL) {
+			return true;
+		}
+		if (intent.type() != DialogueIntentType.JOB_UPDATE || intent.activeJob() == null) {
+			return false;
+		}
+		return switch (intent.activeJob().type()) {
+			case FOLLOW_PLAYER, NAVIGATE_TO, MINE_BLOCKS -> true;
+			case IDLE, COLLECT_RESOURCE, WAIT, ASK_USER -> false;
+		};
+	}
+
+	private static boolean isSemanticTaskSnapshot(TaskSnapshot snapshot) {
+		if (snapshot == null) {
+			return false;
+		}
+		if (snapshot.spec() != null) {
+			return true;
+		}
+		return snapshot.activeStepKind() == ai.moeru.airicraft.agent.tasks.LedgerStepKind.COLLECT_RESOURCE
+			|| snapshot.activeStepKind() == ai.moeru.airicraft.agent.tasks.LedgerStepKind.WAIT
+			|| snapshot.activeStepKind() == ai.moeru.airicraft.agent.tasks.LedgerStepKind.ASK_USER;
 	}
 
 	private static boolean isActiveSemanticTaskState(TaskState state) {
@@ -1582,9 +1574,9 @@ public final class EmbodiedAgentRuntime {
 					+ " message=" + (event.message() == null ? "" : event.message()),
 				tickCount,
 				sessionSnapshot,
-				goalDirector.activeGoal(),
+				activeGoal(),
 				taskSnapshot,
-				taskRuntime.executionSnapshot(),
+				missionExecutionSnapshot,
 				eventBuffer
 			);
 	}

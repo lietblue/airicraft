@@ -1031,7 +1031,8 @@ class PlannerOrchestratorTest {
 			plannerSessionCoalesceMinMillis,
 			plannerSessionCoalesceMaxMillis,
 			clock,
-			NoopObservability.INSTANCE
+			NoopObservability.INSTANCE,
+			PlannerLifecycleListener.NO_OP
 		);
 	}
 

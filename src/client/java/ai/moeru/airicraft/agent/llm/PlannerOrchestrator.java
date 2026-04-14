@@ -44,6 +44,7 @@ public final class PlannerOrchestrator {
 	private final long coalesceMinMs;
 	private final long coalesceMaxMs;
 	private final AgentObservability observability;
+	private final PlannerLifecycleListener lifecycleListener;
 
 	private PlannerRequest pendingSubmitRequest;
 	private PendingToolExecution pendingToolExecution;
@@ -77,7 +78,8 @@ public final class PlannerOrchestrator {
 			SESSION_COALESCE_MIN_MS,
 			SESSION_COALESCE_MAX_MS,
 			Clock.systemDefaultZone(),
-			NoopObservability.INSTANCE
+			NoopObservability.INSTANCE,
+			PlannerLifecycleListener.NO_OP
 		);
 	}
 
@@ -102,7 +104,8 @@ public final class PlannerOrchestrator {
 			SESSION_COALESCE_MIN_MS,
 			SESSION_COALESCE_MAX_MS,
 			Clock.systemDefaultZone(),
-			NoopObservability.INSTANCE
+			NoopObservability.INSTANCE,
+			PlannerLifecycleListener.NO_OP
 		);
 	}
 
@@ -130,7 +133,8 @@ public final class PlannerOrchestrator {
 			plannerSessionCoalesceMinMillis,
 			plannerSessionCoalesceMaxMillis,
 			Clock.systemDefaultZone(),
-			NoopObservability.INSTANCE
+			NoopObservability.INSTANCE,
+			PlannerLifecycleListener.NO_OP
 		);
 	}
 
@@ -159,7 +163,39 @@ public final class PlannerOrchestrator {
 			plannerSessionCoalesceMinMillis,
 			plannerSessionCoalesceMaxMillis,
 			Clock.systemDefaultZone(),
-			observability
+			observability,
+			PlannerLifecycleListener.NO_OP
+		);
+	}
+
+	public PlannerOrchestrator(
+		PlannerExecutor plannerExecutor,
+		PlannerCompactionService compactionService,
+		PlannerContextAggregator contextAggregator,
+		CurrentViewVisionTool visionTool,
+		PlannerVisionMode visionMode,
+		String imageDetail,
+		int plannerSessionMaxConcurrentAttempts,
+		int plannerSessionCoalesceStepMillis,
+		int plannerSessionCoalesceMinMillis,
+		int plannerSessionCoalesceMaxMillis,
+		AgentObservability observability,
+		PlannerLifecycleListener lifecycleListener
+	) {
+		this(
+			plannerExecutor,
+			compactionService,
+			contextAggregator,
+			visionTool,
+			visionMode,
+			imageDetail,
+			plannerSessionMaxConcurrentAttempts,
+			plannerSessionCoalesceStepMillis,
+			plannerSessionCoalesceMinMillis,
+			plannerSessionCoalesceMaxMillis,
+			Clock.systemDefaultZone(),
+			observability,
+			lifecycleListener
 		);
 	}
 
@@ -175,7 +211,8 @@ public final class PlannerOrchestrator {
 		int plannerSessionCoalesceMinMillis,
 		int plannerSessionCoalesceMaxMillis,
 		Clock clock,
-		AgentObservability observability
+		AgentObservability observability,
+		PlannerLifecycleListener lifecycleListener
 	) {
 		this.plannerExecutor = Objects.requireNonNull(plannerExecutor, "plannerExecutor");
 		this.compactionService = Objects.requireNonNull(compactionService, "compactionService");
@@ -196,6 +233,7 @@ public final class PlannerOrchestrator {
 		this.coalesceMinMs = Math.max(0L, plannerSessionCoalesceMinMillis);
 		this.coalesceMaxMs = Math.max(this.coalesceMinMs, plannerSessionCoalesceMaxMillis);
 		this.observability = Objects.requireNonNull(observability, "observability");
+		this.lifecycleListener = Objects.requireNonNull(lifecycleListener, "lifecycleListener");
 	}
 
 	public boolean isConfigured() {
@@ -268,6 +306,7 @@ public final class PlannerOrchestrator {
 		if (request.triggerBatch() == null || request.triggerBatch().isEmpty()) {
 			return false;
 		}
+		lifecycleListener.onPlannerTurnSubmitted(request);
 		contextAggregator.recordPlannerRequestSeed(PlannerRequestSeed.fromRequest(request));
 		contextAggregator.cancelPendingOverflowFlush();
 		turnContext = observability.startTurnSpan(request, buildTurnId(request));
@@ -327,12 +366,14 @@ public final class PlannerOrchestrator {
 		if (!plannerResult.succeeded()) {
 			appendFailureCard(plannerResult);
 			observability.recordFailure(turnContext, plannerResult.failureType().name(), plannerResult.failureMessage(), null);
+			lifecycleListener.onPlannerExecutionFailed(plannerResult);
 			sessionCoordinator.finishGeneration(plannerResult.generation(), true);
 			endTurnSpan();
 			return plannerResult;
 		}
 
 		contextAggregator.recordUsage(plannerResult.usage());
+		lifecycleListener.onPlannerExecutionSucceeded(plannerResult);
 		PlannerToolRequest toolRequest = plannerResult.response().toolRequest();
 		if (toolRequest == null) {
 			appendAssistantOutcomeCard(plannerResult);
@@ -388,6 +429,7 @@ public final class PlannerOrchestrator {
 		}
 
 		appendToolRequestCard(plannerResult);
+		lifecycleListener.onToolRequested(plannerResult.generation(), toolRequest);
 		sessionCoordinator.markToolWait(plannerResult.generation());
 		pendingToolExecution = new PendingToolExecution(
 			plannerResult.generation(),
@@ -462,6 +504,7 @@ public final class PlannerOrchestrator {
 		lastVisibleConversation = PlannerConversationDebugSnapshot.empty();
 		clearCoalesceState();
 		endTurnSpan();
+		lifecycleListener.onReset("reset");
 	}
 
 	public void shutdown() {
@@ -475,6 +518,7 @@ public final class PlannerOrchestrator {
 		lastVisibleConversation = PlannerConversationDebugSnapshot.empty();
 		clearCoalesceState();
 		endTurnSpan();
+		lifecycleListener.onReset("shutdown");
 	}
 
 	private boolean startQueuedWorkIfPossible() {
@@ -587,6 +631,7 @@ public final class PlannerOrchestrator {
 			followUpRequest,
 			toolOutcome.appendFollowUp(contextAggregator, snapshot)
 		);
+		lifecycleListener.onToolCompleted(toolExecution.generation(), toolOutcome.toolResultText(), toolOutcome instanceof ImageToolExecutionOutcome);
 		appendToolFollowUpCard(toolExecution);
 		return null;
 	}
@@ -646,6 +691,7 @@ public final class PlannerOrchestrator {
 
 	private void completeCompaction(CompactionExecutionResult compactionResult) {
 		lastCompactionResult = compactionResult;
+		lifecycleListener.onCompactionCompleted(compactionResult);
 		if (compactionResult.succeeded()) {
 			contextAggregator.recordObservedUsage(compactionResult.usage());
 			contextAggregator.applyCheckpoint(compactionResult.checkpoint());
@@ -695,6 +741,7 @@ public final class PlannerOrchestrator {
 		PlannerRequest request,
 		LlmConversation conversation
 	) {
+		lifecycleListener.onConversationSubmitted(generation, attempt, phase, request, conversation);
 		PlannerConversationDebugSnapshot submitted = PlannerConversationDebugSnapshot.fromConversation(generation, phase, attempt, conversation);
 		if (lastVisibleConversation == null || lastVisibleConversation.isEmpty()) {
 			lastVisibleConversation = submitted;
@@ -722,7 +769,7 @@ public final class PlannerOrchestrator {
 
 	private static boolean hasToolCompatibleIntent(PlannerResponse response) {
 		return switch (toolIntentType(response)) {
-			case "none", "reply_only", "ask_clarification", "acknowledge_failure", "mission_update" -> true;
+			case "none", "reply_only", "ask_clarification", "acknowledge_failure", "mission_update", "job_update" -> true;
 			default -> false;
 		};
 	}
@@ -1005,6 +1052,7 @@ public final class PlannerOrchestrator {
 				yield "Goal call: set_goal.";
 			}
 			case "clear_goal" -> "Goal call: clear current goal.";
+			case "job_update" -> intent.activeJob() == null ? "Job call: job_update." : "Job call: " + intent.activeJob().type().name() + ".";
 			default -> null;
 		};
 	}

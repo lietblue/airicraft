@@ -4,6 +4,7 @@ import ai.moeru.airicraft.agent.AgentConfig;
 import ai.moeru.airicraft.agent.goals.GoalMineSpec;
 import ai.moeru.airicraft.agent.goals.GoalPosition;
 import ai.moeru.airicraft.agent.goals.GoalType;
+import ai.moeru.airicraft.agent.job.ActiveJobProposal;
 import ai.moeru.airicraft.agent.tasks.CollectResourceStepArgs;
 import ai.moeru.airicraft.agent.tasks.CraftRecipeStepArgs;
 import ai.moeru.airicraft.agent.tasks.EvidenceKind;
@@ -210,6 +211,55 @@ class OpenAiCompatibleLlmBackendTest {
 			assertEquals("On it.", result.payload().replyText());
 			assertEquals("submit_task", result.payload().intent().type());
 			assertEquals(new TaskSpec(TaskType.COLLECT_RESOURCE, TaskResourceKind.WOOD_LOGS, 16), result.payload().intent().taskSpec());
+		}
+	}
+
+	@Test
+	void generateParsesJobUpdatePlannerPayload() throws Exception {
+		String responseBody = """
+			{
+			  "choices": [
+			    {
+			      "message": {
+			        "content": "{\\"replyText\\":\\"On it.\\",\\"intent\\":{\\"type\\":\\"job_update\\",\\"activeJob\\":{\\"type\\":\\"COLLECT_RESOURCE\\",\\"resourceKind\\":\\"WOOD_LOGS\\",\\"quantity\\":16}},\\"toolRequest\\":null}"
+			      }
+			    }
+			  ],
+			  "usage": {
+			    "prompt_tokens": 1234,
+			    "completion_tokens": 56,
+			    "total_tokens": 1290
+			  }
+			}
+			""";
+		AtomicReference<String> bodyRef = new AtomicReference<>();
+		try (TestServer server = TestServer.start(bodyRef, responseBody)) {
+			OpenAiCompatibleLlmBackend backend = new OpenAiCompatibleLlmBackend(new AgentConfig.LlmConfig(
+				"http://127.0.0.1:" + server.port(),
+				"planner-key",
+				"planner-model",
+				"https://api.openai.com/v1",
+				"",
+				"",
+				15_000,
+				10_000,
+				8,
+				65_536,
+				"low",
+				false
+			));
+
+			LlmCallResult<PlannerResponse> result = backend.generate(LlmConversation.of(List.of(
+				LlmChatMessage.system("system"),
+				LlmChatMessage.user("Alice said just now: @agent get wood", LlmMessageKind.USER_TURN)
+			)));
+
+			assertEquals("On it.", result.payload().replyText());
+			assertEquals("job_update", result.payload().intent().type());
+			assertEquals(
+				ActiveJobProposal.collectResource(new TaskSpec(TaskType.COLLECT_RESOURCE, TaskResourceKind.WOOD_LOGS, 16)),
+				result.payload().intent().activeJob()
+			);
 		}
 	}
 

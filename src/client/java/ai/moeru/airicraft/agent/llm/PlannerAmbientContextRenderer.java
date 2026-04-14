@@ -70,7 +70,7 @@ public final class PlannerAmbientContextRenderer {
 	}
 
 	private static String describeActiveMission(String activeMissionDescription) {
-		return activeMissionDescription == null ? null : "Active mission: " + activeMissionDescription;
+		return activeMissionDescription == null ? null : "Active job: " + activeMissionDescription;
 	}
 
 	private static String describeMissionEvidence(String missionEvidenceDescription) {
