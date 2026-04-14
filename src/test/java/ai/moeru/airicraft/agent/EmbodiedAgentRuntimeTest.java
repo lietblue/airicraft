@@ -10,6 +10,7 @@ import ai.moeru.airicraft.agent.dialogue.DialogueResponse;
 import ai.moeru.airicraft.agent.job.ActiveJobProposal;
 import ai.moeru.airicraft.agent.session.SessionMode;
 import ai.moeru.airicraft.agent.session.SessionSnapshot;
+import ai.moeru.airicraft.agent.tasks.BaritoneTaskRequest;
 import ai.moeru.airicraft.agent.tasks.CollectResourceStepArgs;
 import ai.moeru.airicraft.agent.tasks.EvidenceKind;
 import ai.moeru.airicraft.agent.tasks.EvidenceRequirement;
@@ -25,6 +26,7 @@ import ai.moeru.airicraft.agent.tasks.TaskExecutionState;
 import ai.moeru.airicraft.agent.tasks.TaskResourceKind;
 import ai.moeru.airicraft.agent.tasks.TaskSpec;
 import ai.moeru.airicraft.agent.tasks.TaskState;
+import ai.moeru.airicraft.agent.tasks.TaskTerminationCause;
 import ai.moeru.airicraft.agent.tasks.TaskType;
 import ai.moeru.airicraft.agent.tasks.TaskTerminalEvent;
 import ai.moeru.airicraft.agent.tasks.WorldTaskExecutor;
@@ -139,9 +141,11 @@ class EmbodiedAgentRuntimeTest {
 			"test"
 		);
 		executor.nextTerminalEvent = Optional.of(new TaskTerminalEvent(
+			"mine-task",
 			goal,
 			TaskExecutionState.COMPLETED,
-			"Goal reached"
+			"Goal reached",
+			TaskTerminationCause.GOAL_REACHED
 		));
 
 		EmbodiedAgentRuntime runtime = EmbodiedAgentRuntime.createForTests(executor);
@@ -194,6 +198,19 @@ class EmbodiedAgentRuntimeTest {
 		assertEquals(TaskType.COLLECT_RESOURCE, runtime.snapshot().task().spec().type());
 		assertTrue(runtime.snapshot().taskExecution().state() == TaskExecutionState.IDLE
 			|| runtime.snapshot().taskExecution().state() == TaskExecutionState.RUNNING);
+	}
+
+	@Test
+	void submitTaskPopulatesCollectResourceDebugProbe() {
+		FakeWorldTaskExecutor executor = new FakeWorldTaskExecutor();
+		EmbodiedAgentRuntime runtime = EmbodiedAgentRuntime.createForTests(executor);
+
+		runtime.submitTask(new TaskSpec(TaskType.COLLECT_RESOURCE, TaskResourceKind.WOOD_LOGS, 16), "bridge_debug");
+
+		assertTrue(runtime.debugCollectResourceState().active());
+		assertEquals("WOOD_LOGS", runtime.debugCollectResourceState().resourceKind());
+		assertEquals(16, runtime.debugCollectResourceState().targetQuantity());
+		assertFalse(runtime.debugTimeline(null).entries().isEmpty());
 	}
 
 	@Test
@@ -434,9 +451,11 @@ class EmbodiedAgentRuntimeTest {
 			"task_runtime"
 		);
 		executor.nextTerminalEvent = Optional.of(new TaskTerminalEvent(
+			"mine-task",
 			goal,
 			TaskExecutionState.FAILED,
-			"Path calculation failed"
+			"Path calculation failed",
+			TaskTerminationCause.CALCULATION_FAILED
 		));
 
 		for (int tick = 0; tick < 24; tick++) {
@@ -523,11 +542,13 @@ class EmbodiedAgentRuntimeTest {
 		private Optional<TaskTerminalEvent> nextTerminalEvent = Optional.empty();
 
 		@Override
-		public Optional<TaskTerminalEvent> tick(SessionSnapshot sessionSnapshot, Optional<GoalSnapshot> activeGoal) {
+		public Optional<TaskTerminalEvent> tick(SessionSnapshot sessionSnapshot, Optional<BaritoneTaskRequest> activeTask) {
 			if (!sessionSnapshot.companionActuationAllowed()) {
 				snapshot = new TaskExecutionSnapshot(
 					TaskExecutionState.PAUSED_BY_SESSION_GATE,
-					activeGoal.orElse(null),
+					activeTask.map(BaritoneTaskRequest::taskId).orElse(null),
+					activeTask.map(BaritoneTaskRequest::goal).orElse(null),
+					null,
 					null,
 					null,
 					null
@@ -537,16 +558,20 @@ class EmbodiedAgentRuntimeTest {
 				TaskTerminalEvent terminalEvent = nextTerminalEvent.get();
 				snapshot = new TaskExecutionSnapshot(
 					terminalEvent.terminalState(),
+					terminalEvent.taskId(),
 					terminalEvent.goal(),
 					null,
 					terminalEvent.terminalState().name(),
-					null
+					null,
+					terminalEvent.terminationCause()
 				);
 			}
 			else {
 				snapshot = new TaskExecutionSnapshot(
-					activeGoal.isPresent() ? TaskExecutionState.RUNNING : TaskExecutionState.IDLE,
-					activeGoal.orElse(null),
+					activeTask.isPresent() ? TaskExecutionState.RUNNING : TaskExecutionState.IDLE,
+					activeTask.map(BaritoneTaskRequest::taskId).orElse(null),
+					activeTask.map(BaritoneTaskRequest::goal).orElse(null),
+					null,
 					null,
 					null,
 					null

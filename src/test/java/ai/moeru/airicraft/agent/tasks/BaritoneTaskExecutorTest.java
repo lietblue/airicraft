@@ -31,8 +31,8 @@ class BaritoneTaskExecutorTest {
 			"planner_response"
 		);
 
-		executor.tick(multiplayer(), Optional.of(goal));
-		executor.tick(multiplayer(), Optional.of(goal));
+		executor.tick(multiplayer(), Optional.of(request("nav-task", goal)));
+		executor.tick(multiplayer(), Optional.of(request("nav-task", goal)));
 
 		assertEquals(1, facade.applySettingsCalls);
 		assertEquals(1, facade.navigateCalls.size());
@@ -52,10 +52,10 @@ class BaritoneTaskExecutorTest {
 			"planner_response"
 		);
 
-		executor.tick(multiplayer(), Optional.of(goal));
+		executor.tick(multiplayer(), Optional.of(request("mine-task", goal)));
 		facade.pathEvents.add("AT_GOAL");
 
-		Optional<TaskTerminalEvent> event = executor.tick(multiplayer(), Optional.of(goal));
+		Optional<TaskTerminalEvent> event = executor.tick(multiplayer(), Optional.of(request("mine-task", goal)));
 
 		assertTrue(event.isPresent());
 		assertEquals(TaskExecutionState.COMPLETED, event.orElseThrow().terminalState());
@@ -74,16 +74,16 @@ class BaritoneTaskExecutorTest {
 			"planner_response"
 		);
 
-		executor.tick(multiplayer(), Optional.of(goal));
+		executor.tick(multiplayer(), Optional.of(request("nav-task", goal)));
 		facade.pathEvents.add("cancelled");
 
-		Optional<TaskTerminalEvent> event = executor.tick(multiplayer(), Optional.of(goal));
+		Optional<TaskTerminalEvent> event = executor.tick(multiplayer(), Optional.of(request("nav-task", goal)));
 
 		assertTrue(event.isPresent());
 		assertEquals(TaskExecutionState.CANCELLED, event.orElseThrow().terminalState());
 		assertEquals(TaskExecutionState.CANCELLED, executor.snapshot().state());
 
-		executor.tick(multiplayer(), Optional.of(goal));
+		executor.tick(multiplayer(), Optional.of(request("nav-task", goal)));
 		assertEquals(TaskExecutionState.CANCELLED, executor.snapshot().state());
 	}
 
@@ -101,10 +101,10 @@ class BaritoneTaskExecutorTest {
 			"verification"
 		);
 
-		executor.tick(multiplayer(), Optional.of(goal));
+		executor.tick(multiplayer(), Optional.of(request("nav-task", goal)));
 		facade.pathEvents.add("CANCELED");
 
-		Optional<TaskTerminalEvent> event = executor.tick(multiplayer(), Optional.of(goal));
+		Optional<TaskTerminalEvent> event = executor.tick(multiplayer(), Optional.of(request("nav-task", goal)));
 
 		assertTrue(event.isPresent());
 		assertEquals(TaskExecutionState.COMPLETED, event.orElseThrow().terminalState());
@@ -124,12 +124,12 @@ class BaritoneTaskExecutorTest {
 			"planner_response"
 		);
 
-		executor.tick(multiplayer(), Optional.of(goal));
+		executor.tick(multiplayer(), Optional.of(request("follow-task", goal)));
 		facade.pathEvents.add("CANCELED");
 		facade.pathEvents.add("CANCELED");
 
-		Optional<TaskTerminalEvent> first = executor.tick(multiplayer(), Optional.of(goal));
-		Optional<TaskTerminalEvent> second = executor.tick(multiplayer(), Optional.of(goal));
+		Optional<TaskTerminalEvent> first = executor.tick(multiplayer(), Optional.of(request("follow-task", goal)));
+		Optional<TaskTerminalEvent> second = executor.tick(multiplayer(), Optional.of(request("follow-task", goal)));
 
 		assertTrue(first.isPresent());
 		assertTrue(second.isEmpty());
@@ -157,8 +157,8 @@ class BaritoneTaskExecutorTest {
 			"planner_response"
 		);
 
-		executor.tick(multiplayer(), Optional.of(first));
-		executor.tick(multiplayer(), Optional.of(second));
+		executor.tick(multiplayer(), Optional.of(request("nav-task", first)));
+		executor.tick(multiplayer(), Optional.of(request("nav-task", second)));
 
 		assertEquals(1, facade.navigateCalls.size());
 	}
@@ -176,9 +176,10 @@ class BaritoneTaskExecutorTest {
 			"planner_response"
 		);
 
-		executor.tick(singleplayerLocal(), Optional.of(goal));
+		executor.tick(singleplayerLocal(), Optional.of(request("follow-task", goal)));
 
 		assertEquals(TaskExecutionState.PAUSED_BY_SESSION_GATE, executor.snapshot().state());
+		assertEquals("follow-task", executor.snapshot().taskId());
 		assertEquals(goal, executor.snapshot().activeGoal());
 		assertEquals(0, facade.followCalls.size());
 	}
@@ -191,6 +192,47 @@ class BaritoneTaskExecutorTest {
 		executor.tick(singleplayerLocal(), Optional.empty());
 
 		assertEquals(TaskExecutionState.IDLE, executor.snapshot().state());
+	}
+
+	@Test
+	void replacingCollectMineTaskDoesNotSurfaceInternalCancelledEvent() {
+		FakeBaritoneFacade facade = new FakeBaritoneFacade();
+		BaritoneTaskExecutor executor = new BaritoneTaskExecutor(facade);
+		GoalSnapshot first = new GoalSnapshot(
+			GoalType.MINE_BLOCKS,
+			null,
+			null,
+			new GoalMineSpec(List.of("minecraft:oak_log"), 8),
+			20L,
+			"task_runtime"
+		);
+		GoalSnapshot second = new GoalSnapshot(
+			GoalType.MINE_BLOCKS,
+			null,
+			null,
+			new GoalMineSpec(List.of("minecraft:oak_log"), 7),
+			21L,
+			"task_runtime"
+		);
+
+		executor.tick(multiplayer(), Optional.of(request("job-1:mine:1", "job-1", first)));
+		facade.pathEvents.add("CANCELED");
+
+		Optional<TaskTerminalEvent> event = executor.tick(multiplayer(), Optional.of(request("job-1:mine:2", "job-1", second)));
+
+		assertTrue(event.isEmpty());
+		assertEquals(TaskExecutionState.RUNNING, executor.snapshot().state());
+		assertEquals("job-1:mine:2", executor.snapshot().taskId());
+		assertEquals(2, facade.mineCalls.size());
+		assertEquals(1, facade.cancelCalls);
+	}
+
+	private static BaritoneTaskRequest request(String taskId, GoalSnapshot goal) {
+		return BaritoneTaskRequest.direct(taskId, goal);
+	}
+
+	private static BaritoneTaskRequest request(String taskId, String sourceJobId, GoalSnapshot goal) {
+		return new BaritoneTaskRequest(taskId, sourceJobId, BaritoneTaskType.MINE, goal);
 	}
 
 	private static SessionSnapshot multiplayer() {
@@ -208,6 +250,7 @@ class BaritoneTaskExecutorTest {
 		private final List<GoalMineSpec> mineCalls = new ArrayList<>();
 		private final ArrayDeque<String> pathEvents = new ArrayDeque<>();
 		private boolean navigationGoalReached;
+		private int cancelCalls;
 
 		@Override
 		public boolean isLoaded() {
@@ -236,6 +279,7 @@ class BaritoneTaskExecutorTest {
 
 		@Override
 		public void cancel() {
+			cancelCalls++;
 		}
 
 		@Override

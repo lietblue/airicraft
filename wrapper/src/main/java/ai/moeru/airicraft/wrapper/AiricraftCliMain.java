@@ -71,9 +71,11 @@ public final class AiricraftCliMain {
 		agentTasks.addSubcommand(new AgentTasksCancelCommand(context));
 		agent.addSubcommand(new AgentTreeCommand(context));
 		agent.addSubcommand(new AgentDialogueCommand(context));
-		agent.addSubcommand("debug", new UsageCommand(out, "airicraft agent debug", "Agent debug injection commands"));
+		agent.addSubcommand("debug", new UsageCommand(out, "airicraft agent debug", "Agent debug commands"));
 		CommandLine agentDebug = agent.getSubcommands().get("debug");
 		agentDebug.addSubcommand(new AgentDebugChatCommand(context));
+		agentDebug.addSubcommand(new AgentDebugStateCommand(context));
+		agentDebug.addSubcommand(new AgentDebugTimelineCommand(context));
 		agent.addSubcommand(new AgentContextCommand(context));
 		agent.addSubcommand(new AgentCompactCommand(context));
 		agent.addSubcommand(new AgentEventPolicyCommand(context));
@@ -442,6 +444,33 @@ public final class AiricraftCliMain {
 		@Override
 		Map<String, Object> runCommand() {
 			return transport().sendAgentDebugChat(message);
+		}
+	}
+
+	@Command(name = "state", mixinStandardHelpOptions = true, description = "Inspect correlated agent debug state across planner, dialogue, chat, and task progress.")
+	private static final class AgentDebugStateCommand extends BaseCommand {
+		private AgentDebugStateCommand(CliContext context) {
+			super(context, "agent debug state");
+		}
+
+		@Override
+		Map<String, Object> runCommand() {
+			return PayloadViews.agentDebugState(transport().getAgentDebugState(), verbose());
+		}
+	}
+
+	@Command(name = "timeline", mixinStandardHelpOptions = true, description = "Inspect the recent agent debug timeline.")
+	private static final class AgentDebugTimelineCommand extends BaseCommand {
+		@Option(names = "--since", description = "Only return timeline entries with an entryId greater than this value.")
+		private Long since;
+
+		private AgentDebugTimelineCommand(CliContext context) {
+			super(context, "agent debug timeline");
+		}
+
+		@Override
+		Map<String, Object> runCommand() {
+			return PayloadViews.agentDebugTimeline(transport().listAgentDebugTimeline(since), verbose());
 		}
 	}
 
@@ -1259,13 +1288,54 @@ public final class AiricraftCliMain {
 			LinkedHashMap<String, Object> view = new LinkedHashMap<>();
 			copy(view, payload, "available", "lastChatTick", "lastChatText");
 			Map<String, Object> dialogue = map(payload.get("dialogue"));
-			copy(view, dialogue, "degraded", "consecutiveFailureCount", "lastFailureType", "lastFailureTick");
+			copy(view, dialogue, "pendingReply", "pendingReplyReason", "degraded", "consecutiveFailureCount", "lastFailureType", "lastFailureTick");
 			List<Map<String, Object>> recentTurns = maps(dialogue.get("recentTurns"));
 			view.put("recentTurnCount", recentTurns.size());
 			if (verbose) {
 				copy(view, dialogue, "lastResponse");
 				view.put("recentTurns", recentTurns);
 			}
+			return view;
+		}
+
+		private static Map<String, Object> agentDebugState(Map<String, Object> payload, boolean verbose) {
+			LinkedHashMap<String, Object> view = new LinkedHashMap<>();
+			copy(view, payload, "available");
+			Map<String, Object> planner = map(payload.get("planner"));
+			Map<String, Object> dialogueState = map(payload.get("dialogueState"));
+			Map<String, Object> conversationSources = map(payload.get("conversationSources"));
+			Map<String, Object> taskProgressProbe = map(payload.get("taskProgressProbe"));
+			Map<String, Object> chatProbe = map(payload.get("chatProbe"));
+			Map<String, Object> eventPipeline = map(payload.get("eventPipeline"));
+			List<Map<String, Object>> plannerAttempts = maps(payload.get("plannerAttempts"));
+			List<Map<String, Object>> timelineTail = maps(payload.get("timelineTail"));
+			copy(view, planner, "configured", "plannerVisionMode", "inFlight", "plannerInFlight", "compactionInFlight", "toolInFlight", "activeGeneration", "currentPhase", "activeAttemptCount");
+			copy(view, dialogueState, "pendingReply", "pendingReplyReason", "degraded", "consecutiveFailureCount", "lastFailureType", "lastFailureTick");
+			copy(view, conversationSources, "canonicalMessageCount", "projectedMessageCount", "canonicalUserTurnCount", "projectedUserTurnCount", "hiddenKinds");
+			copy(view, taskProgressProbe, "active", "resourceKind", "baselineResourceCount", "currentResourceCount", "inventoryDelta", "targetQuantity", "collected", "remaining", "activeJobStatus", "blockedReason", "completionReason");
+			copy(view, chatProbe, "lastAttemptTick", "lastAttemptSource", "lastAttemptReusedPriorResponse", "lastSendSucceeded", "lastEmissionTick", "lastEmissionSource");
+			copy(view, eventPipeline, "rawLatestSeqNo", "plannerLatestSeqNo", "lastProcessedRawSeqNo", "lastRawEventSeqNo", "lastPlannerEventSeqNo", "lastEventType", "lastDecisionEffect", "lastTriggerType", "lastEmitSemantic", "lastEmitTrigger");
+			view.put("plannerAttemptCount", plannerAttempts.size());
+			view.put("timelineEntryCount", timelineTail.size());
+			if (verbose) {
+				copy(view, dialogueState, "lastResponse");
+				copy(view, chatProbe, "lastAttemptText", "lastEmissionText");
+				copy(view, conversationSources, "canonicalConversation", "projectedConversation");
+				view.put("plannerAttempts", plannerAttempts);
+				view.put("timelineTail", timelineTail);
+			}
+			return view;
+		}
+
+		private static Map<String, Object> agentDebugTimeline(Map<String, Object> payload, boolean verbose) {
+			LinkedHashMap<String, Object> view = new LinkedHashMap<>();
+			copy(view, payload, "available", "oldestEntryId", "latestEntryId", "truncated");
+			List<Map<String, Object>> entries = maps(payload.get("entries"));
+			view.put("entryCount", entries.size());
+			view.put("entries", verbose ? entries : filterItems(entries, false,
+				List.of("entryId", "tick", "timestampMs", "domain", "action", "summary"),
+				List.of("correlation", "payload")
+			));
 			return view;
 		}
 

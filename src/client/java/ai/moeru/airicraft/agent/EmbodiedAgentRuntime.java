@@ -8,6 +8,14 @@ import ai.moeru.airicraft.SingleplayerWorldService;
 import ai.moeru.airicraft.agent.behavior.BehaviorTreeRuntime;
 import ai.moeru.airicraft.agent.behavior.BehaviorTreeSnapshot;
 import ai.moeru.airicraft.agent.chat.ChatService;
+import ai.moeru.airicraft.agent.debug.AgentDebugRecorder;
+import ai.moeru.airicraft.agent.debug.AgentDebugTimelineQueryResult;
+import ai.moeru.airicraft.agent.debug.ChatDebugSnapshot;
+import ai.moeru.airicraft.agent.debug.CollectResourceTaskDebugSnapshot;
+import ai.moeru.airicraft.agent.debug.ConversationSourcesDebugSnapshot;
+import ai.moeru.airicraft.agent.debug.DialogueDebugSnapshot;
+import ai.moeru.airicraft.agent.debug.EventPipelineDebugSnapshot;
+import ai.moeru.airicraft.agent.debug.PlannerAttemptDebugSnapshot;
 import ai.moeru.airicraft.agent.dialogue.DialogueIntent;
 import ai.moeru.airicraft.agent.dialogue.DialogueIntentType;
 import ai.moeru.airicraft.agent.dialogue.DialogueResponse;
@@ -35,6 +43,7 @@ import ai.moeru.airicraft.agent.goals.GoalPosition;
 import ai.moeru.airicraft.agent.goals.GoalSnapshot;
 import ai.moeru.airicraft.agent.goals.GoalType;
 import ai.moeru.airicraft.agent.job.ActiveJob;
+import ai.moeru.airicraft.agent.job.ActiveJobType;
 import ai.moeru.airicraft.agent.job.ActiveJobRuntime;
 import ai.moeru.airicraft.agent.llm.CompactionExecutionResult;
 import ai.moeru.airicraft.agent.llm.CurrentViewVisionService;
@@ -66,6 +75,7 @@ import ai.moeru.airicraft.agent.social.PrimaryInteractionPlayer;
 import ai.moeru.airicraft.agent.social.PrimaryInteractionResolver;
 import ai.moeru.airicraft.agent.tasks.TaskExecutionSnapshot;
 import ai.moeru.airicraft.agent.tasks.TaskExecutionState;
+import ai.moeru.airicraft.agent.tasks.BaritoneTaskRequest;
 import ai.moeru.airicraft.agent.tasks.CollectResourceTaskHandler;
 import ai.moeru.airicraft.agent.tasks.InventoryItemCounter;
 import ai.moeru.airicraft.agent.tasks.InventoryResourceCounter;
@@ -137,10 +147,11 @@ public final class EmbodiedAgentRuntime {
 	private final SessionRuntime sessionRuntime = new SessionRuntime();
 	private final LanHostingService lanHostingService = new LanHostingService();
 	private final AgentObservability observability;
+	private final AgentDebugRecorder debugRecorder = new AgentDebugRecorder();
 	private final SemanticEventBuffer eventBuffer = new SemanticEventBuffer(512);
 	private final SemanticEventBuffer plannerEventBuffer = new SemanticEventBuffer(512);
 	private final EventPolicyState eventPolicyState = new EventPolicyState();
-	private final AgentEventPipeline eventPipeline = new AgentEventPipeline(eventBuffer, plannerEventBuffer, eventPolicyState, EVENT_ROUTING_PROFILES);
+	private final AgentEventPipeline eventPipeline = new AgentEventPipeline(eventBuffer, plannerEventBuffer, eventPolicyState, EVENT_ROUTING_PROFILES, debugRecorder);
 	private final ChatIngestService chatIngestService = new ChatIngestService();
 	private final LocalDamageTracker localDamageTracker = new LocalDamageTracker();
 	private final NearbyPlayerTracker nearbyPlayerTracker;
@@ -188,11 +199,13 @@ public final class EmbodiedAgentRuntime {
 			config,
 			Objects.requireNonNull(screenshotService, "screenshotService"),
 			this.observability,
-			clock
+			clock,
+			debugRecorder
 		);
 		this.visionService = plannerShell.visionService();
 		this.dialogueRuntime = plannerShell.dialogueRuntime();
 		this.plannerJournal = plannerShell.plannerJournal();
+		this.debugRecorder.recordDialogueState(this.dialogueRuntime.snapshot());
 		registerDefaultScenarios();
 	}
 
@@ -332,6 +345,7 @@ public final class EmbodiedAgentRuntime {
 			recordPlannerOutcome(completedDialogueResponse, previousGoal, activeGoal());
 			drainEventPipeline();
 		}
+		debugRecorder.recordDialogueState(dialogueRuntime.snapshot());
 
 		TaskSnapshot previousTaskSnapshot = taskSnapshot;
 		activeJobRuntime.tick(
@@ -346,8 +360,10 @@ public final class EmbodiedAgentRuntime {
 			taskSnapshot = projectedTaskSnapshot;
 			missionExecutionSnapshot = activeJobRuntime.missionExecutionSnapshot();
 		}
+		debugRecorder.recordCollectResourceProbe(activeJobRuntime.collectResourceDebugSnapshot());
 		recordSemanticTaskTransition(previousTaskSnapshot, taskSnapshot);
 		Optional<GoalSnapshot> activeGoal = activeGoal();
+		Optional<BaritoneTaskRequest> activeTaskRequest = activeJobRuntime.activeTaskRequest();
 
 		followState = followCapability.tick(
 			client,
@@ -358,7 +374,7 @@ public final class EmbodiedAgentRuntime {
 			eventBuffer
 		);
 		TaskExecutionSnapshot previousTaskExecutionSnapshot = taskExecutionSnapshot;
-		Optional<TaskTerminalEvent> terminalTaskEvent = worldTaskExecutor.tick(sessionSnapshot, activeGoal);
+		Optional<TaskTerminalEvent> terminalTaskEvent = worldTaskExecutor.tick(sessionSnapshot, activeTaskRequest);
 		taskExecutionSnapshot = worldTaskExecutor.snapshot();
 		boolean semanticTaskContext = hasSemanticTaskContext(previousTaskSnapshot, taskSnapshot);
 		recordTaskStateTransition(previousTaskExecutionSnapshot, taskExecutionSnapshot, semanticTaskContext);
@@ -368,6 +384,7 @@ public final class EmbodiedAgentRuntime {
 			sessionSnapshot,
 			dialogueRuntime,
 			chatService,
+			debugRecorder,
 			activeGoal,
 			followState,
 			taskExecutionSnapshot,
@@ -495,6 +512,38 @@ public final class EmbodiedAgentRuntime {
 
 	public PlannerConversationDebugSnapshot plannerConversationDebugSnapshot() {
 		return dialogueRuntime.plannerConversationDebugSnapshot();
+	}
+
+	public PlannerConversationDebugSnapshot plannerCanonicalConversationDebugSnapshot() {
+		return dialogueRuntime.plannerCanonicalConversationDebugSnapshot();
+	}
+
+	public DialogueDebugSnapshot debugDialogueState() {
+		return debugRecorder.dialogueSnapshot();
+	}
+
+	public ChatDebugSnapshot debugChatState() {
+		return debugRecorder.chatSnapshot();
+	}
+
+	public CollectResourceTaskDebugSnapshot debugCollectResourceState() {
+		return debugRecorder.collectResourceSnapshot();
+	}
+
+	public EventPipelineDebugSnapshot debugEventPipelineState() {
+		return debugRecorder.eventPipelineSnapshot();
+	}
+
+	public ConversationSourcesDebugSnapshot debugConversationSources() {
+		return debugRecorder.conversationSourcesSnapshot();
+	}
+
+	public List<PlannerAttemptDebugSnapshot> debugPlannerAttempts() {
+		return debugRecorder.plannerAttempts();
+	}
+
+	public AgentDebugTimelineQueryResult debugTimeline(Long sinceEntryId) {
+		return debugRecorder.queryTimeline(sinceEntryId);
 	}
 
 	public List<String> plannerContextExcerpt() {
@@ -809,6 +858,7 @@ public final class EmbodiedAgentRuntime {
 		);
 		taskSnapshot = activeJobRuntime.taskSnapshot();
 		missionExecutionSnapshot = activeJobRuntime.missionExecutionSnapshot();
+		debugRecorder.recordCollectResourceProbe(activeJobRuntime.collectResourceDebugSnapshot());
 		eventBuffer.append(tickCount, "task.submitted", Map.of(
 			"type", spec.type().name(),
 			"resourceKind", spec.resourceKind().name(),
@@ -828,6 +878,7 @@ public final class EmbodiedAgentRuntime {
 		);
 		taskSnapshot = activeJobRuntime.taskSnapshot();
 		missionExecutionSnapshot = activeJobRuntime.missionExecutionSnapshot();
+		debugRecorder.recordCollectResourceProbe(activeJobRuntime.collectResourceDebugSnapshot());
 		eventBuffer.append(tickCount, "mission.submitted", Map.of(
 			"missionId", ledger.missionId(),
 			"missionType", ledger.missionType().name(),
@@ -842,6 +893,7 @@ public final class EmbodiedAgentRuntime {
 		activeJobRuntime.cancel(reason == null || reason.isBlank() ? "cancelled" : reason, tickCount);
 		taskSnapshot = activeJobRuntime.taskSnapshot();
 		missionExecutionSnapshot = activeJobRuntime.missionExecutionSnapshot();
+		debugRecorder.recordCollectResourceProbe(activeJobRuntime.collectResourceDebugSnapshot());
 		recordSemanticTaskTransition(previousTaskSnapshot, taskSnapshot);
 		return taskSnapshot;
 	}
@@ -862,6 +914,7 @@ public final class EmbodiedAgentRuntime {
 			activeJobRuntime.clear();
 			taskSnapshot = activeJobRuntime.taskSnapshot();
 			missionExecutionSnapshot = activeJobRuntime.missionExecutionSnapshot();
+			debugRecorder.recordCollectResourceProbe(activeJobRuntime.collectResourceDebugSnapshot());
 			return;
 		}
 		activeJobRuntime.applyPlannerResponse(new DialogueResponse(
@@ -875,6 +928,7 @@ public final class EmbodiedAgentRuntime {
 			),
 			goalSnapshot.updatedTick()
 		), 0, "test", goalSnapshot.updatedTick());
+		debugRecorder.recordCollectResourceProbe(activeJobRuntime.collectResourceDebugSnapshot());
 	}
 
 	private void applyTaskIntent(DialogueResponse response, WorldEvidence worldEvidence) {
@@ -889,6 +943,7 @@ public final class EmbodiedAgentRuntime {
 			activeJobRuntime.cancel("preempted_by_direct_goal", response.tick());
 			taskSnapshot = activeJobRuntime.taskSnapshot();
 			missionExecutionSnapshot = activeJobRuntime.missionExecutionSnapshot();
+			debugRecorder.recordCollectResourceProbe(activeJobRuntime.collectResourceDebugSnapshot());
 			recordSemanticTaskTransition(previousTaskSnapshot, taskSnapshot);
 		}
 		activeJobRuntime.applyPlannerResponse(response, currentResourceCount, "planner_response", response.tick());
@@ -897,6 +952,7 @@ public final class EmbodiedAgentRuntime {
 			taskSnapshot = projectedTaskSnapshot;
 			missionExecutionSnapshot = activeJobRuntime.missionExecutionSnapshot();
 		}
+		debugRecorder.recordCollectResourceProbe(activeJobRuntime.collectResourceDebugSnapshot());
 	}
 
 	private int currentTaskResourceCount(MinecraftClient client) {
@@ -1245,6 +1301,9 @@ public final class EmbodiedAgentRuntime {
 	}
 
 	private ai.moeru.airicraft.agent.llm.PlannerTrigger createPickupTrigger(SemanticEvent event) {
+		if (suppressPlannerTriggersForCollectResourceProgress()) {
+			return null;
+		}
 		String itemId = stringPayloadValue(event.payload(), "itemId");
 		Float count = floatPayloadValue(event.payload(), "count");
 		if (itemId == null || count == null) {
@@ -1260,6 +1319,9 @@ public final class EmbodiedAgentRuntime {
 	}
 
 	private ai.moeru.airicraft.agent.llm.PlannerTrigger createCraftTrigger(SemanticEvent event) {
+		if (suppressPlannerTriggersForCollectResourceProgress()) {
+			return null;
+		}
 		String itemId = stringPayloadValue(event.payload(), "itemId");
 		Float count = floatPayloadValue(event.payload(), "count");
 		if (itemId == null || count == null) {
@@ -1407,6 +1469,11 @@ public final class EmbodiedAgentRuntime {
 		profiles.put("policy.event_intervened", EventRoutingProfile.rawOnly("policy.event_intervened"));
 		profiles.put("policy.rule_rejected", EventRoutingProfile.rawOnly("policy.rule_rejected"));
 		return Map.copyOf(profiles);
+	}
+
+	private boolean suppressPlannerTriggersForCollectResourceProgress() {
+		ActiveJob current = activeJobRuntime.current();
+		return current.type() == ActiveJobType.COLLECT_RESOURCE && !current.status().terminal();
 	}
 
 	private void recordTaskStateTransition(TaskExecutionSnapshot previous, TaskExecutionSnapshot current, boolean semanticTaskContext) {
@@ -1560,8 +1627,12 @@ public final class EmbodiedAgentRuntime {
 		};
 		if (eventType != null) {
 			java.util.LinkedHashMap<String, Object> payload = new java.util.LinkedHashMap<>();
+			payload.put("taskId", event.taskId());
 			payload.put("goalType", event.goal().type().name());
 			payload.put("message", event.message() == null ? "" : event.message());
+			if (event.terminationCause() != null) {
+				payload.put("terminationCause", event.terminationCause().name());
+			}
 			if (event.goal().targetPlayer() != null && !event.goal().targetPlayer().isBlank()) {
 				payload.put("targetPlayer", event.goal().targetPlayer());
 			}
@@ -1570,6 +1641,7 @@ public final class EmbodiedAgentRuntime {
 
 			dialogueRuntime.onInternalTaskUpdate(
 				"TASK UPDATE: state=" + event.terminalState().name()
+					+ " taskId=" + event.taskId()
 					+ " goalType=" + event.goal().type().name()
 					+ " message=" + (event.message() == null ? "" : event.message()),
 				tickCount,
@@ -2182,7 +2254,7 @@ public final class EmbodiedAgentRuntime {
 		private static final NoopWorldTaskExecutor INSTANCE = new NoopWorldTaskExecutor();
 
 		@Override
-		public Optional<TaskTerminalEvent> tick(SessionSnapshot sessionSnapshot, Optional<GoalSnapshot> activeGoal) {
+		public Optional<TaskTerminalEvent> tick(SessionSnapshot sessionSnapshot, Optional<BaritoneTaskRequest> activeTask) {
 			return Optional.empty();
 		}
 

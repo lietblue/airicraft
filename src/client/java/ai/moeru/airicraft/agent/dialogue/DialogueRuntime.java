@@ -30,6 +30,7 @@ public final class DialogueRuntime {
 
 	private DialogueState state = DialogueCore.initialState();
 	private int queuedTimeoutInjections;
+	private boolean pendingTimeoutVisibleReply;
 
 	public DialogueRuntime(PlannerOrchestrator plannerOrchestrator, int maxRecentTurns) {
 		this(plannerOrchestrator, maxRecentTurns, Clock.systemDefaultZone());
@@ -47,6 +48,10 @@ public final class DialogueRuntime {
 
 	public boolean hasPendingReply() {
 		return state.pendingReply();
+	}
+
+	public String pendingReplyReason() {
+		return state.pendingReplyReason();
 	}
 
 	public void markReplyObserved() {
@@ -67,6 +72,10 @@ public final class DialogueRuntime {
 
 	public PlannerConversationDebugSnapshot plannerConversationDebugSnapshot() {
 		return plannerOrchestrator.conversationDebugSnapshot();
+	}
+
+	public PlannerConversationDebugSnapshot plannerCanonicalConversationDebugSnapshot() {
+		return plannerOrchestrator.canonicalConversationDebugSnapshot();
 	}
 
 	public List<String> plannerContextExcerpt() {
@@ -97,6 +106,8 @@ public final class DialogueRuntime {
 		return new DialogueSnapshot(
 			List.copyOf(recentTurns),
 			state.lastResponse(),
+			state.pendingReply(),
+			state.pendingReplyReason(),
 			state.degraded(),
 			state.consecutiveFailureCount(),
 			state.lastFailureType(),
@@ -150,7 +161,8 @@ public final class DialogueRuntime {
 				null
 			),
 			eventBuffer,
-			timestampMs
+			timestampMs,
+			true
 		);
 	}
 
@@ -178,7 +190,8 @@ public final class DialogueRuntime {
 				null
 			),
 			eventBuffer,
-			timestampMs
+			timestampMs,
+			triggerType == PlannerTriggerType.CHAT && senderName != null && !"system".equalsIgnoreCase(senderName)
 		);
 	}
 
@@ -205,7 +218,10 @@ public final class DialogueRuntime {
 				null
 			),
 			plannerEventBuffer,
-			trigger.timestampMs()
+			trigger.timestampMs(),
+			trigger.type() == PlannerTriggerType.CHAT
+				&& trigger.speaker() != null
+				&& !"system".equalsIgnoreCase(trigger.speaker())
 		);
 	}
 
@@ -248,6 +264,7 @@ public final class DialogueRuntime {
 			updateMessage,
 			null
 		));
+		pendingTimeoutVisibleReply = false;
 	}
 
 	public void onInternalTaskUpdate(
@@ -263,7 +280,8 @@ public final class DialogueRuntime {
 	public DialogueResponse poll(long tick, SemanticEventBuffer eventBuffer) {
 		if (queuedTimeoutInjections > 0 && !plannerOrchestrator.hasInFlight()) {
 			queuedTimeoutInjections--;
-			applyTransition(DialogueCore.onPlannerFailure(state, LlmFailureType.TIMEOUT, "Injected LLM timeout", tick), tick, eventBuffer);
+			applyTransition(DialogueCore.onPlannerFailure(state, LlmFailureType.TIMEOUT, "Injected LLM timeout", pendingTimeoutVisibleReply, tick), tick, eventBuffer);
+			pendingTimeoutVisibleReply = false;
 			return null;
 		}
 
@@ -273,12 +291,25 @@ public final class DialogueRuntime {
 		}
 
 		if (!result.succeeded()) {
-			applyTransition(DialogueCore.onPlannerFailure(state, result.failureType(), result.failureMessage(), tick), tick, eventBuffer);
+			boolean timeoutVisibleReply = pendingTimeoutVisibleReply || isDirectChatRequest(result.request());
+			applyTransition(
+				DialogueCore.onPlannerFailure(
+					state,
+					result.failureType(),
+					result.failureMessage(),
+					timeoutVisibleReply,
+					tick
+				),
+				tick,
+				eventBuffer
+			);
+			pendingTimeoutVisibleReply = false;
 			return null;
 		}
 
 		DialogueTransition transition = DialogueCore.onPlannerSuccess(state, result.response(), tick);
 		applyTransition(transition, tick, eventBuffer);
+		pendingTimeoutVisibleReply = false;
 		plannerOrchestrator.onAcceptedReplyRecorded();
 		return transition.lastVisibleResponse();
 	}
@@ -286,6 +317,7 @@ public final class DialogueRuntime {
 	public void resetLlmState(long tick, SemanticEventBuffer eventBuffer) {
 		plannerOrchestrator.reset();
 		queuedTimeoutInjections = 0;
+		pendingTimeoutVisibleReply = false;
 		if (state.degraded()) {
 			applyEffects(List.of(DialogueEffect.appendSemanticEvent("planner.degraded_cleared", java.util.Map.of())), tick, eventBuffer);
 		}
@@ -295,6 +327,7 @@ public final class DialogueRuntime {
 	public void clear() {
 		state = DialogueCore.initialState();
 		queuedTimeoutInjections = 0;
+		pendingTimeoutVisibleReply = false;
 		recentTurns.clear();
 		plannerOrchestrator.reset();
 	}
@@ -302,6 +335,7 @@ public final class DialogueRuntime {
 	public void shutdown() {
 		state = DialogueCore.initialState();
 		queuedTimeoutInjections = 0;
+		pendingTimeoutVisibleReply = false;
 		recentTurns.clear();
 		plannerOrchestrator.shutdown();
 	}
@@ -313,7 +347,8 @@ public final class DialogueRuntime {
 	private void submitPlannerTrigger(
 		PlannerRequest request,
 		SemanticEventBuffer eventBuffer,
-		long timestampMs
+		long timestampMs,
+		boolean timeoutVisibleReply
 	) {
 		if (state.degraded()) {
 			return;
@@ -329,6 +364,7 @@ public final class DialogueRuntime {
 				request.activeGoal()
 			)
 		);
+		pendingTimeoutVisibleReply = timeoutVisibleReply;
 		plannerOrchestrator.submit(request);
 	}
 
@@ -362,4 +398,16 @@ public final class DialogueRuntime {
 			}
 		}
 	}
+
+	private static boolean isDirectChatRequest(PlannerRequest request) {
+		if (request == null || request.triggerBatch() == null || request.triggerBatch().triggers().isEmpty()) {
+			return false;
+		}
+		return request.triggerBatch().triggers().stream().allMatch(trigger ->
+			trigger.type() == PlannerTriggerType.CHAT
+				&& trigger.speaker() != null
+				&& !"system".equalsIgnoreCase(trigger.speaker())
+		);
+	}
+
 }

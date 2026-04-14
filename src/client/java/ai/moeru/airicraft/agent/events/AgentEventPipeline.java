@@ -1,5 +1,6 @@
 package ai.moeru.airicraft.agent.events;
 
+import ai.moeru.airicraft.agent.debug.AgentDebugRecorder;
 import ai.moeru.airicraft.agent.llm.PlannerTrigger;
 
 import java.util.ArrayList;
@@ -18,6 +19,7 @@ public final class AgentEventPipeline {
 	private final SemanticEventBuffer plannerEventBuffer;
 	private final EventPolicyState policyState;
 	private final Map<String, EventRoutingProfile> routingProfiles;
+	private final AgentDebugRecorder debugRecorder;
 	private long lastProcessedRawSeqNo;
 
 	public AgentEventPipeline(
@@ -26,10 +28,21 @@ public final class AgentEventPipeline {
 		EventPolicyState policyState,
 		Map<String, EventRoutingProfile> routingProfiles
 	) {
+		this(rawEventBuffer, plannerEventBuffer, policyState, routingProfiles, new AgentDebugRecorder());
+	}
+
+	public AgentEventPipeline(
+		SemanticEventBuffer rawEventBuffer,
+		SemanticEventBuffer plannerEventBuffer,
+		EventPolicyState policyState,
+		Map<String, EventRoutingProfile> routingProfiles,
+		AgentDebugRecorder debugRecorder
+	) {
 		this.rawEventBuffer = Objects.requireNonNull(rawEventBuffer, "rawEventBuffer");
 		this.plannerEventBuffer = Objects.requireNonNull(plannerEventBuffer, "plannerEventBuffer");
 		this.policyState = Objects.requireNonNull(policyState, "policyState");
 		this.routingProfiles = Map.copyOf(Objects.requireNonNull(routingProfiles, "routingProfiles"));
+		this.debugRecorder = Objects.requireNonNull(debugRecorder, "debugRecorder");
 	}
 
 	public SemanticEvent appendRaw(long tick, String type, Map<String, Object> payload) {
@@ -53,11 +66,13 @@ public final class AgentEventPipeline {
 		plannerEventBuffer.clear();
 		policyState.clear();
 		lastProcessedRawSeqNo = 0L;
+		recordBufferState();
 	}
 
 	public void clearPlannerFeed() {
 		plannerEventBuffer.clear();
 		lastProcessedRawSeqNo = rawEventBuffer.latestSeqNo();
+		recordBufferState();
 	}
 
 	public List<PlannerTrigger> drain(TriggerFactory triggerFactory) {
@@ -78,6 +93,7 @@ public final class AgentEventPipeline {
 	private List<PlannerTrigger> route(SemanticEvent event, TriggerFactory triggerFactory) {
 		EventRoutingProfile profile = routingProfiles.getOrDefault(event.type(), EventRoutingProfile.rawOnly(event.type()));
 		if (!profile.semanticEligible() && !profile.triggerEligible()) {
+			recordBufferState();
 			return List.of();
 		}
 
@@ -122,11 +138,32 @@ public final class AgentEventPipeline {
 			plannerEventBuffer.append(event.tick(), event.timestampMs(), event.type(), event.payload());
 		}
 
-		if (!emitTrigger) {
+		PlannerTrigger trigger = emitTrigger ? triggerFactory.create(event, profile) : null;
+		debugRecorder.recordEventRouting(
+			event.tick(),
+			event.timestampMs(),
+			event.seqNo(),
+			event.type(),
+			decision.effect().name(),
+			emitSemantic,
+			trigger != null,
+			plannerEventBuffer.latestSeqNo(),
+			trigger == null || trigger.type() == null ? null : trigger.type().name()
+		);
+		recordBufferState();
+		if (trigger == null) {
 			return List.of();
 		}
+		return List.of(trigger);
+	}
 
-		PlannerTrigger trigger = triggerFactory.create(event, profile);
-		return trigger == null ? List.of() : List.of(trigger);
+	private void recordBufferState() {
+		debugRecorder.updateEventPipelineBufferState(
+			rawEventBuffer.latestSeqNo(),
+			plannerEventBuffer.latestSeqNo(),
+			rawEventBuffer.droppedCount(),
+			plannerEventBuffer.droppedCount(),
+			lastProcessedRawSeqNo
+		);
 	}
 }

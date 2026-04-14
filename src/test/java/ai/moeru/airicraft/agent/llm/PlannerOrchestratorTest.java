@@ -916,6 +916,40 @@ class PlannerOrchestratorTest {
 	}
 
 	@Test
+	void conversationSnapshotShowsAcceptedToolFollowUpReplyBeforeNextSubmit() {
+		RecordingBackend backend = new RecordingBackend();
+		StubVisionTool visionTool = new StubVisionTool(
+			true,
+			CompletableFuture.completedFuture(capturedScreenshot()),
+			CompletableFuture.failedFuture(new AssertionError("External summary should not be requested"))
+		);
+		PlannerOrchestrator orchestrator = newOrchestrator(
+			backend,
+			visionTool,
+			PlannerVisionMode.NATIVE_TOOL_IMAGE
+		);
+
+		orchestrator.submit(requestAt(10L, 1_000L, "Alice", "@agent what do you see?"));
+		backend.awaitCalls(1, Duration.ofSeconds(1));
+		backend.succeed(0, new PlannerResponse(
+			"",
+			new PlannerIntent("none", null, null),
+			new PlannerToolRequest("take_a_look", null)
+		));
+		backend.awaitCompletions(1, Duration.ofSeconds(1));
+		awaitBackendCallCount(orchestrator, backend, 2, Duration.ofSeconds(1));
+		backend.succeed(1, replyOnly("I see snow."));
+		PlannerExecutionResult result = awaitResult(orchestrator);
+
+		orchestrator.recordAssistantTurn(new DialogueTurn("agent", result.response().replyText(), 11L, 1_100L));
+		orchestrator.onAcceptedReplyRecorded();
+
+		PlannerConversationDebugSnapshot snapshot = orchestrator.conversationDebugSnapshot();
+		assertNotNull(findConversationMessage(snapshot, PlannerConversationDebugKind.ASSISTANT_TURN, "I see snow."));
+		assertEquals("TOOL_FOLLOW_UP", snapshot.phase());
+	}
+
+	@Test
 	void toolFollowUpConversationReplaysRawAssistantContentBeforeToolResult() {
 		RecordingBackend backend = new RecordingBackend();
 		StubVisionTool visionTool = new StubVisionTool(

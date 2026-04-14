@@ -3,6 +3,7 @@ package ai.moeru.airicraft.agent.behavior;
 import ai.moeru.airicraft.agent.control.LookController;
 import ai.moeru.airicraft.agent.control.MovementController;
 import ai.moeru.airicraft.agent.chat.ChatService;
+import ai.moeru.airicraft.agent.debug.AgentDebugRecorder;
 import ai.moeru.airicraft.agent.dialogue.DialogueResponse;
 import ai.moeru.airicraft.agent.follow.FollowState;
 import ai.moeru.airicraft.agent.goals.GoalSnapshot;
@@ -32,6 +33,7 @@ public final class BehaviorTreeRuntime {
 		SessionSnapshot sessionSnapshot,
 		DialogueRuntime dialogueRuntime,
 		ChatService chatService,
+		AgentDebugRecorder debugRecorder,
 		Optional<GoalSnapshot> activeGoal,
 		FollowState followState,
 		TaskExecutionSnapshot taskExecutionSnapshot,
@@ -45,10 +47,19 @@ public final class BehaviorTreeRuntime {
 
 		if (dialogueRuntime.hasPendingReply()) {
 			movementController.stop(client);
+			String source = dialogueRuntime.pendingReplyReason();
+			boolean reusedPriorResponse = "failure_reused_last_response".equals(source);
 			dialogueRuntime.lastResponse()
 				.map(DialogueResponse::text)
-				.filter(text -> chatService.send(client, text, tick))
-				.ifPresent(ignored -> dialogueRuntime.markReplyObserved());
+				.ifPresent(text -> {
+					debugRecorder.recordChatAttempt(tick, text, source, reusedPriorResponse);
+					boolean sent = chatService.send(client, text, tick);
+					debugRecorder.recordChatResult(tick, text, source, reusedPriorResponse, sent);
+					if (sent) {
+						dialogueRuntime.markReplyObserved();
+						debugRecorder.recordDialogueState(dialogueRuntime.snapshot());
+					}
+				});
 			snapshot = new BehaviorTreeSnapshot(NodeStatus.RUNNING, List.of("Root", "ReplyToPlayer"), movementController.snapshot());
 			return;
 		}

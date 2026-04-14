@@ -1,11 +1,13 @@
 package ai.moeru.airicraft.agent.job;
 
+import ai.moeru.airicraft.agent.debug.CollectResourceTaskDebugSnapshot;
 import ai.moeru.airicraft.agent.dialogue.DialogueIntentType;
 import ai.moeru.airicraft.agent.dialogue.DialogueResponse;
 import ai.moeru.airicraft.agent.goals.GoalMineSpec;
 import ai.moeru.airicraft.agent.goals.GoalSnapshot;
 import ai.moeru.airicraft.agent.goals.GoalType;
 import ai.moeru.airicraft.agent.tasks.AskUserStepArgs;
+import ai.moeru.airicraft.agent.tasks.BaritoneTaskRequest;
 import ai.moeru.airicraft.agent.tasks.CollectResourceStepArgs;
 import ai.moeru.airicraft.agent.tasks.CollectResourceTaskHandler;
 import ai.moeru.airicraft.agent.tasks.LedgerStep;
@@ -40,6 +42,10 @@ public final class ActiveJobRuntime {
 	private WorldEvidence lastEvidence = new WorldEvidence(Map.of(), Map.of(), Map.of(), null, 0, 0, 0, null, -1L);
 	private MissionSpec compatibilityMission;
 	private TaskLedger compatibilityLedger;
+	private CollectResourceTaskDebugSnapshot collectResourceDebugSnapshot = CollectResourceTaskDebugSnapshot.empty();
+	private BaritoneTaskRequest desiredPrimitiveTask;
+	private String collectAttemptJobId;
+	private int collectAttemptSequence;
 
 	public void clear() {
 		activeJob = ActiveJob.idle();
@@ -47,6 +53,10 @@ public final class ActiveJobRuntime {
 		lastEvidence = new WorldEvidence(Map.of(), Map.of(), Map.of(), null, 0, 0, 0, null, -1L);
 		compatibilityMission = null;
 		compatibilityLedger = null;
+		collectResourceDebugSnapshot = CollectResourceTaskDebugSnapshot.empty();
+		desiredPrimitiveTask = null;
+		collectAttemptJobId = null;
+		collectAttemptSequence = 0;
 	}
 
 	public ActiveJob current() {
@@ -56,6 +66,9 @@ public final class ActiveJobRuntime {
 	public Optional<GoalSnapshot> activeGoal(long tick) {
 		if (activeJob.isIdle() || activeJob.status().terminal()) {
 			return Optional.empty();
+		}
+		if (desiredPrimitiveTask != null && Objects.equals(desiredPrimitiveTask.sourceJobId(), activeJob.jobId())) {
+			return Optional.of(desiredPrimitiveTask.goal());
 		}
 		if (activeJob.directGoal() != null) {
 			return Optional.of(activeJob.directGoal());
@@ -68,6 +81,14 @@ public final class ActiveJobRuntime {
 			return Optional.of(collectResourceTaskHandler.start(activeJob.taskSpec(), remaining, tick));
 		}
 		return Optional.empty();
+	}
+
+	public Optional<BaritoneTaskRequest> activeTaskRequest() {
+		return Optional.ofNullable(desiredPrimitiveTask);
+	}
+
+	public CollectResourceTaskDebugSnapshot collectResourceDebugSnapshot() {
+		return collectResourceDebugSnapshot;
 	}
 
 	public void submitTask(TaskSpec spec, int currentResourceCount, String source, long tick) {
@@ -89,6 +110,15 @@ public final class ActiveJobRuntime {
 		);
 		compatibilityMission = new MissionSpec(activeJob.jobId(), MissionType.COLLECT_RESOURCE, goalText());
 		compatibilityLedger = null;
+		collectResourceDebugSnapshot = collectResourceProbe(
+			activeJob,
+			currentResourceCount,
+			false,
+			lastPrimitiveExecution.state(),
+			null,
+			tick
+		);
+		refreshDesiredTask(tick);
 	}
 
 	public void submitMissionLedger(TaskLedger ledger, int currentResourceCount, String source, long tick) {
@@ -97,6 +127,10 @@ public final class ActiveJobRuntime {
 		activeJob = preserveProgressIfSame(next, tick);
 		compatibilityMission = missionFromLedger(ledger);
 		compatibilityLedger = ledger;
+		collectResourceDebugSnapshot = activeJob.type() == ActiveJobType.COLLECT_RESOURCE
+			? collectResourceProbe(activeJob, currentResourceCount, false, lastPrimitiveExecution.state(), null, tick)
+			: CollectResourceTaskDebugSnapshot.empty();
+		refreshDesiredTask(tick);
 	}
 
 	public void applyPlannerResponse(DialogueResponse response, int currentResourceCount, String source, long tick) {
@@ -112,6 +146,7 @@ public final class ActiveJobRuntime {
 			activeJob = preserveProgressIfSame(fromProposal(response.intent().activeJob(), currentResourceCount, normalizeSource(source), tick), tick);
 			compatibilityMission = missionSpec();
 			compatibilityLedger = null;
+			refreshDesiredTask(tick);
 			return;
 		}
 		if (response.intent().type() == DialogueIntentType.SUBMIT_TASK && response.intent().taskSpec() != null) {
@@ -125,6 +160,7 @@ public final class ActiveJobRuntime {
 		if (response.intent().type() == DialogueIntentType.SET_GOAL && response.intent().goalType() != null) {
 			ActiveJob next = fromGoalResponse(response, normalizeSource(source));
 			activeJob = preserveProgressIfSame(next, tick);
+			refreshDesiredTask(tick);
 		}
 	}
 
@@ -147,6 +183,10 @@ public final class ActiveJobRuntime {
 			reason,
 			tick
 		);
+		collectResourceDebugSnapshot = activeJob.type() == ActiveJobType.COLLECT_RESOURCE
+			? collectResourceProbe(activeJob, activeJob.baselineResourceCount() + activeJob.collectedCount(), false, lastPrimitiveExecution.state(), reason, tick)
+			: CollectResourceTaskDebugSnapshot.empty();
+		refreshDesiredTask(tick);
 	}
 
 	public void clearFollowTarget(String targetPlayer) {
@@ -157,6 +197,7 @@ public final class ActiveJobRuntime {
 			return;
 		}
 		activeJob = ActiveJob.idle();
+		refreshDesiredTask(lastEvidence.tick());
 	}
 
 	public void tick(
@@ -170,6 +211,7 @@ public final class ActiveJobRuntime {
 		lastEvidence = evidence == null ? new WorldEvidence(Map.of(), Map.of(), Map.of(), null, 0, 0, 0, null, tick) : evidence;
 
 		if (activeJob.isIdle() || activeJob.status().terminal()) {
+			collectResourceDebugSnapshot = CollectResourceTaskDebugSnapshot.empty();
 			return;
 		}
 
@@ -180,6 +222,72 @@ public final class ActiveJobRuntime {
 			case FOLLOW_PLAYER, NAVIGATE_TO, MINE_BLOCKS -> tickGoalJob(activeJob, lastPrimitiveExecution, actuationAllowed, tick);
 			case IDLE -> ActiveJob.idle();
 		};
+		if (activeJob.type() != ActiveJobType.COLLECT_RESOURCE) {
+			collectResourceDebugSnapshot = CollectResourceTaskDebugSnapshot.empty();
+		}
+		refreshDesiredTask(tick);
+	}
+
+	private void refreshDesiredTask(long tick) {
+		if (activeJob.isIdle() || activeJob.status().terminal()) {
+			clearDesiredTaskState();
+			return;
+		}
+		if (activeJob.directGoal() != null) {
+			clearCollectAttemptState();
+			desiredPrimitiveTask = BaritoneTaskRequest.direct(activeJob.jobId(), activeJob.directGoal());
+			return;
+		}
+		if (activeJob.type() != ActiveJobType.COLLECT_RESOURCE || activeJob.taskSpec() == null) {
+			clearDesiredTaskState();
+			return;
+		}
+		int remaining = Math.max(1, activeJob.taskSpec().quantity() - activeJob.collectedCount());
+		boolean collectTaskChanged = !Objects.equals(collectAttemptJobId, activeJob.jobId());
+		boolean collectTaskMissing = desiredPrimitiveTask == null || !Objects.equals(desiredPrimitiveTask.sourceJobId(), activeJob.jobId());
+		boolean primitiveCompleted = lastPrimitiveExecution.state() == TaskExecutionState.COMPLETED
+			&& desiredPrimitiveTask != null
+			&& Objects.equals(lastPrimitiveExecution.taskId(), desiredPrimitiveTask.taskId());
+		if ((collectTaskChanged || collectTaskMissing) && activeJob.status() != ActiveJobStatus.RUNNING) {
+			if (collectTaskChanged) {
+				clearCollectAttemptState();
+			}
+			desiredPrimitiveTask = null;
+			return;
+		}
+		if (collectTaskChanged || collectTaskMissing || primitiveCompleted) {
+			startCollectAttempt(remaining, tick);
+			return;
+		}
+	}
+
+	private void startCollectAttempt(int remainingQuantity, long tick) {
+		if (activeJob.taskSpec() == null) {
+			clearDesiredTaskState();
+			return;
+		}
+		if (!Objects.equals(collectAttemptJobId, activeJob.jobId())) {
+			collectAttemptJobId = activeJob.jobId();
+			collectAttemptSequence = 0;
+		}
+		collectAttemptSequence++;
+		int absoluteInventoryTarget = activeJob.baselineResourceCount() + activeJob.taskSpec().quantity();
+		GoalSnapshot goal = collectResourceTaskHandler.start(activeJob.taskSpec(), absoluteInventoryTarget, tick);
+		desiredPrimitiveTask = BaritoneTaskRequest.collectMine(
+			activeJob.jobId() + ":mine:" + collectAttemptSequence,
+			activeJob.jobId(),
+			goal
+		);
+	}
+
+	private void clearDesiredTaskState() {
+		desiredPrimitiveTask = null;
+		clearCollectAttemptState();
+	}
+
+	private void clearCollectAttemptState() {
+		collectAttemptJobId = null;
+		collectAttemptSequence = 0;
 	}
 
 	public TaskSnapshot taskSnapshot() {
@@ -227,21 +335,33 @@ public final class ActiveJobRuntime {
 		int currentCount = evidence.inventoryCounts().getOrDefault(spec.resourceKind(), job.baselineResourceCount());
 		int collected = Math.max(0, currentCount - job.baselineResourceCount());
 		if (collected >= spec.quantity()) {
-			return updated(job, ActiveJobStatus.COMPLETED, null, null, collected, tick);
+			ActiveJob completed = updated(job, ActiveJobStatus.COMPLETED, null, null, collected, tick);
+			collectResourceDebugSnapshot = collectResourceProbe(completed, currentCount, nearbyResourceTargetAvailable, primitiveExecution.state(), "inventory_delta_reached", tick);
+			return completed;
 		}
 		if (!actuationAllowed || primitiveExecution.state() == TaskExecutionState.PAUSED_BY_SESSION_GATE) {
-			return updated(job, ActiveJobStatus.BLOCKED, "session_gate", null, collected, tick);
+			ActiveJob blocked = updated(job, ActiveJobStatus.BLOCKED, "session_gate", null, collected, tick);
+			collectResourceDebugSnapshot = collectResourceProbe(blocked, currentCount, nearbyResourceTargetAvailable, primitiveExecution.state(), null, tick);
+			return blocked;
 		}
 		if (primitiveExecution.state() == TaskExecutionState.FAILED) {
-			return updated(job, ActiveJobStatus.FAILED, null, nonEmpty(primitiveExecution.lastPathEvent(), "task_failed"), collected, tick);
+			ActiveJob failed = updated(job, ActiveJobStatus.FAILED, null, nonEmpty(primitiveExecution.lastPathEvent(), "task_failed"), collected, tick);
+			collectResourceDebugSnapshot = collectResourceProbe(failed, currentCount, nearbyResourceTargetAvailable, primitiveExecution.state(), failed.lastError(), tick);
+			return failed;
 		}
 		if (primitiveExecution.state() == TaskExecutionState.CANCELLED) {
-			return updated(job, ActiveJobStatus.CANCELLED, null, nonEmpty(primitiveExecution.lastPathEvent(), "task_cancelled"), collected, tick);
+			ActiveJob cancelled = updated(job, ActiveJobStatus.CANCELLED, null, nonEmpty(primitiveExecution.lastPathEvent(), "task_cancelled"), collected, tick);
+			collectResourceDebugSnapshot = collectResourceProbe(cancelled, currentCount, nearbyResourceTargetAvailable, primitiveExecution.state(), cancelled.lastError(), tick);
+			return cancelled;
 		}
 		if (!nearbyResourceTargetAvailable) {
-			return updated(job, ActiveJobStatus.BLOCKED, "target_missing", null, collected, tick);
+			ActiveJob blocked = updated(job, ActiveJobStatus.BLOCKED, "target_missing", null, collected, tick);
+			collectResourceDebugSnapshot = collectResourceProbe(blocked, currentCount, false, primitiveExecution.state(), null, tick);
+			return blocked;
 		}
-		return updated(job, ActiveJobStatus.RUNNING, null, null, collected, tick);
+		ActiveJob running = updated(job, ActiveJobStatus.RUNNING, null, null, collected, tick);
+		collectResourceDebugSnapshot = collectResourceProbe(running, currentCount, true, primitiveExecution.state(), null, tick);
+		return running;
 	}
 
 	private static ActiveJob tickWait(ActiveJob job, long tick) {
@@ -558,5 +678,36 @@ public final class ActiveJobRuntime {
 
 	private static String nonEmpty(String value, String fallback) {
 		return value == null || value.isBlank() ? fallback : value;
+	}
+
+	private static CollectResourceTaskDebugSnapshot collectResourceProbe(
+		ActiveJob job,
+		int currentResourceCount,
+		boolean nearbyResourceTargetAvailable,
+		TaskExecutionState primitiveExecutionState,
+		String completionReason,
+		long tick
+	) {
+		if (job == null || job.type() != ActiveJobType.COLLECT_RESOURCE || job.taskSpec() == null) {
+			return CollectResourceTaskDebugSnapshot.empty();
+		}
+		int inventoryDelta = Math.max(0, currentResourceCount - job.baselineResourceCount());
+		return new CollectResourceTaskDebugSnapshot(
+			true,
+			job.jobId(),
+			job.taskSpec().resourceKind().name(),
+			job.baselineResourceCount(),
+			currentResourceCount,
+			inventoryDelta,
+			job.taskSpec().quantity(),
+			job.collectedCount(),
+			Math.max(0, job.taskSpec().quantity() - job.collectedCount()),
+			nearbyResourceTargetAvailable,
+			primitiveExecutionState == null ? null : primitiveExecutionState.name(),
+			job.status().name(),
+			job.blockedReason(),
+			completionReason,
+			tick
+		);
 	}
 }

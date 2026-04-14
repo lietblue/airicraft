@@ -154,6 +154,100 @@ class AiricraftCliMainTest {
 	}
 
 	@Test
+	void agentDebugStateRendersCorrelatedSummary() {
+		TestTransport transport = new TestTransport();
+		transport.agentDebugStatePayload = linkedMap(
+			"available", true,
+			"planner", linkedMap(
+				"configured", true,
+				"plannerVisionMode", "native_tool_image",
+				"inFlight", false,
+				"plannerInFlight", false,
+				"compactionInFlight", false,
+				"toolInFlight", false,
+				"activeGeneration", 7,
+				"currentPhase", "PLANNER_REQUEST",
+				"activeAttemptCount", 1
+			),
+			"dialogueState", linkedMap(
+				"pendingReply", true,
+				"pendingReplyReason", "failure_reused_last_response",
+				"degraded", false,
+				"consecutiveFailureCount", 1,
+				"lastFailureType", "TIMEOUT",
+				"lastFailureTick", 120
+			),
+			"conversationSources", linkedMap(
+				"canonicalMessageCount", 6,
+				"projectedMessageCount", 4,
+				"canonicalUserTurnCount", 2,
+				"projectedUserTurnCount", 1,
+				"hiddenKinds", List.of("USER_TURN")
+			),
+			"taskProgressProbe", linkedMap(
+				"active", true,
+				"resourceKind", "WOOD_LOGS",
+				"inventoryDelta", 3,
+				"targetQuantity", 16,
+				"remaining", 13,
+				"activeJobStatus", "RUNNING"
+			),
+			"chatProbe", linkedMap(
+				"lastAttemptSource", "failure_reused_last_response",
+				"lastAttemptReusedPriorResponse", true,
+				"lastSendSucceeded", true
+			),
+			"eventPipeline", linkedMap(
+				"lastEventType", "pickup.item_picked_up",
+				"lastTriggerType", "PICKUP",
+				"lastEmitSemantic", true,
+				"lastEmitTrigger", true
+			),
+			"plannerAttempts", List.of(linkedMap("submissionId", 1)),
+			"timelineTail", List.of(linkedMap("entryId", 9))
+		);
+
+		CliResult result = execute(transport, "agent", "debug", "state");
+
+		assertEquals(0, result.exitCode());
+		assertTrue(result.output().contains("command: agent debug state\n"));
+		assertTrue(result.output().contains("pendingReplyReason: failure_reused_last_response\n"));
+		assertTrue(result.output().contains("hiddenKinds:\n"));
+		assertTrue(result.output().contains("value: USER_TURN\n"));
+		assertTrue(result.output().contains("inventoryDelta: 3\n"));
+		assertTrue(result.output().contains("plannerAttemptCount: 1\n"));
+	}
+
+	@Test
+	void agentDebugTimelinePassesSinceAndRendersEntries() {
+		TestTransport transport = new TestTransport();
+		transport.agentDebugTimelinePayload = linkedMap(
+			"available", true,
+			"oldestEntryId", 3,
+			"latestEntryId", 7,
+			"truncated", false,
+			"entries", List.of(
+				linkedMap(
+					"entryId", 7,
+					"tick", 120,
+					"timestampMs", 123456L,
+					"domain", "planner",
+					"action", "failure",
+					"summary", "TIMEOUT: LLM request timed out"
+				)
+			)
+		);
+
+		CliResult result = execute(transport, "agent", "debug", "timeline", "--since", "4");
+
+		assertEquals(0, result.exitCode());
+		assertEquals(4L, transport.lastDebugTimelineSince);
+		assertTrue(result.output().contains("command: agent debug timeline\n"));
+		assertTrue(result.output().contains("entryCount: 1\n"));
+		assertTrue(result.output().contains("summary: TIMEOUT: LLM request timed out\n"));
+	}
+
+	@Test
 	void agentStatusIncludesPlannerVisionMode() {
 		TestTransport transport = new TestTransport();
 		transport.agentStatusPayload = linkedMap(
@@ -768,6 +862,8 @@ class AiricraftCliMainTest {
 		private Map<String, Object> agentGoalsPayload = Map.of();
 		private Map<String, Object> agentTreePayload = Map.of();
 		private Map<String, Object> agentDialoguePayload = Map.of();
+		private Map<String, Object> agentDebugStatePayload = Map.of();
+		private Map<String, Object> agentDebugTimelinePayload = Map.of("entries", List.of());
 		private Map<String, Object> agentDebugChatPayload = Map.of();
 		private Map<String, Object> agentContextPayload = Map.of();
 		private Map<String, Object> agentTasksPayload = Map.of();
@@ -811,6 +907,7 @@ class AiricraftCliMainTest {
 		private Map<String, Object> lastSubmittedTask;
 		private Map<String, Object> lastSubmittedMission;
 		private String lastDebugChatMessage;
+		private Long lastDebugTimelineSince;
 
 		private RuntimeException worldsJoinFailure;
 		private RuntimeException serversListFailure;
@@ -929,6 +1026,17 @@ class AiricraftCliMainTest {
 		@Override
 		public Map<String, Object> getAgentDialogue() {
 			return agentDialoguePayload;
+		}
+
+		@Override
+		public Map<String, Object> getAgentDebugState() {
+			return agentDebugStatePayload;
+		}
+
+		@Override
+		public Map<String, Object> listAgentDebugTimeline(Long sinceEntryId) {
+			lastDebugTimelineSince = sinceEntryId;
+			return agentDebugTimelinePayload;
 		}
 
 		@Override

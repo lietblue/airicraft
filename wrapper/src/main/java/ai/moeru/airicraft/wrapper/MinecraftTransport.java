@@ -69,6 +69,10 @@ interface MinecraftTransport {
 
 	Map<String, Object> getAgentDialogue();
 
+	Map<String, Object> getAgentDebugState();
+
+	Map<String, Object> listAgentDebugTimeline(Long sinceEntryId);
+
 	Map<String, Object> sendAgentDebugChat(String message);
 
 	Map<String, Object> getAgentContext();

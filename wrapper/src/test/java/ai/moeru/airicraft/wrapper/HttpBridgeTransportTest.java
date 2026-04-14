@@ -210,6 +210,40 @@ class HttpBridgeTransportTest {
 	}
 
 	@Test
+	void getAgentDebugStateReadsPayload(@TempDir Path tempDir) throws Exception {
+		try (TestBridgeServer server = TestBridgeServer.start()) {
+			server.respondJson("/v1/agent/debug/state", 0, 200, """
+				{"available":true,"dialogueState":{"pendingReply":true},"plannerAttempts":[],"timelineTail":[]}
+				""");
+			writeBridgeState(tempDir, server.port());
+			System.setProperty("user.home", tempDir.toString());
+
+			HttpBridgeTransport transport = new HttpBridgeTransport();
+			Map<String, Object> payload = transport.getAgentDebugState();
+
+			assertEquals(true, payload.get("available"));
+			assertEquals(1, server.requestCount("/v1/agent/debug/state"));
+		}
+	}
+
+	@Test
+	void listAgentDebugTimelineReadsPayload(@TempDir Path tempDir) throws Exception {
+		try (TestBridgeServer server = TestBridgeServer.start()) {
+			server.respondJson("/v1/agent/debug/timeline", 0, 200, """
+				{"available":true,"oldestEntryId":1,"latestEntryId":3,"truncated":false,"entries":[]}
+				""");
+			writeBridgeState(tempDir, server.port());
+			System.setProperty("user.home", tempDir.toString());
+
+			HttpBridgeTransport transport = new HttpBridgeTransport();
+			Map<String, Object> payload = transport.listAgentDebugTimeline(2L);
+
+			assertEquals(true, payload.get("available"));
+			assertEquals(1, server.requestCount("/v1/agent/debug/timeline"));
+		}
+	}
+
+	@Test
 	void openAgentSessionLanPostsPayload(@TempDir Path tempDir) throws Exception {
 		try (TestBridgeServer server = TestBridgeServer.start()) {
 			server.respondJson("/v1/agent/session/open-lan", 0, 200, """

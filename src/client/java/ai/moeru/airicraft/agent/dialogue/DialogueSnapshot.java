@@ -7,6 +7,8 @@ import java.util.List;
 public record DialogueSnapshot(
 	List<DialogueTurn> recentTurns,
 	DialogueResponse lastResponse,
+	boolean pendingReply,
+	String pendingReplyReason,
 	boolean degraded,
 	int consecutiveFailureCount,
 	LlmFailureType lastFailureType,

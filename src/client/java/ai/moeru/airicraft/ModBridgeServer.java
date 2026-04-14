@@ -131,6 +131,8 @@ public final class ModBridgeServer {
 			httpServer.createContext("/v1/agent/step-execution", exchange -> handleJson(exchange, this::createAgentStepExecutionResponse));
 			httpServer.createContext("/v1/agent/debug/chat", this::handleAgentDebugChat);
 			httpServer.createContext("/v1/agent/debug/compact", this::handleAgentDebugCompact);
+			httpServer.createContext("/v1/agent/debug/state", exchange -> handleJson(exchange, this::createAgentDebugStateResponse));
+			httpServer.createContext("/v1/agent/debug/timeline", exchange -> handleJson(exchange, () -> createAgentDebugTimelineResponse(exchange)));
 				httpServer.createContext("/v1/verification/status", exchange -> handleJson(exchange, this::createVerificationStatusResponse));
 				httpServer.createContext("/v1/verification/player", exchange -> handleJson(exchange, this::createVerificationPlayerResponse));
 				httpServer.createContext("/v1/verification/player/teleport", this::handleVerificationPlayerTeleport);
@@ -891,6 +893,8 @@ public final class ModBridgeServer {
 			Map<String, Object> response = new LinkedHashMap<>();
 			response.put("available", true);
 			response.put("dialogue", agentRuntime.dialogueSnapshot());
+			response.put("conversation", agentRuntime.plannerConversationDebugSnapshot());
+			response.put("canonicalConversation", agentRuntime.plannerCanonicalConversationDebugSnapshot());
 			response.put("plannerJournal", agentRuntime.plannerShellJournal());
 			response.put("lastChatTick", agentRuntime.lastChatTick());
 			response.put("lastChatText", agentRuntime.lastChatText());
@@ -910,6 +914,39 @@ public final class ModBridgeServer {
 			response.put("task", agentRuntime.taskSnapshot());
 			response.put("taskExecution", agentRuntime.taskExecutionSnapshot());
 			response.put("missionExecution", agentRuntime.missionExecutionSnapshot());
+			return response;
+		});
+	}
+
+	private Object createAgentDebugStateResponse() {
+		return onClientThread(() -> {
+			Map<String, Object> response = new LinkedHashMap<>();
+			response.put("available", true);
+			response.put("planner", agentRuntime.plannerDebugSnapshot());
+			response.put("dialogueState", agentRuntime.debugDialogueState());
+			response.put("conversation", agentRuntime.plannerConversationDebugSnapshot());
+			response.put("conversationSources", agentRuntime.debugConversationSources());
+			response.put("plannerAttempts", agentRuntime.debugPlannerAttempts());
+			response.put("taskProgressProbe", agentRuntime.debugCollectResourceState());
+			response.put("chatProbe", agentRuntime.debugChatState());
+			response.put("eventPipeline", agentRuntime.debugEventPipelineState());
+			response.put("timelineTail", agentRuntime.debugTimeline(null).entries());
+			return response;
+		});
+	}
+
+	private Object createAgentDebugTimelineResponse(HttpExchange exchange) {
+		long defaultSince = Long.MIN_VALUE;
+		long since = getLongQuery(exchange, "since", defaultSince);
+		Long sinceEntryId = since == defaultSince ? null : since;
+		return onClientThread(() -> {
+			var result = agentRuntime.debugTimeline(sinceEntryId);
+			Map<String, Object> response = new LinkedHashMap<>();
+			response.put("available", true);
+			response.put("oldestEntryId", result.oldestEntryId());
+			response.put("latestEntryId", result.latestEntryId());
+			response.put("truncated", result.truncated());
+			response.put("entries", result.entries());
 			return response;
 		});
 	}

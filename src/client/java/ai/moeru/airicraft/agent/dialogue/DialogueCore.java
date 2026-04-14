@@ -14,6 +14,7 @@ public final class DialogueCore {
 	static final String DEGRADED_MESSAGE = "I'm having trouble understanding right now. Send '@agent reset' to recover my planner.";
 	static final String RESET_MESSAGE = "Planner state reset.";
 	static final String PARSE_ERROR_MESSAGE = "I got confused for a moment.";
+	static final String TIMEOUT_MESSAGE = "I hit a timeout just now. Please try again.";
 
 	private DialogueCore() {
 	}
@@ -30,7 +31,7 @@ public final class DialogueCore {
 	}
 
 	public static DialogueState markReplyObserved(DialogueState state) {
-		return state.withPendingReply(false);
+		return state.withPendingReply(false, null);
 	}
 
 	public static DialogueTransition onPlannerSuccess(DialogueState state, PlannerResponse plannerResponse, long tick) {
@@ -61,11 +62,17 @@ public final class DialogueCore {
 		DialogueState nextState = state
 			.withConsecutiveFailureCount(0)
 			.withLastResponse(response)
-			.withPendingReply(hasVisibleText(response));
+			.withPendingReply(hasVisibleText(response), hasVisibleText(response) ? "planner_success" : null);
 		return new DialogueTransition(nextState, List.of(response), List.copyOf(effects));
 	}
 
-	public static DialogueTransition onPlannerFailure(DialogueState state, LlmFailureType failureType, String failureMessage, long tick) {
+	public static DialogueTransition onPlannerFailure(
+		DialogueState state,
+		LlmFailureType failureType,
+		String failureMessage,
+		boolean directChatTrigger,
+		long tick
+	) {
 		ArrayList<DialogueEffect> effects = new ArrayList<>();
 		effects.add(DialogueEffect.appendSemanticEvent(failureEventType(failureType), Map.of(
 			"failureType", failureType.name(),
@@ -76,6 +83,13 @@ public final class DialogueCore {
 		if (failureType == LlmFailureType.PARSE_ERROR) {
 			visibleResponses.add(new DialogueResponse(
 				PARSE_ERROR_MESSAGE,
+				new DialogueIntent(DialogueIntentType.ACKNOWLEDGE_FAILURE, null, null),
+				tick
+			));
+		}
+		else if (failureType == LlmFailureType.TIMEOUT && directChatTrigger) {
+			visibleResponses.add(new DialogueResponse(
+				TIMEOUT_MESSAGE,
 				new DialogueIntent(DialogueIntentType.ACKNOWLEDGE_FAILURE, null, null),
 				tick
 			));
@@ -96,14 +110,22 @@ public final class DialogueCore {
 			));
 		}
 
-		DialogueResponse lastResponse = visibleResponses.isEmpty() ? state.lastResponse() : visibleResponses.get(visibleResponses.size() - 1);
+		DialogueResponse lastResponse = visibleResponses.isEmpty() ? null : visibleResponses.get(visibleResponses.size() - 1);
+		String pendingReplyReason = null;
+		if (lastResponse != null && hasVisibleText(lastResponse)) {
+			pendingReplyReason = switch (failureType) {
+				case PARSE_ERROR -> "parse_error_visible_reply";
+				case TIMEOUT -> "timeout_visible_reply";
+				default -> null;
+			};
+		}
 		DialogueState nextState = state
 			.withLastFailureType(failureType)
 			.withLastFailureTick(tick)
 			.withConsecutiveFailureCount(consecutiveFailureCount)
 			.withDegraded(degraded)
 			.withLastResponse(lastResponse)
-			.withPendingReply(lastResponse != null && hasVisibleText(lastResponse));
+			.withPendingReply(lastResponse != null && hasVisibleText(lastResponse), pendingReplyReason);
 		return new DialogueTransition(nextState, List.copyOf(visibleResponses), List.copyOf(effects));
 	}
 
@@ -123,7 +145,7 @@ public final class DialogueCore {
 		);
 		DialogueState nextState = DialogueState.initial()
 			.withLastResponse(response)
-			.withPendingReply(true);
+			.withPendingReply(true, "reset");
 		return new DialogueTransition(nextState, List.of(response), List.copyOf(effects));
 	}
 

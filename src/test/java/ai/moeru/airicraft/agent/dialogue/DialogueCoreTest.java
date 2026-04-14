@@ -39,6 +39,7 @@ class DialogueCoreTest {
 			state,
 			LlmFailureType.TIMEOUT,
 			"planner timed out",
+			false,
 			77L
 		);
 
@@ -46,6 +47,20 @@ class DialogueCoreTest {
 		assertEquals(3, transition.state().consecutiveFailureCount());
 		assertEquals(2, transition.effects().size());
 		assertTrue(transition.lastVisibleResponse().text().contains("@agent reset"));
+	}
+
+	@Test
+	void directChatTimeoutUsesFreshVisibleReply() {
+		DialogueTransition transition = DialogueCore.onPlannerFailure(
+			DialogueState.initial(),
+			LlmFailureType.TIMEOUT,
+			"planner timed out",
+			true,
+			91L
+		);
+
+		assertEquals("I hit a timeout just now. Please try again.", transition.lastVisibleResponse().text());
+		assertEquals("timeout_visible_reply", transition.state().pendingReplyReason());
 	}
 
 	@Test

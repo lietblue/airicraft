@@ -2,6 +2,7 @@ package ai.moeru.airicraft.agent.shell;
 
 import ai.moeru.airicraft.FirstPersonScreenshotService;
 import ai.moeru.airicraft.agent.AgentConfig;
+import ai.moeru.airicraft.agent.debug.AgentDebugRecorder;
 import ai.moeru.airicraft.agent.dialogue.DialogueRuntime;
 import ai.moeru.airicraft.agent.llm.CurrentViewVisionService;
 import ai.moeru.airicraft.agent.llm.OpenAiCompatibleChatClient;
@@ -25,7 +26,8 @@ public final class PlannerShellFactory {
 		AgentConfig config,
 		FirstPersonScreenshotService screenshotService,
 		AgentObservability observability,
-		Clock clock
+		Clock clock,
+		AgentDebugRecorder debugRecorder
 	) {
 		Objects.requireNonNull(config, "config");
 		Objects.requireNonNull(screenshotService, "screenshotService");
@@ -55,7 +57,8 @@ public final class PlannerShellFactory {
 			config.llm().plannerSessionCoalesceMinMillis(),
 			config.llm().plannerSessionCoalesceMaxMillis(),
 			observability,
-			journal
+			journal,
+			debugRecorder
 		);
 		return new PlannerShellComponents(
 			visionService,

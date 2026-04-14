@@ -12,9 +12,11 @@ import java.util.Optional;
 public final class BaritoneTaskExecutor implements WorldTaskExecutor {
 	private final BaritoneFacade facade;
 
-	private GoalSnapshot appliedGoal;
-	private GoalSnapshot terminalEventGoal;
+	private BaritoneTaskRequest appliedTask;
+	private String terminalEventTaskId;
 	private TaskExecutionState terminalEventState;
+	private TaskTerminationCause terminalEventCause;
+	private String pendingInternalCancelTaskId;
 	private TaskExecutionSnapshot snapshot = TaskExecutionSnapshot.idle();
 
 	public BaritoneTaskExecutor(BaritoneFacade facade) {
@@ -23,14 +25,15 @@ public final class BaritoneTaskExecutor implements WorldTaskExecutor {
 	}
 
 	@Override
-	public Optional<TaskTerminalEvent> tick(SessionSnapshot sessionSnapshot, Optional<GoalSnapshot> activeGoal) {
+	public Optional<TaskTerminalEvent> tick(SessionSnapshot sessionSnapshot, Optional<BaritoneTaskRequest> activeTask) {
 		if (!facade.isLoaded()) {
 			reset();
 			return Optional.empty();
 		}
 
-		if (activeGoal.isEmpty()) {
-			if (appliedGoal != null) {
+		if (activeTask.isEmpty()) {
+			if (appliedTask != null) {
+				pendingInternalCancelTaskId = appliedTask.taskId();
 				facade.cancel();
 			}
 			reset();
@@ -38,10 +41,12 @@ public final class BaritoneTaskExecutor implements WorldTaskExecutor {
 		}
 
 		if (!sessionSnapshot.companionActuationAllowed()) {
-			clearTerminalEvent(activeGoal.get());
+			clearTerminalEvent(activeTask.get());
 			snapshot = new TaskExecutionSnapshot(
 				TaskExecutionState.PAUSED_BY_SESSION_GATE,
-				activeGoal.orElse(null),
+				activeTask.get().taskId(),
+				activeTask.get().goal(),
+				null,
 				null,
 				null,
 				null
@@ -49,39 +54,52 @@ public final class BaritoneTaskExecutor implements WorldTaskExecutor {
 			return Optional.empty();
 		}
 
-		if (!sameGoalTarget(activeGoal.get(), appliedGoal)) {
-			if (appliedGoal != null) {
+		if (!sameTaskTarget(activeTask.get(), appliedTask)) {
+			if (appliedTask != null) {
+				pendingInternalCancelTaskId = appliedTask.taskId();
 				facade.cancel();
 			}
-			clearTerminalEvent(activeGoal.get());
-			applyGoal(activeGoal.get());
+			clearTerminalEvent(activeTask.get());
+			applyGoal(activeTask.get().goal());
 		}
-		appliedGoal = activeGoal.get();
+		appliedTask = activeTask.get();
 
 		Optional<String> pathEvent = facade.pollPathEvent();
-		Optional<TaskExecutionState> terminalState = terminalStateFor(pathEvent, appliedGoal);
-		TaskExecutionState state = terminalState
+		Optional<TerminalOutcome> terminalOutcome = terminalOutcomeFor(pathEvent, appliedTask);
+		if (terminalOutcome.isPresent() && isSuppressedInternalCancel(pathEvent)) {
+			terminalOutcome = Optional.empty();
+		}
+		TaskExecutionState state = terminalOutcome
+			.map(TerminalOutcome::state)
 			.orElseGet(() -> isTerminal(snapshot.state()) ? snapshot.state() : TaskExecutionState.RUNNING);
+		TaskTerminationCause terminationCause = terminalOutcome.map(TerminalOutcome::cause).orElse(null);
 		snapshot = new TaskExecutionSnapshot(
 			state,
-			appliedGoal,
+			appliedTask.taskId(),
+			appliedTask.goal(),
 			facade.activeProcessName().orElse(null),
 			pathEvent.orElse(null),
-			facade.estimatedTicksToGoal().orElse(null)
+			facade.estimatedTicksToGoal().orElse(null),
+			terminationCause
 		);
 
-		if (terminalState.isEmpty()) {
+		if (terminalOutcome.isEmpty()) {
 			return Optional.empty();
 		}
-		if (sameGoalTarget(appliedGoal, terminalEventGoal) && terminalState.get() == terminalEventState) {
+		if (Objects.equals(appliedTask.taskId(), terminalEventTaskId)
+			&& terminalOutcome.get().state() == terminalEventState
+			&& terminalOutcome.get().cause() == terminalEventCause) {
 			return Optional.empty();
 		}
-		terminalEventGoal = appliedGoal;
-		terminalEventState = terminalState.get();
+		terminalEventTaskId = appliedTask.taskId();
+		terminalEventState = terminalOutcome.get().state();
+		terminalEventCause = terminalOutcome.get().cause();
 		return Optional.of(new TaskTerminalEvent(
-			appliedGoal,
-			terminalState.get(),
-			messageFor(terminalState.get())
+			appliedTask.taskId(),
+			appliedTask.goal(),
+			terminalOutcome.get().state(),
+			messageFor(terminalOutcome.get().state()),
+			terminalOutcome.get().cause()
 		));
 	}
 
@@ -93,15 +111,15 @@ public final class BaritoneTaskExecutor implements WorldTaskExecutor {
 		}
 	}
 
-	private Optional<TaskExecutionState> terminalStateFor(Optional<String> pathEvent, GoalSnapshot activeGoal) {
+	private Optional<TerminalOutcome> terminalOutcomeFor(Optional<String> pathEvent, BaritoneTaskRequest activeTask) {
 		if (pathEvent.isEmpty()) {
 			return Optional.empty();
 		}
 		String normalized = pathEvent.get().trim().toUpperCase(Locale.ROOT);
 		return switch (normalized) {
-			case "AT_GOAL" -> Optional.of(TaskExecutionState.COMPLETED);
-			case "CALC_FAILED" -> Optional.of(TaskExecutionState.FAILED);
-			case "CANCELLED", "CANCELED" -> Optional.of(cancelledStateFor(activeGoal));
+			case "AT_GOAL" -> Optional.of(new TerminalOutcome(TaskExecutionState.COMPLETED, TaskTerminationCause.GOAL_REACHED));
+			case "CALC_FAILED" -> Optional.of(new TerminalOutcome(TaskExecutionState.FAILED, TaskTerminationCause.CALCULATION_FAILED));
+			case "CANCELLED", "CANCELED" -> Optional.of(new TerminalOutcome(cancelledStateFor(activeTask == null ? null : activeTask.goal()), TaskTerminationCause.BARITONE_CANCELLED));
 			default -> Optional.empty();
 		};
 	}
@@ -119,6 +137,29 @@ public final class BaritoneTaskExecutor implements WorldTaskExecutor {
 		return state == TaskExecutionState.COMPLETED
 			|| state == TaskExecutionState.FAILED
 			|| state == TaskExecutionState.CANCELLED;
+	}
+
+	private boolean isSuppressedInternalCancel(Optional<String> pathEvent) {
+		if (pathEvent.isEmpty() || pendingInternalCancelTaskId == null) {
+			return false;
+		}
+		String normalized = pathEvent.get().trim().toUpperCase(Locale.ROOT);
+		if (!normalized.equals("CANCELLED") && !normalized.equals("CANCELED")) {
+			return false;
+		}
+		pendingInternalCancelTaskId = null;
+		return true;
+	}
+
+	private static boolean sameTaskTarget(BaritoneTaskRequest left, BaritoneTaskRequest right) {
+		if (left == right) {
+			return true;
+		}
+		if (left == null || right == null) {
+			return false;
+		}
+		return Objects.equals(left.taskId(), right.taskId())
+			&& sameGoalTarget(left.goal(), right.goal());
 	}
 
 	private static boolean sameGoalTarget(GoalSnapshot left, GoalSnapshot right) {
@@ -160,16 +201,22 @@ public final class BaritoneTaskExecutor implements WorldTaskExecutor {
 	}
 
 	private void reset() {
-		appliedGoal = null;
-		terminalEventGoal = null;
+		appliedTask = null;
+		terminalEventTaskId = null;
 		terminalEventState = null;
+		terminalEventCause = null;
+		pendingInternalCancelTaskId = null;
 		snapshot = TaskExecutionSnapshot.idle();
 	}
 
-	private void clearTerminalEvent(GoalSnapshot goal) {
-		if (!sameGoalTarget(goal, terminalEventGoal)) {
-			terminalEventGoal = null;
+	private void clearTerminalEvent(BaritoneTaskRequest task) {
+		if (!sameTaskTarget(task, appliedTask) || !Objects.equals(task.taskId(), terminalEventTaskId)) {
+			terminalEventTaskId = null;
 			terminalEventState = null;
+			terminalEventCause = null;
 		}
+	}
+
+	private record TerminalOutcome(TaskExecutionState state, TaskTerminationCause cause) {
 	}
 }

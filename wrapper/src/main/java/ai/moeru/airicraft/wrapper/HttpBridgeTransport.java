@@ -255,6 +255,19 @@ final class HttpBridgeTransport implements MinecraftTransport {
 	}
 
 	@Override
+	public Map<String, Object> getAgentDebugState() {
+		return get("/v1/agent/debug/state");
+	}
+
+	@Override
+	public Map<String, Object> listAgentDebugTimeline(Long sinceEntryId) {
+		if (sinceEntryId == null) {
+			return get("/v1/agent/debug/timeline");
+		}
+		return get("/v1/agent/debug/timeline?since=" + sinceEntryId.longValue());
+	}
+
+	@Override
 	public Map<String, Object> sendAgentDebugChat(String message) {
 		return send("POST", "/v1/agent/debug/chat", Map.of("message", message));
 	}

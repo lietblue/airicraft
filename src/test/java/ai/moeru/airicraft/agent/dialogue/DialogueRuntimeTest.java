@@ -10,11 +10,13 @@ import ai.moeru.airicraft.agent.llm.CurrentViewVisionTool;
 import ai.moeru.airicraft.agent.llm.OpenAiCompatibleLlmBackend;
 import ai.moeru.airicraft.agent.llm.OpenAiCompatibleChatClient;
 import ai.moeru.airicraft.agent.llm.PlannerCompactionService;
+import ai.moeru.airicraft.agent.llm.PlannerConversationDebugKind;
 import ai.moeru.airicraft.agent.llm.PlannerContextAggregator;
 import ai.moeru.airicraft.agent.llm.PlannerExecutor;
 import ai.moeru.airicraft.agent.llm.PlannerIntent;
 import ai.moeru.airicraft.agent.llm.PlannerOrchestrator;
 import ai.moeru.airicraft.agent.llm.PlannerResponse;
+import ai.moeru.airicraft.agent.llm.PlannerTriggerType;
 import ai.moeru.airicraft.agent.llm.PlannerVisionMode;
 import ai.moeru.airicraft.agent.tasks.CollectResourceStepArgs;
 import ai.moeru.airicraft.agent.tasks.EvidenceKind;
@@ -35,6 +37,7 @@ import org.junit.jupiter.api.Test;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.Clock;
+import java.util.concurrent.CompletableFuture;
 import java.util.List;
 import java.util.Optional;
 
@@ -269,6 +272,106 @@ class DialogueRuntimeTest {
 		runtime.shutdown();
 	}
 
+	@Test
+	void timeoutEmitsFreshVisibleReplyForDirectChat() {
+		OpenAiCompatibleLlmBackend backend = new OpenAiCompatibleLlmBackend(AgentConfig.LlmConfig.defaults());
+		DialogueRuntime runtime = newDialogueRuntime(backend);
+		SemanticEventBuffer eventBuffer = new SemanticEventBuffer(32);
+		backend.injectMockResponse(new PlannerResponse(
+			"Still working on it.",
+			new PlannerIntent("reply_only", null, null)
+		));
+
+		runtime.onPlayerChat("Alice", "@agent status", 10L, SessionSnapshot.initial(), "Alice", Optional.empty(), eventBuffer);
+		DialogueResponse response = awaitResponse(runtime, eventBuffer, Duration.ofSeconds(1));
+		assertEquals("Still working on it.", response.text());
+		runtime.markReplyObserved();
+
+		backend.injectTimeout();
+		runtime.onPlayerChat("Alice", "@agent status?", 11L, SessionSnapshot.initial(), "Alice", Optional.empty(), eventBuffer);
+		awaitFailureProcessed(runtime, eventBuffer, 1L, Duration.ofSeconds(1));
+
+		assertFalse("failure_reused_last_response".equals(runtime.pendingReplyReason()));
+		assertFalse(runtime.lastResponse().filter(last -> "Still working on it.".equals(last.text())).isPresent());
+		runtime.shutdown();
+	}
+
+	@Test
+	void timeoutDuringBackgroundTaskUpdateStaysSilent() {
+		OpenAiCompatibleLlmBackend backend = new OpenAiCompatibleLlmBackend(AgentConfig.LlmConfig.defaults());
+		DialogueRuntime runtime = newDialogueRuntime(backend);
+		SemanticEventBuffer eventBuffer = new SemanticEventBuffer(32);
+
+		backend.injectTimeout();
+		runtime.onContextTrigger(
+			PlannerTriggerType.SYSTEM,
+			"server",
+			"Background update",
+			12L,
+			SessionSnapshot.initial(),
+			null,
+			Optional.empty(),
+			eventBuffer
+		);
+		awaitFailureProcessed(runtime, eventBuffer, 1L, Duration.ofSeconds(1));
+
+		assertFalse(runtime.hasPendingReply());
+		assertTrue(runtime.lastResponse().isEmpty());
+		runtime.shutdown();
+	}
+
+	@Test
+	void plannerConversationDebugSnapshotShowsAcceptedNativeVisionReply() {
+		OpenAiCompatibleLlmBackend backend = new OpenAiCompatibleLlmBackend(AgentConfig.LlmConfig.defaults());
+		DialogueRuntime runtime = newDialogueRuntime(
+			backend,
+			new CurrentViewVisionTool() {
+				@Override
+				public boolean isConfigured() {
+					return true;
+				}
+
+				@Override
+				public CompletableFuture<ai.moeru.airicraft.FirstPersonScreenshotService.CapturedScreenshot> requestCapture() {
+					return CompletableFuture.completedFuture(
+						new ai.moeru.airicraft.FirstPersonScreenshotService.CapturedScreenshot("png", 854, 480, 1920, 1080, 1L, new byte[]{1, 2, 3})
+					);
+				}
+
+				@Override
+				public CompletableFuture<ai.moeru.airicraft.agent.llm.VisionDescription> requestDescription(
+					ai.moeru.airicraft.FirstPersonScreenshotService.CapturedScreenshot screenshot,
+					String prompt
+				) {
+					return CompletableFuture.failedFuture(new AssertionError("Native tool image flow should not request external description"));
+				}
+			},
+			PlannerVisionMode.NATIVE_TOOL_IMAGE
+		);
+		SemanticEventBuffer eventBuffer = new SemanticEventBuffer(32);
+		backend.injectMockResponse(new PlannerResponse(
+			"",
+			new PlannerIntent("none", null, null),
+			new ai.moeru.airicraft.agent.llm.PlannerToolRequest("take_a_look", null)
+		));
+		backend.injectMockResponse(new PlannerResponse(
+			"I see snow.",
+			new PlannerIntent("reply_only", null, null)
+		));
+
+		runtime.onPlayerChat("Alice", "@agent take a look", 10L, SessionSnapshot.initial(), "Alice", Optional.empty(), eventBuffer);
+		DialogueResponse response = awaitResponse(runtime, eventBuffer, Duration.ofSeconds(1));
+
+		assertEquals("I see snow.", response.text());
+		assertTrue(runtime.plannerConversationDebugSnapshot().messages().stream().anyMatch(message ->
+			message.kind() == PlannerConversationDebugKind.ASSISTANT_TURN && message.text().contains("I see snow.")
+		));
+		assertFalse(runtime.plannerCanonicalConversationDebugSnapshot().messages().stream().anyMatch(message ->
+			message.kind() == PlannerConversationDebugKind.ASSISTANT_TURN && message.text().contains("I see snow.")
+		));
+		runtime.shutdown();
+	}
+
 	private static DialogueResponse awaitResponse(DialogueRuntime runtime, SemanticEventBuffer eventBuffer, Duration timeout) {
 		Instant deadline = Instant.now().plus(timeout);
 		long pollTick = 100L;
@@ -306,6 +409,14 @@ class DialogueRuntimeTest {
 	}
 
 	private static DialogueRuntime newDialogueRuntime(OpenAiCompatibleLlmBackend backend) {
+		return newDialogueRuntime(backend, CurrentViewVisionTool.disabled(), PlannerVisionMode.EXTERNAL_SUMMARY);
+	}
+
+	private static DialogueRuntime newDialogueRuntime(
+		OpenAiCompatibleLlmBackend backend,
+		CurrentViewVisionTool visionTool,
+		PlannerVisionMode visionMode
+	) {
 		AgentConfig.LlmConfig config = AgentConfig.LlmConfig.defaults();
 		Clock clock = Clock.systemDefaultZone();
 		PlannerOrchestrator orchestrator = new PlannerOrchestrator(
@@ -315,10 +426,10 @@ class DialogueRuntimeTest {
 				clock,
 				config.plannerCompactionTriggerTokens(),
 				config.plannerPendingSemanticEventCap(),
-				PlannerVisionMode.EXTERNAL_SUMMARY
+				visionMode
 			),
-			CurrentViewVisionTool.disabled(),
-			PlannerVisionMode.EXTERNAL_SUMMARY,
+			visionTool,
+			visionMode,
 			config.visionImageDetail()
 		);
 		return new DialogueRuntime(orchestrator, 8, clock);
