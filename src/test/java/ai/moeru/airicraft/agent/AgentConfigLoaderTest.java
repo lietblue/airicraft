@@ -37,6 +37,8 @@ class AgentConfigLoaderTest {
 		assertEquals(10, parsed.llm().plannerSessionCoalesceStepMillis());
 		assertEquals(10, parsed.llm().plannerSessionCoalesceMinMillis());
 		assertEquals(100, parsed.llm().plannerSessionCoalesceMaxMillis());
+		assertEquals(30, parsed.idle().initialDelaySeconds());
+		assertEquals(90, parsed.idle().cooldownSeconds());
 		assertEquals("high", parsed.llm().visionImageDetail());
 		assertEquals(true, parsed.llm().plannerNativeVisionEnabled());
 		assertEquals(false, parsed.llm().plannerUseJsonObjectResponseFormat());
@@ -86,6 +88,30 @@ class AgentConfigLoaderTest {
 		assertEquals(5, reordered.llm().plannerSessionCoalesceStepMillis());
 		assertEquals(50, reordered.llm().plannerSessionCoalesceMinMillis());
 		assertEquals(50, reordered.llm().plannerSessionCoalesceMaxMillis());
+	}
+
+	@Test
+	void fromMapReadsIdleTimerFields() {
+		AgentConfig parsed = AgentConfigLoader.fromMap(Map.of(
+			"idleInitialDelaySeconds", 5,
+			"idleCooldownSeconds", 0
+		), AgentConfig.defaults());
+
+		assertEquals(5, parsed.idle().initialDelaySeconds());
+		assertEquals(0, parsed.idle().cooldownSeconds());
+		assertFalse(parsed.idle().automaticEnabled());
+	}
+
+	@Test
+	void fromMapNormalizesIdleTimerFields() {
+		AgentConfig parsed = AgentConfigLoader.fromMap(Map.of(
+			"idleInitialDelaySeconds", -5,
+			"idleCooldownSeconds", -10
+		), AgentConfig.defaults());
+
+		assertEquals(0, parsed.idle().initialDelaySeconds());
+		assertEquals(0, parsed.idle().cooldownSeconds());
+		assertFalse(parsed.idle().automaticEnabled());
 	}
 
 	@Test

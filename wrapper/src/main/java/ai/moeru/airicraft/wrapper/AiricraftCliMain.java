@@ -75,6 +75,7 @@ public final class AiricraftCliMain {
 		agent.addSubcommand("debug", new UsageCommand(out, "airicraft agent debug", "Agent debug commands"));
 		CommandLine agentDebug = agent.getSubcommands().get("debug");
 		agentDebug.addSubcommand(new AgentDebugChatCommand(context));
+		agentDebug.addSubcommand(new AgentDebugIdleTriggerCommand(context));
 		agentDebug.addSubcommand(new AgentDebugStateCommand(context));
 		agentDebug.addSubcommand(new AgentDebugTimelineCommand(context));
 		agent.addSubcommand(new AgentContextCommand(context));
@@ -470,6 +471,18 @@ public final class AiricraftCliMain {
 		@Override
 		Map<String, Object> runCommand() {
 			return transport().sendAgentDebugChat(message);
+		}
+	}
+
+	@Command(name = "idle-trigger", mixinStandardHelpOptions = true, description = "Manually fire the idle-think planner trigger.")
+	private static final class AgentDebugIdleTriggerCommand extends BaseCommand {
+		private AgentDebugIdleTriggerCommand(CliContext context) {
+			super(context, "agent debug idle-trigger");
+		}
+
+		@Override
+		Map<String, Object> runCommand() {
+			return PayloadViews.agentDebugIdleTrigger(transport().fireAgentDebugIdleTrigger(), verbose());
 		}
 	}
 
@@ -1654,6 +1667,15 @@ public final class AiricraftCliMain {
 				List.of("entryId", "tick", "timestampMs", "domain", "action", "summary"),
 				List.of("correlation", "payload")
 			));
+			return view;
+		}
+
+		private static Map<String, Object> agentDebugIdleTrigger(Map<String, Object> payload, boolean verbose) {
+			LinkedHashMap<String, Object> view = new LinkedHashMap<>();
+			copy(view, payload, "available", "accepted", "triggerType", "speaker", "tick", "timestampMs", "sessionMode");
+			if (verbose) {
+				copy(view, payload, "task", "taskExecution", "lastDialogueResponse");
+			}
 			return view;
 		}
 

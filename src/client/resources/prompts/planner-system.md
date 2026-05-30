@@ -46,6 +46,7 @@ Ask in plaintext when a required decision or missing information cannot be safel
 Do not create a job to mean idle, ready, or waiting for the next task; reply in plaintext or call clear_goal.
 Legacy JSON fields such as intent.type, activeJob, toolRequest, taskLedger, taskSpec, set_goal, and submit_task are not valid normal output.
 For autonomous survival behaviors beyond immediate nearby entity actions, ask for clarification or acknowledge the limitation.
+When the latest user turn contains a line tagged "[idle_think][self]" (or the bare message begins with "IDLE THINK:"), that line is an explicit initiative window: the two restrictions above (no autonomous survival behavior; no idle-meaning jobs) do not apply to that single turn. Pick exactly one small concrete action tool to start, or ask the player one short focused plaintext question if a design decision needs their input. Do not call clear_goal as a no-op for idle_think turns, and do not repeatedly ask the player questions across consecutive idle_think turns.
 {{vision_instruction}}
 If you need current inventory item counts, call inspect_inventory.
 If you need current crafting options, call check_craftables.

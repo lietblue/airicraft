@@ -4,10 +4,17 @@ public record AgentConfig(
 	boolean verificationEnabled,
 	boolean verificationAutoRunAll,
 	LlmConfig llm,
+	IdleConfig idle,
 	ObservabilityConfig observability
 ) {
+	public AgentConfig {
+		llm = llm == null ? LlmConfig.defaults() : llm;
+		idle = idle == null ? IdleConfig.defaults() : idle;
+		observability = observability == null ? ObservabilityConfig.defaults() : observability;
+	}
+
 	public static AgentConfig defaults() {
-		return new AgentConfig(false, false, LlmConfig.defaults(), ObservabilityConfig.defaults());
+		return new AgentConfig(false, false, LlmConfig.defaults(), IdleConfig.defaults(), ObservabilityConfig.defaults());
 	}
 
 	public record LlmConfig(
@@ -150,6 +157,24 @@ public record AgentConfig(
 			return plannerNativeVisionEnabled
 				? ai.moeru.airicraft.agent.llm.PlannerVisionMode.NATIVE_TOOL_IMAGE
 				: ai.moeru.airicraft.agent.llm.PlannerVisionMode.EXTERNAL_SUMMARY;
+		}
+	}
+
+	public record IdleConfig(
+		int initialDelaySeconds,
+		int cooldownSeconds
+	) {
+		public IdleConfig {
+			initialDelaySeconds = Math.max(0, initialDelaySeconds);
+			cooldownSeconds = Math.max(0, cooldownSeconds);
+		}
+
+		public static IdleConfig defaults() {
+			return new IdleConfig(30, 90);
+		}
+
+		public boolean automaticEnabled() {
+			return initialDelaySeconds > 0 && cooldownSeconds > 0;
 		}
 	}
 

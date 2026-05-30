@@ -102,6 +102,10 @@ public final class AgentConfigLoader {
 			readBoolean(root, "plannerNativeVisionEnabled", defaults.llm().plannerNativeVisionEnabled(), strict),
 			readBoolean(root, "plannerUseJsonObjectResponseFormat", defaults.llm().plannerUseJsonObjectResponseFormat(), strict)
 		);
+		AgentConfig.IdleConfig idle = new AgentConfig.IdleConfig(
+			readInt(root, "idleInitialDelaySeconds", defaults.idle().initialDelaySeconds()),
+			readInt(root, "idleCooldownSeconds", defaults.idle().cooldownSeconds())
+		);
 		warnIfMalformedObject(root, "observability", strict);
 		Map<String, Object> observabilityRoot = readObjectMap(root, "observability", strict);
 		AgentConfig.ObservabilityConfig observability = new AgentConfig.ObservabilityConfig(
@@ -116,7 +120,7 @@ public final class AgentConfigLoader {
 			readBoolean(observabilityRoot, "captureOutputs", defaults.observability().captureOutputs(), strict),
 			readBoolean(observabilityRoot, "captureImages", defaults.observability().captureImages(), strict)
 		);
-		return new AgentConfig(defaults.verificationEnabled(), defaults.verificationAutoRunAll(), llm, observability);
+		return new AgentConfig(defaults.verificationEnabled(), defaults.verificationAutoRunAll(), llm, idle, observability);
 	}
 
 	private static void ensureFile(Path path) throws IOException {
@@ -170,6 +174,8 @@ public final class AgentConfigLoader {
 		yamlData.put("plannerSessionCoalesceStepMillis", readInt(root, "plannerSessionCoalesceStepMillis", defaults.llm().plannerSessionCoalesceStepMillis()));
 		yamlData.put("plannerSessionCoalesceMinMillis", readInt(root, "plannerSessionCoalesceMinMillis", defaults.llm().plannerSessionCoalesceMinMillis()));
 		yamlData.put("plannerSessionCoalesceMaxMillis", readInt(root, "plannerSessionCoalesceMaxMillis", defaults.llm().plannerSessionCoalesceMaxMillis()));
+		yamlData.put("idleInitialDelaySeconds", defaults.idle().initialDelaySeconds());
+		yamlData.put("idleCooldownSeconds", defaults.idle().cooldownSeconds());
 		yamlData.put("visionImageDetail", readString(root, "visionImageDetail", defaults.llm().visionImageDetail(), false));
 		yamlData.put("plannerNativeVisionEnabled", readBoolean(root, "plannerNativeVisionEnabled", defaults.llm().plannerNativeVisionEnabled(), false));
 		yamlData.put(

@@ -12,6 +12,7 @@ import ai.moeru.airicraft.agent.integration.map.MapWaypointWrite;
 import ai.moeru.airicraft.agent.verification.VerificationPlayerProbe;
 import ai.moeru.airicraft.agent.llm.CurrentViewVisionService;
 import ai.moeru.airicraft.agent.llm.LlmBackendException;
+import ai.moeru.airicraft.agent.llm.PlannerTrigger;
 import ai.moeru.airicraft.agent.session.LanHostingService;
 import ai.moeru.airicraft.agent.tasks.TaskResourceKind;
 import ai.moeru.airicraft.agent.tasks.TaskLedger;
@@ -154,6 +155,7 @@ public final class ModBridgeServer {
 			httpServer.createContext("/v1/agent/evidence", exchange -> handleJson(exchange, this::createAgentEvidenceResponse));
 			httpServer.createContext("/v1/agent/step-execution", exchange -> handleJson(exchange, this::createAgentStepExecutionResponse));
 			httpServer.createContext("/v1/agent/debug/chat", this::handleAgentDebugChat);
+			httpServer.createContext("/v1/agent/debug/idle-trigger", this::handleAgentDebugIdleTrigger);
 			httpServer.createContext("/v1/agent/debug/compact", this::handleAgentDebugCompact);
 			httpServer.createContext("/v1/agent/debug/state", exchange -> handleJson(exchange, this::createAgentDebugStateResponse));
 			httpServer.createContext("/v1/agent/debug/timeline", exchange -> handleJson(exchange, () -> createAgentDebugTimelineResponse(exchange)));
@@ -741,7 +743,27 @@ public final class ModBridgeServer {
 		});
 	}
 
+	private void handleAgentDebugIdleTrigger(HttpExchange exchange) throws IOException {
+		handleJsonBody(exchange, "POST", Object.class, request -> onClientThread(() -> {
+			var client = getClient();
+			ensureWorldLoaded(client);
+			PlannerTrigger trigger = agentRuntime().fireIdleIdeaTriggerManually()
+				.orElseThrow(() -> new BridgeUnavailableException("idle_trigger_unavailable", "No idle ideas are configured"));
 
+			Map<String, Object> payload = new LinkedHashMap<>();
+			payload.put("available", true);
+			payload.put("accepted", true);
+			payload.put("triggerType", trigger.type().promptLabel());
+			payload.put("speaker", trigger.speaker());
+			payload.put("tick", trigger.tick());
+			payload.put("timestampMs", trigger.timestampMs());
+			payload.put("task", agentRuntime().taskSnapshot());
+			payload.put("taskExecution", agentRuntime().taskExecutionSnapshot());
+			payload.put("lastDialogueResponse", agentRuntime().lastDialogueResponse().orElse(null));
+			payload.put("sessionMode", agentRuntime().sessionSnapshot().mode().name());
+			return payload;
+		}));
+	}
 
 	private void handleAgentTasks(HttpExchange exchange) throws IOException {
 		if (!authorize(exchange)) {

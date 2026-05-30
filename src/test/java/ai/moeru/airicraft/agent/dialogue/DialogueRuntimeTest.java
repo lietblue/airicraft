@@ -16,6 +16,7 @@ import ai.moeru.airicraft.agent.llm.PlannerExecutor;
 import ai.moeru.airicraft.agent.llm.PlannerIntent;
 import ai.moeru.airicraft.agent.llm.PlannerOrchestrator;
 import ai.moeru.airicraft.agent.llm.PlannerResponse;
+import ai.moeru.airicraft.agent.llm.PlannerTrigger;
 import ai.moeru.airicraft.agent.llm.PlannerTriggerType;
 import ai.moeru.airicraft.agent.llm.PlannerVisionMode;
 import ai.moeru.airicraft.agent.tasks.CollectResourceStepArgs;
@@ -348,6 +349,36 @@ class DialogueRuntimeTest {
 
 		assertFalse(runtime.hasPendingReply());
 		assertTrue(runtime.lastResponse().isEmpty());
+		runtime.shutdown();
+	}
+
+	@Test
+	void plannerTriggerPreservesOriginalTriggerType() {
+		OpenAiCompatibleLlmBackend backend = new OpenAiCompatibleLlmBackend(AgentConfig.LlmConfig.defaults());
+		DialogueRuntime runtime = newDialogueRuntime(backend);
+		SemanticEventBuffer eventBuffer = new SemanticEventBuffer(32);
+		backend.injectMockResponse(new PlannerResponse(
+			"I will pick one step.",
+			new PlannerIntent("reply_only", null, null)
+		));
+
+		runtime.onPlannerTrigger(
+			PlannerTrigger.pending(PlannerTriggerType.IDLE_THINK, "self", "IDLE THINK: choose a useful step.", 12L, 1000L),
+			SessionSnapshot.initial(),
+			null,
+			Optional.empty(),
+			TaskSnapshot.idle(),
+			MissionExecutionSnapshot.idle(),
+			eventBuffer
+		);
+		awaitResponse(runtime, eventBuffer, Duration.ofSeconds(1));
+
+		assertTrue(runtime.plannerConversationDebugSnapshot().messages().stream().anyMatch(message ->
+			message.text().contains("[idle_think][self] IDLE THINK: choose a useful step.")
+		));
+		assertFalse(runtime.plannerConversationDebugSnapshot().messages().stream().anyMatch(message ->
+			message.text().contains("[chat][self] IDLE THINK")
+		));
 		runtime.shutdown();
 	}
 

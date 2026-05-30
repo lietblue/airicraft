@@ -44,6 +44,14 @@ plannerSessionCoalesceMinMillis: 10
 # Maximum coalesce delay for superseded planner replacement generations.
 plannerSessionCoalesceMaxMillis: 100
 
+# Wait this many seconds after going idle before the first automatic idle thought.
+# Set to 0 to disable automatic idle thoughts.
+idleInitialDelaySeconds: 30
+
+# After each automatic idle thought, wait at least this many seconds before another one.
+# Set to 0 to disable automatic idle thoughts.
+idleCooldownSeconds: 90
+
 # Image detail hint passed to compatible multimodal providers: low | high | auto
 visionImageDetail: "low"
 

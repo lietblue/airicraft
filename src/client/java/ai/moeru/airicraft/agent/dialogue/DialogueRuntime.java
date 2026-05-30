@@ -12,6 +12,7 @@ import ai.moeru.airicraft.agent.llm.PlannerRequest;
 import ai.moeru.airicraft.agent.llm.PlannerRequestSeed;
 import ai.moeru.airicraft.agent.llm.PlannerResponse;
 import ai.moeru.airicraft.agent.llm.PlannerTrigger;
+import ai.moeru.airicraft.agent.llm.PlannerTriggerBatch;
 import ai.moeru.airicraft.agent.llm.PlannerTriggerType;
 import ai.moeru.airicraft.agent.session.SessionSnapshot;
 import ai.moeru.airicraft.agent.tasks.MissionExecutionSnapshot;
@@ -217,8 +218,7 @@ public final class DialogueRuntime {
 				activeGoal.orElse(null),
 				activeTask,
 				missionExecution,
-				trigger.speaker(),
-				trigger.text(),
+				PlannerTriggerBatch.of(List.of(trigger)),
 				null
 			),
 			plannerEventBuffer,

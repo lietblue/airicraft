@@ -8,7 +8,10 @@ import ai.moeru.airicraft.agent.dialogue.DialogueIntent;
 import ai.moeru.airicraft.agent.dialogue.DialogueIntentType;
 import ai.moeru.airicraft.agent.dialogue.DialogueResponse;
 import ai.moeru.airicraft.agent.events.SemanticEvent;
+import ai.moeru.airicraft.agent.job.ActiveJob;
 import ai.moeru.airicraft.agent.job.ActiveJobProposal;
+import ai.moeru.airicraft.agent.job.ActiveJobStatus;
+import ai.moeru.airicraft.agent.job.ActiveJobType;
 import ai.moeru.airicraft.agent.session.SessionMode;
 import ai.moeru.airicraft.agent.session.SessionSnapshot;
 import ai.moeru.airicraft.agent.tasks.WorldTaskRequest;
@@ -97,6 +100,46 @@ class EmbodiedAgentRuntimeTest {
 		assertTrue(EmbodiedAgentRuntime.isLocalControllerMessage("Player918", "Player918"));
 		assertFalse(EmbodiedAgentRuntime.isLocalControllerMessage("magpie", "Player918"));
 		assertFalse(EmbodiedAgentRuntime.isLocalControllerMessage(null, "Player918"));
+	}
+
+	@Test
+	void idleIdeaSchedulingTreatsTerminalJobsAsIdle() {
+		ActiveJob running = new ActiveJob(
+			"job-running",
+			ActiveJobType.COLLECT_RESOURCE,
+			ActiveJobStatus.RUNNING,
+			null,
+			null,
+			null,
+			null,
+			-1L,
+			0,
+			0,
+			"test",
+			null,
+			null,
+			1L
+		);
+		ActiveJob completed = new ActiveJob(
+			"job-completed",
+			ActiveJobType.COLLECT_RESOURCE,
+			ActiveJobStatus.COMPLETED,
+			null,
+			null,
+			null,
+			null,
+			-1L,
+			0,
+			0,
+			"test",
+			null,
+			null,
+			2L
+		);
+
+		assertFalse(EmbodiedAgentRuntime.isIdleForIdleIdeaScheduling(running));
+		assertTrue(EmbodiedAgentRuntime.isIdleForIdleIdeaScheduling(completed));
+		assertTrue(EmbodiedAgentRuntime.isIdleForIdleIdeaScheduling(ActiveJob.idle()));
 	}
 
 	@Test

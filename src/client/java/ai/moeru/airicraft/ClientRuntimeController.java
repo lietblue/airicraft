@@ -5,6 +5,8 @@ import ai.moeru.airicraft.agent.AgentConfig;
 import ai.moeru.airicraft.agent.AgentConfigLoader;
 import ai.moeru.airicraft.agent.baritone.BaritoneFacade;
 import ai.moeru.airicraft.agent.baritone.LiveBaritoneFacade;
+import ai.moeru.airicraft.agent.idle.IdleIdeasConfig;
+import ai.moeru.airicraft.agent.idle.IdleIdeasLoader;
 import ai.moeru.airicraft.agent.tasks.BaritoneTaskExecutor;
 import ai.moeru.airicraft.agent.tasks.CraftingTaskExecutor;
 import ai.moeru.airicraft.agent.tasks.DispatchingWorldTaskExecutor;
@@ -34,6 +36,7 @@ public final class ClientRuntimeController {
 	public ClientRuntimeController() {
 		this.config = AiricraftConfigLoader.load();
 		this.agentRuntime = createRuntime(config, AgentConfigLoader.load());
+		this.agentRuntime.updateIdleIdeasConfig(IdleIdeasLoader.load());
 		this.bridgeServer = new ModBridgeServer(this::highlightManager, this::agentRuntime, this::screenshotService, this::reload);
 	}
 
@@ -151,9 +154,11 @@ public final class ClientRuntimeController {
 	public synchronized ReloadResult reload() {
 		AiricraftConfig nextConfig;
 		AgentConfig nextAgentConfig;
+		IdleIdeasConfig nextIdleIdeasConfig;
 		try {
 			nextConfig = AiricraftConfigLoader.loadStrict();
 			nextAgentConfig = AgentConfigLoader.loadStrict();
+			nextIdleIdeasConfig = IdleIdeasLoader.loadStrict();
 		}
 		catch (ConfigLoadException exception) {
 			throw new BridgeUnavailableException("invalid_config", exception.getMessage());
@@ -162,6 +167,7 @@ public final class ClientRuntimeController {
 		screenshotService.failActiveCapture("capture_failed", "Screenshot capture was interrupted");
 		EmbodiedAgentRuntime previousRuntime = currentAgentRuntime();
 		EmbodiedAgentRuntime nextRuntime = createRuntime(nextConfig, nextAgentConfig);
+		nextRuntime.updateIdleIdeasConfig(nextIdleIdeasConfig);
 		MinecraftClient client = MinecraftClient.getInstance();
 		if (client != null) {
 			nextRuntime.onClientStarted(client);
@@ -170,7 +176,7 @@ public final class ClientRuntimeController {
 		config = nextConfig;
 		agentRuntime = nextRuntime;
 		previousRuntime.shutdown();
-		return new ReloadResult(nextConfig, nextAgentConfig, nextRuntime.sessionSnapshot());
+		return new ReloadResult(nextConfig, nextAgentConfig, nextIdleIdeasConfig, nextRuntime.sessionSnapshot());
 	}
 
 	public void shutdown() {
@@ -198,6 +204,7 @@ public final class ClientRuntimeController {
 	public record ReloadResult(
 		AiricraftConfig airicraftConfig,
 		AgentConfig agentConfig,
+		IdleIdeasConfig idleIdeasConfig,
 		SessionSnapshot sessionSnapshot
 	) {
 		public Map<String, Object> toPayload() {
@@ -214,6 +221,7 @@ public final class ClientRuntimeController {
 			payload.put("config", configPayload());
 			payload.put("llm", llmPayload());
 			payload.put("observability", observabilityPayload());
+			payload.put("idleIdeas", idleIdeasPayload());
 			return payload;
 		}
 
@@ -263,6 +271,15 @@ public final class ClientRuntimeController {
 			payload.put("captureInputs", agentConfig.observability().captureInputs());
 			payload.put("captureOutputs", agentConfig.observability().captureOutputs());
 			payload.put("captureImages", agentConfig.observability().captureImages());
+			return payload;
+		}
+
+		private Map<String, Object> idleIdeasPayload() {
+			LinkedHashMap<String, Object> payload = new LinkedHashMap<>();
+			payload.put("enabled", idleIdeasConfig.enabled() && agentConfig.idle().automaticEnabled());
+			payload.put("initialDelaySeconds", agentConfig.idle().initialDelaySeconds());
+			payload.put("cooldownSeconds", agentConfig.idle().cooldownSeconds());
+			payload.put("ideaCount", idleIdeasConfig.ideas().size());
 			return payload;
 		}
 	}

@@ -93,6 +93,8 @@ interface MinecraftTransport {
 
 	Map<String, Object> sendAgentDebugChat(String message);
 
+	Map<String, Object> fireAgentDebugIdleTrigger();
+
 	Map<String, Object> getAgentContext();
 
 	Map<String, Object> listRecentAgentEvents(Long sinceSeqNo);

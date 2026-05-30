@@ -344,6 +344,11 @@ final class HttpBridgeTransport implements MinecraftTransport {
 	}
 
 	@Override
+	public Map<String, Object> fireAgentDebugIdleTrigger() {
+		return send("POST", "/v1/agent/debug/idle-trigger", null);
+	}
+
+	@Override
 	public Map<String, Object> getAgentContext() {
 		return get("/v1/agent/context");
 	}

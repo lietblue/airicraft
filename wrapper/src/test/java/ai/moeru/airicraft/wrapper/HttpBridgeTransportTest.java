@@ -428,6 +428,24 @@ class HttpBridgeTransportTest {
 	}
 
 	@Test
+	void agentDebugIdleTriggerPostsToBridgePath(@TempDir Path tempDir) throws Exception {
+		try (TestBridgeServer server = TestBridgeServer.start()) {
+			server.respondJson("/v1/agent/debug/idle-trigger", 0, 200, """
+				{"available":true,"accepted":true,"triggerType":"idle_think","speaker":"self"}
+				""");
+			writeBridgeState(tempDir, server.port());
+			System.setProperty("user.home", tempDir.toString());
+
+			HttpBridgeTransport transport = new HttpBridgeTransport();
+			Map<String, Object> payload = transport.fireAgentDebugIdleTrigger();
+
+			assertEquals(true, payload.get("accepted"));
+			assertEquals(1, server.requestCount("/v1/agent/debug/idle-trigger"));
+			assertEquals("POST", server.lastMethod("/v1/agent/debug/idle-trigger"));
+		}
+	}
+
+	@Test
 	void agentEventPolicyEndpointsMapToBridgePaths(@TempDir Path tempDir) throws Exception {
 		try (TestBridgeServer server = TestBridgeServer.start()) {
 			server.respondJson("/v1/agent/event-policy", 0, 200, """

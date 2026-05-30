@@ -182,6 +182,27 @@ class AiricraftCliMainTest {
 	}
 
 	@Test
+	void agentDebugIdleTriggerFiresManualTrigger() {
+		TestTransport transport = new TestTransport();
+		transport.agentDebugIdleTriggerPayload = linkedMap(
+			"available", true,
+			"accepted", true,
+			"triggerType", "idle_think",
+			"speaker", "self",
+			"tick", 42L,
+			"sessionMode", "SINGLEPLAYER_LAN_HOST"
+		);
+
+		CliResult result = execute(transport, "agent", "debug", "idle-trigger");
+
+		assertEquals(0, result.exitCode());
+		assertTrue(transport.agentDebugIdleTriggerCalled);
+		assertTrue(result.output().contains("command: agent debug idle-trigger\n"));
+		assertTrue(result.output().contains("accepted: true\n"));
+		assertTrue(result.output().contains("triggerType: idle_think\n"));
+	}
+
+	@Test
 	void agentDebugTimelinePassesSinceAndRendersEntries() {
 		TestTransport transport = new TestTransport();
 		transport.agentDebugTimelinePayload = linkedMap(
@@ -965,6 +986,7 @@ class AiricraftCliMainTest {
 		private Map<String, Object> agentDebugStatePayload = Map.of();
 		private Map<String, Object> agentDebugTimelinePayload = Map.of("entries", List.of());
 		private Map<String, Object> agentDebugChatPayload = Map.of();
+		private Map<String, Object> agentDebugIdleTriggerPayload = Map.of();
 		private Map<String, Object> agentContextPayload = Map.of();
 		private Map<String, Object> agentTasksPayload = Map.of();
 		private Map<String, Object> agentLedgerPayload = Map.of();
@@ -1001,6 +1023,7 @@ class AiricraftCliMainTest {
 		private Long lastEventSince;
 		private boolean lastCompactWait = true;
 		private Integer lastCompactTimeoutMs;
+		private boolean agentDebugIdleTriggerCalled;
 		private String lastVerificationScenario;
 		private Double lastTeleportX;
 		private Double lastTeleportY;
@@ -1217,6 +1240,12 @@ class AiricraftCliMainTest {
 		public Map<String, Object> sendAgentDebugChat(String message) {
 			lastDebugChatMessage = message;
 			return agentDebugChatPayload;
+		}
+
+		@Override
+		public Map<String, Object> fireAgentDebugIdleTrigger() {
+			agentDebugIdleTriggerCalled = true;
+			return agentDebugIdleTriggerPayload;
 		}
 
 		@Override

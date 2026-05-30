@@ -17,7 +17,7 @@ public class GameRendererPauseMixin {
 		)
 	)
 	private void airicraft$suppressAutoPauseOnFocusLost(MinecraftClient client, boolean pauseOnly) {
-		if (AiricraftClient.runtimeController() != null && AiricraftClient.runtimeController().config().suppressAutoPauseOnFocusLost()) {
+		if (AiricraftClient.runtimeController().config().suppressAutoPauseOnFocusLost()) {
 			return;
 		}
 		client.openGameMenu(pauseOnly);
