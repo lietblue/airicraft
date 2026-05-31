@@ -9,7 +9,7 @@
   - `wrapper/`: standalone Java CLI for agent-driven control
 
 ## Build And Run
-- Before running build or test verification commands, source `.envrc` first: `source .envrc`
+- Before running build or test verification commands, source `.envrc` first if exists: `source .envrc`
 - Full build: `./gradlew build`
 - Run Minecraft client in dev: `./gradlew runClient`
 - `runClient` starts JDWP by default on `127.0.0.1:5005` with `suspend=n`
