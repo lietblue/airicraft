@@ -84,7 +84,7 @@ class MapPlannerToolProviderTest {
 
 		PlannerProviderToolResult result = provider.executeResult(new PlannerToolCall("call-map", "take_map_look", new JsonObject(), null, null)).join();
 
-		assertEquals("MAP_UNAVAILABLE: world_not_loaded", result.text());
+		assertEquals("MAP_UNAVAILABLE: world_not_loaded - No world is currently loaded", result.text());
 		assertNull(result.imageAttachment());
 	}
 

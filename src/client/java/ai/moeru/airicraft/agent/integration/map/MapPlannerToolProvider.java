@@ -290,7 +290,9 @@ public final class MapPlannerToolProvider implements PlannerToolProvider {
 			? completionException.getCause()
 			: throwable;
 		if (cause instanceof BridgeUnavailableException bridgeUnavailableException) {
-			return "MAP_UNAVAILABLE: " + bridgeUnavailableException.code();
+			String message = bridgeUnavailableException.getMessage();
+			return "MAP_UNAVAILABLE: " + bridgeUnavailableException.code()
+				+ (message == null || message.isBlank() ? "" : " - " + message);
 		}
 		return "MAP_UNAVAILABLE: map_capture_failed";
 	}
