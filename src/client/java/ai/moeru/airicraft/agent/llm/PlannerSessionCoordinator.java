@@ -1,5 +1,8 @@
 package ai.moeru.airicraft.agent.llm;
 
+import ai.moeru.airicraft.agent.observability.AgentObservability;
+import io.opentelemetry.context.Context;
+
 import java.time.Clock;
 import java.util.ArrayDeque;
 import java.util.Objects;
@@ -98,8 +101,12 @@ public final class PlannerSessionCoordinator {
 	}
 
 	public void submit(PlannerContextSnapshot contextSnapshot) {
+		submit(contextSnapshot, Context.current());
+	}
+
+	public void submit(PlannerContextSnapshot contextSnapshot, Context parentContext) {
 		Objects.requireNonNull(contextSnapshot, "contextSnapshot");
-		activeSession = new PlannerSession(nextGeneration++, contextSnapshot);
+		activeSession = new PlannerSession(nextGeneration++, contextSnapshot, parentContext);
 		launchIfPossible(activeSession);
 	}
 
@@ -128,7 +135,9 @@ public final class PlannerSessionCoordinator {
 					activeSession.attemptCount(),
 					activeSession.phase(),
 					activeSession.request(),
-					activeSession.conversation()
+					activeSession.conversation(),
+					activeSession.parentContext(),
+					spanNameFor(activeSession.phase())
 				);
 			}
 			else if (activeSession.awaitingLaunch()) {
@@ -196,7 +205,15 @@ public final class PlannerSessionCoordinator {
 			session.request(),
 			session.conversation()
 		);
-		plannerExecutor.submit(session.generation(), session.attemptCount(), session.phase(), session.request(), session.conversation());
+		plannerExecutor.submit(
+			session.generation(),
+			session.attemptCount(),
+			session.phase(),
+			session.request(),
+			session.conversation(),
+			session.parentContext(),
+			spanNameFor(session.phase())
+		);
 	}
 
 	public void drainCompletedResults() {
@@ -231,5 +248,11 @@ public final class PlannerSessionCoordinator {
 			case TIMEOUT, PROVIDER_UNAVAILABLE -> true;
 			case PARSE_ERROR, PROVIDER_ERROR -> false;
 		};
+	}
+
+	private static String spanNameFor(PlannerSessionPhase phase) {
+		return phase == PlannerSessionPhase.TOOL_FOLLOW_UP
+			? AgentObservability.FOLLOW_UP_SPAN_NAME
+			: AgentObservability.PLANNER_REQUEST_SPAN_NAME;
 	}
 }

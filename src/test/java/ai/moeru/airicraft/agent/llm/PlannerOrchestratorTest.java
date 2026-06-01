@@ -5,6 +5,7 @@ import ai.moeru.airicraft.FirstPersonScreenshotService;
 import ai.moeru.airicraft.agent.AgentConfig;
 import ai.moeru.airicraft.agent.debug.AgentDebugRecorder;
 import ai.moeru.airicraft.agent.dialogue.DialogueTurn;
+import ai.moeru.airicraft.agent.observability.AgentObservability;
 import ai.moeru.airicraft.agent.observability.NoopObservability;
 import ai.moeru.airicraft.agent.events.EventPolicyChanges;
 import ai.moeru.airicraft.agent.events.EventPolicyMatch;
@@ -17,11 +18,14 @@ import com.google.gson.JsonParser;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import ai.moeru.airicraft.agent.session.SessionMode;
+import io.opentelemetry.context.Context;
+import io.opentelemetry.context.ContextKey;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
+import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.time.Duration;
@@ -1477,6 +1481,47 @@ class PlannerOrchestratorTest {
 	}
 
 	@Test
+	void plannerRequestAndToolFollowUpUseTurnContextAsSpanParent() {
+		RecordingBackend backend = new RecordingBackend();
+		RecordingObservability observability = new RecordingObservability();
+		StubInventoryTool inventoryTool = new StubInventoryTool(
+			"Tool result for inspect_inventory: itemCounts={minecraft:charcoal=3}",
+			"unused"
+		);
+		PlannerOrchestrator orchestrator = newObservedOrchestrator(
+			backend,
+			CurrentViewVisionTool.disabled(),
+			inventoryTool,
+			PlannerVisionMode.EXTERNAL_SUMMARY,
+			observability
+		);
+
+		orchestrator.submit(requestAt(10L, 1_000L, "Alice", "@agent check inventory"));
+		backend.awaitCalls(1, Duration.ofSeconds(1));
+		backend.succeed(0, new PlannerResponse(
+			"",
+			new PlannerIntent("none", null, null),
+			new PlannerToolRequest("inspect_inventory", null)
+		));
+
+		awaitBackendCallCount(orchestrator, backend, 2, Duration.ofSeconds(1));
+		assertEquals(
+			List.of(AgentObservability.PLANNER_REQUEST_SPAN_NAME, AgentObservability.FOLLOW_UP_SPAN_NAME),
+			observability.childNames()
+		);
+		assertEquals(
+			java.util.Arrays.asList(
+				"session:OUT_OF_WORLD:sender=Alice:tick=10",
+				"session:OUT_OF_WORLD:sender=Alice:tick=10"
+			),
+			observability.childParentThreadIds()
+		);
+
+		backend.succeed(1, replyOnly("Inventory checked."));
+		assertTrue(awaitResult(orchestrator).succeeded());
+	}
+
+	@Test
 	void toolFollowUpConversationReplaysRawAssistantContentBeforeToolResult() {
 		RecordingBackend backend = new RecordingBackend();
 		StubVisionTool visionTool = new StubVisionTool(
@@ -1754,6 +1799,38 @@ class PlannerOrchestratorTest {
 			config.plannerSessionCoalesceMaxMillis(),
 			clock,
 			NoopObservability.INSTANCE,
+			PlannerLifecycleListener.NO_OP,
+			new AgentDebugRecorder(),
+			PlannerActionToolExecutor.DISABLED,
+			PlannerToolNarrationSink.NO_OP,
+			toolRegistry
+		);
+	}
+
+	private static PlannerOrchestrator newObservedOrchestrator(
+		LlmBackend backend,
+		CurrentViewVisionTool visionTool,
+		CurrentInventoryTool inventoryTool,
+		PlannerVisionMode visionMode,
+		AgentObservability observability
+	) {
+		AgentConfig.LlmConfig config = AgentConfig.LlmConfig.defaults();
+		Clock clock = Clock.systemDefaultZone();
+		PlannerToolRegistry toolRegistry = PlannerToolRegistry.empty();
+		return new PlannerOrchestrator(
+			new PlannerExecutor(backend, observability),
+			new PlannerCompactionService(new OpenAiCompatibleChatClient(config, observability, toolRegistry), observability),
+			new PlannerContextAggregator(clock, config.plannerCompactionTriggerTokens(), config.plannerPendingSemanticEventCap(), visionMode, toolRegistry),
+			visionTool,
+			inventoryTool,
+			visionMode,
+			config.visionImageDetail(),
+			config.plannerSessionMaxConcurrentAttempts(),
+			config.plannerSessionCoalesceStepMillis(),
+			config.plannerSessionCoalesceMinMillis(),
+			config.plannerSessionCoalesceMaxMillis(),
+			clock,
+			observability,
 			PlannerLifecycleListener.NO_OP,
 			new AgentDebugRecorder(),
 			PlannerActionToolExecutor.DISABLED,
@@ -2182,6 +2259,107 @@ class PlannerOrchestratorTest {
 
 		private int nearbyEntitiesRequestCount() {
 			return nearbyEntitiesRequestCount;
+		}
+	}
+
+	private static final class RecordingObservability implements AgentObservability {
+		private static final ContextKey<String> THREAD_ID_KEY = ContextKey.named("test-thread-id");
+
+		private final List<String> childParentThreadIds = new ArrayList<>();
+		private final List<String> childNames = new ArrayList<>();
+
+		@Override
+		public synchronized Context startTurnSpan(PlannerRequest request, String threadId) {
+			return Context.root().with(THREAD_ID_KEY, threadId);
+		}
+
+		@Override
+		public synchronized Context startChildSpan(String name, Context parent) {
+			Context safeParent = parent == null ? Context.root() : parent;
+			childNames.add(name);
+			childParentThreadIds.add(safeParent.get(THREAD_ID_KEY));
+			return safeParent;
+		}
+
+		private synchronized List<String> childNames() {
+			return List.copyOf(childNames);
+		}
+
+		private synchronized List<String> childParentThreadIds() {
+			return new ArrayList<>(childParentThreadIds);
+		}
+
+		@Override
+		public void setSpanAttribute(Context context, String key, String value) {
+		}
+
+		@Override
+		public void setSpanAttribute(Context context, String key, boolean value) {
+		}
+
+		@Override
+		public void setSpanAttribute(Context context, String key, long value) {
+		}
+
+		@Override
+		public void recordImageCapture(Context context, FirstPersonScreenshotService.CapturedScreenshot capture) {
+		}
+
+		@Override
+		public void recordLlmRequest(
+			Context context,
+			String providerName,
+			URI endpoint,
+			String model,
+			long timeoutMillis,
+			LlmConversation conversation,
+			String requestBody
+		) {
+		}
+
+		@Override
+		public void recordFailedLlmInput(Context context, LlmConversation conversation, String requestBody) {
+		}
+
+		@Override
+		public void recordLlmRequest(
+			Context context,
+			String providerName,
+			URI endpoint,
+			String model,
+			long timeoutMillis,
+			VisionRequest request,
+			String imageDetail,
+			String requestBody
+		) {
+		}
+
+		@Override
+		public void recordLlmResponse(Context context, Integer statusCode, String responseModel, LlmUsageSnapshot usage, PlannerResponse plannerResponse) {
+		}
+
+		@Override
+		public void recordLlmResponse(Context context, Integer statusCode, String responseModel, LlmUsageSnapshot usage, String rawResponseBody) {
+		}
+
+		@Override
+		public void recordLlmResponse(Context context, Integer statusCode, String responseModel, LlmUsageSnapshot usage, CompactionCheckpoint checkpoint) {
+		}
+
+		@Override
+		public void recordLlmResponse(Context context, Integer statusCode, String responseModel, LlmUsageSnapshot usage, VisionDescription visionDescription) {
+		}
+
+		@Override
+		public void recordFailure(Context context, String failureType, String message, Throwable throwable) {
+		}
+
+		@Override
+		public void endSpan(Context context) {
+		}
+
+		@Override
+		public void shutdown() {
 		}
 	}
 

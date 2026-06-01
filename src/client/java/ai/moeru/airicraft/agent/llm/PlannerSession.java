@@ -1,8 +1,11 @@
 package ai.moeru.airicraft.agent.llm;
 
+import io.opentelemetry.context.Context;
+
 final class PlannerSession {
 	private final long generation;
 	private final PlannerContextSnapshot contextSnapshot;
+	private final Context parentContext;
 	private PlannerRequest request;
 	private PlannerSessionPhase phase;
 	private LlmConversation conversation;
@@ -10,8 +13,13 @@ final class PlannerSession {
 	private long retryReadyAtMs = -1L;
 
 	PlannerSession(long generation, PlannerContextSnapshot contextSnapshot) {
+		this(generation, contextSnapshot, Context.current());
+	}
+
+	PlannerSession(long generation, PlannerContextSnapshot contextSnapshot, Context parentContext) {
 		this.generation = generation;
 		this.contextSnapshot = contextSnapshot;
+		this.parentContext = parentContext == null ? Context.root() : parentContext;
 		this.request = contextSnapshot.request();
 		this.phase = PlannerSessionPhase.PLANNER_REQUEST;
 		this.conversation = contextSnapshot.plannerConversation();
@@ -23,6 +31,10 @@ final class PlannerSession {
 
 	PlannerContextSnapshot contextSnapshot() {
 		return contextSnapshot;
+	}
+
+	Context parentContext() {
+		return parentContext;
 	}
 
 	PlannerRequest request() {

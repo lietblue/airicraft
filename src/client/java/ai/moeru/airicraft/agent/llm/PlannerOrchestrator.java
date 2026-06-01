@@ -934,7 +934,7 @@ public final class PlannerOrchestrator {
 		if (overflowSnapshot == null) {
 			return true;
 		}
-		sessionCoordinator.submit(overflowSnapshot);
+		sessionCoordinator.submit(overflowSnapshot, currentTurnContext());
 		return true;
 	}
 
@@ -948,7 +948,7 @@ public final class PlannerOrchestrator {
 			return true;
 		}
 		snapshot = withInventoryBootstrapIfAvailable(snapshot);
-		sessionCoordinator.submit(snapshot);
+		sessionCoordinator.submit(snapshot, currentTurnContext());
 		return true;
 	}
 
