@@ -1095,6 +1095,10 @@ public final class PlannerOrchestrator {
 		}
 
 		PlannerRequest followUpRequest = snapshot.request().withToolResult(toolOutcome.toolResultText());
+		PlannerContextSnapshot followUpSnapshot = withRecordedToolExchanges(
+			snapshot,
+			recordedToolExchanges(toolExecution.generation())
+		);
 		recordToolExchange(
 			toolExecution.generation(),
 			snapshot,
@@ -1105,7 +1109,7 @@ public final class PlannerOrchestrator {
 		sessionCoordinator.submitToolFollowUp(
 			toolExecution.generation(),
 			followUpRequest,
-			toolOutcome.appendFollowUp(contextAggregator, snapshot, toolExecution.assistantRawContent(), toolExecution.toolCall())
+			toolOutcome.appendFollowUp(contextAggregator, followUpSnapshot, toolExecution.assistantRawContent(), toolExecution.toolCall())
 		);
 		lifecycleListener.onToolCompleted(toolExecution.generation(), toolOutcome.toolResultText(), toolOutcome instanceof ImageToolExecutionOutcome);
 		appendToolFollowUpCard(toolExecution);
@@ -1283,6 +1287,62 @@ public final class PlannerOrchestrator {
 				);
 			}
 		}
+	}
+
+	private List<RecordedToolExchange> recordedToolExchanges(long generation) {
+		return List.copyOf(toolExchangesByGeneration.getOrDefault(generation, List.of()));
+	}
+
+	private PlannerContextSnapshot withRecordedToolExchanges(
+		PlannerContextSnapshot snapshot,
+		List<RecordedToolExchange> exchanges
+	) {
+		if (snapshot == null || exchanges == null || exchanges.isEmpty()) {
+			return snapshot;
+		}
+		return new PlannerContextSnapshot(
+			snapshot.request(),
+			snapshot.mode(),
+			snapshot.triggerBatch(),
+			appendRecordedToolExchanges(snapshot.plannerConversation(), exchanges),
+			snapshot.includedSemanticEventSeqNoUpperBound(),
+			snapshot.includedSemanticGapVersion(),
+			snapshot.renderedAmbientContext(),
+			snapshot.renderedTimeContextAtMs()
+		);
+	}
+
+	private LlmConversation appendRecordedToolExchanges(
+		LlmConversation conversation,
+		List<RecordedToolExchange> exchanges
+	) {
+		LlmConversation updated = conversation;
+		for (RecordedToolExchange exchange : exchanges) {
+			if (exchange.toolCall() != null) {
+				updated = updated
+					.withAppended(LlmChatMessage.assistantToolCall("", exchange.toolCall()))
+					.withAppended(LlmChatMessage.tool(exchange.toolCall().id(), recordedToolResultContent(exchange.toolResultText())));
+			}
+			else if (exchange.assistantRawContent() != null) {
+				updated = updated
+					.withAppended(LlmChatMessage.assistant(
+						OpenAiCompatibleMessageContent.extractVisibleText(exchange.assistantRawContent()),
+						exchange.assistantRawContent()
+					))
+					.withAppended(LlmChatMessage.user(
+						"Tool result: " + recordedToolResultContent(exchange.toolResultText()),
+						LlmMessageKind.TOOL_RESULT
+					));
+			}
+		}
+		return updated;
+	}
+
+	private static String recordedToolResultContent(String toolResultText) {
+		if (toolResultText == null || toolResultText.isBlank()) {
+			return "Tool result: none";
+		}
+		return toolResultText;
 	}
 
 	private int completedToolCallCount(long generation) {

@@ -1411,19 +1411,69 @@ class PlannerOrchestratorTest {
 		orchestrator.submit(requestAt(20L, 2_000L, "Alice", "@agent craft them"));
 		awaitBackendCallCount(orchestrator, backend, 3, Duration.ofSeconds(1));
 
-			LlmConversation secondPrompt = backend.conversation(2);
-			LlmChatMessage replayedToolRequest = secondPrompt.messages().stream()
-				.filter(message -> "assistant".equals(message.role()) && message.hasToolCalls())
-				.filter(message -> message.toolCalls().stream().anyMatch(toolCall -> "check_craftables".equals(toolCall.name())))
-				.findFirst()
-				.orElseThrow();
-			assertNotNull(replayedToolRequest);
+		LlmConversation secondPrompt = backend.conversation(2);
+		LlmChatMessage replayedToolRequest = secondPrompt.messages().stream()
+			.filter(message -> "assistant".equals(message.role()) && message.hasToolCalls())
+			.filter(message -> message.toolCalls().stream().anyMatch(toolCall -> "check_craftables".equals(toolCall.name())))
+			.findFirst()
+			.orElseThrow();
+		assertNotNull(replayedToolRequest);
 
 		LlmChatMessage replayedToolResult = secondPrompt.messages().stream()
 			.filter(message -> message.kind() == LlmMessageKind.TOOL_RESULT)
 			.findFirst()
 			.orElseThrow();
 		assertTrue(replayedToolResult.content().contains("birch_wood_to_birch_planks"));
+	}
+
+	@Test
+	void consecutiveToolFollowUpKeepsPriorToolExchangeInPrompt() {
+		RecordingBackend backend = new RecordingBackend();
+		StubInventoryTool inventoryTool = new StubInventoryTool(
+			"unused",
+			"Tool result for check_craftables: availableCrafts=Available 2x2 crafts: [From {1*stick,1*charcoal} to 4*torch]: torch"
+		);
+		RecordingPlannerToolProvider provider = new RecordingPlannerToolProvider();
+		PlannerOrchestrator orchestrator = newOrchestrator(
+			backend,
+			CurrentViewVisionTool.disabled(),
+			inventoryTool,
+			PlannerVisionMode.EXTERNAL_SUMMARY,
+			PlannerToolRegistry.of(provider)
+		);
+
+		orchestrator.submit(requestAt(10L, 1_000L, "Alice", "@agent make torches"));
+		backend.awaitCalls(1, Duration.ofSeconds(1));
+		backend.succeed(0, new PlannerResponse(
+			"",
+			new PlannerIntent("none", null, null),
+			new PlannerToolRequest("check_craftables", null)
+		));
+
+		awaitBackendCallCount(orchestrator, backend, 2, Duration.ofSeconds(1));
+		JsonObject args = new JsonObject();
+		args.addProperty("query", "torch");
+		backend.succeed(1, new PlannerResponse(
+			"",
+			new PlannerToolCall("call_search", "search_recipes", args, null, null),
+			null
+		));
+
+		awaitBackendCallCount(orchestrator, backend, 3, Duration.ofSeconds(1));
+		LlmConversation secondFollowUp = backend.conversation(2);
+		assertTrue(secondFollowUp.messages().stream()
+			.anyMatch(message -> "assistant".equals(message.role())
+				&& message.hasToolCalls()
+				&& message.toolCalls().stream().anyMatch(toolCall -> "check_craftables".equals(toolCall.name()))));
+		assertTrue(secondFollowUp.messages().stream()
+			.anyMatch(message -> message.kind() == LlmMessageKind.TOOL_RESULT && message.content().contains("Available 2x2 crafts")));
+		assertTrue(secondFollowUp.messages().stream()
+			.anyMatch(message -> "assistant".equals(message.role())
+				&& message.hasToolCalls()
+				&& message.toolCalls().stream().anyMatch(toolCall -> "search_recipes".equals(toolCall.name()))));
+		assertTrue(secondFollowUp.messages().stream()
+			.anyMatch(message -> message.kind() == LlmMessageKind.TOOL_RESULT && message.content().contains("query=torch")));
+		assertEquals(List.of("torch"), provider.queries());
 	}
 
 	@Test
