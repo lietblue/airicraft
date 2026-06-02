@@ -785,9 +785,8 @@ public final class EmbodiedAgentRuntime {
 			senderName,
 			plainTextMessage,
 			localPlayerName(),
-			chatService.lastChatText(),
 			tickCount,
-			chatService.lastChatTick()
+			chatService
 		)) {
 			return;
 		}
@@ -1100,11 +1099,17 @@ public final class EmbodiedAgentRuntime {
 		JsonObject args = toolCall.arguments();
 		return switch (PlannerToolCatalog.normalizeName(toolCall.name())) {
 			case PlannerToolCatalog.FOLLOW_PLAYER -> {
+				if (plannerToolWouldPreemptActiveTask(toolCall)) {
+					yield plannerActiveTaskPreemptionError(toolCall);
+				}
 				String targetPlayer = stringArg(args, "targetPlayer").orElseThrow(() -> new IllegalArgumentException("targetPlayer is required"));
 				applyPlannerJobTool(ActiveJobProposal.followPlayer(targetPlayer));
-				yield "Tool result for follow_player: accepted targetPlayer=" + targetPlayer;
+				yield queuedActionToolResult("follow_player", "targetPlayer=" + targetPlayer);
 			}
 			case PlannerToolCatalog.NAVIGATE_TO -> {
+				if (plannerToolWouldPreemptActiveTask(toolCall)) {
+					yield plannerActiveTaskPreemptionError(toolCall);
+				}
 				GoalPosition position = new GoalPosition(
 					intArg(args, "x").orElseThrow(() -> new IllegalArgumentException("x is required")),
 					intArg(args, "y").orElseThrow(() -> new IllegalArgumentException("y is required")),
@@ -1112,15 +1117,18 @@ public final class EmbodiedAgentRuntime {
 					booleanArg(args, "exactY").orElse(false)
 				);
 				applyPlannerJobTool(ActiveJobProposal.navigateTo(position));
-				yield "Tool result for navigate_to: accepted x=" + position.x() + " y=" + position.y() + " z=" + position.z() + " exactY=" + position.exactY();
+				yield queuedActionToolResult("navigate_to", "x=" + position.x() + " y=" + position.y() + " z=" + position.z() + " exactY=" + position.exactY());
 			}
 			case PlannerToolCatalog.MINE_BLOCKS -> {
+				if (plannerToolWouldPreemptActiveTask(toolCall)) {
+					yield plannerActiveTaskPreemptionError(toolCall);
+				}
 				GoalMineSpec mineSpec = new GoalMineSpec(
 					stringArrayArg(args, "blockIds"),
 					intArg(args, "quantity").orElseThrow(() -> new IllegalArgumentException("quantity is required"))
 				);
 				applyPlannerJobTool(ActiveJobProposal.mineBlocks(mineSpec));
-				yield "Tool result for mine_blocks: accepted blockIds=" + String.join(",", mineSpec.blockIds()) + " quantity=" + mineSpec.quantity();
+				yield queuedActionToolResult("mine_blocks", "blockIds=" + String.join(",", mineSpec.blockIds()) + " quantity=" + mineSpec.quantity());
 			}
 			case PlannerToolCatalog.COLLECT_RESOURCE -> {
 				TaskResourceKind resourceKind = resourceKindArg(args, "resourceKind");
@@ -1188,6 +1196,26 @@ public final class EmbodiedAgentRuntime {
 			}
 			default -> "TOOL_ERROR: unknown_tool " + toolCall.name();
 		};
+	}
+
+	private boolean plannerToolWouldPreemptActiveTask(PlannerToolCall toolCall) {
+		if (!isSemanticTaskSnapshot(taskSnapshot) || !isActiveSemanticTaskState(taskSnapshot.state())) {
+			return false;
+		}
+		String normalizedToolName = PlannerToolCatalog.normalizeName(toolCall == null ? null : toolCall.name());
+		return PlannerToolCatalog.FOLLOW_PLAYER.equals(normalizedToolName)
+			|| PlannerToolCatalog.NAVIGATE_TO.equals(normalizedToolName)
+			|| PlannerToolCatalog.MINE_BLOCKS.equals(normalizedToolName);
+	}
+
+	private String plannerActiveTaskPreemptionError(PlannerToolCall toolCall) {
+		String toolName = PlannerToolCatalog.normalizeName(toolCall == null ? null : toolCall.name());
+		String taskState = taskSnapshot == null || taskSnapshot.state() == null ? "UNKNOWN" : taskSnapshot.state().name();
+		String activeStep = taskSnapshot == null || taskSnapshot.activeStepKind() == null ? "UNKNOWN" : taskSnapshot.activeStepKind().name();
+		return "TOOL_ERROR: " + toolName + " denied reason=active_task_in_progress"
+			+ " taskState=" + taskState
+			+ " activeStepKind=" + activeStep
+			+ ". Direct movement or mining tools would preempt the active job. Use cancel_task first only if the user explicitly changed tasks; otherwise wait for TASK UPDATE or ask the user.";
 	}
 
 	private static String queuedActionToolResult(String toolName, String details) {
@@ -1606,23 +1634,41 @@ public final class EmbodiedAgentRuntime {
 		String senderName,
 		String plainTextMessage,
 		String localPlayerName,
+		long currentTick,
+		ChatService chatService
+	) {
+		if (chatService == null) {
+			return false;
+		}
+		return isAgentChatEchoSender(senderName, plainTextMessage, localPlayerName)
+			&& chatService.isRecentSentChat(plainTextMessage, currentTick, CHAT_ECHO_SUPPRESSION_TICKS);
+	}
+
+	static boolean isAgentChatEcho(
+		String senderName,
+		String plainTextMessage,
+		String localPlayerName,
 		String lastAgentChatText,
 		long currentTick,
 		long lastAgentChatTick
 	) {
-		if (senderName == null || plainTextMessage == null || localPlayerName == null || lastAgentChatText == null) {
+		if (!isAgentChatEchoSender(senderName, plainTextMessage, localPlayerName)) {
 			return false;
 		}
-		if (!senderName.equals(localPlayerName)) {
-			return false;
-		}
-		if (!plainTextMessage.equals(lastAgentChatText)) {
+		if (lastAgentChatText == null || !plainTextMessage.equals(lastAgentChatText)) {
 			return false;
 		}
 		if (lastAgentChatTick < 0L || currentTick < lastAgentChatTick) {
 			return false;
 		}
 		return currentTick - lastAgentChatTick <= CHAT_ECHO_SUPPRESSION_TICKS;
+	}
+
+	private static boolean isAgentChatEchoSender(String senderName, String plainTextMessage, String localPlayerName) {
+		if (senderName == null || plainTextMessage == null || localPlayerName == null) {
+			return false;
+		}
+		return senderName.equals(localPlayerName);
 	}
 
 	static boolean isLocalControllerMessage(String senderName, String localPlayerName) {
@@ -1708,13 +1754,19 @@ public final class EmbodiedAgentRuntime {
 			return;
 		}
 
-		if (response.intent().type() == DialogueIntentType.CLEAR_GOAL && previousGoal.isPresent() && currentGoal.isEmpty()) {
+		if (response.intent().type() == DialogueIntentType.CLEAR_GOAL && currentGoal.isEmpty()) {
 			java.util.LinkedHashMap<String, Object> goalPayload = new java.util.LinkedHashMap<>();
-			goalPayload.put("goalType", previousGoal.get().type().name());
-			if (previousGoal.get().targetPlayer() != null && !previousGoal.get().targetPlayer().isBlank()) {
-				goalPayload.put("targetPlayer", previousGoal.get().targetPlayer());
+			if (previousGoal.isPresent()) {
+				goalPayload.put("goalType", previousGoal.get().type().name());
+				if (previousGoal.get().targetPlayer() != null && !previousGoal.get().targetPlayer().isBlank()) {
+					goalPayload.put("targetPlayer", previousGoal.get().targetPlayer());
+				}
+				goalPayload.put("source", previousGoal.get().source());
 			}
-			goalPayload.put("source", previousGoal.get().source());
+			else {
+				goalPayload.put("source", "planner_response");
+				goalPayload.put("alreadyClear", true);
+			}
 			eventBuffer.append(tickCount, "planner.goal_cleared", goalPayload);
 		}
 	}
@@ -1862,7 +1914,7 @@ public final class EmbodiedAgentRuntime {
 	}
 
 	private ai.moeru.airicraft.agent.llm.PlannerTrigger createCraftTrigger(SemanticEvent event) {
-		if (suppressPlannerTriggersForCollectResourceProgress()) {
+		if (suppressPlannerTriggersForCollectResourceProgress() || suppressPlannerTriggersForPendingCraftToolResult()) {
 			return null;
 		}
 		String itemId = stringPayloadValue(event.payload(), "itemId");
@@ -2052,6 +2104,11 @@ public final class EmbodiedAgentRuntime {
 		return current.type() == ActiveJobType.COLLECT_RESOURCE && !current.status().terminal();
 	}
 
+	private boolean suppressPlannerTriggersForPendingCraftToolResult() {
+		PendingCraftToolResult pending = pendingCraftToolResult;
+		return pending != null && !pending.future().isDone();
+	}
+
 	private void recordTaskStateTransition(TaskExecutionSnapshot previous, TaskExecutionSnapshot current, boolean semanticTaskContext) {
 		if (current == null || previous == null || current.state() == previous.state()) {
 			return;
@@ -2231,20 +2288,19 @@ public final class EmbodiedAgentRuntime {
 			eventBuffer.append(tickCount, eventType, payload);
 		}
 
-		if (event.terminalState() != TaskExecutionState.FAILED) {
-				dialogueRuntime.onInternalTaskUpdate(
-					"TASK UPDATE: state=" + event.terminalState().name()
-						+ " taskId=" + event.taskId()
-						+ " goalType=" + event.goal().type().name()
-						+ " message=" + (event.message() == null ? "" : event.message()),
-					tickCount,
-					sessionSnapshot,
-					activeGoal(),
-					taskSnapshot,
-					missionExecutionSnapshot,
-					eventBuffer
-				);
-		}
+		dialogueRuntime.onInternalTaskUpdate(
+			"TASK UPDATE: state=" + event.terminalState().name()
+				+ " taskId=" + event.taskId()
+				+ " goalType=" + event.goal().type().name()
+				+ " message=" + (event.message() == null ? "" : event.message())
+				+ " terminationCause=" + (event.terminationCause() == null ? "" : event.terminationCause().name()),
+			tickCount,
+			sessionSnapshot,
+			activeGoal(),
+			taskSnapshot,
+			missionExecutionSnapshot,
+			eventBuffer
+		);
 	}
 
 	private void completePendingCraftToolResult(TaskTerminalEvent event) {
