@@ -59,6 +59,18 @@ public record PlannerResponse(
 		this(replyText, new PlannerIntent(toolCall == null ? "reply_only" : "none", null, null), null, null, toolCall, rawAssistantContent);
 	}
 
+	public PlannerResponse(String replyText, List<PlannerToolCall> toolCalls, JsonElement rawAssistantContent) {
+		this(
+			replyText,
+			new PlannerIntent(toolCalls == null || toolCalls.isEmpty() ? "reply_only" : "none", null, null),
+			null,
+			null,
+			null,
+			toolCalls,
+			rawAssistantContent
+		);
+	}
+
 	public static PlannerResponse toolCalls(List<PlannerToolCall> toolCalls, JsonElement rawAssistantContent) {
 		List<PlannerToolCall> normalizedToolCalls = normalizeToolCalls(toolCalls, null);
 		return new PlannerResponse(

@@ -8,6 +8,7 @@ import ai.moeru.airicraft.agent.llm.PlannerConversationDebugSnapshot;
 import ai.moeru.airicraft.agent.llm.PlannerExecutionResult;
 import ai.moeru.airicraft.agent.llm.PlannerResponse;
 import ai.moeru.airicraft.agent.llm.PlannerSessionPhase;
+import ai.moeru.airicraft.agent.llm.PlannerToolCall;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;

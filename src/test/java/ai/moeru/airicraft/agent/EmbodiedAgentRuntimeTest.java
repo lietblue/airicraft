@@ -8,6 +8,7 @@ import ai.moeru.airicraft.agent.dialogue.DialogueIntent;
 import ai.moeru.airicraft.agent.dialogue.DialogueIntentType;
 import ai.moeru.airicraft.agent.dialogue.DialogueResponse;
 import ai.moeru.airicraft.agent.debug.AgentDebugTimelineEntry;
+import ai.moeru.airicraft.agent.events.EventRoutingProfile;
 import ai.moeru.airicraft.agent.events.SemanticEvent;
 import ai.moeru.airicraft.agent.job.ActiveJob;
 import ai.moeru.airicraft.agent.job.ActiveJobProposal;
@@ -18,6 +19,7 @@ import ai.moeru.airicraft.agent.session.SessionSnapshot;
 import ai.moeru.airicraft.agent.tasks.WorldTaskRequest;
 import ai.moeru.airicraft.agent.tasks.CollectResourceStepArgs;
 import ai.moeru.airicraft.agent.tasks.CraftRecipeStepArgs;
+import ai.moeru.airicraft.agent.tasks.CollectSmeltedItemsStepArgs;
 import ai.moeru.airicraft.agent.tasks.DropItemsStepArgs;
 import ai.moeru.airicraft.agent.tasks.EvidenceKind;
 import ai.moeru.airicraft.agent.tasks.EvidenceRequirement;
@@ -30,6 +32,16 @@ import ai.moeru.airicraft.agent.tasks.LedgerStepKind;
 import ai.moeru.airicraft.agent.tasks.LedgerStepPayload;
 import ai.moeru.airicraft.agent.tasks.LedgerStepStatus;
 import ai.moeru.airicraft.agent.tasks.MissionType;
+import ai.moeru.airicraft.agent.tasks.SmeltItemsStepArgs;
+import ai.moeru.airicraft.agent.tasks.SmeltingFuelMode;
+import ai.moeru.airicraft.agent.tasks.SmeltingOption;
+import ai.moeru.airicraft.agent.tasks.SmeltingSlotSnapshot;
+import ai.moeru.airicraft.agent.tasks.SmeltingStationCandidate;
+import ai.moeru.airicraft.agent.tasks.SmeltingStationKey;
+import ai.moeru.airicraft.agent.tasks.SmeltingStationKind;
+import ai.moeru.airicraft.agent.tasks.SmeltingStationObservation;
+import ai.moeru.airicraft.agent.tasks.SmeltingStationSource;
+import ai.moeru.airicraft.agent.tasks.SmeltingStationState;
 import ai.moeru.airicraft.agent.tasks.TaskLedger;
 import ai.moeru.airicraft.agent.tasks.TaskExecutionSnapshot;
 import ai.moeru.airicraft.agent.tasks.TaskExecutionState;
@@ -43,6 +55,8 @@ import ai.moeru.airicraft.agent.tasks.WorldTaskExecutor;
 import ai.moeru.airicraft.agent.tasks.WorldTaskType;
 import ai.moeru.airicraft.agent.verification.VerificationStatus;
 import ai.moeru.airicraft.agent.llm.PlannerToolCall;
+import ai.moeru.airicraft.agent.llm.PlannerTrigger;
+import ai.moeru.airicraft.agent.llm.PlannerTriggerType;
 import com.google.gson.JsonParser;
 import net.minecraft.util.math.Vec3d;
 import org.junit.jupiter.api.Test;
@@ -268,6 +282,39 @@ class EmbodiedAgentRuntimeTest {
 	}
 
 	@Test
+	void smeltItemsToolRoutesWorldTaskRequest() {
+		FakeWorldTaskExecutor executor = new FakeWorldTaskExecutor();
+		EmbodiedAgentRuntime runtime = EmbodiedAgentRuntime.createForTests(executor);
+		runtime.overrideSessionSnapshotForTests(loadedRemoteSession());
+		runtime.registerSmeltingOptionsForTests(List.of(testSmeltingOption("smelt:iron:nearby-1", 3)));
+
+		String result = runtime.executePlannerToolCallForTests(new PlannerToolCall(
+				"call_smelt",
+				"smelt_items",
+				JsonParser.parseString("""
+					{"optionId":"smelt:iron:nearby-1","inputQuantity":3,"fuelMode":"manual","fuelItemId":"minecraft:coal","fuelQuantity":1,"confirmationToken":"confirm-1"}
+					""").getAsJsonObject(),
+				null,
+				null
+			));
+		assertTrue(result.contains("accepted"), result);
+		runtime.onClientTick(null);
+
+		WorldTaskRequest request = executor.lastActiveTask.orElseThrow();
+		assertTrue(result.contains("processId="));
+		assertTrue(result.contains("does not mean completed"));
+		assertEquals(WorldTaskType.SMELT_ITEMS, request.type());
+		assertEquals(new SmeltItemsStepArgs(
+			"smelt:iron:nearby-1",
+			3,
+			SmeltingFuelMode.MANUAL,
+			"minecraft:coal",
+			1,
+			"confirm-1"
+		), request.smeltItems());
+	}
+
+	@Test
 	void mineBlocksToolResultWarnsPlannerToWaitForTaskUpdate() {
 		FakeWorldTaskExecutor executor = new FakeWorldTaskExecutor();
 		EmbodiedAgentRuntime runtime = EmbodiedAgentRuntime.createForTests(executor);
@@ -282,14 +329,14 @@ class EmbodiedAgentRuntimeTest {
 		));
 
 		String result = runtime.executePlannerToolCallForTests(new PlannerToolCall(
-			"call_mine",
-			"mine_blocks",
-			JsonParser.parseString("""
-				{"blockIds":["minecraft:dirt"],"quantity":1}
-				""").getAsJsonObject(),
-			null,
-			null
-		));
+				"call_mine",
+				"mine_blocks",
+				JsonParser.parseString("""
+					{"blockIds":["minecraft:dirt"],"quantity":1}
+					""").getAsJsonObject(),
+				null,
+				null
+			));
 		runtime.onClientTick(null);
 
 		WorldTaskRequest request = executor.lastActiveTask.orElseThrow();
@@ -299,6 +346,68 @@ class EmbodiedAgentRuntimeTest {
 		assertTrue(result.contains("TASK UPDATE"));
 		assertEquals(WorldTaskType.MINE, request.type());
 		assertEquals(new GoalMineSpec(List.of("minecraft:dirt"), 1), request.goal().mineSpec());
+	}
+
+	@Test
+	void collectSmeltedItemsToolRoutesWorldTaskRequest() {
+		FakeWorldTaskExecutor executor = new FakeWorldTaskExecutor();
+		EmbodiedAgentRuntime runtime = EmbodiedAgentRuntime.createForTests(executor);
+		runtime.overrideSessionSnapshotForTests(loadedRemoteSession());
+		runtime.registerSmeltingOptionsForTests(List.of(testSmeltingOption("smelt:iron:nearby-1", 3)));
+		String startResult = runtime.executePlannerToolCallForTests(new PlannerToolCall(
+			"call_smelt",
+			"smelt_items",
+			JsonParser.parseString("""
+				{"optionId":"smelt:iron:nearby-1","inputQuantity":1}
+				""").getAsJsonObject(),
+			null,
+			null
+		));
+		String processId = extractProcessId(startResult);
+
+		String result = runtime.executePlannerToolCallForTests(new PlannerToolCall(
+			"call_collect_smelted",
+			"collect_smelted_items",
+			JsonParser.parseString("""
+				{"processId":"%s","confirmationToken":"confirm-2"}
+				""".formatted(processId)).getAsJsonObject(),
+			null,
+			null
+		));
+		runtime.onClientTick(null);
+
+		WorldTaskRequest request = executor.lastActiveTask.orElseThrow();
+		assertTrue(result.contains("accepted"));
+		assertTrue(result.contains("queued"));
+		assertEquals(WorldTaskType.COLLECT_SMELTED_ITEMS, request.type());
+		assertEquals(new CollectSmeltedItemsStepArgs(processId, "confirm-2"), request.collectSmeltedItems());
+	}
+
+	@Test
+	void smeltingOutputReadyEventCreatesSystemPlannerTrigger() {
+		EmbodiedAgentRuntime runtime = EmbodiedAgentRuntime.createForTests(new FakeWorldTaskExecutor());
+
+		PlannerTrigger trigger = runtime.createPlannerTriggerForTests(new SemanticEvent(
+			1L,
+			20L,
+			1000L,
+			"smelting.output_ready",
+			Map.of(
+				"processId", "smelt-process-1",
+				"optionId", "smelt:iron:nearby-1",
+				"station", "minecraft:overworld@1,64,1",
+				"outputItemId", "minecraft:iron_ingot",
+				"outputCount", 1,
+				"inputQuantity", 1
+			)
+		), new EventRoutingProfile("smelting.output_ready", true, PlannerTriggerType.SYSTEM, true));
+
+		assertEquals(PlannerTriggerType.SYSTEM, trigger.type());
+		assertEquals("runtime", trigger.speaker());
+		assertEquals(
+			"Smelting output ready: processId=smelt-process-1 output=minecraft:iron_ingotx1 station=minecraft:overworld@1,64,1.",
+			trigger.text()
+			);
 	}
 
 	@Test
@@ -713,6 +822,48 @@ class EmbodiedAgentRuntimeTest {
 	}
 
 	@Test
+	void directGoalTerminalFailureCreatesDialogueTaskUpdate() {
+		FakeWorldTaskExecutor executor = new FakeWorldTaskExecutor();
+		GoalSnapshot goal = new GoalSnapshot(
+			GoalType.NAVIGATE_TO,
+			null,
+			new GoalPosition(12, 64, -8, true),
+			null,
+			20L,
+			"test"
+		);
+		executor.nextTerminalEvent = Optional.of(new TaskTerminalEvent(
+			"navigate-task",
+			goal,
+			TaskExecutionState.FAILED,
+			"Path calculation failed",
+			TaskTerminationCause.CALCULATION_FAILED
+		));
+
+		EmbodiedAgentRuntime runtime = EmbodiedAgentRuntime.createForTests(executor);
+		runtime.overrideSessionSnapshotForTests(new SessionSnapshot(
+			SessionMode.REMOTE_MULTIPLAYER,
+			true,
+			true,
+			"minecraft:overworld",
+			false,
+			0,
+			0L
+		));
+		runtime.injectGoalForTests(goal);
+
+		runtime.onClientTick(null);
+
+		assertTrue(runtime.recentEvents(null).events().stream().anyMatch(event -> "task.failed".equals(event.type())));
+		assertTrue(runtime.dialogueSnapshot().recentTurns().stream().anyMatch(turn ->
+			"system".equals(turn.speaker())
+				&& turn.text().contains("TASK UPDATE: state=FAILED")
+				&& turn.text().contains("goalType=NAVIGATE_TO")
+				&& turn.text().contains("Path calculation failed")
+		));
+	}
+
+	@Test
 	void submitTaskPlannerResponseThreadsTaskSnapshotIntoRuntimeSnapshot() {
 		FakeWorldTaskExecutor executor = new FakeWorldTaskExecutor();
 		EmbodiedAgentRuntime runtime = EmbodiedAgentRuntime.createForTests(executor);
@@ -1119,6 +1270,32 @@ class EmbodiedAgentRuntimeTest {
 	}
 
 	@Test
+	void clearGoalEventEmitsWhenGoalAlreadyClearedByTaskRuntime() {
+		EmbodiedAgentRuntime runtime = EmbodiedAgentRuntime.createForTests(new FakeWorldTaskExecutor());
+		runtime.injectGoalForTests(new GoalSnapshot(
+			GoalType.FOLLOW_PLAYER,
+			"Alice",
+			null,
+			null,
+			10L,
+			"test"
+		));
+		runtime.injectGoalForTests(null);
+
+		runtime.injectDialogueResponseForTests(new DialogueResponse(
+			"Stopping.",
+			new DialogueIntent(DialogueIntentType.CLEAR_GOAL, null, null),
+			20L
+		));
+
+		SemanticEvent event = runtime.recentEvents(null).events().stream()
+			.filter(current -> "planner.goal_cleared".equals(current.type()))
+			.findFirst()
+			.orElseThrow();
+		assertEquals("planner_response", event.payload().get("source"));
+	}
+
+	@Test
 	void cancelTaskRecordsCancelledEventImmediately() {
 		FakeWorldTaskExecutor executor = new FakeWorldTaskExecutor();
 		EmbodiedAgentRuntime runtime = EmbodiedAgentRuntime.createForTests(executor);
@@ -1264,6 +1441,42 @@ class EmbodiedAgentRuntimeTest {
 			null,
 			null
 		);
+	}
+
+	private static SmeltingOption testSmeltingOption(String optionId, int maxInputQuantity) {
+		SmeltingStationKey key = new SmeltingStationKey("minecraft:overworld", 1, 64, 1);
+		SmeltingStationObservation observation = new SmeltingStationObservation(
+			key,
+			SmeltingStationKind.FURNACE,
+			new SmeltingSlotSnapshot(null, 0, null, 0, null, 0, 0, 200, false),
+			false,
+			1.0D
+		);
+		return new SmeltingOption(
+			optionId,
+			"minecraft:raw_iron",
+			"minecraft:iron_ingot",
+			1,
+			maxInputQuantity,
+			200,
+			new SmeltingStationCandidate(
+				SmeltingStationSource.NEARBY_EXISTING,
+				SmeltingStationState.EMPTY,
+				SmeltingStationKind.FURNACE,
+				key,
+				1.0D,
+				false
+			),
+			observation
+		);
+	}
+
+	private static String extractProcessId(String toolResult) {
+		int start = toolResult.indexOf("processId=");
+		assertTrue(start >= 0);
+		int valueStart = start + "processId=".length();
+		int valueEnd = toolResult.indexOf(' ', valueStart);
+		return valueEnd < 0 ? toolResult.substring(valueStart) : toolResult.substring(valueStart, valueEnd);
 	}
 
 	private static SessionSnapshot loadedRemoteSession() {

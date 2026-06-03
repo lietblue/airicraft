@@ -1092,7 +1092,11 @@ public final class PlannerOrchestrator {
 			toolOutcome = toolExecution.future().join();
 		}
 		catch (CompletionException exception) {
-			toolOutcome = new TextToolExecutionOutcome("VISION_UNAVAILABLE: vision_failed");
+			PlannerToolCall failedToolCall = toolExecution.toolCalls().isEmpty() ? null : toolExecution.toolCalls().getFirst();
+			String resultText = VISUAL_TOOL_NAME.equals(normalizedToolName(failedToolCall))
+				? "VISION_UNAVAILABLE: vision_failed"
+				: failedToolResultText(failedToolCall, exception);
+			toolOutcome = new TextToolExecutionOutcome(resultText);
 			Airicraft.LOGGER.warn("Planner tool future failed generation={}", toolExecution.generation(), exception);
 		}
 		finally {
@@ -1170,7 +1174,7 @@ public final class PlannerOrchestrator {
 					? actionToolExecutor.execute(toolCall).<ToolExecutionOutcome>thenApply(TextToolExecutionOutcome::new)
 					: providerToolFuture;
 			}
-		};
+			};
 	}
 
 	private CompletableFuture<ToolExecutionOutcome> providerToolOutcome(PlannerToolCall toolCall, PlannerProviderToolResult result) {
@@ -1448,7 +1452,14 @@ public final class PlannerOrchestrator {
 		return switch (name) {
 			case VISUAL_TOOL_NAME -> visionMode == PlannerVisionMode.NATIVE_TOOL_IMAGE || !toolPrompt(toolCall).isBlank();
 			default -> true;
-		};
+			};
+	}
+
+	private boolean isBatchSafeTextToolCalls(List<PlannerToolCall> toolCalls) {
+		return toolCalls.stream().allMatch(toolCall -> {
+			String name = normalizedToolName(toolCall);
+			return !VISUAL_TOOL_NAME.equals(name) && !"take_map_look".equals(name) && toolRegistry.isReadTool(name);
+		});
 	}
 
 	private static boolean canBatchToolCalls(List<PlannerToolCall> toolCalls) {
@@ -1558,18 +1569,6 @@ public final class PlannerOrchestrator {
 			result.attempt(),
 			false
 		));
-	}
-
-	private void appendToolRequestCard(PlannerExecutionResult result, PlannerToolCall toolCall) {
-		if (result == null || toolCall == null) {
-			return;
-		}
-		appendOperationCard(
-			result.generation(),
-			result.phase().name(),
-			result.attempt(),
-			toolCallSummary(toolCall)
-		);
 	}
 
 	private void appendToolRequestCard(PlannerExecutionResult result, List<PlannerToolCall> toolCalls) {

@@ -137,7 +137,7 @@ class OpenAiCompatibleLlmBackendTest {
 	}
 
 	@Test
-	void generateParsesMultipleToolCalls() throws Exception {
+	void generateParsesMultipleReadToolCalls() throws Exception {
 		String responseBody = """
 			{
 			  "choices": [
@@ -159,12 +159,12 @@ class OpenAiCompatibleLlmBackendTest {
 
 			LlmCallResult<PlannerResponse> result = backend.generate(LlmConversation.of(List.of(LlmChatMessage.system("system"))));
 
-			assertEquals("", result.payload().replyText());
-			assertEquals("inspect_inventory", result.payload().toolCall().name());
-			assertEquals(2, result.payload().toolCalls().size());
-			assertEquals("inspect_inventory", result.payload().toolCalls().get(0).name());
-			assertEquals("check_craftables", result.payload().toolCalls().get(1).name());
-		}
+		assertEquals(List.of("inspect_inventory", "check_craftables"), result.payload().toolCalls().stream()
+			.map(PlannerToolCall::name)
+			.toList());
+		assertEquals("", result.payload().replyText());
+		assertEquals("inspect_inventory", result.payload().toolCall().name());
+	}
 	}
 
 	@Test
@@ -196,15 +196,14 @@ class OpenAiCompatibleLlmBackendTest {
 			LlmCallResult<PlannerResponse> result = backend.generate(LlmConversation.of(List.of(LlmChatMessage.system("system"))));
 
 			assertNotNull(result.payload().toolCall());
-			assertEquals("inspect_nearby_entities", result.payload().toolCall().name());
-			assertEquals(2, result.payload().toolCalls().size());
-			assertEquals("attack_entity", result.payload().toolCalls().get(1).name());
-			assertEquals("slime-1", result.payload().toolCalls().get(1).arguments().get("uuid").getAsString());
+			assertEquals("attack_entity", result.payload().toolCall().name());
+			assertEquals(1, result.payload().toolCalls().size());
+			assertEquals("slime-1", result.payload().toolCall().arguments().get("uuid").getAsString());
 		}
 	}
 
 	@Test
-	void generateParsesMultipleActionToolCallsForExecutionValidation() throws Exception {
+	void generateRejectsMultipleActionToolCallsBeforeExecutionValidation() throws Exception {
 		String responseBody = """
 			{
 			  "choices": [
@@ -229,11 +228,44 @@ class OpenAiCompatibleLlmBackendTest {
 		try (TestServer server = TestServer.start(bodyRef, responseBody)) {
 			OpenAiCompatibleLlmBackend backend = new OpenAiCompatibleLlmBackend(config(server.port(), false));
 
-			LlmCallResult<PlannerResponse> result = backend.generate(LlmConversation.of(List.of(LlmChatMessage.system("system"))));
+			LlmBackendException exception = assertThrows(LlmBackendException.class, () ->
+				backend.generate(LlmConversation.of(List.of(LlmChatMessage.system("system"))))
+			);
 
-			assertEquals(2, result.payload().toolCalls().size());
-			assertEquals("attack_entity", result.payload().toolCalls().get(0).name());
-			assertEquals("clear_goal", result.payload().toolCalls().get(1).name());
+			assertEquals(LlmFailureType.PARSE_ERROR, exception.failureType());
+			assertTrue(exception.getMessage().contains("attack_entity"));
+			assertTrue(exception.getMessage().contains("clear_goal"));
+		}
+	}
+
+	@Test
+	void generateRejectsReadAndActionToolCallBatch() throws Exception {
+		String responseBody = """
+			{
+			  "choices": [
+			    {
+			      "message": {
+			        "content": null,
+			        "tool_calls": [
+			          {"id":"call_check","type":"function","function":{"name":"check_craftables","arguments":"{}"}},
+			          {"id":"call_craft","type":"function","function":{"name":"craft_recipe","arguments":"{\\"recipeId\\":\\"minecraft:stick\\",\\"times\\":1}"}}
+			        ]
+			      }
+			    }
+			  ]
+			}
+			""";
+		AtomicReference<String> bodyRef = new AtomicReference<>();
+		try (TestServer server = TestServer.start(bodyRef, responseBody)) {
+			OpenAiCompatibleLlmBackend backend = new OpenAiCompatibleLlmBackend(config(server.port(), false));
+
+			LlmBackendException exception = assertThrows(LlmBackendException.class, () ->
+				backend.generate(LlmConversation.of(List.of(LlmChatMessage.system("system"))))
+			);
+
+			assertEquals(LlmFailureType.PARSE_ERROR, exception.failureType());
+			assertTrue(exception.getMessage().contains("check_craftables"));
+			assertTrue(exception.getMessage().contains("craft_recipe"));
 		}
 	}
 
