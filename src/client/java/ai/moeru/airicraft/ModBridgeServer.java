@@ -34,6 +34,8 @@ import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import net.minecraft.block.BlockState;
 import net.minecraft.client.MinecraftClient;
+import net.minecraft.client.gui.screen.Screen;
+import net.minecraft.client.gui.screen.TitleScreen;
 import net.minecraft.entity.Entity;
 import net.minecraft.entity.LivingEntity;
 import net.minecraft.fluid.FluidState;
@@ -1463,10 +1465,17 @@ public final class ModBridgeServer {
 	}
 
 	private static String currentScreenName(MinecraftClient client) {
-		if (client.currentScreen == null) {
-			return client.world == null ? "none" : "in_game";
+		return currentScreenNameForStatus(client.currentScreen, client.world != null);
+	}
+
+	static String currentScreenNameForStatus(Screen currentScreen, boolean worldPresent) {
+		if (currentScreen == null) {
+			return worldPresent ? "in_game" : "none";
 		}
-		return client.currentScreen.getClass().getSimpleName();
+		if (currentScreen instanceof TitleScreen) {
+			return "TitleScreen";
+		}
+		return currentScreen.getClass().getSimpleName();
 	}
 
 	private static String sessionState(MinecraftClient client) {
