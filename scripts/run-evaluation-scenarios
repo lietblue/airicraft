@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run Airicraft evaluation scenarios one by one and save postmortem bundles."""
+"""Bootstrap Airicraft evaluator scenarios and leave durable reports to the addon."""
 
 from __future__ import annotations
 
@@ -79,9 +79,7 @@ def repo_root_from_script() -> Path:
 
 
 def default_client_command(repo_root: Path) -> str:
-    if (repo_root / ".envrc").exists():
-        return "source .envrc && ./gradlew runClient"
-    return "./gradlew runClient"
+    return "scripts/eval run"
 
 
 def bridge_state_path() -> Path:
@@ -417,106 +415,6 @@ def assert_no_active_bridge() -> None:
         raise RunnerError("Airicraft bridge is already active; stop Minecraft before running the batch evaluator")
 
 
-def collect_endpoint(bridge: BridgeState, path: str, timeout_seconds: float = 15) -> dict[str, Any]:
-    try:
-        return {"ok": True, "payload": bridge_json(bridge, "GET", path, timeout_seconds=timeout_seconds)}
-    except Exception as error:
-        return endpoint_error(error)
-
-
-def collect_final_bundle(bridge: BridgeState, scenario_dir: Path) -> dict[str, Any]:
-    endpoints = {
-        "results-final.json": "/v1/evaluation/results",
-        "evidence-final.json": "/v1/evaluation/evidence",
-        "agent-status-final.json": "/v1/agent/status",
-        "agent-debug-state-final.json": "/v1/agent/debug/state",
-        "agent-debug-timeline-final.json": "/v1/agent/debug/timeline",
-        "agent-debug-llm-calls-final.json": "/v1/agent/debug/llm-calls",
-        "agent-events-final.json": "/v1/agent/events/recent",
-        "world-snapshot-final.json": "/v1/world-snapshot?radius=4",
-    }
-    summary: dict[str, Any] = {}
-    for filename, path in endpoints.items():
-        result = collect_endpoint(bridge, path)
-        write_json(scenario_dir / filename, result)
-        summary[filename] = {"ok": result.get("ok", False)}
-    return summary
-
-
-def drain_debug_timeline(
-    bridge: BridgeState,
-    scenario_dir: Path,
-    latest_entry_id: int | None,
-    collected_at: str,
-) -> tuple[int | None, bool]:
-    path = "/v1/agent/debug/timeline"
-    if latest_entry_id is not None:
-        path += f"?since={latest_entry_id}"
-    payload = bridge_json(bridge, "GET", path, timeout_seconds=10)
-    for entry in payload.get("entries", []):
-        append_jsonl(scenario_dir / "debug-timeline.jsonl", {
-            "collectedAt": collected_at,
-            "entry": entry,
-        })
-    latest = payload.get("latestEntryId", latest_entry_id)
-    return latest, bool(payload.get("truncated", False))
-
-
-def drain_llm_calls(
-    bridge: BridgeState,
-    scenario_dir: Path,
-    latest_sequence_id: int | None,
-    collected_at: str,
-) -> tuple[int | None, bool]:
-    path = "/v1/agent/debug/llm-calls"
-    if latest_sequence_id is not None:
-        path += f"?since={latest_sequence_id}"
-    payload = bridge_json(bridge, "GET", path, timeout_seconds=10)
-    for record in payload.get("records", []):
-        append_jsonl(scenario_dir / "llm-calls.jsonl", {
-            "collectedAt": collected_at,
-            "record": record,
-        })
-    latest = payload.get("latestSequenceId", latest_sequence_id)
-    return latest, bool(payload.get("truncated", False))
-
-
-def drain_debug_recorders(
-    bridge: BridgeState,
-    scenario_dir: Path,
-    latest_timeline_entry_id: int | None,
-    latest_llm_sequence_id: int | None,
-    collected_at: str,
-) -> tuple[int | None, int | None, dict[str, Any]]:
-    result: dict[str, Any] = {
-        "timelineOk": False,
-        "llmCallsOk": False,
-        "timelineTruncated": False,
-        "llmCallsTruncated": False,
-    }
-    try:
-        latest_timeline_entry_id, result["timelineTruncated"] = drain_debug_timeline(
-            bridge,
-            scenario_dir,
-            latest_timeline_entry_id,
-            collected_at,
-        )
-        result["timelineOk"] = True
-    except Exception as error:
-        result["timelineError"] = endpoint_error(error)
-    try:
-        latest_llm_sequence_id, result["llmCallsTruncated"] = drain_llm_calls(
-            bridge,
-            scenario_dir,
-            latest_llm_sequence_id,
-            collected_at,
-        )
-        result["llmCallsOk"] = True
-    except Exception as error:
-        result["llmCallsError"] = endpoint_error(error)
-    return latest_timeline_entry_id, latest_llm_sequence_id, result
-
-
 def run_scenario(
     repo_root: Path,
     run_dir: Path,
@@ -541,9 +439,11 @@ def run_scenario(
         "message": None,
         "clientCommand": client_command,
         "keepClientAfterScenario": keep_client_after_scenario,
+        "outputDir": str(scenario_dir),
+        "addonSummaryPath": str(scenario_dir / "summary.json"),
         "archive": scenario_archive_metadata(scenario_root, scenario),
     }
-    write_json(scenario_dir / "summary.json", summary)
+    write_json(scenario_dir / "harness-summary.json", summary)
 
     launch_started_ms = int(time.time() * 1000)
     client = start_client(
@@ -553,24 +453,21 @@ def run_scenario(
         detach_output=keep_client_after_scenario,
     )
     bridge: BridgeState | None = None
-    latest_event_seq: int | None = None
-    latest_timeline_entry_id: int | None = None
-    latest_llm_sequence_id: int | None = None
     bridge_failures = 0
-    final_results: dict[str, Any] | None = None
 
     try:
         bridge, status = wait_for_title_bridge(client, launch_started_ms, args.bridge_timeout_seconds)
         write_json(scenario_dir / "initial-status.json", status)
+        run_request = {"scenario": scenario_id, "outputDir": str(scenario_dir)}
         run_response = bridge_json(
             bridge,
             "POST",
             "/v1/evaluation/run",
-            {"scenario": scenario_id},
+            run_request,
             timeout_seconds=20,
         )
         write_json(scenario_dir / "run-request.json", {
-            "request": {"scenario": scenario_id},
+            "request": run_request,
             "response": run_response,
         })
 
@@ -583,9 +480,8 @@ def run_scenario(
             collected_at = utc_now_iso()
             try:
                 results = bridge_json(bridge, "GET", "/v1/evaluation/results", timeout_seconds=10)
-                final_results = results
                 bridge_failures = 0
-                append_jsonl(scenario_dir / "status-samples.jsonl", {
+                append_jsonl(scenario_dir / "harness-polls.jsonl", {
                     "collectedAt": collected_at,
                     "kind": "evaluation_results",
                     "payload": results,
@@ -597,41 +493,12 @@ def run_scenario(
                 summary["elapsedTicks"] = report.get("elapsedTicks")
                 summary["plannerTurns"] = report.get("plannerTurns")
 
-                events_path = "/v1/agent/events/recent"
-                if latest_event_seq is not None:
-                    events_path += f"?since={latest_event_seq}"
-                events = bridge_json(bridge, "GET", events_path, timeout_seconds=10)
-                latest_event_seq = events.get("latestSeqNo", latest_event_seq)
-                for event in events.get("events", []):
-                    append_jsonl(scenario_dir / "events.jsonl", {
-                        "collectedAt": collected_at,
-                        "event": event,
-                    })
-
-                latest_timeline_entry_id, latest_llm_sequence_id, debug_drain = drain_debug_recorders(
-                    bridge,
-                    scenario_dir,
-                    latest_timeline_entry_id,
-                    latest_llm_sequence_id,
-                    collected_at,
-                )
-                if debug_drain.get("timelineTruncated") or debug_drain.get("llmCallsTruncated") or not debug_drain.get("timelineOk") or not debug_drain.get("llmCallsOk"):
-                    append_jsonl(scenario_dir / "status-samples.jsonl", {
-                        "collectedAt": collected_at,
-                        "kind": "debug_drain",
-                        "payload": debug_drain,
-                    })
-                summary["debugTimelineLatestEntryId"] = latest_timeline_entry_id
-                summary["llmCallsLatestSequenceId"] = latest_llm_sequence_id
-                summary["debugTimelineTruncated"] = bool(summary.get("debugTimelineTruncated", False) or debug_drain.get("timelineTruncated"))
-                summary["llmCallsTruncated"] = bool(summary.get("llmCallsTruncated", False) or debug_drain.get("llmCallsTruncated"))
-
                 if report_status in TERMINAL_STATUSES:
                     summary["harnessStatus"] = "OK"
                     break
             except Exception as error:
                 bridge_failures += 1
-                append_jsonl(scenario_dir / "status-samples.jsonl", {
+                append_jsonl(scenario_dir / "harness-polls.jsonl", {
                     "collectedAt": collected_at,
                     "kind": "poll_error",
                     "payload": endpoint_error(error),
@@ -642,29 +509,6 @@ def run_scenario(
                     break
 
             time.sleep(args.poll_seconds)
-
-        if bridge is not None:
-            collected_at = utc_now_iso()
-            latest_timeline_entry_id, latest_llm_sequence_id, debug_drain = drain_debug_recorders(
-                bridge,
-                scenario_dir,
-                latest_timeline_entry_id,
-                latest_llm_sequence_id,
-                collected_at,
-            )
-            if debug_drain.get("timelineTruncated") or debug_drain.get("llmCallsTruncated") or not debug_drain.get("timelineOk") or not debug_drain.get("llmCallsOk"):
-                append_jsonl(scenario_dir / "status-samples.jsonl", {
-                    "collectedAt": collected_at,
-                    "kind": "debug_drain_final",
-                    "payload": debug_drain,
-                })
-            summary["debugTimelineLatestEntryId"] = latest_timeline_entry_id
-            summary["llmCallsLatestSequenceId"] = latest_llm_sequence_id
-            summary["debugTimelineTruncated"] = bool(summary.get("debugTimelineTruncated", False) or debug_drain.get("timelineTruncated"))
-            summary["llmCallsTruncated"] = bool(summary.get("llmCallsTruncated", False) or debug_drain.get("llmCallsTruncated"))
-            summary["finalEndpointCollection"] = collect_final_bundle(bridge, scenario_dir)
-        if final_results is not None:
-            write_json(scenario_dir / "results-final-raw.json", final_results)
     except Exception as error:
         summary["harnessStatus"] = "HARNESS_ERROR"
         summary["message"] = f"{type(error).__name__}: {error}"
@@ -681,7 +525,7 @@ def run_scenario(
             summary["clientExit"] = stop_client(client, args.client_stop_timeout_seconds)
             summary["clientKeptRunning"] = False
         summary["finishedAt"] = utc_now_iso()
-        write_json(scenario_dir / "summary.json", summary)
+        write_json(scenario_dir / "harness-summary.json", summary)
     return summary
 
 
@@ -779,11 +623,11 @@ def run_self_test() -> None:
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Run Airicraft evaluation scenarios one by one and save postmortem bundles.",
+        description="Bootstrap Airicraft evaluator scenarios one by one. The evaluator addon owns durable reports.",
     )
     parser.add_argument("--scenario", action="append", dest="scenario_filters", help="Scenario id to run. May be repeated.")
     parser.add_argument("--output-root", default="eval-output", help="Directory for ignored run bundles.")
-    parser.add_argument("--client-command", help="Command used to launch Minecraft. Defaults to runClient with .envrc sourced.")
+    parser.add_argument("--client-command", help="Command used to launch Minecraft. Defaults to runClientEvaluator with .envrc sourced.")
     parser.add_argument("--poll-seconds", type=float, default=5.0, help="Seconds between evaluation result polls.")
     parser.add_argument("--bridge-timeout-seconds", type=float, default=180.0, help="Seconds to wait for the bridge at startup.")
     parser.add_argument("--client-stop-timeout-seconds", type=float, default=45.0, help="Seconds to wait after SIGINT before SIGTERM.")
