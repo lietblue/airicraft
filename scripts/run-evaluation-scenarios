@@ -272,7 +272,12 @@ def wait_for_title_bridge(
         if bridge is not None and bridge.started_at_epoch_millis >= launch_started_ms - 5000:
             try:
                 status = bridge_json(bridge, "GET", "/v1/status", timeout_seconds=2)
-                if status.get("bridgeAvailable") and not status.get("worldLoaded") and status.get("canJoinWorldOrServer"):
+                if (
+                    status.get("bridgeAvailable")
+                    and not status.get("worldLoaded")
+                    and status.get("canJoinWorldOrServer")
+                    and status.get("currentScreen") == "TitleScreen"
+                ):
                     return bridge, status
                 last_error = f"bridge not ready: {status}"
             except Exception as error:
@@ -487,6 +492,10 @@ def run_scenario(
         summary["harnessStatus"] = "HARNESS_ERROR"
         summary["message"] = f"{type(error).__name__}: {error}"
         write_json(scenario_dir / "harness-error.json", endpoint_error(error))
+    except KeyboardInterrupt:
+        summary["harnessStatus"] = "INTERRUPTED"
+        summary["message"] = "Interrupted by user"
+        summary["interrupted"] = True
     finally:
         summary["clientExit"] = stop_client(client, args.client_stop_timeout_seconds)
         summary["finishedAt"] = utc_now_iso()
@@ -624,6 +633,7 @@ def main(argv: list[str]) -> int:
         manifest["skipped"] = skipped
         write_json(run_dir / "manifest.json", manifest)
 
+        interrupted = False
         for index, scenario in enumerate(runnable, start=1):
             print(f"[{index}/{len(runnable)}] running {scenario['id']}")
             result = run_scenario(repo_root, run_dir, scenario_root, scenario, index, client_command, args)
@@ -631,8 +641,13 @@ def main(argv: list[str]) -> int:
             write_json(run_dir / "manifest.json", manifest)
             write_summary_markdown(run_dir, manifest)
             print(f"[{index}/{len(runnable)}] {scenario['id']}: {result.get('harnessStatus')} {result.get('reportStatus')}")
+            if result.get("interrupted"):
+                interrupted = True
+                break
 
         manifest["finishedAt"] = utc_now_iso()
+        if interrupted:
+            manifest["harnessStatus"] = "INTERRUPTED"
         write_json(run_dir / "manifest.json", manifest)
         write_summary_markdown(run_dir, manifest)
     except Exception as error:
@@ -649,6 +664,8 @@ def main(argv: list[str]) -> int:
         if result.get("harnessStatus") != "OK" or result.get("reportStatus") == "FAILED"
     ]
     print(f"output: {run_dir}")
+    if manifest.get("harnessStatus") == "INTERRUPTED":
+        return 130
     if failed:
         return 1
     return 0
