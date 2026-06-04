@@ -4,13 +4,27 @@ import ai.moeru.airicraft.agent.baritone.BaritoneFacade;
 import ai.moeru.airicraft.agent.goals.GoalSnapshot;
 import ai.moeru.airicraft.agent.goals.GoalType;
 import ai.moeru.airicraft.agent.session.SessionSnapshot;
+import net.minecraft.block.Block;
+import net.minecraft.block.BlockState;
+import net.minecraft.client.MinecraftClient;
+import net.minecraft.client.network.ClientPlayerEntity;
+import net.minecraft.item.ItemStack;
+import net.minecraft.network.packet.c2s.play.UpdateSelectedSlotC2SPacket;
+import net.minecraft.registry.Registries;
+import net.minecraft.screen.PlayerScreenHandler;
+import net.minecraft.screen.ScreenHandler;
+import net.minecraft.screen.slot.SlotActionType;
+import net.minecraft.util.Identifier;
 
+import java.util.ArrayList;
 import java.util.Locale;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.function.Supplier;
 
 public final class BaritoneTaskExecutor implements WorldTaskExecutor {
 	private final BaritoneFacade facade;
+	private final Supplier<MinecraftClient> clientSupplier;
 
 	private WorldTaskRequest appliedTask;
 	private String terminalEventTaskId;
@@ -20,6 +34,11 @@ public final class BaritoneTaskExecutor implements WorldTaskExecutor {
 	private TaskExecutionSnapshot snapshot = TaskExecutionSnapshot.idle();
 
 	public BaritoneTaskExecutor(BaritoneFacade facade) {
+		this(MinecraftClient::getInstance, facade);
+	}
+
+	BaritoneTaskExecutor(Supplier<MinecraftClient> clientSupplier, BaritoneFacade facade) {
+		this.clientSupplier = Objects.requireNonNull(clientSupplier, "clientSupplier");
 		this.facade = Objects.requireNonNull(facade, "facade");
 		this.facade.applySettings();
 	}
@@ -117,7 +136,136 @@ public final class BaritoneTaskExecutor implements WorldTaskExecutor {
 		switch (goal.type()) {
 			case FOLLOW_PLAYER -> facade.startFollow(goal.targetPlayer());
 			case NAVIGATE_TO -> facade.startNavigate(goal.position());
-			case MINE_BLOCKS -> facade.startMine(goal.mineSpec());
+			case MINE_BLOCKS -> {
+				MiningToolPreflight.Result result = ensureMiningToolSelected(goal);
+				if (!result.ok()) {
+					throw new IllegalStateException(result.message());
+				}
+				facade.startMine(goal.mineSpec());
+			}
+		}
+	}
+
+	private MiningToolPreflight.Result ensureMiningToolSelected(GoalSnapshot goal) {
+		MinecraftClient client = clientSupplier.get();
+		ClientPlayerEntity player = client == null ? null : client.player;
+		if (client == null || client.world == null || client.interactionManager == null || player == null || goal.mineSpec() == null) {
+			return MiningToolPreflight.Result.success();
+		}
+		if (player.currentScreenHandler != player.playerScreenHandler || !player.currentScreenHandler.getCursorStack().isEmpty()) {
+			return MiningToolPreflight.Result.failed("inventory_unavailable_for_tool_selection");
+		}
+		ArrayList<BlockState> targetStates = new ArrayList<>();
+		for (String blockId : goal.mineSpec().blockIds()) {
+			Optional<Block> block = resolveBlock(blockId);
+			if (block.isEmpty()) {
+				return MiningToolPreflight.Result.failed("invalid_block_id " + blockId);
+			}
+			targetStates.add(block.get().getDefaultState());
+		}
+		return MiningToolPreflight.ensureSelected(client, player, targetStates);
+	}
+
+	private static Optional<Block> resolveBlock(String blockId) {
+		if (blockId == null || blockId.isBlank()) {
+			return Optional.empty();
+		}
+		Identifier identifier;
+		try {
+			identifier = Identifier.of(blockId);
+		}
+		catch (RuntimeException ignored) {
+			return Optional.empty();
+		}
+		return Registries.BLOCK.getOptionalValue(identifier);
+	}
+
+	static final class MiningToolPreflight {
+		private MiningToolPreflight() {
+		}
+
+		static Result ensureSelected(MinecraftClient client, ClientPlayerEntity player, java.util.List<BlockState> targetStates) {
+			if (!needsSuitableTool(targetStates)) {
+				return Result.success();
+			}
+			if (isSuitableForAllRequiredBlocks(player.getInventory().getSelectedStack(), targetStates)) {
+				return Result.success();
+			}
+			ScreenHandler handler = player.currentScreenHandler;
+			int sourceSlot = findSuitableToolSlot(handler, targetStates);
+			if (sourceSlot < 0) {
+				return Result.failed("missing_suitable_tool blockIds=" + requiredBlockIds(targetStates));
+			}
+			int selectedHotbarSlot = player.getInventory().getSelectedSlot();
+			if (sourceSlot >= PlayerScreenHandler.HOTBAR_START && sourceSlot < PlayerScreenHandler.HOTBAR_END) {
+				selectAndSyncHotbarSlot(client, player, sourceSlot - PlayerScreenHandler.HOTBAR_START);
+			}
+			else {
+				client.interactionManager.clickSlot(handler.syncId, sourceSlot, selectedHotbarSlot, SlotActionType.SWAP, player);
+				selectAndSyncHotbarSlot(client, player, selectedHotbarSlot);
+			}
+			return isSuitableForAllRequiredBlocks(player.getInventory().getSelectedStack(), targetStates)
+				? Result.success()
+				: Result.failed("tool_selection_failed blockIds=" + requiredBlockIds(targetStates));
+		}
+
+		static boolean needsSuitableTool(java.util.List<BlockState> targetStates) {
+			return targetStates != null && targetStates.stream().anyMatch(BlockState::isToolRequired);
+		}
+
+		static boolean isSuitableForAllRequiredBlocks(ItemStack stack, java.util.List<BlockState> targetStates) {
+			if (stack == null || stack.isEmpty()) {
+				return false;
+			}
+			for (BlockState state : targetStates) {
+				if (state.isToolRequired() && !stack.isSuitableFor(state)) {
+					return false;
+				}
+			}
+			return true;
+		}
+
+		private static int findSuitableToolSlot(ScreenHandler handler, java.util.List<BlockState> targetStates) {
+			if (!(handler instanceof PlayerScreenHandler)) {
+				return -1;
+			}
+			for (int slot = PlayerScreenHandler.HOTBAR_START; slot < PlayerScreenHandler.HOTBAR_END; slot++) {
+				if (isSuitableForAllRequiredBlocks(handler.getSlot(slot).getStack(), targetStates)) {
+					return slot;
+				}
+			}
+			for (int slot = PlayerScreenHandler.INVENTORY_START; slot < PlayerScreenHandler.HOTBAR_START; slot++) {
+				if (isSuitableForAllRequiredBlocks(handler.getSlot(slot).getStack(), targetStates)) {
+					return slot;
+				}
+			}
+			return -1;
+		}
+
+		private static void selectAndSyncHotbarSlot(MinecraftClient client, ClientPlayerEntity player, int hotbarSlot) {
+			player.getInventory().setSelectedSlot(hotbarSlot);
+			if (client.getNetworkHandler() != null) {
+				client.getNetworkHandler().sendPacket(new UpdateSelectedSlotC2SPacket(hotbarSlot));
+			}
+		}
+
+		private static String requiredBlockIds(java.util.List<BlockState> targetStates) {
+			return targetStates.stream()
+				.filter(BlockState::isToolRequired)
+				.map(state -> Registries.BLOCK.getId(state.getBlock()).toString())
+				.distinct()
+				.toList()
+				.toString();
+		}
+
+		record Result(boolean ok, String message) {
+			static Result success() {
+				return new Result(true, "");
+			}
+
+			static Result failed(String message) {
+				return new Result(false, message);
+			}
 		}
 	}
 

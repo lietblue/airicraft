@@ -12,6 +12,7 @@ import net.minecraft.block.BlockState;
 import net.minecraft.block.Blocks;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.network.ClientPlayerEntity;
+import net.minecraft.entity.player.PlayerInventory;
 import net.minecraft.item.ItemStack;
 import net.minecraft.registry.Registries;
 import net.minecraft.screen.CraftingScreenHandler;
@@ -68,11 +69,14 @@ public final class CurrentInventoryService implements CurrentInventoryTool {
 		String dimension = client.world.getRegistryKey().getValue().toString();
 		String position = client.player.getBlockPos().getX() + "," + client.player.getBlockPos().getY() + "," + client.player.getBlockPos().getZ();
 		String equippedItemId = Registries.ITEM.getId(client.player.getMainHandStack().getItem()).toString();
+		int selectedHotbarSlot = client.player.getInventory().getSelectedSlot();
 		return CompletableFuture.completedFuture(
 			"Tool result for inspect_inventory: "
 				+ "dimension=" + dimension
 				+ ", position=" + position
 				+ ", equippedItemId=" + equippedItemId
+				+ ", selectedHotbarSlot=" + selectedHotbarSlot
+				+ ", hotbarItems=" + hotbarItems(client.player.getInventory())
 				+ ", inventoryCounts=" + resourceCounts
 				+ ", itemCounts=" + sortedItemCounts(itemCounter.count(client.player.getInventory()))
 		);
@@ -142,6 +146,23 @@ public final class CurrentInventoryService implements CurrentInventoryTool {
 		return opportunities.stream()
 			.map(CraftingOpportunity::compactDescription)
 			.collect(Collectors.joining("; ", "[", "]"));
+	}
+
+	private static List<String> hotbarItems(PlayerInventory inventory) {
+		if (inventory == null) {
+			return List.of();
+		}
+		ArrayList<String> items = new ArrayList<>();
+		for (int slot = 0; slot < 9; slot++) {
+			ItemStack stack = inventory.getStack(slot);
+			if (stack == null || stack.isEmpty()) {
+				items.add(slot + "=empty");
+			}
+			else {
+				items.add(slot + "=" + Registries.ITEM.getId(stack.getItem()) + "x" + stack.getCount());
+			}
+		}
+		return List.copyOf(items);
 	}
 
 	static String formatNearbyEntities(List<NearbyEntityService.NearbyEntitySnapshot> nearbyEntities) {

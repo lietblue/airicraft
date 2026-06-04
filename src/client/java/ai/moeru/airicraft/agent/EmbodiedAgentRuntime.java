@@ -121,6 +121,7 @@ import net.minecraft.client.MinecraftClient;
 import net.minecraft.entity.damage.DamageSource;
 import net.minecraft.registry.Registries;
 import net.minecraft.text.Text;
+import net.minecraft.util.Identifier;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Direction;
 import net.minecraft.util.math.Vec3d;
@@ -143,6 +144,10 @@ public final class EmbodiedAgentRuntime {
 	static final long CHAT_ECHO_SUPPRESSION_TICKS = 40L;
 	static final int CRAFT_TOOL_RESULT_TIMEOUT_TICKS = 40;
 	private static final long SMELTING_OUTPUT_READY_POLL_INTERVAL_TICKS = 20L;
+	private static final List<String> KNOWN_NON_BLOCK_MINE_ITEM_IDS = List.of(
+		"minecraft:raw_iron",
+		"minecraft:iron_ingot"
+	);
 	private static final Map<String, EventRoutingProfile> EVENT_ROUTING_PROFILES = createEventRoutingProfiles();
 
 	private final AiricraftConfig airicraftConfig;
@@ -1111,6 +1116,10 @@ public final class EmbodiedAgentRuntime {
 					stringArrayArg(args, "blockIds"),
 					intArg(args, "quantity").orElseThrow(() -> new IllegalArgumentException("quantity is required"))
 				);
+				Optional<String> validationError = validateMineBlockIds(mineSpec.blockIds());
+				if (validationError.isPresent()) {
+					yield "TOOL_ERROR: mine_blocks " + validationError.get();
+				}
 				applyPlannerJobTool(ActiveJobProposal.mineBlocks(mineSpec));
 				yield queuedActionToolResult("mine_blocks", "blockIds=" + String.join(",", mineSpec.blockIds()) + " quantity=" + mineSpec.quantity());
 			}
@@ -1122,6 +1131,10 @@ public final class EmbodiedAgentRuntime {
 					stringArrayArg(args, "blockIds"),
 					intArg(args, "quantity").orElseThrow(() -> new IllegalArgumentException("quantity is required"))
 				);
+				Optional<String> validationError = validateMineBlockIds(mineSpec.blockIds());
+				if (validationError.isPresent()) {
+					yield "TOOL_ERROR: ensure_blocks_in_inventory " + validationError.get();
+				}
 				applyPlannerJobTool(ActiveJobProposal.ensureBlocksInInventory(mineSpec));
 				yield queuedActionToolResult("ensure_blocks_in_inventory", "blockIds=" + String.join(",", mineSpec.blockIds()) + " quantity=" + mineSpec.quantity());
 			}
@@ -1499,6 +1512,59 @@ public final class EmbodiedAgentRuntime {
 		return List.copyOf(values);
 	}
 
+	private static Optional<String> validateMineBlockIds(List<String> blockIds) {
+		if (blockIds == null || blockIds.isEmpty()) {
+			return Optional.of("missing_block_id");
+		}
+		for (String blockId : blockIds) {
+			Optional<String> error = validateMineBlockId(blockId);
+			if (error.isPresent()) {
+				return error;
+			}
+		}
+		return Optional.empty();
+	}
+
+	private static Optional<String> validateMineBlockId(String blockId) {
+		if (blockId == null || blockId.isBlank()) {
+			return Optional.of("missing_block_id");
+		}
+		Identifier identifier;
+		try {
+			identifier = Identifier.of(blockId);
+		}
+		catch (RuntimeException exception) {
+			return Optional.of("invalid_block_id " + blockId);
+		}
+		if (KNOWN_NON_BLOCK_MINE_ITEM_IDS.contains(blockId)) {
+			return Optional.of("invalid_block_id " + blockId + " is an item id, not a block id. Use mineable block ids such as minecraft:iron_ore; inspect_inventory itemCounts are item ids.");
+		}
+		if (!minecraftRegistriesAvailableForToolValidation()) {
+			return Optional.empty();
+		}
+		try {
+			if (Registries.BLOCK.getOptionalValue(identifier).isPresent()) {
+				return Optional.empty();
+			}
+			if (Registries.ITEM.getOptionalValue(identifier).isPresent()) {
+				return Optional.of("invalid_block_id " + blockId + " is an item id, not a block id. Use mineable block ids such as minecraft:iron_ore; inspect_inventory itemCounts are item ids.");
+			}
+			return Optional.of("invalid_block_id " + blockId + " is not a registered block id.");
+		}
+		catch (RuntimeException | LinkageError ignored) {
+			return Optional.empty();
+		}
+	}
+
+	private static boolean minecraftRegistriesAvailableForToolValidation() {
+		try {
+			return MinecraftClient.getInstance() != null;
+		}
+		catch (RuntimeException | LinkageError ignored) {
+			return false;
+		}
+	}
+
 	private static TaskResourceKind resourceKindArg(JsonObject object, String key) {
 		String value = stringArg(object, key).orElseThrow(() -> new IllegalArgumentException(key + " is required"));
 		try {
@@ -1590,6 +1656,7 @@ public final class EmbodiedAgentRuntime {
 		}
 
 		String equippedItemId = Registries.ITEM.getId(client.player.getMainHandStack().getItem()).toString();
+		int selectedHotbarSlot = client.player.getInventory().getSelectedSlot();
 		BlockPos origin = client.player.getBlockPos();
 		Map<String, Integer> itemCounts = inventoryItemCounter.count(client.player.getInventory());
 		return new WorldEvidence(
@@ -1601,8 +1668,27 @@ public final class EmbodiedAgentRuntime {
 			origin.getY(),
 			origin.getZ(),
 			equippedItemId,
+			selectedHotbarSlot,
+			hotbarItems(client.player.getInventory()),
 			tickCount
 		);
+	}
+
+	private static java.util.List<String> hotbarItems(net.minecraft.entity.player.PlayerInventory inventory) {
+		java.util.ArrayList<String> items = new java.util.ArrayList<>();
+		if (inventory == null) {
+			return java.util.List.of();
+		}
+		for (int slot = 0; slot < 9; slot++) {
+			net.minecraft.item.ItemStack stack = inventory.getStack(slot);
+			if (stack == null || stack.isEmpty()) {
+				items.add(slot + "=empty");
+			}
+			else {
+				items.add(slot + "=" + Registries.ITEM.getId(stack.getItem()) + "x" + stack.getCount());
+			}
+		}
+		return java.util.List.copyOf(items);
 	}
 
 	private boolean hasNearbyTaskResourceTarget(MinecraftClient client, TaskSpec spec) {

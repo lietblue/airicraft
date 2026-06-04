@@ -355,6 +355,29 @@ class EmbodiedAgentRuntimeTest {
 	}
 
 	@Test
+	void mineBlocksRejectsInventoryItemIdsBeforeStartingTask() {
+		FakeWorldTaskExecutor executor = new FakeWorldTaskExecutor();
+		EmbodiedAgentRuntime runtime = EmbodiedAgentRuntime.createForTests(executor);
+		runtime.overrideSessionSnapshotForTests(loadedRemoteSession());
+
+		String result = runtime.executePlannerToolCallForTests(new PlannerToolCall(
+			"call_mine",
+			"mine_blocks",
+			JsonParser.parseString("""
+				{"blockIds":["minecraft:raw_iron"],"quantity":1}
+				""").getAsJsonObject(),
+			null,
+			null
+		));
+		runtime.onClientTick(null);
+
+		assertTrue(result.contains("TOOL_ERROR: mine_blocks invalid_block_id minecraft:raw_iron"));
+		assertTrue(result.contains("item id, not a block id"));
+		assertTrue(executor.lastActiveTask.isEmpty());
+		assertTrue(runtime.activeGoal().isEmpty());
+	}
+
+	@Test
 	void mineBlocksIgnoresPickupEventsForCompletion() {
 		FakeWorldTaskExecutor executor = new FakeWorldTaskExecutor();
 		EmbodiedAgentRuntime runtime = EmbodiedAgentRuntime.createForTests(executor);

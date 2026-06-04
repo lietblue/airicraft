@@ -93,14 +93,14 @@ public final class PlannerToolCatalog {
 				prop("z", number("Block z coordinate.")),
 				prop("exactY", bool("Whether y must match exactly."))
 			), List.of("x", "y", "z", "exactY")), PlannerToolCatalog::validateNavigateToArguments),
-		builtInTool(MINE_BLOCKS, false, tool(MINE_BLOCKS, "Mine matching blocks.", properties(
+		builtInTool(MINE_BLOCKS, false, tool(MINE_BLOCKS, "Mine matching blocks by block id. Do not pass item ids from inventory itemCounts.", properties(
 				prop("narration", optionalString("Optional visible narration before using the tool. Omit this field when no narration is needed.")),
-				prop("blockIds", stringArray("Namespaced block ids to mine.")),
+				prop("blockIds", stringArray("Namespaced block ids to mine, for example minecraft:iron_ore. These must be block ids, not item ids such as minecraft:raw_iron.")),
 				prop("quantity", integer("Number of blocks to mine."))
 			), List.of("blockIds", "quantity")), PlannerToolCatalog::validateMineBlocksArguments),
-		builtInTool(ENSURE_BLOCKS_IN_INVENTORY, false, tool(ENSURE_BLOCKS_IN_INVENTORY, "Ensure the inventory contains at least a target count of matching block items.", properties(
+		builtInTool(ENSURE_BLOCKS_IN_INVENTORY, false, tool(ENSURE_BLOCKS_IN_INVENTORY, "Ensure the inventory contains at least a target count from mined block drops. Do not pass inventory item ids.", properties(
 				prop("narration", optionalString("Optional visible narration before using the tool. Omit this field when no narration is needed.")),
-				prop("blockIds", stringArray("Namespaced block ids whose matching inventory items count toward the target.")),
+				prop("blockIds", stringArray("Namespaced block ids whose drops count toward the target, for example minecraft:iron_ore. These must be block ids, not item ids such as minecraft:raw_iron.")),
 				prop("quantity", integer("Minimum matching item count required in inventory. Existing inventory and pickups count."))
 			), List.of("blockIds", "quantity")), PlannerToolCatalog::validateMineBlocksArguments),
 		builtInTool(COLLECT_RESOURCE, false, tool(COLLECT_RESOURCE, "Collect a supported resource kind.", properties(
