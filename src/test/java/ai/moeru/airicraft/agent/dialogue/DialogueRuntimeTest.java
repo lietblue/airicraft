@@ -44,6 +44,7 @@ import ai.moeru.airicraft.agent.tasks.TaskOwnership;
 import ai.moeru.airicraft.agent.tasks.TaskProgressSnapshot;
 import ai.moeru.airicraft.agent.tasks.TaskResourceKind;
 import ai.moeru.airicraft.agent.tasks.TaskSpec;
+import ai.moeru.airicraft.agent.tasks.StepExecutionStatus;
 import ai.moeru.airicraft.agent.tasks.TaskSnapshot;
 import ai.moeru.airicraft.agent.tasks.TaskState;
 import ai.moeru.airicraft.agent.tasks.TaskStep;
@@ -415,6 +416,63 @@ class DialogueRuntimeTest {
 	}
 
 	@Test
+	void queuedInternalTaskUpdateUsesCurrentTaskContextWhenReplayed() {
+		BlockingLlmBackend backend = new BlockingLlmBackend();
+		CompletableFuture<PlannerResponse> firstResponse = backend.enqueueResponse();
+		backend.enqueueResponse();
+		DialogueRuntime runtime = newDialogueRuntime(backend);
+		SemanticEventBuffer eventBuffer = new SemanticEventBuffer(32);
+		TaskSnapshot staleTask = activeTask("stale-mission", MissionType.CRAFT_ITEM, "Stale craft planks", "stale-step", LedgerStepKind.CRAFT_RECIPE);
+		MissionExecutionSnapshot staleExecution = missionExecution(staleTask.mission(), StepExecutionStatus.COMPLETED);
+		TaskSnapshot currentTask = activeTask("current-mission", MissionType.COLLECT_RESOURCE, "Fresh mine stone", "current-step", LedgerStepKind.MINE_BLOCKS);
+		MissionExecutionSnapshot currentExecution = missionExecution(currentTask.mission(), StepExecutionStatus.RUNNING);
+
+		runtime.onPlayerChat(
+			"Alice",
+			"@agent continue",
+			10L,
+			SessionSnapshot.initial(),
+			"Alice",
+			Optional.empty(),
+			eventBuffer
+		);
+		backend.awaitConversationCount(1);
+		runtime.onInternalTaskUpdate(
+			"TASK UPDATE: state=COMPLETED activeStepKind=CRAFT_RECIPE",
+			11L,
+			SessionSnapshot.initial(),
+			Optional.empty(),
+			staleTask,
+			staleExecution,
+			eventBuffer
+		);
+
+		firstResponse.complete(new PlannerResponse("Working.", new PlannerIntent("reply_only", null, null)));
+		assertEquals(
+			"Working.",
+			awaitResponse(
+				runtime,
+				eventBuffer,
+				Duration.ofSeconds(1),
+				SessionSnapshot.initial(),
+				Optional.empty(),
+				currentTask,
+				currentExecution
+			).text()
+		);
+		backend.awaitConversationCount(2);
+		String replayedPrompt = backend.conversation(1).messages().stream()
+			.map(message -> message.content() == null ? "" : message.content())
+			.reduce("", (left, right) -> left + "\n" + right);
+
+		assertTrue(replayedPrompt.contains("Fresh mine stone"));
+		assertTrue(replayedPrompt.contains("current-step"));
+		assertFalse(replayedPrompt.contains("Stale craft planks"));
+		assertFalse(replayedPrompt.contains("stale-step"));
+		runtime.shutdown();
+	}
+
+	@Test
 	void plannerTriggerPreservesOriginalTriggerType() {
 		OpenAiCompatibleLlmBackend backend = new OpenAiCompatibleLlmBackend(AgentConfig.LlmConfig.defaults());
 		DialogueRuntime runtime = newDialogueRuntime(backend);
@@ -596,10 +654,22 @@ class DialogueRuntimeTest {
 	}
 
 	private static DialogueResponse awaitResponse(DialogueRuntime runtime, SemanticEventBuffer eventBuffer, Duration timeout) {
+		return awaitResponse(runtime, eventBuffer, timeout, null, Optional.empty(), null, null);
+	}
+
+	private static DialogueResponse awaitResponse(
+		DialogueRuntime runtime,
+		SemanticEventBuffer eventBuffer,
+		Duration timeout,
+		SessionSnapshot sessionSnapshot,
+		Optional<GoalSnapshot> activeGoal,
+		TaskSnapshot activeTask,
+		MissionExecutionSnapshot missionExecution
+	) {
 		Instant deadline = Instant.now().plus(timeout);
 		long pollTick = 100L;
 		while (Instant.now().isBefore(deadline)) {
-			DialogueResponse response = runtime.poll(pollTick++, eventBuffer);
+			DialogueResponse response = runtime.poll(pollTick++, eventBuffer, sessionSnapshot, activeGoal, activeTask, missionExecution);
 			if (response != null) {
 				return response;
 			}
@@ -692,6 +762,42 @@ class DialogueRuntimeTest {
 			config.visionImageDetail()
 		);
 		return new DialogueRuntime(orchestrator, 8, clock);
+	}
+
+	private static TaskSnapshot activeTask(
+		String missionId,
+		MissionType missionType,
+		String goalText,
+		String activeStepId,
+		LedgerStepKind activeStepKind
+	) {
+		MissionSpec mission = new MissionSpec(missionId, missionType, goalText);
+		return new TaskSnapshot(
+			TaskState.RUNNING,
+			mission,
+			null,
+			null,
+			new TaskProgressSnapshot(0, 1),
+			TaskStep.NONE,
+			TaskOwnership.NONE,
+			"test",
+			null,
+			activeStepId,
+			activeStepKind,
+			StepExecutionResult.idle(),
+			10L
+		);
+	}
+
+	private static MissionExecutionSnapshot missionExecution(MissionSpec mission, StepExecutionStatus status) {
+		return new MissionExecutionSnapshot(
+			mission,
+			null,
+			null,
+			null,
+			new StepExecutionResult(null, status, null, java.util.Map.of(), java.util.Map.of(), 10L),
+			TaskExecutionSnapshot.idle()
+		);
 	}
 
 	private static final class BlockingLlmBackend implements LlmBackend {

@@ -373,7 +373,14 @@ public final class EmbodiedAgentRuntime {
 		drainEventPipeline();
 
 		WorldEvidence worldEvidence = currentWorldEvidence(client);
-		DialogueResponse completedDialogueResponse = dialogueRuntime.poll(tickCount, eventBuffer);
+		DialogueResponse completedDialogueResponse = dialogueRuntime.poll(
+			tickCount,
+			eventBuffer,
+			sessionSnapshot,
+			activeGoal(),
+			taskSnapshot,
+			missionExecutionSnapshot
+		);
 		if (completedDialogueResponse != null) {
 			Optional<GoalSnapshot> previousGoal = activeGoal();
 			applyPlannerEventPolicyChanges(completedDialogueResponse.eventPolicyChanges());

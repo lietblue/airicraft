@@ -287,13 +287,24 @@ public final class DialogueRuntime {
 	}
 
 	public DialogueResponse poll(long tick, SemanticEventBuffer eventBuffer) {
+		return poll(tick, eventBuffer, null, Optional.empty(), null, null);
+	}
+
+	public DialogueResponse poll(
+		long tick,
+		SemanticEventBuffer eventBuffer,
+		SessionSnapshot sessionSnapshot,
+		Optional<GoalSnapshot> activeGoal,
+		TaskSnapshot activeTask,
+		MissionExecutionSnapshot missionExecution
+	) {
 		if (queuedTimeoutInjections > 0 && !plannerOrchestrator.hasInFlight()) {
 			queuedTimeoutInjections--;
 			applyTransition(DialogueCore.onPlannerFailure(state, LlmFailureType.TIMEOUT, "Injected LLM timeout", pendingTimeoutVisibleReply, tick), tick, eventBuffer);
 			pendingTimeoutVisibleReply = false;
 			return null;
 		}
-		if (submitNextPendingInternalTaskUpdate(eventBuffer)) {
+		if (submitNextPendingInternalTaskUpdate(eventBuffer, sessionSnapshot, activeGoal, activeTask, missionExecution)) {
 			return null;
 		}
 
@@ -316,7 +327,7 @@ public final class DialogueRuntime {
 				eventBuffer
 			);
 			pendingTimeoutVisibleReply = false;
-			submitNextPendingInternalTaskUpdate(eventBuffer);
+			submitNextPendingInternalTaskUpdate(eventBuffer, sessionSnapshot, activeGoal, activeTask, missionExecution);
 			return null;
 		}
 
@@ -324,7 +335,7 @@ public final class DialogueRuntime {
 		applyTransition(transition, tick, eventBuffer);
 		pendingTimeoutVisibleReply = false;
 		plannerOrchestrator.onAcceptedReplyRecorded();
-		submitNextPendingInternalTaskUpdate(eventBuffer);
+		submitNextPendingInternalTaskUpdate(eventBuffer, sessionSnapshot, activeGoal, activeTask, missionExecution);
 		return transition.lastVisibleResponse();
 	}
 
@@ -389,7 +400,13 @@ public final class DialogueRuntime {
 		plannerOrchestrator.submit(request);
 	}
 
-	private boolean submitNextPendingInternalTaskUpdate(SemanticEventBuffer eventBuffer) {
+	private boolean submitNextPendingInternalTaskUpdate(
+		SemanticEventBuffer eventBuffer,
+		SessionSnapshot sessionSnapshot,
+		Optional<GoalSnapshot> activeGoal,
+		TaskSnapshot activeTask,
+		MissionExecutionSnapshot missionExecution
+	) {
 		if (pendingInternalTaskUpdates.isEmpty()) {
 			return false;
 		}
@@ -400,7 +417,8 @@ public final class DialogueRuntime {
 		if (plannerOrchestrator.hasInFlight()) {
 			return false;
 		}
-		PendingInternalTaskUpdate pendingUpdate = pendingInternalTaskUpdates.removeFirst();
+		PendingInternalTaskUpdate pendingUpdate = pendingInternalTaskUpdates.removeFirst()
+			.withCurrentContext(sessionSnapshot, activeGoal, activeTask, missionExecution);
 		if (submitInternalTaskUpdate(pendingUpdate, eventBuffer)) {
 			return true;
 		}
@@ -491,6 +509,22 @@ public final class DialogueRuntime {
 		TaskSnapshot activeTask,
 		MissionExecutionSnapshot missionExecution
 	) {
+		private PendingInternalTaskUpdate withCurrentContext(
+			SessionSnapshot currentSessionSnapshot,
+			Optional<GoalSnapshot> currentActiveGoal,
+			TaskSnapshot currentActiveTask,
+			MissionExecutionSnapshot currentMissionExecution
+		) {
+			return new PendingInternalTaskUpdate(
+				updateMessage,
+				tick,
+				timestampMs,
+				currentSessionSnapshot == null ? sessionSnapshot : currentSessionSnapshot,
+				currentActiveGoal == null ? activeGoal : currentActiveGoal.orElse(null),
+				currentActiveTask == null ? activeTask : currentActiveTask,
+				currentMissionExecution == null ? missionExecution : currentMissionExecution
+			);
+		}
 	}
 
 }
