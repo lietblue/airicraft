@@ -1,0 +1,658 @@
+#!/usr/bin/env python3
+"""Run Airicraft evaluation scenarios one by one and save postmortem bundles."""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import queue
+import re
+import shutil
+import signal
+import subprocess
+import sys
+import threading
+import time
+import urllib.error
+import urllib.request
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+
+TERMINAL_STATUSES = {"PASSED", "FAILED", "NEEDS_REVIEW"}
+SENSITIVE_KEY_RE = re.compile(r"(token|authorization|api[_-]?key|secret|password|credential)", re.IGNORECASE)
+BEARER_RE = re.compile(r"Bearer\s+[A-Za-z0-9._~+/=-]+", re.IGNORECASE)
+JSON_SECRET_RE = re.compile(
+    r'("?(?:token|authorization|api[_-]?key|secret|password|credential)"?\s*[:=]\s*)("[^"]*"|[^\s,}]+)',
+    re.IGNORECASE,
+)
+
+
+class RunnerError(RuntimeError):
+    pass
+
+
+class BridgeHttpError(RunnerError):
+    def __init__(self, method: str, path: str, status: int, payload: Any) -> None:
+        super().__init__(f"{method} {path} failed with HTTP {status}")
+        self.method = method
+        self.path = path
+        self.status = status
+        self.payload = payload
+
+
+@dataclass(frozen=True)
+class BridgeState:
+    port: int
+    token: str
+    started_at_epoch_millis: int
+
+    @property
+    def base_url(self) -> str:
+        return f"http://127.0.0.1:{self.port}"
+
+
+@dataclass
+class ClientProcess:
+    process: subprocess.Popen[str]
+    log_path: Path
+    log_thread: threading.Thread
+    line_queue: "queue.Queue[str]"
+
+
+def utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+def local_timestamp() -> str:
+    return datetime.now().strftime("%Y%m%d-%H%M%S")
+
+
+def repo_root_from_script() -> Path:
+    return Path(__file__).resolve().parents[1]
+
+
+def default_client_command(repo_root: Path) -> str:
+    if (repo_root / ".envrc").exists():
+        return "source .envrc && ./gradlew runClient"
+    return "./gradlew runClient"
+
+
+def bridge_state_path() -> Path:
+    return Path.home() / ".airicraft" / "bridge-state.json"
+
+
+def read_bridge_state() -> BridgeState | None:
+    path = bridge_state_path()
+    if not path.exists():
+        return None
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        return BridgeState(
+            port=int(raw["port"]),
+            token=str(raw["token"]),
+            started_at_epoch_millis=int(raw["startedAtEpochMillis"]),
+        )
+    except Exception:
+        return None
+
+
+def redact_text(value: str) -> str:
+    value = BEARER_RE.sub("Bearer [REDACTED]", value)
+    return JSON_SECRET_RE.sub(lambda match: f"{match.group(1)}[REDACTED]", value)
+
+
+def redact_json(value: Any) -> Any:
+    if isinstance(value, dict):
+        redacted: dict[str, Any] = {}
+        for key, child in value.items():
+            if SENSITIVE_KEY_RE.search(str(key)):
+                redacted[key] = "[REDACTED]"
+            else:
+                redacted[key] = redact_json(child)
+        return redacted
+    if isinstance(value, list):
+        return [redact_json(child) for child in value]
+    if isinstance(value, str):
+        return redact_text(value)
+    return value
+
+
+def write_json(path: Path, payload: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(redact_json(payload), indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def append_jsonl(path: Path, payload: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(redact_json(payload), sort_keys=True) + "\n")
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def safe_name(value: str) -> str:
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "-", value.strip())
+    safe = re.sub(r"(^[-.]+|[-.]+$)", "", safe)
+    return safe or "scenario"
+
+
+def start_client(repo_root: Path, command: str, log_path: Path) -> ClientProcess:
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    line_queue: "queue.Queue[str]" = queue.Queue()
+    process = subprocess.Popen(
+        ["bash", "-lc", command],
+        cwd=repo_root,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+        start_new_session=True,
+    )
+
+    def pump() -> None:
+        assert process.stdout is not None
+        with log_path.open("a", encoding="utf-8") as handle:
+            for line in process.stdout:
+                redacted = redact_text(line)
+                handle.write(redacted)
+                handle.flush()
+                line_queue.put(redacted.rstrip("\n"))
+
+    thread = threading.Thread(target=pump, name="airicraft-client-log", daemon=True)
+    thread.start()
+    return ClientProcess(process=process, log_path=log_path, log_thread=thread, line_queue=line_queue)
+
+
+def stop_client(client: ClientProcess, timeout_seconds: float) -> dict[str, Any]:
+    process = client.process
+    result: dict[str, Any] = {
+        "requestedAt": utc_now_iso(),
+        "pid": process.pid,
+        "initialReturnCode": process.poll(),
+        "method": None,
+    }
+    if process.poll() is None:
+        result["method"] = "SIGINT"
+        try:
+            os.killpg(process.pid, signal.SIGINT)
+        except ProcessLookupError:
+            pass
+        try:
+            process.wait(timeout=timeout_seconds)
+        except subprocess.TimeoutExpired:
+            result["method"] = "SIGTERM"
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            try:
+                process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                result["method"] = "SIGKILL"
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                process.wait(timeout=10)
+    client.log_thread.join(timeout=5)
+    result["finalReturnCode"] = process.poll()
+    result["finishedAt"] = utc_now_iso()
+    return result
+
+
+def bridge_json(
+    bridge: BridgeState,
+    method: str,
+    path: str,
+    payload: Any | None = None,
+    timeout_seconds: float = 10,
+) -> Any:
+    body = None
+    headers = {
+        "Authorization": f"Bearer {bridge.token}",
+        "Accept": "application/json",
+    }
+    if payload is not None:
+        body = json.dumps(payload).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+    request = urllib.request.Request(
+        bridge.base_url + path,
+        data=body,
+        headers=headers,
+        method=method,
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+            raw = response.read().decode("utf-8")
+            return json.loads(raw) if raw else {}
+    except urllib.error.HTTPError as error:
+        raw = error.read().decode("utf-8", errors="replace")
+        try:
+            parsed: Any = json.loads(raw)
+        except json.JSONDecodeError:
+            parsed = {"raw": raw}
+        raise BridgeHttpError(method, path, error.code, parsed) from error
+
+
+def endpoint_error(error: BaseException) -> dict[str, Any]:
+    if isinstance(error, BridgeHttpError):
+        return {
+            "ok": False,
+            "status": error.status,
+            "method": error.method,
+            "path": error.path,
+            "payload": error.payload,
+            "error": str(error),
+        }
+    return {"ok": False, "error": f"{type(error).__name__}: {error}"}
+
+
+def wait_for_title_bridge(
+    client: ClientProcess,
+    launch_started_ms: int,
+    timeout_seconds: float,
+) -> tuple[BridgeState, dict[str, Any]]:
+    deadline = time.monotonic() + timeout_seconds
+    last_error: str | None = None
+    while time.monotonic() < deadline:
+        if client.process.poll() is not None:
+            raise RunnerError(f"client exited while waiting for bridge, code={client.process.poll()}")
+        bridge = read_bridge_state()
+        if bridge is not None and bridge.started_at_epoch_millis >= launch_started_ms - 5000:
+            try:
+                status = bridge_json(bridge, "GET", "/v1/status", timeout_seconds=2)
+                if status.get("bridgeAvailable") and not status.get("worldLoaded") and status.get("canJoinWorldOrServer"):
+                    return bridge, status
+                last_error = f"bridge not ready: {status}"
+            except Exception as error:
+                last_error = f"{type(error).__name__}: {error}"
+        time.sleep(1)
+    raise RunnerError(f"timed out waiting for title-screen bridge; last_error={last_error}")
+
+
+def scenario_archive_metadata(scenario_root: Path, scenario: dict[str, Any]) -> dict[str, Any]:
+    scenario_id = str(scenario.get("id", ""))
+    archive_name = str(scenario.get("worldArchive", "world.zip"))
+    archive = scenario_root / safe_name(scenario_id).lower() / archive_name
+    payload: dict[str, Any] = {
+        "path": str(archive),
+        "exists": archive.exists(),
+    }
+    if archive.exists():
+        payload["sizeBytes"] = archive.stat().st_size
+        payload["sha256"] = sha256_file(archive)
+    return payload
+
+
+def copy_scenario_config(scenario_root: Path, scenario_id: str, destination: Path) -> None:
+    source = scenario_root / safe_name(scenario_id).lower() / "scenario.yml"
+    if source.exists():
+        shutil.copy2(source, destination)
+
+
+def selected_scenarios(scenarios: list[dict[str, Any]], filters: list[str] | None) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    requested = {item.strip() for item in filters or [] if item.strip()}
+    unknown = sorted(requested - {str(scenario.get("id", "")) for scenario in scenarios})
+    if unknown:
+        raise RunnerError("unknown scenario filter(s): " + ", ".join(unknown))
+
+    selected: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
+    for scenario in scenarios:
+        scenario_id = str(scenario.get("id", ""))
+        if requested and scenario_id not in requested:
+            continue
+        if not scenario.get("promptConfigured", False):
+            skipped.append({
+                "id": scenario_id,
+                "name": scenario.get("name"),
+                "reason": "empty_prompt",
+            })
+            continue
+        selected.append(scenario)
+    return selected, skipped
+
+
+def discover_scenarios(repo_root: Path, run_dir: Path, client_command: str, args: argparse.Namespace) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    launch_started_ms = int(time.time() * 1000)
+    client = start_client(repo_root, client_command, run_dir / "discovery-client.log")
+    discovery: dict[str, Any] = {
+        "startedAt": utc_now_iso(),
+        "clientCommand": client_command,
+    }
+    try:
+        bridge, status = wait_for_title_bridge(client, launch_started_ms, args.bridge_timeout_seconds)
+        discovery["initialStatus"] = status
+        scenarios_payload = bridge_json(bridge, "GET", "/v1/evaluation/scenarios", timeout_seconds=10)
+        discovery["scenariosPayload"] = scenarios_payload
+        return list(scenarios_payload.get("scenarios", [])), discovery
+    finally:
+        discovery["clientExit"] = stop_client(client, args.client_stop_timeout_seconds)
+        discovery["finishedAt"] = utc_now_iso()
+        write_json(run_dir / "discovery.json", discovery)
+
+
+def assert_no_active_bridge() -> None:
+    bridge = read_bridge_state()
+    if bridge is None:
+        return
+    try:
+        status = bridge_json(bridge, "GET", "/v1/status", timeout_seconds=2)
+    except Exception:
+        return
+    if status.get("bridgeAvailable"):
+        raise RunnerError("Airicraft bridge is already active; stop Minecraft before running the batch evaluator")
+
+
+def collect_endpoint(bridge: BridgeState, path: str, timeout_seconds: float = 15) -> dict[str, Any]:
+    try:
+        return {"ok": True, "payload": bridge_json(bridge, "GET", path, timeout_seconds=timeout_seconds)}
+    except Exception as error:
+        return endpoint_error(error)
+
+
+def collect_final_bundle(bridge: BridgeState, scenario_dir: Path) -> dict[str, Any]:
+    endpoints = {
+        "results-final.json": "/v1/evaluation/results",
+        "evidence-final.json": "/v1/evaluation/evidence",
+        "agent-status-final.json": "/v1/agent/status",
+        "agent-debug-state-final.json": "/v1/agent/debug/state",
+        "agent-debug-timeline-final.json": "/v1/agent/debug/timeline",
+        "agent-events-final.json": "/v1/agent/events/recent",
+        "world-snapshot-final.json": "/v1/world-snapshot?radius=4",
+    }
+    summary: dict[str, Any] = {}
+    for filename, path in endpoints.items():
+        result = collect_endpoint(bridge, path)
+        write_json(scenario_dir / filename, result)
+        summary[filename] = {"ok": result.get("ok", False)}
+    return summary
+
+
+def run_scenario(
+    repo_root: Path,
+    run_dir: Path,
+    scenario_root: Path,
+    scenario: dict[str, Any],
+    index: int,
+    client_command: str,
+    args: argparse.Namespace,
+) -> dict[str, Any]:
+    scenario_id = str(scenario["id"])
+    scenario_dir = run_dir / f"{index:02d}-{safe_name(scenario_id)}"
+    scenario_dir.mkdir(parents=True, exist_ok=True)
+    copy_scenario_config(scenario_root, scenario_id, scenario_dir / "scenario.yml")
+
+    summary: dict[str, Any] = {
+        "id": scenario_id,
+        "name": scenario.get("name"),
+        "startedAt": utc_now_iso(),
+        "harnessStatus": "RUNNING",
+        "reportStatus": None,
+        "message": None,
+        "clientCommand": client_command,
+        "archive": scenario_archive_metadata(scenario_root, scenario),
+    }
+    write_json(scenario_dir / "summary.json", summary)
+
+    launch_started_ms = int(time.time() * 1000)
+    client = start_client(repo_root, client_command, scenario_dir / "client.log")
+    bridge: BridgeState | None = None
+    latest_event_seq: int | None = None
+    bridge_failures = 0
+    final_results: dict[str, Any] | None = None
+
+    try:
+        bridge, status = wait_for_title_bridge(client, launch_started_ms, args.bridge_timeout_seconds)
+        write_json(scenario_dir / "initial-status.json", status)
+        run_response = bridge_json(
+            bridge,
+            "POST",
+            "/v1/evaluation/run",
+            {"scenario": scenario_id},
+            timeout_seconds=20,
+        )
+        write_json(scenario_dir / "run-request.json", {
+            "request": {"scenario": scenario_id},
+            "response": run_response,
+        })
+
+        while True:
+            if client.process.poll() is not None:
+                summary["harnessStatus"] = "CLIENT_EXITED"
+                summary["message"] = f"client exited before terminal report, code={client.process.poll()}"
+                break
+
+            collected_at = utc_now_iso()
+            try:
+                results = bridge_json(bridge, "GET", "/v1/evaluation/results", timeout_seconds=10)
+                final_results = results
+                bridge_failures = 0
+                append_jsonl(scenario_dir / "status-samples.jsonl", {
+                    "collectedAt": collected_at,
+                    "kind": "evaluation_results",
+                    "payload": results,
+                })
+                report = results.get("report", {})
+                report_status = report.get("status")
+                summary["reportStatus"] = report_status
+                summary["message"] = report.get("message")
+                summary["elapsedTicks"] = report.get("elapsedTicks")
+                summary["plannerTurns"] = report.get("plannerTurns")
+
+                events_path = "/v1/agent/events/recent"
+                if latest_event_seq is not None:
+                    events_path += f"?since={latest_event_seq}"
+                events = bridge_json(bridge, "GET", events_path, timeout_seconds=10)
+                latest_event_seq = events.get("latestSeqNo", latest_event_seq)
+                for event in events.get("events", []):
+                    append_jsonl(scenario_dir / "events.jsonl", {
+                        "collectedAt": collected_at,
+                        "event": event,
+                    })
+
+                if report_status in TERMINAL_STATUSES:
+                    summary["harnessStatus"] = "OK"
+                    break
+            except Exception as error:
+                bridge_failures += 1
+                append_jsonl(scenario_dir / "status-samples.jsonl", {
+                    "collectedAt": collected_at,
+                    "kind": "poll_error",
+                    "payload": endpoint_error(error),
+                })
+                if bridge_failures >= 5:
+                    summary["harnessStatus"] = "BRIDGE_UNAVAILABLE"
+                    summary["message"] = f"bridge unavailable for {bridge_failures} consecutive polls"
+                    break
+
+            time.sleep(args.poll_seconds)
+
+        if bridge is not None:
+            summary["finalEndpointCollection"] = collect_final_bundle(bridge, scenario_dir)
+        if final_results is not None:
+            write_json(scenario_dir / "results-final-raw.json", final_results)
+    except Exception as error:
+        summary["harnessStatus"] = "HARNESS_ERROR"
+        summary["message"] = f"{type(error).__name__}: {error}"
+        write_json(scenario_dir / "harness-error.json", endpoint_error(error))
+    finally:
+        summary["clientExit"] = stop_client(client, args.client_stop_timeout_seconds)
+        summary["finishedAt"] = utc_now_iso()
+        write_json(scenario_dir / "summary.json", summary)
+    return summary
+
+
+def write_summary_markdown(run_dir: Path, manifest: dict[str, Any]) -> None:
+    lines = [
+        "# Airicraft Evaluation Run",
+        "",
+        f"- Run id: `{manifest['runId']}`",
+        f"- Started: `{manifest['startedAt']}`",
+        f"- Finished: `{manifest.get('finishedAt', '')}`",
+        f"- Git commit: `{manifest.get('gitCommit', '')}`",
+        f"- Dirty before run: `{manifest.get('gitDirty', '')}`",
+        "",
+        "## Results",
+        "",
+        "| Scenario | Harness | Report | Message |",
+        "| --- | --- | --- | --- |",
+    ]
+    for result in manifest.get("results", []):
+        lines.append(
+            "| `{id}` | `{harness}` | `{report}` | {message} |".format(
+                id=result.get("id", ""),
+                harness=result.get("harnessStatus", ""),
+                report=result.get("reportStatus", ""),
+                message=str(result.get("message", "")).replace("|", "\\|"),
+            )
+        )
+    if manifest.get("skipped"):
+        lines.extend(["", "## Skipped", "", "| Scenario | Reason |", "| --- | --- |"])
+        for item in manifest["skipped"]:
+            lines.append(f"| `{item.get('id', '')}` | `{item.get('reason', '')}` |")
+    (run_dir / "summary.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def git_value(repo_root: Path, args: list[str]) -> str:
+    try:
+        result = subprocess.run(
+            ["git", *args],
+            cwd=repo_root,
+            check=True,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+        return result.stdout.strip()
+    except Exception:
+        return ""
+
+
+def run_self_test() -> None:
+    redacted = redact_json({
+        "token": "abc",
+        "nested": [{"apiKey": "secret"}, {"message": "Authorization: Bearer abc123"}],
+        "safe": "value",
+    })
+    assert redacted["token"] == "[REDACTED]"
+    assert redacted["nested"][0]["apiKey"] == "[REDACTED]"
+    assert "abc123" not in redacted["nested"][1]["message"]
+    assert safe_name("../Iron Pickaxe!!") == "Iron-Pickaxe"
+    scenarios = [
+        {"id": "a", "promptConfigured": True},
+        {"id": "b", "promptConfigured": False},
+    ]
+    runnable, skipped = selected_scenarios(scenarios, None)
+    assert [item["id"] for item in runnable] == ["a"]
+    assert skipped == [{"id": "b", "name": None, "reason": "empty_prompt"}]
+    runnable, skipped = selected_scenarios(scenarios, ["a"])
+    assert [item["id"] for item in runnable] == ["a"]
+    assert skipped == []
+    try:
+        selected_scenarios(scenarios, ["missing"])
+    except RunnerError:
+        pass
+    else:
+        raise AssertionError("unknown scenario filter should fail")
+
+
+def parse_args(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Run Airicraft evaluation scenarios one by one and save postmortem bundles.",
+    )
+    parser.add_argument("--scenario", action="append", dest="scenario_filters", help="Scenario id to run. May be repeated.")
+    parser.add_argument("--output-root", default="eval-output", help="Directory for ignored run bundles.")
+    parser.add_argument("--client-command", help="Command used to launch Minecraft. Defaults to runClient with .envrc sourced.")
+    parser.add_argument("--poll-seconds", type=float, default=5.0, help="Seconds between evaluation result polls.")
+    parser.add_argument("--bridge-timeout-seconds", type=float, default=180.0, help="Seconds to wait for the bridge at startup.")
+    parser.add_argument("--client-stop-timeout-seconds", type=float, default=45.0, help="Seconds to wait after SIGINT before SIGTERM.")
+    parser.add_argument("--self-test", action="store_true", help="Run built-in unit checks and exit.")
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str]) -> int:
+    args = parse_args(argv)
+    if args.self_test:
+        run_self_test()
+        print("self-test: ok")
+        return 0
+
+    repo_root = repo_root_from_script()
+    client_command = args.client_command or default_client_command(repo_root)
+    output_root = Path(args.output_root)
+    if not output_root.is_absolute():
+        output_root = repo_root / output_root
+    run_id = local_timestamp()
+    run_dir = output_root / run_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    manifest: dict[str, Any] = {
+        "runId": run_id,
+        "startedAt": utc_now_iso(),
+        "repoRoot": str(repo_root),
+        "clientCommand": client_command,
+        "gitCommit": git_value(repo_root, ["rev-parse", "HEAD"]),
+        "gitDirty": bool(git_value(repo_root, ["status", "--short"])),
+        "scenarioFilters": args.scenario_filters or [],
+        "skipped": [],
+        "results": [],
+    }
+    write_json(run_dir / "manifest.json", manifest)
+
+    try:
+        assert_no_active_bridge()
+        scenarios, discovery = discover_scenarios(repo_root, run_dir, client_command, args)
+        manifest["discovery"] = {
+            "scenarioCount": len(scenarios),
+            "scenarioRoot": discovery.get("scenariosPayload", {}).get("scenarioRoot"),
+        }
+        scenario_root = Path(str(discovery.get("scenariosPayload", {}).get("scenarioRoot", repo_root / "scenarios")))
+        write_json(run_dir / "scenario-index.json", scenarios)
+        runnable, skipped = selected_scenarios(scenarios, args.scenario_filters)
+        manifest["skipped"] = skipped
+        write_json(run_dir / "manifest.json", manifest)
+
+        for index, scenario in enumerate(runnable, start=1):
+            print(f"[{index}/{len(runnable)}] running {scenario['id']}")
+            result = run_scenario(repo_root, run_dir, scenario_root, scenario, index, client_command, args)
+            manifest["results"].append(result)
+            write_json(run_dir / "manifest.json", manifest)
+            write_summary_markdown(run_dir, manifest)
+            print(f"[{index}/{len(runnable)}] {scenario['id']}: {result.get('harnessStatus')} {result.get('reportStatus')}")
+
+        manifest["finishedAt"] = utc_now_iso()
+        write_json(run_dir / "manifest.json", manifest)
+        write_summary_markdown(run_dir, manifest)
+    except Exception as error:
+        manifest["finishedAt"] = utc_now_iso()
+        manifest["harnessError"] = f"{type(error).__name__}: {error}"
+        write_json(run_dir / "manifest.json", manifest)
+        write_summary_markdown(run_dir, manifest)
+        print(f"error: {manifest['harnessError']}", file=sys.stderr)
+        print(f"output: {run_dir}", file=sys.stderr)
+        return 2
+
+    failed = [
+        result for result in manifest["results"]
+        if result.get("harnessStatus") != "OK" or result.get("reportStatus") == "FAILED"
+    ]
+    print(f"output: {run_dir}")
+    if failed:
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))

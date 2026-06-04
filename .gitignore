@@ -39,6 +39,11 @@ replay_*.log
 *.hprof
 *.jfr
 
+# python
+
+__pycache__/
+*.pyc
+
 #direnv
 .envrc
 
@@ -51,3 +56,4 @@ legacy_code_for_ref/
 logs/
 mappings/
 .worktrees/
+eval-output/
