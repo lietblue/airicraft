@@ -1,0 +1,30 @@
+{
+	"schemaVersion": 1,
+	"id": "airicraft-evaluator",
+	"version": "${version}",
+	"name": "Airicraft Evaluator",
+	"description": "Optional scenario evaluation addon for Airicraft.",
+	"authors": [
+		"Airicraft"
+	],
+	"license": "CC0-1.0",
+	"environment": "client",
+	"entrypoints": {
+		"client": [
+			"ai.moeru.airicraft.evaluator.AiricraftEvaluatorClient"
+		]
+	},
+	"mixins": [
+		{
+			"config": "airicraft-evaluator.client.mixins.json",
+			"environment": "client"
+		}
+	],
+	"depends": {
+		"fabricloader": ">=0.18.4",
+		"minecraft": "~1.21.8",
+		"java": ">=21",
+		"fabric-api": "*",
+		"airicraft": "*"
+	}
+}

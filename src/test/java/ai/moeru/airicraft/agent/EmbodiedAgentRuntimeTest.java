@@ -55,11 +55,6 @@ import ai.moeru.airicraft.agent.tasks.TaskType;
 import ai.moeru.airicraft.agent.tasks.TaskTerminalEvent;
 import ai.moeru.airicraft.agent.tasks.WorldTaskExecutor;
 import ai.moeru.airicraft.agent.tasks.WorldTaskType;
-import ai.moeru.airicraft.agent.evaluation.EvaluationBudget;
-import ai.moeru.airicraft.agent.evaluation.EvaluationCheck;
-import ai.moeru.airicraft.agent.evaluation.EvaluationEvidenceSettings;
-import ai.moeru.airicraft.agent.evaluation.EvaluationScenario;
-import ai.moeru.airicraft.agent.evaluation.EvaluationStatus;
 import ai.moeru.airicraft.agent.llm.PlannerToolCall;
 import ai.moeru.airicraft.agent.llm.PlannerTrigger;
 import ai.moeru.airicraft.agent.llm.PlannerTriggerType;
@@ -1518,109 +1513,6 @@ class EmbodiedAgentRuntimeTest {
 		assertEquals("planner_response", event.payload().get("source"));
 	}
 
-	@Test
-	void startEvaluationTracksScenarioReport() {
-		FakeWorldTaskExecutor executor = new FakeWorldTaskExecutor();
-		EmbodiedAgentRuntime runtime = EmbodiedAgentRuntime.createForTests(executor);
-		EvaluationScenario scenario = new EvaluationScenario(
-			"mine-blocks-basic",
-			"Mine Blocks Basic",
-			"1.21.8",
-			"test",
-			null,
-			"world.zip",
-			true,
-			"Mine one oak log.",
-			new EvaluationBudget(3, 120L, 0L, 20L),
-			List.of(new EvaluationCheck("task_execution_state", Map.of("state", "RUNNING"))),
-			EvaluationEvidenceSettings.defaults()
-		);
-
-		assertTrue(runtime.startEvaluation(scenario));
-		assertEquals(EvaluationStatus.PENDING_WORLD, runtime.evaluationReport().status());
-		assertEquals("mine-blocks-basic", runtime.evaluationReport().scenarioId());
-		assertEquals("Waiting for evaluation world", runtime.evaluationReport().message());
-	}
-
-	@Test
-	void evaluationContinuesAfterRecoverableTaskFailure() {
-		FakeWorldTaskExecutor executor = new FakeWorldTaskExecutor();
-		EmbodiedAgentRuntime runtime = createEvaluationRuntimeForTests(executor);
-		runtime.overrideSessionSnapshotForTests(loadedRemoteSession());
-		EvaluationScenario scenario = new EvaluationScenario(
-			"iron-pickaxe",
-			"Iron Pickaxe",
-			"1.21.8",
-			"test",
-			null,
-			"world.zip",
-			true,
-			"Obtain an iron pickaxe.",
-			new EvaluationBudget(10, 120L, 0L, 20L),
-			List.of(new EvaluationCheck("inventory_contains", Map.of(
-				"itemId", "minecraft:iron_pickaxe",
-				"count", 1
-			))),
-			EvaluationEvidenceSettings.defaults()
-		);
-
-		assertTrue(runtime.startEvaluation(scenario));
-		runtime.onClientTick(null);
-		CompletableFuture<String> resultFuture = runtime.executePlannerToolCallFutureForTests(craftRecipeToolCall());
-		runtime.onClientTick(null);
-		WorldTaskRequest request = executor.lastActiveTask.orElseThrow();
-		executor.nextTerminalEvent = Optional.of(new TaskTerminalEvent(
-			request.taskId(),
-			null,
-			TaskExecutionState.FAILED,
-			"crafting_table_missing_materials",
-			null
-		));
-
-		runtime.onClientTick(null);
-		String result = resultFuture.join();
-
-		assertTrue(result.contains("failed"));
-		assertEquals(TaskExecutionState.FAILED, runtime.taskExecutionSnapshot().state());
-		assertEquals(EvaluationStatus.RUNNING, runtime.evaluationReport().status());
-		assertEquals("Evaluation running", runtime.evaluationReport().message());
-
-		runtime.onClientTick(null);
-
-		assertEquals(TaskState.FAILED, runtime.taskSnapshot().state());
-		assertEquals(EvaluationStatus.RUNNING, runtime.evaluationReport().status());
-	}
-
-	@Test
-	void evaluationEvidenceHonorsScenarioSettings() {
-		EmbodiedAgentRuntime runtime = EmbodiedAgentRuntime.createForTests(new FakeWorldTaskExecutor());
-		EvaluationScenario scenario = new EvaluationScenario(
-			"minimal-evidence",
-			"Minimal Evidence",
-			"1.21.8",
-			"test",
-			null,
-			"world.zip",
-			true,
-			"Do the task.",
-			EvaluationBudget.defaults(),
-			List.of(new EvaluationCheck("subjective", Map.of())),
-			new EvaluationEvidenceSettings(false, false, false, false, false)
-		);
-
-		assertTrue(runtime.startEvaluation(scenario));
-		Map<String, Object> evidence = runtime.evaluationEvidence();
-
-		assertTrue(evidence.containsKey("report"));
-		assertTrue(evidence.containsKey("session"));
-		assertTrue(evidence.containsKey("lastChatText"));
-		assertFalse(evidence.containsKey("plannerJournal"));
-		assertFalse(evidence.containsKey("debugTimeline"));
-		assertFalse(evidence.containsKey("recentEvents"));
-		assertFalse(evidence.containsKey("task"));
-		assertFalse(evidence.containsKey("worldEvidence"));
-	}
-
 	private static final class FakeWorldTaskExecutor implements WorldTaskExecutor {
 		private TaskExecutionSnapshot snapshot = TaskExecutionSnapshot.idle();
 		private Optional<TaskTerminalEvent> nextTerminalEvent = Optional.empty();
@@ -1694,21 +1586,6 @@ class EmbodiedAgentRuntimeTest {
 				""").getAsJsonObject(),
 			null,
 			null
-		);
-	}
-
-	private static EmbodiedAgentRuntime createEvaluationRuntimeForTests(WorldTaskExecutor worldTaskExecutor) {
-		return new EmbodiedAgentRuntime(
-			AiricraftConfig.defaults(),
-			new AgentConfig(
-				false,
-				false,
-				configuredLlmConfig(),
-				AgentConfig.IdleConfig.defaults(),
-				AgentConfig.ObservabilityConfig.defaults()
-			),
-			new FirstPersonScreenshotService(),
-			worldTaskExecutor
 		);
 	}
 

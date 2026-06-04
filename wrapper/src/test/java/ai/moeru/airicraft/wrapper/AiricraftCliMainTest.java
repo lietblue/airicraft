@@ -731,7 +731,7 @@ class AiricraftCliMainTest {
 	}
 
 	@Test
-	void evaluationRunPassesScenarioName() {
+	void evaluationRunPassesScenarioNameAndOutputDir() {
 		TestTransport transport = new TestTransport();
 		transport.evaluationRunPayload = linkedMap(
 			"accepted", true,
@@ -747,10 +747,16 @@ class AiricraftCliMainTest {
 			)
 		);
 
-		CliResult result = execute(transport, "evaluation", "run", "--scenario", "smelting-basic");
+		CliResult result = execute(
+			transport,
+			"evaluation", "run",
+			"--scenario", "smelting-basic",
+			"--output-dir", "/tmp/eval-output/run-1"
+		);
 
 		assertEquals(0, result.exitCode());
 		assertEquals("smelting-basic", transport.lastEvaluationScenario);
+		assertEquals("/tmp/eval-output/run-1", transport.lastEvaluationOutputDir);
 		assertTrue(result.output().contains("scenario: smelting-basic\n"));
 		assertTrue(result.output().contains("reportStatus: PENDING_WORLD\n"));
 	}
@@ -1151,6 +1157,7 @@ class AiricraftCliMainTest {
 		private Integer lastCompactTimeoutMs;
 		private boolean agentDebugIdleTriggerCalled;
 		private String lastEvaluationScenario;
+		private String lastEvaluationOutputDir;
 		private boolean agentEventPolicyCleared;
 		private boolean reloadCalled;
 		private Map<String, Object> lastSubmittedTask;
@@ -1447,8 +1454,9 @@ class AiricraftCliMainTest {
 		}
 
 		@Override
-		public Map<String, Object> runEvaluationScenario(String scenario) {
+		public Map<String, Object> runEvaluationScenario(String scenario, String outputDir) {
 			lastEvaluationScenario = scenario;
+			lastEvaluationOutputDir = outputDir;
 			return evaluationRunPayload;
 		}
 

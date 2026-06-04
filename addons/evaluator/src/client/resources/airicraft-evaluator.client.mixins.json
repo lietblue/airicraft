@@ -1,0 +1,15 @@
+{
+	"required": true,
+	"package": "ai.moeru.airicraft.mixin.client",
+	"compatibilityLevel": "JAVA_21",
+	"client": [
+		"LevelSummaryMixin",
+		"SelectWorldScreenEvaluationControlsMixin",
+		"WorldEntryFrozenLoadMixin",
+		"WorldListWidgetEvaluationFilterMixin",
+		"WorldListWidgetInvoker"
+	],
+	"injectors": {
+		"defaultRequire": 1
+	}
+}

@@ -197,6 +197,15 @@ publishing {
 }
 
 gradle.projectsEvaluated {
+	def evaluatorProject = findProject(":addons:evaluator")
+	if (evaluatorProject != null) {
+		tasks.register("runClientEvaluator") {
+			group = "airicraft evaluation"
+			description = "Runs a production-style Fabric client with Airicraft and the evaluator addon."
+			dependsOn evaluatorProject.tasks.named("runClientEvaluator")
+		}
+	}
+
 	def journeyMapCompatProject = findProject(":compat:journeymap")
 	if (journeyMapCompatProject != null) {
 		tasks.register("syncCompatMods") {

@@ -634,13 +634,16 @@ public final class AiricraftCliMain {
 		@Option(names = "--scenario", required = true, description = "Scenario id from `airicraft evaluation scenarios`.")
 		private String scenario;
 
+		@Option(names = "--output-dir", description = "Directory where the evaluator addon should write the scenario flight record.")
+		private String outputDir;
+
 		private EvaluationRunCommand(CliContext context) {
 			super(context, "evaluation run");
 		}
 
 		@Override
 		Map<String, Object> runCommand() {
-			return PayloadViews.evaluationRun(transport().runEvaluationScenario(scenario), verbose());
+			return PayloadViews.evaluationRun(transport().runEvaluationScenario(scenario, outputDir), verbose());
 		}
 	}
 

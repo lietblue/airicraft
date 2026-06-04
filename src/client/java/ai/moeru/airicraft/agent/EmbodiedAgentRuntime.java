@@ -34,10 +34,6 @@ import ai.moeru.airicraft.agent.events.EventPolicyRule;
 import ai.moeru.airicraft.agent.events.EventPolicyRuleUpsert;
 import ai.moeru.airicraft.agent.events.EventPolicyState;
 import ai.moeru.airicraft.agent.events.EventRoutingProfile;
-import ai.moeru.airicraft.agent.evaluation.EvaluationEvidenceSettings;
-import ai.moeru.airicraft.agent.evaluation.EvaluationReport;
-import ai.moeru.airicraft.agent.evaluation.EvaluationScenario;
-import ai.moeru.airicraft.agent.evaluation.ScenarioEvaluationRunner;
 import ai.moeru.airicraft.agent.observability.AgentObservability;
 import ai.moeru.airicraft.agent.observability.FlightRecordingObservability;
 import ai.moeru.airicraft.agent.events.SemanticEventBuffer;
@@ -152,7 +148,6 @@ public final class EmbodiedAgentRuntime {
 
 	private final AiricraftConfig airicraftConfig;
 	private final AgentConfig config;
-	private final ScenarioEvaluationRunner evaluationRunner = new ScenarioEvaluationRunner();
 	private final SingleplayerWorldService singleplayerWorldService = new SingleplayerWorldService();
 	private final SessionRuntime sessionRuntime = new SessionRuntime();
 	private final LanHostingService lanHostingService = new LanHostingService();
@@ -341,7 +336,6 @@ public final class EmbodiedAgentRuntime {
 		completePendingCraftToolResult("Tool result for craft_recipe: cancelled reason=world_left");
 		dialogueRuntime.clear();
 		worldTaskExecutor.onWorldLeave();
-		evaluationRunner.reset();
 		activeJobRuntime.clear();
 		idleIdeaScheduler.reset();
 		followCapability.clear();
@@ -468,7 +462,6 @@ public final class EmbodiedAgentRuntime {
 		}
 		drainEventPipeline();
 
-		evaluationRunner.onTick(new LiveEvaluationContext(client));
 		lastKnownPlayerHealth = currentPlayerHealth(client);
 	}
 
@@ -501,7 +494,6 @@ public final class EmbodiedAgentRuntime {
 		worldLoadTick = -1L;
 		sessionSnapshotOverrideForTests = null;
 		autoLanOpenState.clear();
-		evaluationRunner.reset();
 		localDamageTracker.clear();
 		nearbyPlayerTracker.clear(tickCount, eventBuffer);
 		eventPipeline.clear();
@@ -531,6 +523,10 @@ public final class EmbodiedAgentRuntime {
 		return sessionSnapshot.withTickCount(tickCount);
 	}
 
+	public long tickCount() {
+		return tickCount;
+	}
+
 	public AgentRuntimeSnapshot snapshot() {
 		return new AgentRuntimeSnapshot(
 			initialized,
@@ -538,57 +534,8 @@ public final class EmbodiedAgentRuntime {
 			sessionSnapshot(),
 			taskSnapshot,
 			taskExecutionSnapshot,
-			missionExecutionSnapshot,
-			evaluationRunner.report(tickCount)
+			missionExecutionSnapshot
 		);
-	}
-
-	public EvaluationReport evaluationReport() {
-		return evaluationRunner.report(tickCount);
-	}
-
-	public Map<String, Object> evaluationEvidence() {
-		LinkedHashMap<String, Object> evidence = new LinkedHashMap<>();
-		EvaluationScenario scenario = evaluationRunner.scenario();
-		EvaluationEvidenceSettings settings = scenario == null ? EvaluationEvidenceSettings.defaults() : scenario.evidence();
-		evidence.put("report", evaluationReport());
-		evidence.put("session", sessionSnapshot());
-		if (settings.includeTaskState()) {
-			evidence.put("activeGoal", activeGoal().orElse(null));
-			evidence.put("task", taskSnapshot);
-			evidence.put("taskExecution", taskExecutionSnapshot);
-			evidence.put("missionExecution", missionExecutionSnapshot);
-			evidence.put("activeJob", activeJobRuntime.current());
-		}
-		if (settings.includePlannerJournal()) {
-			evidence.put("planner", plannerDebugSnapshot());
-			evidence.put("plannerJournal", plannerShellJournal());
-			evidence.put("contextExcerpt", plannerContextExcerpt());
-		}
-		if (settings.includeDebugTimeline()) {
-			evidence.put("debugTimeline", debugTimeline(null));
-		}
-		if (settings.includeRecentEvents()) {
-			evidence.put("recentEvents", recentEvents(null));
-		}
-		if (settings.includeWorldSnapshot()) {
-			evidence.put("worldEvidence", currentWorldEvidence(MinecraftClient.getInstance()));
-		}
-		evidence.put("lastChatText", lastChatText());
-		return evidence;
-	}
-
-	public boolean startEvaluation(EvaluationScenario scenario) {
-		if (scenario == null) {
-			return false;
-		}
-		if (scenario.prompt() == null || scenario.prompt().isBlank()) {
-			throw new BridgeUnavailableException("invalid_scenario", "Scenario prompt is empty: " + scenario.id());
-		}
-		proactiveSocialModeOverride = null;
-		prepareClientForEvaluation();
-		evaluationRunner.start(scenario, tickCount, System.currentTimeMillis());
-		return true;
 	}
 
 	public Optional<GoalSnapshot> activeGoal() {
@@ -681,6 +628,43 @@ public final class EmbodiedAgentRuntime {
 
 	public LlmFlightRecordQueryResult llmFlightRecords(Long sinceSequenceId) {
 		return llmFlightRecorder.query(sinceSequenceId);
+	}
+
+	public WorldEvidence currentWorldEvidence() {
+		return currentWorldEvidence(MinecraftClient.getInstance());
+	}
+
+	public int inventoryItemCount(String itemId) {
+		MinecraftClient client = MinecraftClient.getInstance();
+		if (client == null || client.player == null || itemId == null || itemId.isBlank()) {
+			return 0;
+		}
+		return inventoryItemCounter.count(client.player.getInventory()).getOrDefault(itemId, 0);
+	}
+
+	public String blockIdAt(int x, int y, int z) {
+		MinecraftClient client = MinecraftClient.getInstance();
+		if (client == null || client.world == null) {
+			return null;
+		}
+		return Registries.BLOCK.getId(client.world.getBlockState(new BlockPos(x, y, z)).getBlock()).toString();
+	}
+
+	public boolean semanticEventContains(String eventType) {
+		return eventType != null && eventBuffer.containsType(eventType);
+	}
+
+	public void prepareForEvaluation() {
+		proactiveSocialModeOverride = null;
+		prepareClientForEvaluation();
+	}
+
+	public void emitEvaluationChat(String message) {
+		emitEvaluationTrigger(PlannerTriggerType.CHAT, "evaluation", message);
+	}
+
+	public void emitEvaluationSystem(String message) {
+		emitEvaluationTrigger(PlannerTriggerType.SYSTEM, "evaluation", message);
 	}
 
 	public List<String> plannerContextExcerpt() {
@@ -2701,93 +2685,6 @@ public final class EmbodiedAgentRuntime {
 			missionExecutionSnapshot,
 			plannerEventBuffer
 		);
-	}
-
-	private final class LiveEvaluationContext implements ScenarioEvaluationRunner.Context {
-		private final MinecraftClient client;
-
-		private LiveEvaluationContext(MinecraftClient client) {
-			this.client = client;
-		}
-
-		@Override
-		public long tick() {
-			return tickCount;
-		}
-
-		@Override
-		public long nowMs() {
-			return System.currentTimeMillis();
-		}
-
-		@Override
-		public boolean worldLoaded() {
-			return sessionSnapshot.worldLoaded();
-		}
-
-		@Override
-		public boolean plannerConfigured() {
-			return llmAvailable();
-		}
-
-		@Override
-		public boolean plannerInFlight() {
-			return plannerDebugSnapshot().inFlight();
-		}
-
-		@Override
-		public Optional<String> declaredFailure() {
-			if (isDegraded()) {
-				return Optional.of("Planner entered degraded mode");
-			}
-			return Optional.empty();
-		}
-
-		@Override
-		public int inventoryCount(String itemId) {
-			if (client == null || client.player == null || itemId == null || itemId.isBlank()) {
-				return 0;
-			}
-			return inventoryItemCounter.count(client.player.getInventory()).getOrDefault(itemId, 0);
-		}
-
-		@Override
-		public String blockIdAt(int x, int y, int z) {
-			if (client == null || client.world == null) {
-				return null;
-			}
-			return Registries.BLOCK.getId(client.world.getBlockState(new BlockPos(x, y, z)).getBlock()).toString();
-		}
-
-		@Override
-		public boolean eventContains(String eventType) {
-			return eventType != null && eventBuffer.containsType(eventType);
-		}
-
-		@Override
-		public String lastChatText() {
-			return EmbodiedAgentRuntime.this.lastChatText();
-		}
-
-		@Override
-		public String taskState() {
-			return taskSnapshot.state().name();
-		}
-
-		@Override
-		public String taskExecutionState() {
-			return taskExecutionSnapshot.state().name();
-		}
-
-		@Override
-		public void emitInitialPrompt(String prompt) {
-			emitEvaluationTrigger(PlannerTriggerType.CHAT, "evaluation", prompt);
-		}
-
-		@Override
-		public void emitHeartbeat(String message) {
-			emitEvaluationTrigger(PlannerTriggerType.SYSTEM, "evaluation", message);
-		}
 	}
 
 	private void joinFirstWorld() {

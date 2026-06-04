@@ -26,6 +26,11 @@ dependencyResolutionManagement {
 include("wrapper")
 
 def includeAllCompat = gradle.startParameter.projectProperties.get("airicraft.includeCompat") == "true"
+def includeEvaluator = gradle.startParameter.projectProperties.get("airicraft.includeEvaluator") == "true"
+
+if (includeEvaluator) {
+	include("addons:evaluator")
+}
 
 if (includeAllCompat || gradle.startParameter.projectProperties.get("airicraft.includeReiCompat") == "true") {
 	include("compat:rei")

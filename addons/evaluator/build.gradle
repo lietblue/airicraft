@@ -1,0 +1,105 @@
+plugins {
+	id 'net.fabricmc.fabric-loom-remap' version "${loom_version}"
+}
+
+version = project.mod_version
+group = project.maven_group
+
+base {
+	archivesName = "airicraft-evaluator"
+}
+
+loom {
+	splitEnvironmentSourceSets()
+
+	mods {
+		"airicraft-evaluator" {
+			sourceSet sourceSets.main
+			sourceSet sourceSets.client
+		}
+	}
+}
+
+configurations {
+	evaluatorRuntimeMods {
+		canBeConsumed = false
+		canBeResolved = true
+		transitive = false
+	}
+
+	evaluatorRuntimeLibraries {
+		canBeConsumed = false
+		canBeResolved = true
+		transitive = true
+	}
+
+	testRuntimeOnly.extendsFrom(evaluatorRuntimeLibraries)
+}
+
+dependencies {
+	minecraft "com.mojang:minecraft:${project.minecraft_version}"
+	mappings "net.fabricmc:yarn:${project.yarn_mappings}:v2"
+	modImplementation "net.fabricmc:fabric-loader:${project.loader_version}"
+	modImplementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_api_version}"
+	clientCompileOnly rootProject.sourceSets.main.output
+	clientCompileOnly rootProject.sourceSets.client.output
+	implementation "org.yaml:snakeyaml:2.4"
+
+	evaluatorRuntimeMods "net.fabricmc.fabric-api:fabric-api:${project.fabric_api_version}"
+	evaluatorRuntimeLibraries "org.yaml:snakeyaml:2.4"
+	evaluatorRuntimeLibraries "io.opentelemetry:opentelemetry-api:1.60.1"
+	evaluatorRuntimeLibraries "io.opentelemetry:opentelemetry-sdk:1.60.1"
+	evaluatorRuntimeLibraries "io.opentelemetry:opentelemetry-exporter-otlp:1.60.1"
+
+	testImplementation platform("org.junit:junit-bom:5.11.4")
+	testImplementation "org.junit.jupiter:junit-jupiter"
+	testImplementation rootProject.sourceSets.main.output
+	testImplementation rootProject.sourceSets.client.output
+	testRuntimeOnly "org.junit.platform:junit-platform-launcher"
+}
+
+processResources {
+	inputs.property "version", project.version
+
+	filesMatching("fabric.mod.json") {
+		expand "version": inputs.properties.version
+	}
+}
+
+tasks.withType(JavaCompile).configureEach {
+	it.options.release = 21
+}
+
+java {
+	withSourcesJar()
+	sourceCompatibility = JavaVersion.VERSION_21
+	targetCompatibility = JavaVersion.VERSION_21
+}
+
+tasks.named("test") {
+	useJUnitPlatform()
+}
+
+def sharedDevRunDir = rootProject.layout.projectDirectory.dir("run")
+
+tasks.register("runClientEvaluator", net.fabricmc.loom.task.prod.ClientProductionRunTask) {
+	group = "airicraft evaluation"
+	description = "Runs a production-style Fabric client with Airicraft and the evaluator addon."
+	dependsOn rootProject.tasks.named("remapJar")
+	dependsOn tasks.named("remapJar")
+	outputs.upToDateWhen { false }
+
+	mods.from(rootProject.tasks.named("remapJar").flatMap { it.archiveFile })
+	mods.from(tasks.named("remapJar").flatMap { it.archiveFile })
+	mods.from(configurations.evaluatorRuntimeMods)
+	mods.from(rootProject.layout.projectDirectory.files(
+		"libs/baritone-unoptimized-fabric-1.15.0.jar",
+		"libs/nether-pathfinder-1.4.1.jar"
+	))
+	classpath.from(configurations.evaluatorRuntimeLibraries)
+	runDir = sharedDevRunDir.asFile
+	javaLauncher = javaToolchains.launcherFor {
+		languageVersion = JavaLanguageVersion.of(21)
+	}
+	jvmArgs.add("-agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=127.0.0.1:5008")
+}

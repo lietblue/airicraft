@@ -523,7 +523,7 @@ class HttpBridgeTransportTest {
 	}
 
 	@Test
-	void evaluationRunPostsScenario(@TempDir Path tempDir) throws Exception {
+	void evaluationRunPostsScenarioAndOutputDir(@TempDir Path tempDir) throws Exception {
 		try (TestBridgeServer server = TestBridgeServer.start()) {
 			server.respondJson("/v1/evaluation/run", 0, 200, """
 				{"accepted":true,"scenario":"smelting-basic","running":true}
@@ -532,11 +532,12 @@ class HttpBridgeTransportTest {
 			System.setProperty("user.home", tempDir.toString());
 
 			HttpBridgeTransport transport = new HttpBridgeTransport();
-			Map<String, Object> payload = transport.runEvaluationScenario("smelting-basic");
+			Map<String, Object> payload = transport.runEvaluationScenario("smelting-basic", "/tmp/eval-output/run-1");
 
 			assertEquals(true, payload.get("accepted"));
 			assertEquals(1, server.requestCount("/v1/evaluation/run"));
 			assertTrue(server.lastRequestBody("/v1/evaluation/run").contains("\"scenario\":\"smelting-basic\""));
+			assertTrue(server.lastRequestBody("/v1/evaluation/run").contains("\"outputDir\":\"/tmp/eval-output/run-1\""));
 		}
 	}
 

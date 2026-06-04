@@ -111,7 +111,7 @@ interface MinecraftTransport {
 
 	Map<String, Object> getEvaluationConfig();
 
-	Map<String, Object> runEvaluationScenario(String scenario);
+	Map<String, Object> runEvaluationScenario(String scenario, String outputDir);
 
 	Map<String, Object> getEvaluationResults();
 

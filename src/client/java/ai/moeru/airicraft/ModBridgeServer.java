@@ -1,10 +1,9 @@
 package ai.moeru.airicraft;
 
 import ai.moeru.airicraft.agent.EmbodiedAgentRuntime;
-import ai.moeru.airicraft.agent.evaluation.EvaluationScenario;
-import ai.moeru.airicraft.agent.evaluation.EvaluationScenarioLoader;
-import ai.moeru.airicraft.agent.evaluation.EvaluationScenarioRepository;
-import ai.moeru.airicraft.agent.evaluation.EvaluationWorldFixtureService;
+import ai.moeru.airicraft.bridge.BridgeExtensionRegistry;
+import ai.moeru.airicraft.bridge.BridgeRoute;
+import ai.moeru.airicraft.bridge.BridgeRouteContext;
 import ai.moeru.airicraft.agent.integration.map.MapImageCapture;
 import ai.moeru.airicraft.agent.integration.map.MapImageRequest;
 import ai.moeru.airicraft.agent.integration.map.MapIntegrationBridge;
@@ -79,14 +78,6 @@ public final class ModBridgeServer {
 	private static final long DEBUG_COMPACTION_DEFAULT_TIMEOUT_MILLIS = 30_000L;
 	private static final long DEBUG_COMPACTION_MAX_TIMEOUT_MILLIS = 120_000L;
 	private static final long DEBUG_COMPACTION_POLL_INTERVAL_MILLIS = 25L;
-	private static final List<String> EVALUATION_CAPABILITIES = List.of(
-		"scenario_list",
-		"world_restore",
-		"current_config",
-		"planner_loop",
-		"results",
-		"evidence"
-	);
 
 	private final Supplier<HighlightManager> highlightManagerSupplier;
 	private final Supplier<EmbodiedAgentRuntime> agentRuntimeSupplier;
@@ -95,7 +86,6 @@ public final class ModBridgeServer {
 	private final SingleplayerWorldService singleplayerWorldService = new SingleplayerWorldService();
 	private final SavedServerService savedServerService = new SavedServerService();
 	private final PlayerViewService playerViewService = new PlayerViewService();
-	private final EvaluationWorldFixtureService evaluationWorldFixtureService = EvaluationWorldFixtureService.createDefault();
 
 	private volatile HttpServer server;
 	private volatile String token;
@@ -161,12 +151,7 @@ public final class ModBridgeServer {
 			httpServer.createContext("/v1/agent/debug/state", exchange -> handleJson(exchange, this::createAgentDebugStateResponse));
 			httpServer.createContext("/v1/agent/debug/timeline", exchange -> handleJson(exchange, () -> createAgentDebugTimelineResponse(exchange)));
 			httpServer.createContext("/v1/agent/debug/llm-calls", exchange -> handleJson(exchange, () -> createAgentDebugLlmCallsResponse(exchange)));
-			httpServer.createContext("/v1/evaluation/status", exchange -> handleJson(exchange, this::createEvaluationStatusResponse));
-			httpServer.createContext("/v1/evaluation/scenarios", exchange -> handleJson(exchange, this::createEvaluationScenariosResponse));
-			httpServer.createContext("/v1/evaluation/config", exchange -> handleJson(exchange, this::createEvaluationConfigResponse));
-			httpServer.createContext("/v1/evaluation/results", exchange -> handleJson(exchange, this::createEvaluationResultsResponse));
-			httpServer.createContext("/v1/evaluation/evidence", exchange -> handleJson(exchange, this::createEvaluationEvidenceResponse));
-			httpServer.createContext("/v1/evaluation/run", this::handleEvaluationRun);
+			registerExtensionRoutes(httpServer);
 			httpServer.start();
 
 			server = httpServer;
@@ -543,41 +528,6 @@ public final class ModBridgeServer {
 		writeJson(exchange, 405, Map.of("error", "method_not_allowed"));
 	}
 
-	private void handleEvaluationRun(HttpExchange exchange) throws IOException {
-		handleJsonBody(exchange, "POST", EvaluationRunRequest.class, request -> {
-			if (request == null || request.scenario() == null || request.scenario().isBlank()) {
-				throw new BridgeUnavailableException("invalid_request", "Missing scenario");
-			}
-
-			try {
-				EvaluationScenario scenario = evaluationWorldFixtureService.repository().require(request.scenario());
-				var restoredWorld = evaluationWorldFixtureService.restoreScenarioWorld(scenario);
-				Map<String, Object> joinPayload = singleplayerWorldService.joinWorldDirectory(restoredWorld.worldName());
-				onClientThread(() -> {
-					agentRuntime().startEvaluation(scenario);
-					return null;
-				});
-				Map<String, Object> payload = new LinkedHashMap<>();
-				payload.put("accepted", true);
-				payload.put("scenario", scenario.id());
-				payload.put("worldName", restoredWorld.worldName());
-				payload.put("worldPath", restoredWorld.path().toString());
-				payload.put("join", joinPayload);
-				payload.put("report", agentRuntime().evaluationReport());
-				return payload;
-			}
-			catch (EvaluationScenarioRepository.EvaluationScenarioRepositoryException exception) {
-				throw new BridgeUnavailableException(exception.code(), exception.getMessage());
-			}
-			catch (EvaluationWorldFixtureService.EvaluationWorldFixtureException exception) {
-				throw new BridgeUnavailableException(exception.code(), exception.getMessage());
-			}
-			catch (SingleplayerWorldService.SingleplayerWorldException exception) {
-				throw new BridgeUnavailableException(exception.code(), exception.getMessage());
-			}
-		});
-	}
-
 	private void handleAgentOpenLan(HttpExchange exchange) throws IOException {
 		handleJsonBody(exchange, "POST", Object.class, request -> {
 			try {
@@ -812,6 +762,37 @@ public final class ModBridgeServer {
 		return payload;
 	}
 
+	private void registerExtensionRoutes(HttpServer httpServer) {
+		for (BridgeExtensionRegistry.BridgeRouteRegistration registration : BridgeExtensionRegistry.routes()) {
+			httpServer.createContext(registration.path(), exchange -> handleExtensionRoute(exchange, registration.route()));
+		}
+	}
+
+	private void handleExtensionRoute(HttpExchange exchange, BridgeRoute route) throws IOException {
+		if (!authorize(exchange)) {
+			writeJson(exchange, 401, Map.of("error", "unauthorized", "message", "Invalid bridge token"));
+			return;
+		}
+		BridgeRouteContext context = new BridgeRouteContext(
+			exchange,
+			GSON,
+			this::agentRuntime,
+			supplier -> onClientThread(supplier::get)
+		);
+		try {
+			route.handle(context);
+		}
+		catch (JsonSyntaxException exception) {
+			writeJson(exchange, 400, Map.of("error", "invalid_json", "message", "Malformed request payload"));
+		}
+		catch (BridgeUnavailableException exception) {
+			writeJson(exchange, 503, Map.of("error", exception.code(), "message", exception.getMessage()));
+		}
+		catch (Exception exception) {
+			Airicraft.LOGGER.warn("Bridge extension request failed", exception);
+			writeJson(exchange, 500, Map.of("error", "internal_error", "message", exception.getMessage()));
+		}
+	}
 
 	private void handleJson(HttpExchange exchange, Supplier<Object> supplier) throws IOException {
 		if (!authorize(exchange)) {
@@ -1020,99 +1001,8 @@ public final class ModBridgeServer {
 			response.put("degraded", agentRuntime().isDegraded());
 			response.put("plannerJournal", agentRuntime().plannerShellJournal());
 			response.put("eventPolicy", eventPolicySummaryPayload());
-			response.put("evaluation", snapshot.evaluation());
 			return response;
 		});
-	}
-
-	private Object createEvaluationStatusResponse() {
-		return onClientThread(() -> {
-			Map<String, Object> response = new LinkedHashMap<>();
-			response.put("available", true);
-			response.put("sessionMode", agentRuntime().sessionSnapshot().mode().name());
-			response.put("worldLoaded", agentRuntime().sessionSnapshot().worldLoaded());
-			response.put("capabilities", EVALUATION_CAPABILITIES);
-			response.put("scenarioRoot", evaluationWorldFixtureService.repository().root().toString());
-			response.put("report", agentRuntime().evaluationReport());
-			return response;
-		});
-	}
-
-	private Object createEvaluationScenariosResponse() {
-		try {
-			Map<String, Object> response = new LinkedHashMap<>();
-			response.put("available", true);
-			response.put("scenarioRoot", evaluationWorldFixtureService.repository().root().toString());
-			response.put("scenarios", evaluationWorldFixtureService.repository().list().stream()
-				.map(this::evaluationScenarioPayload)
-				.toList());
-			response.put("report", agentRuntime().evaluationReport());
-			return response;
-		}
-		catch (EvaluationScenarioRepository.EvaluationScenarioRepositoryException exception) {
-			throw new BridgeUnavailableException(exception.code(), exception.getMessage());
-		}
-	}
-
-	private Object createEvaluationConfigResponse() {
-		return onClientThread(() -> {
-			try {
-				Path configPath = evaluationWorldFixtureService.resolveCurrentScenarioConfig()
-					.orElseThrow(() -> new BridgeUnavailableException("scenario_not_found", "No scenario config is associated with the current world"));
-				EvaluationScenario scenario = EvaluationScenarioLoader.load(configPath);
-				Map<String, Object> response = new LinkedHashMap<>();
-				response.put("available", true);
-				response.put("scenarioId", scenario.id());
-				response.put("scenarioRoot", evaluationWorldFixtureService.repository().root().toString());
-				response.put("configPath", configPath.toString());
-				response.put("worldArchivePath", evaluationWorldFixtureService.repository().archivePath(scenario).toString());
-				response.put("scenario", evaluationScenarioPayload(scenario));
-				return response;
-			}
-			catch (BridgeUnavailableException exception) {
-				throw exception;
-			}
-			catch (EvaluationWorldFixtureService.EvaluationWorldFixtureException exception) {
-				throw new BridgeUnavailableException(exception.code(), exception.getMessage());
-			}
-			catch (IOException exception) {
-				throw new BridgeUnavailableException("scenario_load_failed", "Failed to load current scenario config: " + exception.getMessage());
-			}
-		});
-	}
-
-	private Object createEvaluationResultsResponse() {
-		return onClientThread(() -> {
-			Map<String, Object> response = new LinkedHashMap<>();
-			response.put("available", true);
-			response.put("report", agentRuntime().evaluationReport());
-			return response;
-		});
-	}
-
-	private Object createEvaluationEvidenceResponse() {
-		return onClientThread(() -> {
-			Map<String, Object> response = new LinkedHashMap<>();
-			response.put("available", true);
-			response.put("evidence", agentRuntime().evaluationEvidence());
-			return response;
-		});
-	}
-
-	private Map<String, Object> evaluationScenarioPayload(EvaluationScenario scenario) {
-		Map<String, Object> payload = new LinkedHashMap<>();
-		payload.put("id", scenario.id());
-		payload.put("name", scenario.name());
-		payload.put("minecraftVersion", scenario.minecraftVersion());
-		payload.put("airicraftVersion", scenario.airicraftVersion());
-		payload.put("worldArchive", scenario.worldArchive());
-		payload.put("frozen", scenario.frozen());
-		payload.put("promptConfigured", scenario.prompt() != null && !scenario.prompt().isBlank());
-		payload.put("checkCount", scenario.checks().size());
-		payload.put("maxPlannerTurns", scenario.budget().maxPlannerTurns());
-		payload.put("maxElapsedTicks", scenario.budget().maxElapsedTicks());
-		payload.put("heartbeatIntervalTicks", scenario.budget().heartbeatIntervalTicks());
-		return payload;
 	}
 
 	private Object createAgentSessionResponse() {
@@ -1869,9 +1759,6 @@ public final class ModBridgeServer {
 	}
 
 	private record EntityInteractionRequest(String uuid, String name, String entityTypeId, String itemId, String mode) {
-	}
-
-	private record EvaluationRunRequest(String scenario) {
 	}
 
 	private record VisionDescribeRequest(String prompt) {

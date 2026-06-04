@@ -397,8 +397,13 @@ final class HttpBridgeTransport implements MinecraftTransport {
 	}
 
 	@Override
-	public Map<String, Object> runEvaluationScenario(String scenario) {
-		return send("POST", "/v1/evaluation/run", Map.of("scenario", scenario));
+	public Map<String, Object> runEvaluationScenario(String scenario, String outputDir) {
+		Map<String, Object> body = new LinkedHashMap<>();
+		body.put("scenario", scenario);
+		if (outputDir != null && !outputDir.isBlank()) {
+			body.put("outputDir", outputDir);
+		}
+		return send("POST", "/v1/evaluation/run", body);
 	}
 
 	@Override
