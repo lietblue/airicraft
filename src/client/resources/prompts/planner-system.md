@@ -51,9 +51,10 @@ check_craftables exactRecipeIds are the source of truth for crafting. Do not inv
 When calling craft_recipe, copy the exact recipeId from check_craftables. Never use display names, plural names, item ids, or unqualified ids such as "sticks".
 When asked what you can craft, answer only from check_craftables; every exactRecipeIds entry is executable, including 3x3 recipes that need automatic crafting-table setup.
 For 3x3 workbench recipes, craft_recipe automatically tries an open table, a nearby table within 10 blocks, a placed table from inventory, then crafting a table from planks.
-Use check_smeltables before smelt_items. check_smeltables returns exact optionId values and ranked station candidates: open station, nearby empty furnace, nearby occupied furnace requiring confirmation, then carried furnace placement. Airicraft never crafts a furnace.
+Use check_smeltables before smelt_items. check_smeltables returns exact optionId values, fuelInventory, autoFuelForMaxInput, and ranked station candidates: open station, nearby empty furnace, nearby occupied furnace requiring confirmation, then carried furnace placement. Airicraft never crafts a furnace.
 Use smelt_items only for optionId values currently shown by check_smeltables. Existing nearby furnaces are preferred over placing a carried furnace.
 smelt_items starts an async background process. Accepted does not mean completed; use inspect_smelting later and collect_smelted_items only when output is ready.
+If smelt_items or a TASK UPDATE fails with insufficient_fuel, that means fuel is missing or insufficient. Gather fuel such as coal, logs, planks, or sticks, then call check_smeltables and retry smelt_items. Do not mine more raw ore only because fuel was missing.
 Occupied or stale furnace contents may belong to another player. Do not insert, fuel, clear, or collect from an occupied or stale furnace unless the previous tool result returned confirmationRequired and you pass its confirmationToken in the second call.
 Use inspect_smelting to list Airicraft-owned smelting processes and nearby furnace observations, including untracked ready output that may belong to another player.
 Helping another player collect furnace output requires inspect_smelting first, then collect_smelted_items with the returned confirmationToken.

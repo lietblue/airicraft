@@ -50,8 +50,9 @@ public final class SmeltingPlannerService {
 		List<SmeltableInput> inputs = smeltableInputs(player, world);
 		List<SmeltingStationCandidate> candidates = manager.rankCandidates(stationCandidates(client, manager, tick));
 		List<SmeltingOption> options = buildOptions(inputs, candidates, observeStations(client), manager, tick);
+		FuelInventorySummary fuelSummary = fuelInventorySummary(player, world);
 		manager.registerOptions(options);
-		return renderCheckSmeltables(options, candidates);
+		return renderCheckSmeltables(options, candidates, fuelSummary);
 	}
 
 	public String inspectSmelting(MinecraftClient client, SmeltingProcessManager manager, long tick) {
@@ -439,12 +440,33 @@ public final class SmeltingPlannerService {
 		return Map.copyOf(counts);
 	}
 
+	private static FuelInventorySummary fuelInventorySummary(ClientPlayerEntity player, ClientWorld world) {
+		LinkedHashMap<String, FuelItemSummary> fuels = new LinkedHashMap<>();
+		for (int slot = 0; slot < player.getInventory().size(); slot++) {
+			ItemStack stack = player.getInventory().getStack(slot);
+			if (stack.isEmpty() || !world.getFuelRegistry().isFuel(stack)) {
+				continue;
+			}
+			String itemId = itemId(stack);
+			int fuelTicks = world.getFuelRegistry().getFuelTicks(stack);
+			FuelItemSummary previous = fuels.get(itemId);
+			fuels.put(itemId, new FuelItemSummary(
+				itemId,
+				(previous == null ? 0 : previous.count()) + stack.getCount(),
+				fuelTicks
+			));
+		}
+		return new FuelInventorySummary(fuels);
+	}
+
 	private static SmeltingStationKey stationKey(ClientWorld world, BlockPos pos) {
 		return new SmeltingStationKey(world.getRegistryKey().getValue().toString(), pos.getX(), pos.getY(), pos.getZ());
 	}
 
-	private static String renderCheckSmeltables(List<SmeltingOption> options, List<SmeltingStationCandidate> candidates) {
-		StringBuilder builder = new StringBuilder("Tool result for check_smeltables: options=").append(options.size());
+	private static String renderCheckSmeltables(List<SmeltingOption> options, List<SmeltingStationCandidate> candidates, FuelInventorySummary fuelSummary) {
+		StringBuilder builder = new StringBuilder("Tool result for check_smeltables: options=").append(options.size())
+			.append(" fuelInventory=")
+			.append(fuelSummary.format());
 		if (options.isEmpty()) {
 			return builder.append(" candidates=").append(candidates.size()).toString();
 		}
@@ -463,6 +485,8 @@ public final class SmeltingPlannerService {
 				.append(option.stationCandidate().state().name())
 				.append(" stationSource=")
 				.append(option.stationCandidate().source().name())
+				.append(" autoFuelForMaxInput=")
+				.append(fuelSummary.bestFuelFor(option.maxInputQuantity(), option.cookTimeTicks()))
 				.append(" confirmationRequired=")
 				.append(option.stationCandidate().confirmationRequired());
 		}
@@ -502,5 +526,48 @@ public final class SmeltingPlannerService {
 		int availableCount,
 		int cookTimeTicks
 	) {
+	}
+
+	private record FuelInventorySummary(Map<String, FuelItemSummary> fuels) {
+		FuelInventorySummary {
+			fuels = fuels == null ? Map.of() : Map.copyOf(fuels);
+		}
+
+		String format() {
+			if (fuels.isEmpty()) {
+				return "none";
+			}
+			return fuels.values().stream()
+				.sorted(Comparator
+					.comparingInt(FuelInventorySummary::defaultCookOperations)
+					.reversed()
+					.thenComparing(FuelItemSummary::itemId))
+				.map(fuel -> fuel.itemId() + "x" + fuel.count() + "(cooks=" + defaultCookOperations(fuel) + ")")
+				.toList()
+				.toString();
+		}
+
+		String bestFuelFor(int inputQuantity, int cookTimeTicks) {
+			FuelItemSummary best = null;
+			int bestQuantity = Integer.MAX_VALUE;
+			for (FuelItemSummary fuel : fuels.values()) {
+				int needed = SmeltingTaskExecutor.fuelItemsNeeded(inputQuantity * cookTimeTicks, fuel.fuelTicksPerItem());
+				if (needed <= 0 || fuel.count() < needed) {
+					continue;
+				}
+				if (needed < bestQuantity || needed == bestQuantity && (best == null || fuel.itemId().compareTo(best.itemId()) < 0)) {
+					best = fuel;
+					bestQuantity = needed;
+				}
+			}
+			return best == null ? "missing" : best.itemId() + "x" + bestQuantity;
+		}
+
+		private static int defaultCookOperations(FuelItemSummary fuel) {
+			return fuel.count() * fuel.fuelTicksPerItem() / DEFAULT_COOK_TIME_TICKS;
+		}
+	}
+
+	private record FuelItemSummary(String itemId, int count, int fuelTicksPerItem) {
 	}
 }

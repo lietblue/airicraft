@@ -24,6 +24,8 @@ import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Direction;
 import net.minecraft.util.math.Vec3d;
 
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.function.Supplier;
@@ -123,15 +125,15 @@ public final class SmeltingTaskExecutor implements WorldTaskExecutor {
 		long tick
 	) {
 		SmeltItemsStepArgs args = request.smeltItems();
-		if (!moveItemsToSlot(client, player, handler, option.inputItemId(), 0, args.inputQuantity())) {
-			return fail(request, "insufficient_input");
-		}
 		FuelSelection fuel = fuelSelection(client, player, handler, option, args).orElse(null);
 		if (fuel == null) {
 			return fail(request, "insufficient_fuel");
 		}
 		if (fuel.quantity() > 0 && !moveItemsToSlot(client, player, handler, fuel.itemId(), 1, fuel.quantity())) {
 			return fail(request, "insufficient_fuel");
+		}
+		if (!moveItemsToSlot(client, player, handler, option.inputItemId(), 0, args.inputQuantity())) {
+			return fail(request, "insufficient_input");
 		}
 		processManager.updateProcessFingerprint(
 			option.optionId(),
@@ -243,22 +245,42 @@ public final class SmeltingTaskExecutor implements WorldTaskExecutor {
 		if (args.fuelMode() == SmeltingFuelMode.MANUAL) {
 			return Optional.of(new FuelSelection(args.fuelItemId(), args.fuelQuantity()));
 		}
-		if (handler.getSlot(1).getStack().getCount() > 0 || handler.getSlot(1).getStack().isEmpty() && furnaceBurning(handler)) {
+		int requiredFuelTicks = args.inputQuantity() * option.cookTimeTicks();
+		ItemStack existingFuel = handler.getSlot(1).getStack();
+		if (existingFuel.isEmpty() && furnaceBurning(handler)) {
 			return Optional.of(new FuelSelection(null, 0));
 		}
-		int requiredFuelTicks = args.inputQuantity() * option.cookTimeTicks();
-		FuelSelection best = null;
+		if (!existingFuel.isEmpty()) {
+			if (!client.world.getFuelRegistry().isFuel(existingFuel)) {
+				return Optional.empty();
+			}
+			int needed = fuelItemsNeeded(requiredFuelTicks, client.world.getFuelRegistry().getFuelTicks(existingFuel));
+			String existingFuelItemId = itemId(existingFuel);
+			if (existingFuel.getCount() >= needed) {
+				return Optional.of(new FuelSelection(null, 0));
+			}
+			if (existingFuel.getCount() + sourceItemCount(handler, existingFuelItemId) >= needed) {
+				return Optional.of(new FuelSelection(existingFuelItemId, needed));
+			}
+			return Optional.empty();
+		}
+		Map<String, Integer> availableFuelCounts = new LinkedHashMap<>();
+		Map<String, Integer> fuelTicksByItemId = new LinkedHashMap<>();
 		for (int slot = 3; slot < handler.slots.size(); slot++) {
 			ItemStack stack = handler.getSlot(slot).getStack();
 			if (stack.isEmpty() || !client.world.getFuelRegistry().isFuel(stack)) {
 				continue;
 			}
-			int fuelTicks = client.world.getFuelRegistry().getFuelTicks(stack);
-			int needed = fuelItemsNeeded(requiredFuelTicks, fuelTicks);
-			if (needed > 0 && stack.getCount() >= needed) {
-				String itemId = itemId(stack);
+			String itemId = itemId(stack);
+			availableFuelCounts.merge(itemId, stack.getCount(), Integer::sum);
+			fuelTicksByItemId.putIfAbsent(itemId, client.world.getFuelRegistry().getFuelTicks(stack));
+		}
+		FuelSelection best = null;
+		for (Map.Entry<String, Integer> entry : availableFuelCounts.entrySet()) {
+			int needed = fuelItemsNeeded(requiredFuelTicks, fuelTicksByItemId.getOrDefault(entry.getKey(), 0));
+			if (needed > 0 && entry.getValue() >= needed) {
 				if (best == null || needed < best.quantity()) {
-					best = new FuelSelection(itemId, needed);
+					best = new FuelSelection(entry.getKey(), needed);
 				}
 			}
 		}
@@ -280,7 +302,11 @@ public final class SmeltingTaskExecutor implements WorldTaskExecutor {
 	}
 
 	private static boolean moveItemsToSlot(MinecraftClient client, ClientPlayerEntity player, ScreenHandler handler, String itemId, int targetSlot, int quantity) {
-		int remaining = quantity;
+		ItemStack targetStack = handler.getSlot(targetSlot).getStack();
+		int remaining = remainingItemsToMove(itemId(targetStack), targetStack.getCount(), itemId, quantity);
+		if (remaining < 0) {
+			return false;
+		}
 		while (remaining > 0) {
 			int sourceSlot = findSourceSlot(handler, itemId);
 			if (sourceSlot < 0) {
@@ -294,6 +320,30 @@ public final class SmeltingTaskExecutor implements WorldTaskExecutor {
 			remaining -= moved;
 		}
 		return true;
+	}
+
+	static int remainingItemsToMove(String currentItemId, int currentCount, String desiredItemId, int desiredQuantity) {
+		if (desiredQuantity <= 0) {
+			return 0;
+		}
+		if (currentItemId == null || currentCount <= 0) {
+			return desiredQuantity;
+		}
+		if (!currentItemId.equals(desiredItemId)) {
+			return -1;
+		}
+		return Math.max(0, desiredQuantity - currentCount);
+	}
+
+	private static int sourceItemCount(ScreenHandler handler, String itemId) {
+		int count = 0;
+		for (int slot = 3; slot < handler.slots.size(); slot++) {
+			ItemStack stack = handler.getSlot(slot).getStack();
+			if (!stack.isEmpty() && itemId.equals(itemId(stack))) {
+				count += stack.getCount();
+			}
+		}
+		return count;
 	}
 
 	private static int moveFromSourceToTarget(

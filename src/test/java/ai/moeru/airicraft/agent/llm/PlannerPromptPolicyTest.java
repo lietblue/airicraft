@@ -104,6 +104,10 @@ class PlannerPromptPolicyTest {
 		assertTrue(prompt.contains("confirmationToken"));
 		assertTrue(prompt.contains("occupied"));
 		assertTrue(prompt.contains("Accepted does not mean completed") || prompt.contains("accepted does not mean completed"));
+		assertTrue(prompt.contains("fuelInventory"));
+		assertTrue(prompt.contains("autoFuelForMaxInput"));
+		assertTrue(prompt.contains("insufficient_fuel"));
+		assertTrue(prompt.contains("Do not mine more raw ore only because fuel was missing."));
 	}
 
 	@Test
