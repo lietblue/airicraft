@@ -8,8 +8,13 @@
 		"CraftingResultSlotMixin",
 		"GameRendererMixin",
 		"GameRendererPauseMixin",
+		"LevelSummaryMixin",
 		"MessageHandlerMixin",
-		"SlotMixin"
+		"SelectWorldScreenEvaluationControlsMixin",
+		"SlotMixin",
+		"WorldEntryFrozenLoadMixin",
+		"WorldListWidgetEvaluationFilterMixin",
+		"WorldListWidgetInvoker"
 	],
 	"injectors": {
 		"defaultRequire": 1
