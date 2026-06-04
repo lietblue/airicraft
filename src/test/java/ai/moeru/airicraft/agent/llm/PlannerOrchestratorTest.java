@@ -841,7 +841,7 @@ class PlannerOrchestratorTest {
 	}
 
 	@Test
-	void supersedesUnfinishedPlannerRequestsAndKeepsOnlyLatestBatchedReply() {
+	void supersedesUnfinishedPlannerRequestsWithoutParallelBackendCalls() {
 		RecordingBackend backend = new RecordingBackend();
 		MutableClock clock = new MutableClock(Instant.ofEpochMilli(1_000L), ZoneId.of("Asia/Taipei"));
 		PlannerOrchestrator orchestrator = newOrchestrator(
@@ -867,36 +867,38 @@ class PlannerOrchestratorTest {
 		assertEquals(1, backend.callCount());
 
 		clock.advanceMillis(1L);
-		awaitBackendCallCount(orchestrator, backend, 2, Duration.ofSeconds(1));
+		assertNull(orchestrator.poll());
+		assertEquals(1, backend.callCount());
 
 		orchestrator.submit(requestAt(12L, 1_200L, "Alice", "C"));
-		assertEquals(2, backend.callCount());
+		assertEquals(1, backend.callCount());
 		PlannerOrchestratorDebugSnapshot secondCoalesce = orchestrator.debugSnapshot();
 		assertTrue(secondCoalesce.coalescePending());
 		assertEquals(20L, secondCoalesce.coalesceWindowMs());
 
 		clock.advanceMillis(19L);
 		assertNull(orchestrator.poll());
-		assertEquals(2, backend.callCount());
+		assertEquals(1, backend.callCount());
 
 		clock.advanceMillis(1L);
-		awaitBackendCallCount(orchestrator, backend, 3, Duration.ofSeconds(1));
+		assertNull(orchestrator.poll());
+		assertEquals(1, backend.callCount());
 
 		assertPromptContains(backend.conversation(0), "[chat][Alice] A");
-		assertPromptContains(backend.conversation(1), "[chat][Alice] A", "[chat][Alice] B");
-		assertPromptContains(backend.conversation(2), "[chat][Alice] A", "[chat][Alice] B", "[chat][Alice] C");
 
 		backend.succeed(0, replyOnly("old A"));
-		backend.succeed(1, replyOnly("old AB"));
-		assertNull(orchestrator.poll());
+		backend.awaitCompletions(1, Duration.ofSeconds(1));
+		awaitBackendCallCount(orchestrator, backend, 2, Duration.ofSeconds(1));
 
-		backend.succeed(2, replyOnly("latest ABC"));
+		assertPromptContains(backend.conversation(1), "[chat][Alice] A", "[chat][Alice] B", "[chat][Alice] C");
+
+		backend.succeed(1, replyOnly("latest ABC"));
 		PlannerExecutionResult result = awaitResult(orchestrator);
 
 		assertEquals("latest ABC", result.response().replyText());
-		assertEquals(3L, result.generation());
+		assertEquals(2L, result.generation());
 		assertEquals(3, result.request().triggerBatch().size());
-		assertEquals(2L, orchestrator.debugSnapshot().supersededCount());
+		assertEquals(1L, orchestrator.debugSnapshot().supersededCount());
 	}
 
 	@Test
@@ -932,11 +934,14 @@ class PlannerOrchestratorTest {
 		assertEquals(1, backend.callCount());
 
 		clock.advanceMillis(1L);
+		assertNull(orchestrator.poll());
+		assertEquals(1, backend.callCount());
+
+		backend.succeed(0, replyOnly("old A"));
+		backend.awaitCompletions(1, Duration.ofSeconds(1));
 		awaitBackendCallCount(orchestrator, backend, 2, Duration.ofSeconds(1));
 		assertPromptContains(backend.conversation(1), "[chat][Alice] A", "[chat][Alice] B", "[chat][Alice] C");
 
-		backend.succeed(0, replyOnly("old A"));
-		assertNull(orchestrator.poll());
 		backend.succeed(1, replyOnly("latest ABC"));
 
 		PlannerExecutionResult result = awaitResult(orchestrator);
@@ -975,6 +980,11 @@ class PlannerOrchestratorTest {
 		assertEquals(1, backend.callCount());
 
 		clock.advanceMillis(1L);
+		assertNull(orchestrator.poll());
+		assertEquals(1, backend.callCount());
+
+		backend.succeed(0, replyOnly("old A"));
+		backend.awaitCompletions(1, Duration.ofSeconds(1));
 		awaitBackendCallCount(orchestrator, backend, 2, Duration.ofSeconds(1));
 	}
 

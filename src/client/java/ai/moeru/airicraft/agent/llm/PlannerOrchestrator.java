@@ -952,6 +952,9 @@ public final class PlannerOrchestrator {
 		if (coalescePending && clock.millis() < coalesceReadyAtMs) {
 			return true;
 		}
+		if (sessionCoordinator.hasInFlight() || pendingToolExecution != null || compactionService.hasInFlight()) {
+			return true;
+		}
 		dropSupersededGenerationBeforeTriggeredSubmit();
 		PlannerContextSnapshot snapshot = contextAggregator.freezePlannerSnapshot(pendingSubmitRequest);
 		if (snapshot == null) {
