@@ -69,6 +69,10 @@ public record ActiveJobProposal(
 		return new ActiveJobProposal(ActiveJobType.MINE_BLOCKS, null, null, mineSpec, null, null, null, null, null, null, null);
 	}
 
+	public static ActiveJobProposal ensureBlocksInInventory(GoalMineSpec mineSpec) {
+		return new ActiveJobProposal(ActiveJobType.ENSURE_BLOCKS_IN_INVENTORY, null, null, mineSpec, null, null, null, null, null, null, null);
+	}
+
 	public static ActiveJobProposal collectResource(TaskSpec taskSpec) {
 		return new ActiveJobProposal(ActiveJobType.COLLECT_RESOURCE, null, null, null, taskSpec, null, null, null, null, null, null);
 	}

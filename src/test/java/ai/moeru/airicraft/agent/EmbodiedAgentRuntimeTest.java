@@ -353,6 +353,61 @@ class EmbodiedAgentRuntimeTest {
 	}
 
 	@Test
+	void mineBlocksIgnoresPickupEventsForCompletion() {
+		FakeWorldTaskExecutor executor = new FakeWorldTaskExecutor();
+		EmbodiedAgentRuntime runtime = EmbodiedAgentRuntime.createForTests(executor);
+		runtime.overrideSessionSnapshotForTests(loadedRemoteSession());
+
+		runtime.executePlannerToolCallForTests(new PlannerToolCall(
+			"call_mine",
+			"mine_blocks",
+			JsonParser.parseString("""
+				{"blockIds":["minecraft:dirt"],"quantity":3}
+				""").getAsJsonObject(),
+			null,
+			null
+		));
+		runtime.onClientTick(null);
+
+		runtime.onPlayerPickedUpItem("minecraft:dirt", 3);
+		runtime.onPlayerMinedBlock("minecraft:dirt", 0, 64, 0);
+		runtime.onPlayerMinedBlock("minecraft:dirt", 1, 64, 0);
+
+		assertTrue(runtime.activeGoal().isPresent());
+		assertFalse(runtime.recentEvents(null).events().stream().anyMatch(event -> "task.completed".equals(event.type())));
+
+		runtime.onPlayerMinedBlock("minecraft:dirt", 2, 64, 0);
+
+		assertTrue(runtime.activeGoal().isEmpty());
+		assertTrue(runtime.recentEvents(null).events().stream().anyMatch(event -> "task.completed".equals(event.type())));
+	}
+
+	@Test
+	void ensureBlocksInInventoryToolRoutesAbsoluteMineGoal() {
+		FakeWorldTaskExecutor executor = new FakeWorldTaskExecutor();
+		EmbodiedAgentRuntime runtime = EmbodiedAgentRuntime.createForTests(executor);
+		runtime.overrideSessionSnapshotForTests(loadedRemoteSession());
+
+		String result = runtime.executePlannerToolCallForTests(new PlannerToolCall(
+				"call_ensure_blocks",
+				"ensure_blocks_in_inventory",
+				JsonParser.parseString("""
+					{"blockIds":["minecraft:dirt"],"quantity":3}
+					""").getAsJsonObject(),
+				null,
+				null
+			));
+		runtime.onClientTick(null);
+
+		WorldTaskRequest request = executor.lastActiveTask.orElseThrow();
+		assertTrue(result.contains("accepted"));
+		assertTrue(result.contains("queued"));
+		assertTrue(result.contains("TASK UPDATE"));
+		assertEquals(WorldTaskType.MINE, request.type());
+		assertEquals(new GoalMineSpec(List.of("minecraft:dirt"), 3), request.goal().mineSpec());
+	}
+
+	@Test
 	void collectSmeltedItemsToolRoutesWorldTaskRequest() {
 		FakeWorldTaskExecutor executor = new FakeWorldTaskExecutor();
 		EmbodiedAgentRuntime runtime = EmbodiedAgentRuntime.createForTests(executor);
@@ -1111,6 +1166,18 @@ class EmbodiedAgentRuntimeTest {
 
 		assertTrue(result.contains("TOOL_ERROR: navigate_to denied"));
 		assertTrue(result.contains("active_task_in_progress"));
+		String ensureResult = runtime.executePlannerToolCallForTests(new PlannerToolCall(
+			"call_ensure",
+			"ensure_blocks_in_inventory",
+			JsonParser.parseString("""
+				{"blockIds":["minecraft:oak_log"],"quantity":3}
+				""").getAsJsonObject(),
+			null,
+			null
+		));
+
+		assertTrue(ensureResult.contains("TOOL_ERROR: ensure_blocks_in_inventory denied"));
+		assertTrue(ensureResult.contains("active_task_in_progress"));
 		assertEquals(TaskState.WAITING_FOR_PICKUP, runtime.taskSnapshot().state());
 		assertEquals(TaskType.COLLECT_RESOURCE, runtime.taskSnapshot().spec().type());
 		assertEquals(GoalType.MINE_BLOCKS, runtime.activeGoal().orElseThrow().type());

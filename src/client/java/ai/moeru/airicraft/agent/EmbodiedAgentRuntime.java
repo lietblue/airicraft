@@ -823,6 +823,10 @@ public final class EmbodiedAgentRuntime {
 		drainEventPipeline();
 	}
 
+	public void onPlayerMinedBlock(String blockId, int x, int y, int z) {
+		activeJobRuntime.recordMinedBlock(blockId, tickCount).ifPresent(event -> handleTerminalTaskEvent(event, false));
+	}
+
 	public void onPlayerDamageObserved(DamageSource damageSource) {
 		localDamageTracker.observeDamageSource(tickCount, damageSource);
 	}
@@ -1091,6 +1095,17 @@ public final class EmbodiedAgentRuntime {
 				applyPlannerJobTool(ActiveJobProposal.mineBlocks(mineSpec));
 				yield queuedActionToolResult("mine_blocks", "blockIds=" + String.join(",", mineSpec.blockIds()) + " quantity=" + mineSpec.quantity());
 			}
+			case PlannerToolCatalog.ENSURE_BLOCKS_IN_INVENTORY -> {
+				if (plannerToolWouldPreemptActiveTask(toolCall)) {
+					yield plannerActiveTaskPreemptionError(toolCall);
+				}
+				GoalMineSpec mineSpec = new GoalMineSpec(
+					stringArrayArg(args, "blockIds"),
+					intArg(args, "quantity").orElseThrow(() -> new IllegalArgumentException("quantity is required"))
+				);
+				applyPlannerJobTool(ActiveJobProposal.ensureBlocksInInventory(mineSpec));
+				yield queuedActionToolResult("ensure_blocks_in_inventory", "blockIds=" + String.join(",", mineSpec.blockIds()) + " quantity=" + mineSpec.quantity());
+			}
 			case PlannerToolCatalog.COLLECT_RESOURCE -> {
 				TaskResourceKind resourceKind = resourceKindArg(args, "resourceKind");
 				int quantity = intArg(args, "quantity").orElseThrow(() -> new IllegalArgumentException("quantity is required"));
@@ -1239,7 +1254,8 @@ public final class EmbodiedAgentRuntime {
 		String normalizedToolName = PlannerToolCatalog.normalizeName(toolCall == null ? null : toolCall.name());
 		return PlannerToolCatalog.FOLLOW_PLAYER.equals(normalizedToolName)
 			|| PlannerToolCatalog.NAVIGATE_TO.equals(normalizedToolName)
-			|| PlannerToolCatalog.MINE_BLOCKS.equals(normalizedToolName);
+			|| PlannerToolCatalog.MINE_BLOCKS.equals(normalizedToolName)
+			|| PlannerToolCatalog.ENSURE_BLOCKS_IN_INVENTORY.equals(normalizedToolName);
 	}
 
 	private String plannerActiveTaskPreemptionError(PlannerToolCall toolCall) {
@@ -2327,7 +2343,7 @@ public final class EmbodiedAgentRuntime {
 			return false;
 		}
 		return switch (intent.activeJob().type()) {
-			case FOLLOW_PLAYER, NAVIGATE_TO, MINE_BLOCKS -> true;
+			case FOLLOW_PLAYER, NAVIGATE_TO, MINE_BLOCKS, ENSURE_BLOCKS_IN_INVENTORY -> true;
 			case IDLE, COLLECT_RESOURCE, CRAFT_RECIPE, DROP_ITEMS, SMELT_ITEMS, COLLECT_SMELTED_ITEMS, ATTACK_ENTITY, USE_ENTITY, ASK_USER -> false;
 		};
 	}

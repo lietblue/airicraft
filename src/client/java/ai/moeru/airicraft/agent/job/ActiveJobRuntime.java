@@ -30,9 +30,12 @@ import ai.moeru.airicraft.agent.tasks.TaskSnapshot;
 import ai.moeru.airicraft.agent.tasks.TaskSpec;
 import ai.moeru.airicraft.agent.tasks.TaskState;
 import ai.moeru.airicraft.agent.tasks.TaskStep;
+import ai.moeru.airicraft.agent.tasks.TaskTerminalEvent;
+import ai.moeru.airicraft.agent.tasks.TaskTerminationCause;
 import ai.moeru.airicraft.agent.tasks.WorldTaskRequest;
 import ai.moeru.airicraft.agent.tasks.WorldEvidence;
 
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
@@ -50,6 +53,8 @@ public final class ActiveJobRuntime {
 	private WorldTaskRequest desiredPrimitiveTask;
 	private String collectAttemptJobId;
 	private int collectAttemptSequence;
+	private String mineAttemptJobId;
+	private int mineAttemptSequence;
 
 	public void clear() {
 		activeJob = ActiveJob.idle();
@@ -61,6 +66,8 @@ public final class ActiveJobRuntime {
 		desiredPrimitiveTask = null;
 		collectAttemptJobId = null;
 		collectAttemptSequence = 0;
+		mineAttemptJobId = null;
+		mineAttemptSequence = 0;
 	}
 
 	public ActiveJob current() {
@@ -70,6 +77,9 @@ public final class ActiveJobRuntime {
 	public Optional<GoalSnapshot> activeGoal(long tick) {
 		if (activeJob.isIdle() || activeJob.status().terminal()) {
 			return Optional.empty();
+		}
+		if (activeJob.type() == ActiveJobType.MINE_BLOCKS && activeJob.directGoal() != null) {
+			return Optional.of(activeJob.directGoal());
 		}
 		if (desiredPrimitiveTask != null
 			&& desiredPrimitiveTask.goal() != null
@@ -95,6 +105,38 @@ public final class ActiveJobRuntime {
 
 	public CollectResourceTaskDebugSnapshot collectResourceDebugSnapshot() {
 		return collectResourceDebugSnapshot;
+	}
+
+	public Optional<TaskTerminalEvent> recordMinedBlock(String blockId, long tick) {
+		if (blockId == null || blockId.isBlank()) {
+			return Optional.empty();
+		}
+		if (activeJob.type() != ActiveJobType.MINE_BLOCKS || activeJob.status().terminal()) {
+			return Optional.empty();
+		}
+		GoalSnapshot goal = activeJob.directGoal();
+		GoalMineSpec spec = goal == null ? null : goal.mineSpec();
+		if (spec == null || !spec.blockIds().contains(blockId)) {
+			return Optional.empty();
+		}
+
+		String taskId = desiredPrimitiveTask == null ? activeJob.jobId() : desiredPrimitiveTask.taskId();
+		int minedCount = activeJob.collectedCount() + 1;
+		ActiveJobStatus nextStatus = minedCount >= spec.quantity()
+			? ActiveJobStatus.COMPLETED
+			: activeMiningStatus(activeJob.status());
+		activeJob = updated(activeJob, nextStatus, null, null, minedCount, tick);
+		refreshDesiredTask(tick);
+		if (nextStatus != ActiveJobStatus.COMPLETED) {
+			return Optional.empty();
+		}
+		return Optional.of(new TaskTerminalEvent(
+			taskId,
+			goal,
+			TaskExecutionState.COMPLETED,
+			"Mined requested blocks",
+			TaskTerminationCause.GOAL_REACHED
+		));
 	}
 
 	public void submitTask(TaskSpec spec, int currentResourceCount, String source, long tick) {
@@ -240,7 +282,8 @@ public final class ActiveJobRuntime {
 			case SMELT_ITEMS, COLLECT_SMELTED_ITEMS -> tickPrimitiveJob(activeJob, lastPrimitiveExecution, actuationAllowed, tick);
 			case ATTACK_ENTITY, USE_ENTITY -> tickPrimitiveJob(activeJob, lastPrimitiveExecution, actuationAllowed, tick);
 			case ASK_USER -> tickAskUser(activeJob, tick);
-			case FOLLOW_PLAYER, NAVIGATE_TO, MINE_BLOCKS -> tickGoalJob(activeJob, lastPrimitiveExecution, actuationAllowed, tick);
+			case MINE_BLOCKS -> tickMineBlocks(activeJob, lastPrimitiveExecution, actuationAllowed, tick);
+			case FOLLOW_PLAYER, NAVIGATE_TO, ENSURE_BLOCKS_IN_INVENTORY -> tickGoalJob(activeJob, lastPrimitiveExecution, actuationAllowed, tick);
 			case IDLE -> ActiveJob.idle();
 		};
 		if (activeJob.type() != ActiveJobType.COLLECT_RESOURCE) {
@@ -254,38 +297,42 @@ public final class ActiveJobRuntime {
 			clearDesiredTaskState();
 			return;
 		}
+		if (activeJob.type() == ActiveJobType.MINE_BLOCKS && activeJob.directGoal() != null) {
+			refreshMineBlocksAttempt(tick);
+			return;
+		}
 		if (activeJob.directGoal() != null) {
-			clearCollectAttemptState();
+			clearAttemptState();
 			desiredPrimitiveTask = WorldTaskRequest.direct(activeJob.jobId(), activeJob.directGoal());
 			return;
 		}
 		if (activeJob.type() == ActiveJobType.CRAFT_RECIPE && activeJob.craftRecipe() != null) {
-			clearCollectAttemptState();
+			clearAttemptState();
 			desiredPrimitiveTask = WorldTaskRequest.craftRecipe(activeJob.jobId(), activeJob.jobId(), activeJob.craftRecipe());
 			return;
 		}
 		if (activeJob.type() == ActiveJobType.DROP_ITEMS && activeJob.dropItems() != null) {
-			clearCollectAttemptState();
+			clearAttemptState();
 			desiredPrimitiveTask = WorldTaskRequest.dropItems(activeJob.jobId(), activeJob.jobId(), activeJob.dropItems());
 			return;
 		}
 		if (activeJob.type() == ActiveJobType.SMELT_ITEMS && activeJob.smeltItems() != null) {
-			clearCollectAttemptState();
+			clearAttemptState();
 			desiredPrimitiveTask = WorldTaskRequest.smeltItems(activeJob.jobId(), activeJob.jobId(), activeJob.smeltItems());
 			return;
 		}
 		if (activeJob.type() == ActiveJobType.COLLECT_SMELTED_ITEMS && activeJob.collectSmeltedItems() != null) {
-			clearCollectAttemptState();
+			clearAttemptState();
 			desiredPrimitiveTask = WorldTaskRequest.collectSmeltedItems(activeJob.jobId(), activeJob.jobId(), activeJob.collectSmeltedItems());
 			return;
 		}
 		if (activeJob.type() == ActiveJobType.ATTACK_ENTITY && activeJob.entityInteraction() != null) {
-			clearCollectAttemptState();
+			clearAttemptState();
 			desiredPrimitiveTask = WorldTaskRequest.attackEntity(activeJob.jobId(), activeJob.jobId(), activeJob.entityInteraction());
 			return;
 		}
 		if (activeJob.type() == ActiveJobType.USE_ENTITY && activeJob.entityInteraction() != null) {
-			clearCollectAttemptState();
+			clearAttemptState();
 			desiredPrimitiveTask = WorldTaskRequest.useEntity(activeJob.jobId(), activeJob.jobId(), activeJob.entityInteraction());
 			return;
 		}
@@ -312,6 +359,45 @@ public final class ActiveJobRuntime {
 		}
 	}
 
+	private void refreshMineBlocksAttempt(long tick) {
+		GoalMineSpec spec = activeJob.directGoal().mineSpec();
+		if (spec == null || activeJob.collectedCount() >= spec.quantity()) {
+			clearDesiredTaskState();
+			return;
+		}
+		boolean mineTaskChanged = !Objects.equals(mineAttemptJobId, activeJob.jobId());
+		boolean mineTaskMissing = desiredPrimitiveTask == null || !Objects.equals(desiredPrimitiveTask.sourceJobId(), activeJob.jobId());
+		boolean primitiveCompleted = lastPrimitiveExecution.state() == TaskExecutionState.COMPLETED
+			&& desiredPrimitiveTask != null
+			&& Objects.equals(lastPrimitiveExecution.taskId(), desiredPrimitiveTask.taskId());
+		if (mineTaskChanged || mineTaskMissing || primitiveCompleted) {
+			startMineBlocksAttempt(spec, tick);
+		}
+	}
+
+	private void startMineBlocksAttempt(GoalMineSpec requestedSpec, long tick) {
+		if (!Objects.equals(mineAttemptJobId, activeJob.jobId())) {
+			mineAttemptJobId = activeJob.jobId();
+			mineAttemptSequence = 0;
+		}
+		mineAttemptSequence++;
+		int remainingToMine = Math.max(1, requestedSpec.quantity() - activeJob.collectedCount());
+		int absoluteInventoryTarget = matchingItemCount(lastEvidence.itemCounts(), requestedSpec.blockIds()) + remainingToMine;
+		GoalSnapshot executionGoal = new GoalSnapshot(
+			GoalType.MINE_BLOCKS,
+			null,
+			null,
+			new GoalMineSpec(requestedSpec.blockIds(), absoluteInventoryTarget),
+			tick,
+			activeJob.directGoal().source()
+		);
+		desiredPrimitiveTask = WorldTaskRequest.collectMine(
+			activeJob.jobId() + ":mine:" + mineAttemptSequence,
+			activeJob.jobId(),
+			executionGoal
+		);
+	}
+
 	private void startCollectAttempt(int remainingQuantity, long tick) {
 		if (activeJob.taskSpec() == null) {
 			clearDesiredTaskState();
@@ -333,12 +419,22 @@ public final class ActiveJobRuntime {
 
 	private void clearDesiredTaskState() {
 		desiredPrimitiveTask = null;
-		clearCollectAttemptState();
+		clearAttemptState();
 	}
 
 	private void clearCollectAttemptState() {
 		collectAttemptJobId = null;
 		collectAttemptSequence = 0;
+	}
+
+	private void clearMineAttemptState() {
+		mineAttemptJobId = null;
+		mineAttemptSequence = 0;
+	}
+
+	private void clearAttemptState() {
+		clearCollectAttemptState();
+		clearMineAttemptState();
 	}
 
 	public TaskSnapshot taskSnapshot() {
@@ -459,6 +555,31 @@ public final class ActiveJobRuntime {
 		};
 	}
 
+	private static ActiveJob tickMineBlocks(
+		ActiveJob job,
+		TaskExecutionSnapshot primitiveExecution,
+		boolean actuationAllowed,
+		long tick
+	) {
+		GoalMineSpec spec = job.directGoal() == null ? null : job.directGoal().mineSpec();
+		if (spec == null) {
+			return updated(job, ActiveJobStatus.FAILED, null, "missing_mine_blocks_args", job.collectedCount(), tick);
+		}
+		if (job.collectedCount() >= spec.quantity()) {
+			return updated(job, ActiveJobStatus.COMPLETED, null, null, job.collectedCount(), tick);
+		}
+		if (!actuationAllowed || primitiveExecution.state() == TaskExecutionState.PAUSED_BY_SESSION_GATE) {
+			return updated(job, ActiveJobStatus.BLOCKED, "session_gate", null, job.collectedCount(), tick);
+		}
+		return switch (primitiveExecution.state()) {
+			case RUNNING -> updated(job, ActiveJobStatus.RUNNING, null, null, job.collectedCount(), tick);
+			case COMPLETED -> updated(job, ActiveJobStatus.RUNNING, null, null, job.collectedCount(), tick);
+			case FAILED -> updated(job, ActiveJobStatus.FAILED, null, nonEmpty(primitiveExecution.lastPathEvent(), "task_failed"), job.collectedCount(), tick);
+			case CANCELLED -> updated(job, ActiveJobStatus.CANCELLED, null, nonEmpty(primitiveExecution.lastPathEvent(), "task_cancelled"), job.collectedCount(), tick);
+			case IDLE, PAUSED_BY_SESSION_GATE -> updated(job, ActiveJobStatus.QUEUED, null, null, job.collectedCount(), tick);
+		};
+	}
+
 	private static ActiveJob tickGoalJob(
 		ActiveJob job,
 		TaskExecutionSnapshot primitiveExecution,
@@ -475,6 +596,23 @@ public final class ActiveJobRuntime {
 			case CANCELLED -> updated(job, ActiveJobStatus.CANCELLED, null, nonEmpty(primitiveExecution.lastPathEvent(), "task_cancelled"), job.collectedCount(), tick);
 			case IDLE, PAUSED_BY_SESSION_GATE -> updated(job, ActiveJobStatus.QUEUED, null, null, job.collectedCount(), tick);
 		};
+	}
+
+	private static ActiveJobStatus activeMiningStatus(ActiveJobStatus status) {
+		return status == ActiveJobStatus.BLOCKED || status == ActiveJobStatus.QUEUED || status == ActiveJobStatus.IDLE
+			? ActiveJobStatus.RUNNING
+			: status;
+	}
+
+	private static int matchingItemCount(Map<String, Integer> itemCounts, List<String> blockIds) {
+		if (itemCounts == null || itemCounts.isEmpty() || blockIds == null || blockIds.isEmpty()) {
+			return 0;
+		}
+		int total = 0;
+		for (String blockId : blockIds) {
+			total += itemCounts.getOrDefault(blockId, 0);
+		}
+		return total;
 	}
 
 	private ActiveJob fromLedger(TaskLedger ledger, int currentResourceCount, String source, long tick) {
@@ -659,6 +797,13 @@ public final class ActiveJobRuntime {
 				source,
 				tick
 			);
+			case ENSURE_BLOCKS_IN_INVENTORY -> fromDirectGoal(
+				newJobId(),
+				new GoalSnapshot(GoalType.MINE_BLOCKS, null, null, proposal.mineSpec(), tick, source),
+				ActiveJobType.ENSURE_BLOCKS_IN_INVENTORY,
+				source,
+				tick
+			);
 			case COLLECT_RESOURCE -> new ActiveJob(
 				newJobId(),
 				ActiveJobType.COLLECT_RESOURCE,
@@ -764,6 +909,7 @@ public final class ActiveJobRuntime {
 			case FOLLOW_PLAYER -> "Follow " + (activeJob.directGoal() == null ? "" : nonEmpty(activeJob.directGoal().targetPlayer(), "player"));
 			case NAVIGATE_TO -> "Navigate to target";
 			case MINE_BLOCKS -> "Mine blocks";
+			case ENSURE_BLOCKS_IN_INVENTORY -> "Ensure blocks in inventory";
 			case COLLECT_RESOURCE -> activeJob.taskSpec() == null ? "Collect resource" : "Collect " + activeJob.taskSpec().quantity() + " " + activeJob.taskSpec().resourceKind().name().toLowerCase();
 			case CRAFT_RECIPE -> activeJob.craftRecipe() == null ? "Craft recipe" : "Run recipe " + activeJob.craftRecipe().recipeId() + " x" + activeJob.craftRecipe().times();
 			case DROP_ITEMS -> activeJob.dropItems() == null ? "Drop items" : "Drop " + activeJob.dropItems().quantity() + " " + activeJob.dropItems().itemId();
@@ -779,7 +925,7 @@ public final class ActiveJobRuntime {
 	private ai.moeru.airicraft.agent.tasks.LedgerStepKind activeStepKind() {
 		return switch (activeJob.type()) {
 			case FOLLOW_PLAYER, NAVIGATE_TO -> ai.moeru.airicraft.agent.tasks.LedgerStepKind.NAVIGATE_TO_POSITION;
-			case MINE_BLOCKS -> ai.moeru.airicraft.agent.tasks.LedgerStepKind.MINE_BLOCKS;
+			case MINE_BLOCKS, ENSURE_BLOCKS_IN_INVENTORY -> ai.moeru.airicraft.agent.tasks.LedgerStepKind.MINE_BLOCKS;
 			case COLLECT_RESOURCE -> ai.moeru.airicraft.agent.tasks.LedgerStepKind.COLLECT_RESOURCE;
 			case CRAFT_RECIPE -> ai.moeru.airicraft.agent.tasks.LedgerStepKind.CRAFT_RECIPE;
 			case DROP_ITEMS -> ai.moeru.airicraft.agent.tasks.LedgerStepKind.DROP_ITEMS;

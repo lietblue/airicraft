@@ -102,6 +102,10 @@ public final class ClientRuntimeController {
 		currentAgentRuntime().onPlayerPickedUpItem(itemId, count);
 	}
 
+	public void onPlayerMinedBlock(String blockId, int x, int y, int z) {
+		currentAgentRuntime().onPlayerMinedBlock(blockId, x, y, z);
+	}
+
 	public void onPlayerDamageObserved(DamageSource damageSource) {
 		currentAgentRuntime().onPlayerDamageObserved(damageSource);
 	}

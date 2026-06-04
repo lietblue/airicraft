@@ -3,6 +3,8 @@ package ai.moeru.airicraft.agent.job;
 import ai.moeru.airicraft.agent.dialogue.DialogueIntent;
 import ai.moeru.airicraft.agent.dialogue.DialogueIntentType;
 import ai.moeru.airicraft.agent.dialogue.DialogueResponse;
+import ai.moeru.airicraft.agent.goals.GoalMineSpec;
+import ai.moeru.airicraft.agent.goals.GoalType;
 import ai.moeru.airicraft.agent.tasks.CraftRecipeStepArgs;
 import ai.moeru.airicraft.agent.tasks.CollectSmeltedItemsStepArgs;
 import ai.moeru.airicraft.agent.tasks.DropItemsStepArgs;
@@ -16,12 +18,15 @@ import ai.moeru.airicraft.agent.tasks.TaskExecutionSnapshot;
 import ai.moeru.airicraft.agent.tasks.TaskExecutionState;
 import ai.moeru.airicraft.agent.tasks.TaskResourceKind;
 import ai.moeru.airicraft.agent.tasks.TaskSpec;
+import ai.moeru.airicraft.agent.tasks.TaskTerminalEvent;
 import ai.moeru.airicraft.agent.tasks.TaskTerminationCause;
 import ai.moeru.airicraft.agent.tasks.TaskType;
 import ai.moeru.airicraft.agent.tasks.WorldEvidence;
 import org.junit.jupiter.api.Test;
 
+import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
@@ -29,6 +34,132 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class ActiveJobRuntimeTest {
+	@Test
+	void minedBlockEventWithoutActiveMineJobIsIgnored() {
+		ActiveJobRuntime runtime = new ActiveJobRuntime();
+
+		assertTrue(runtime.recordMinedBlock("minecraft:dirt", 1L).isEmpty());
+		assertEquals(ActiveJobStatus.IDLE, runtime.current().status());
+	}
+
+	@Test
+	void mineBlocksProgressCountsOnlyMatchingBreakEvents() {
+		ActiveJobRuntime runtime = new ActiveJobRuntime();
+		runtime.applyPlannerResponse(
+			new DialogueResponse(
+				"Mining dirt.",
+				new DialogueIntent(DialogueIntentType.JOB_UPDATE, ActiveJobProposal.mineBlocks(new GoalMineSpec(List.of("minecraft:dirt"), 2))),
+				1L
+			),
+			0,
+			"test",
+			1L
+		);
+
+		assertTrue(runtime.recordMinedBlock("minecraft:stone", 2L).isEmpty());
+		assertEquals(0, runtime.current().collectedCount());
+		assertTrue(runtime.recordMinedBlock("minecraft:dirt", 3L).isEmpty());
+		assertEquals(1, runtime.current().collectedCount());
+		Optional<TaskTerminalEvent> completed = runtime.recordMinedBlock("minecraft:dirt", 4L);
+
+		assertTrue(completed.isPresent());
+		assertEquals(TaskExecutionState.COMPLETED, completed.orElseThrow().terminalState());
+		assertEquals("Mined requested blocks", completed.orElseThrow().message());
+		assertEquals(ActiveJobStatus.COMPLETED, runtime.current().status());
+		assertTrue(runtime.activeTaskRequest().isEmpty());
+	}
+
+	@Test
+	void mineBlocksIgnoresInventoryIncreaseAndRestartsAfterEarlyBaritoneCompletion() {
+		ActiveJobRuntime runtime = new ActiveJobRuntime();
+		runtime.applyPlannerResponse(
+			new DialogueResponse(
+				"Mining dirt.",
+				new DialogueIntent(DialogueIntentType.JOB_UPDATE, ActiveJobProposal.mineBlocks(new GoalMineSpec(List.of("minecraft:dirt"), 3))),
+				1L
+			),
+			0,
+			"test",
+			1L
+		);
+
+		runtime.tick(TaskExecutionSnapshot.idle(), evidence(Map.of("minecraft:dirt", 0), 2L), true, true, 2L);
+		WorldTaskRequest firstAttempt = runtime.activeTaskRequest().orElseThrow();
+		TaskExecutionSnapshot completedBeforeBreaks = new TaskExecutionSnapshot(
+			TaskExecutionState.COMPLETED,
+			firstAttempt.taskId(),
+			firstAttempt.goal(),
+			null,
+			"AT_GOAL",
+			null,
+			TaskTerminationCause.GOAL_REACHED
+		);
+
+		runtime.tick(completedBeforeBreaks, evidence(Map.of("minecraft:dirt", 3), 3L), true, true, 3L);
+		WorldTaskRequest secondAttempt = runtime.activeTaskRequest().orElseThrow();
+
+		assertEquals(ActiveJobStatus.RUNNING, runtime.current().status());
+		assertEquals(0, runtime.current().collectedCount());
+		assertTrue(secondAttempt.taskId().endsWith(":mine:2"));
+		assertEquals(6, secondAttempt.goal().mineSpec().quantity());
+	}
+
+	@Test
+	void mineBlocksRestartsAfterPartialBreakCountAndEarlyBaritoneCompletion() {
+		ActiveJobRuntime runtime = new ActiveJobRuntime();
+		runtime.applyPlannerResponse(
+			new DialogueResponse(
+				"Mining dirt.",
+				new DialogueIntent(DialogueIntentType.JOB_UPDATE, ActiveJobProposal.mineBlocks(new GoalMineSpec(List.of("minecraft:dirt"), 3))),
+				1L
+			),
+			0,
+			"test",
+			1L
+		);
+		runtime.tick(TaskExecutionSnapshot.idle(), evidence(Map.of("minecraft:dirt", 0), 2L), true, true, 2L);
+		WorldTaskRequest firstAttempt = runtime.activeTaskRequest().orElseThrow();
+
+		runtime.recordMinedBlock("minecraft:dirt", 3L);
+		TaskExecutionSnapshot completedAfterOneBreak = new TaskExecutionSnapshot(
+			TaskExecutionState.COMPLETED,
+			firstAttempt.taskId(),
+			firstAttempt.goal(),
+			null,
+			"AT_GOAL",
+			null,
+			TaskTerminationCause.GOAL_REACHED
+		);
+		runtime.tick(completedAfterOneBreak, evidence(Map.of("minecraft:dirt", 1), 4L), true, true, 4L);
+		WorldTaskRequest secondAttempt = runtime.activeTaskRequest().orElseThrow();
+
+		assertEquals(1, runtime.current().collectedCount());
+		assertTrue(secondAttempt.taskId().endsWith(":mine:2"));
+		assertEquals(3, secondAttempt.goal().mineSpec().quantity());
+	}
+
+	@Test
+	void ensureBlocksInInventoryUsesAbsoluteInventoryTarget() {
+		ActiveJobRuntime runtime = new ActiveJobRuntime();
+		GoalMineSpec mineSpec = new GoalMineSpec(List.of("minecraft:dirt"), 3);
+		runtime.applyPlannerResponse(
+			new DialogueResponse(
+				"Ensuring dirt.",
+				new DialogueIntent(DialogueIntentType.JOB_UPDATE, ActiveJobProposal.ensureBlocksInInventory(mineSpec)),
+				1L
+			),
+			0,
+			"test",
+			1L
+		);
+
+		WorldTaskRequest request = runtime.activeTaskRequest().orElseThrow();
+
+		assertEquals(ActiveJobType.ENSURE_BLOCKS_IN_INVENTORY, runtime.current().type());
+		assertEquals(GoalType.MINE_BLOCKS, request.goal().type());
+		assertEquals(mineSpec, request.goal().mineSpec());
+	}
+
 	@Test
 	void collectProgressDoesNotReplaceRunningPrimitiveMineTask() {
 		ActiveJobRuntime runtime = new ActiveJobRuntime();
@@ -286,6 +417,20 @@ class ActiveJobRuntimeTest {
 		return new WorldEvidence(
 			Map.of(TaskResourceKind.WOOD_LOGS, woodLogs),
 			Map.of("minecraft:oak_log", 4),
+			"minecraft:overworld",
+			0,
+			64,
+			0,
+			null,
+			tick
+		);
+	}
+
+	private static WorldEvidence evidence(Map<String, Integer> itemCounts, long tick) {
+		return new WorldEvidence(
+			Map.of(),
+			itemCounts,
+			Map.of(),
 			"minecraft:overworld",
 			0,
 			64,

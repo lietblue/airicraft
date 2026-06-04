@@ -27,6 +27,7 @@ public final class PlannerToolCatalog {
 	public static final String FOLLOW_PLAYER = "follow_player";
 	public static final String NAVIGATE_TO = "navigate_to";
 	public static final String MINE_BLOCKS = "mine_blocks";
+	public static final String ENSURE_BLOCKS_IN_INVENTORY = "ensure_blocks_in_inventory";
 	public static final String COLLECT_RESOURCE = "collect_resource";
 	public static final String CRAFT_RECIPE = "craft_recipe";
 	public static final String SMELT_ITEMS = "smelt_items";
@@ -96,6 +97,11 @@ public final class PlannerToolCatalog {
 				prop("narration", optionalString("Optional visible narration before using the tool. Omit this field when no narration is needed.")),
 				prop("blockIds", stringArray("Namespaced block ids to mine.")),
 				prop("quantity", integer("Number of blocks to mine."))
+			), List.of("blockIds", "quantity")), PlannerToolCatalog::validateMineBlocksArguments),
+		builtInTool(ENSURE_BLOCKS_IN_INVENTORY, false, tool(ENSURE_BLOCKS_IN_INVENTORY, "Ensure the inventory contains at least a target count of matching block items.", properties(
+				prop("narration", optionalString("Optional visible narration before using the tool. Omit this field when no narration is needed.")),
+				prop("blockIds", stringArray("Namespaced block ids whose matching inventory items count toward the target.")),
+				prop("quantity", integer("Minimum matching item count required in inventory. Existing inventory and pickups count."))
 			), List.of("blockIds", "quantity")), PlannerToolCatalog::validateMineBlocksArguments),
 		builtInTool(COLLECT_RESOURCE, false, tool(COLLECT_RESOURCE, "Collect a supported resource kind.", properties(
 				prop("narration", optionalString("Optional visible narration before using the tool. Omit this field when no narration is needed.")),

@@ -51,6 +51,19 @@ class PlannerPromptPolicyTest {
 	}
 
 	@Test
+	void systemPromptDistinguishesMiningFromInventoryEnsuringAndResourceCollection() {
+		String prompt = PlannerPromptPolicy.systemPrompt(PlannerVisionMode.EXTERNAL_SUMMARY);
+
+		assertTrue(prompt.contains("mine_blocks"));
+		assertTrue(prompt.contains("additional matching blocks must be mined"));
+		assertTrue(prompt.contains("Existing inventory and picked-up ground items do not count"));
+		assertTrue(prompt.contains("ensure_blocks_in_inventory"));
+		assertTrue(prompt.contains("inventory should contain at least"));
+		assertTrue(prompt.contains("Existing inventory and picked-up ground items count"));
+		assertTrue(prompt.contains("Use collect_resource for gathering tasks like wood logs"));
+	}
+
+	@Test
 	void systemPromptExplainsEntityInteractionToolSelectors() {
 		String prompt = PlannerPromptPolicy.systemPrompt(PlannerVisionMode.EXTERNAL_SUMMARY);
 

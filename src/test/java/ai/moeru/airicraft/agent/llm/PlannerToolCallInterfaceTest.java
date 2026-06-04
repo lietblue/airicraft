@@ -155,6 +155,25 @@ class PlannerToolCallInterfaceTest {
 	}
 
 	@Test
+	void exposesAndParsesEnsureBlocksInInventoryTool() {
+		JsonArray tools = JsonParser.parseString(gson().toJson(PlannerToolCatalog.openAiTools())).getAsJsonArray();
+
+		assertTrue(toolNames(tools).contains("ensure_blocks_in_inventory"));
+		PlannerToolCall ensureCall = PlannerToolCatalog.parseToolCall(toolCall("ensure_blocks_in_inventory", """
+			{"blockIds":["minecraft:dirt"],"quantity":3}
+			"""));
+
+		assertEquals("ensure_blocks_in_inventory", ensureCall.name());
+		assertEquals("minecraft:dirt", ensureCall.arguments().getAsJsonArray("blockIds").get(0).getAsString());
+		assertEquals(3, ensureCall.arguments().get("quantity").getAsInt());
+		assertThrows(com.google.gson.JsonParseException.class, () ->
+			PlannerToolCatalog.parseToolCall(toolCall("ensure_blocks_in_inventory", """
+				{"blockIds":["minecraft:dirt"],"quantity":0}
+				"""))
+		);
+	}
+
+	@Test
 	void exposesAndParsesEntityInteractionTools() {
 		JsonArray tools = JsonParser.parseString(gson().toJson(PlannerToolCatalog.openAiTools())).getAsJsonArray();
 
