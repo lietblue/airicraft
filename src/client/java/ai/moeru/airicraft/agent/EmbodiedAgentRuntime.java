@@ -2646,12 +2646,6 @@ public final class EmbodiedAgentRuntime {
 			if (isDegraded()) {
 				return Optional.of("Planner entered degraded mode");
 			}
-			if (taskSnapshot.state() == TaskState.FAILED) {
-				return Optional.of("Task failed: " + nonEmpty(taskSnapshot.lastFailure(), "unknown"));
-			}
-			if (taskExecutionSnapshot.state() == TaskExecutionState.FAILED) {
-				return Optional.of("Task execution failed");
-			}
 			return Optional.empty();
 		}
 

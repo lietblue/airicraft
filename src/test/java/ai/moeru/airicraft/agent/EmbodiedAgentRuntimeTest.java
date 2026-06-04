@@ -1,5 +1,7 @@
 package ai.moeru.airicraft.agent;
 
+import ai.moeru.airicraft.AiricraftConfig;
+import ai.moeru.airicraft.FirstPersonScreenshotService;
 import ai.moeru.airicraft.agent.goals.GoalMineSpec;
 import ai.moeru.airicraft.agent.goals.GoalPosition;
 import ai.moeru.airicraft.agent.goals.GoalSnapshot;
@@ -1518,6 +1520,55 @@ class EmbodiedAgentRuntimeTest {
 	}
 
 	@Test
+	void evaluationContinuesAfterRecoverableTaskFailure() {
+		FakeWorldTaskExecutor executor = new FakeWorldTaskExecutor();
+		EmbodiedAgentRuntime runtime = createEvaluationRuntimeForTests(executor);
+		runtime.overrideSessionSnapshotForTests(loadedRemoteSession());
+		EvaluationScenario scenario = new EvaluationScenario(
+			"iron-pickaxe",
+			"Iron Pickaxe",
+			"1.21.8",
+			"test",
+			null,
+			"world.zip",
+			true,
+			"Obtain an iron pickaxe.",
+			new EvaluationBudget(10, 120L, 0L, 20L),
+			List.of(new EvaluationCheck("inventory_contains", Map.of(
+				"itemId", "minecraft:iron_pickaxe",
+				"count", 1
+			))),
+			EvaluationEvidenceSettings.defaults()
+		);
+
+		assertTrue(runtime.startEvaluation(scenario));
+		runtime.onClientTick(null);
+		CompletableFuture<String> resultFuture = runtime.executePlannerToolCallFutureForTests(craftRecipeToolCall());
+		runtime.onClientTick(null);
+		WorldTaskRequest request = executor.lastActiveTask.orElseThrow();
+		executor.nextTerminalEvent = Optional.of(new TaskTerminalEvent(
+			request.taskId(),
+			null,
+			TaskExecutionState.FAILED,
+			"crafting_table_missing_materials",
+			null
+		));
+
+		runtime.onClientTick(null);
+		String result = resultFuture.join();
+
+		assertTrue(result.contains("failed"));
+		assertEquals(TaskExecutionState.FAILED, runtime.taskExecutionSnapshot().state());
+		assertEquals(EvaluationStatus.RUNNING, runtime.evaluationReport().status());
+		assertEquals("Evaluation running", runtime.evaluationReport().message());
+
+		runtime.onClientTick(null);
+
+		assertEquals(TaskState.FAILED, runtime.taskSnapshot().state());
+		assertEquals(EvaluationStatus.RUNNING, runtime.evaluationReport().status());
+	}
+
+	@Test
 	void evaluationEvidenceHonorsScenarioSettings() {
 		EmbodiedAgentRuntime runtime = EmbodiedAgentRuntime.createForTests(new FakeWorldTaskExecutor());
 		EvaluationScenario scenario = new EvaluationScenario(
@@ -1620,6 +1671,45 @@ class EmbodiedAgentRuntimeTest {
 				""").getAsJsonObject(),
 			null,
 			null
+		);
+	}
+
+	private static EmbodiedAgentRuntime createEvaluationRuntimeForTests(WorldTaskExecutor worldTaskExecutor) {
+		return new EmbodiedAgentRuntime(
+			AiricraftConfig.defaults(),
+			new AgentConfig(
+				false,
+				false,
+				configuredLlmConfig(),
+				AgentConfig.IdleConfig.defaults(),
+				AgentConfig.ObservabilityConfig.defaults()
+			),
+			new FirstPersonScreenshotService(),
+			worldTaskExecutor
+		);
+	}
+
+	private static AgentConfig.LlmConfig configuredLlmConfig() {
+		AgentConfig.LlmConfig defaults = AgentConfig.LlmConfig.defaults();
+		return new AgentConfig.LlmConfig(
+			defaults.providerBaseUrl(),
+			"test-key",
+			"test-model",
+			defaults.visionProviderBaseUrl(),
+			defaults.visionApiKey(),
+			defaults.visionModel(),
+			defaults.requestTimeoutMillis(),
+			defaults.visionRequestTimeoutMillis(),
+			defaults.maxRecentConversationTurns(),
+			defaults.plannerCompactionTriggerTokens(),
+			defaults.plannerPendingSemanticEventCap(),
+			defaults.plannerSessionMaxConcurrentAttempts(),
+			defaults.plannerSessionCoalesceStepMillis(),
+			defaults.plannerSessionCoalesceMinMillis(),
+			defaults.plannerSessionCoalesceMaxMillis(),
+			defaults.visionImageDetail(),
+			defaults.plannerNativeVisionEnabled(),
+			defaults.plannerUseJsonObjectResponseFormat()
 		);
 	}
 
