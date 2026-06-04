@@ -60,8 +60,10 @@ class BridgeState:
 class ClientProcess:
     process: subprocess.Popen[str]
     log_path: Path
-    log_thread: threading.Thread
+    log_thread: threading.Thread | None
     line_queue: "queue.Queue[str]"
+    log_handle: Any | None
+    output_detached: bool
 
 
 def utc_now_iso() -> str:
@@ -147,9 +149,30 @@ def safe_name(value: str) -> str:
     return safe or "scenario"
 
 
-def start_client(repo_root: Path, command: str, log_path: Path) -> ClientProcess:
+def start_client(repo_root: Path, command: str, log_path: Path, detach_output: bool = False) -> ClientProcess:
     log_path.parent.mkdir(parents=True, exist_ok=True)
     line_queue: "queue.Queue[str]" = queue.Queue()
+    log_handle = None
+    if detach_output:
+        log_handle = log_path.open("a", encoding="utf-8")
+        process = subprocess.Popen(
+            ["bash", "-lc", command],
+            cwd=repo_root,
+            stdout=log_handle,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+            start_new_session=True,
+        )
+        return ClientProcess(
+            process=process,
+            log_path=log_path,
+            log_thread=None,
+            line_queue=line_queue,
+            log_handle=log_handle,
+            output_detached=True,
+        )
+
     process = subprocess.Popen(
         ["bash", "-lc", command],
         cwd=repo_root,
@@ -171,7 +194,19 @@ def start_client(repo_root: Path, command: str, log_path: Path) -> ClientProcess
 
     thread = threading.Thread(target=pump, name="airicraft-client-log", daemon=True)
     thread.start()
-    return ClientProcess(process=process, log_path=log_path, log_thread=thread, line_queue=line_queue)
+    return ClientProcess(
+        process=process,
+        log_path=log_path,
+        log_thread=thread,
+        line_queue=line_queue,
+        log_handle=None,
+        output_detached=False,
+    )
+
+
+def close_parent_log_handle(client: ClientProcess) -> None:
+    if client.log_handle is not None and not client.log_handle.closed:
+        client.log_handle.close()
 
 
 def stop_client(client: ClientProcess, timeout_seconds: float) -> dict[str, Any]:
@@ -205,8 +240,26 @@ def stop_client(client: ClientProcess, timeout_seconds: float) -> dict[str, Any]
                 except ProcessLookupError:
                     pass
                 process.wait(timeout=10)
-    client.log_thread.join(timeout=5)
+    if client.log_thread is not None:
+        client.log_thread.join(timeout=5)
+    close_parent_log_handle(client)
     result["finalReturnCode"] = process.poll()
+    result["finishedAt"] = utc_now_iso()
+    return result
+
+
+def leave_client_running(client: ClientProcess) -> dict[str, Any]:
+    process = client.process
+    result: dict[str, Any] = {
+        "requestedAt": utc_now_iso(),
+        "pid": process.pid,
+        "initialReturnCode": process.poll(),
+        "method": "LEFT_RUNNING" if process.poll() is None else "ALREADY_EXITED",
+        "finalReturnCode": process.poll(),
+        "logPath": str(client.log_path),
+        "outputDetached": client.output_detached,
+    }
+    close_parent_log_handle(client)
     result["finishedAt"] = utc_now_iso()
     return result
 
@@ -329,6 +382,10 @@ def selected_scenarios(scenarios: list[dict[str, Any]], filters: list[str] | Non
     return selected, skipped
 
 
+def keep_client_for_scenario(args: argparse.Namespace, index: int, total: int) -> bool:
+    return not args.stop_client_after_scenario and index == total
+
+
 def discover_scenarios(repo_root: Path, run_dir: Path, client_command: str, args: argparse.Namespace) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     launch_started_ms = int(time.time() * 1000)
     client = start_client(repo_root, client_command, run_dir / "discovery-client.log")
@@ -393,6 +450,7 @@ def run_scenario(
     index: int,
     client_command: str,
     args: argparse.Namespace,
+    keep_client_after_scenario: bool,
 ) -> dict[str, Any]:
     scenario_id = str(scenario["id"])
     scenario_dir = run_dir / f"{index:02d}-{safe_name(scenario_id)}"
@@ -407,12 +465,18 @@ def run_scenario(
         "reportStatus": None,
         "message": None,
         "clientCommand": client_command,
+        "keepClientAfterScenario": keep_client_after_scenario,
         "archive": scenario_archive_metadata(scenario_root, scenario),
     }
     write_json(scenario_dir / "summary.json", summary)
 
     launch_started_ms = int(time.time() * 1000)
-    client = start_client(repo_root, client_command, scenario_dir / "client.log")
+    client = start_client(
+        repo_root,
+        client_command,
+        scenario_dir / "client.log",
+        detach_output=keep_client_after_scenario,
+    )
     bridge: BridgeState | None = None
     latest_event_seq: int | None = None
     bridge_failures = 0
@@ -497,7 +561,12 @@ def run_scenario(
         summary["message"] = "Interrupted by user"
         summary["interrupted"] = True
     finally:
-        summary["clientExit"] = stop_client(client, args.client_stop_timeout_seconds)
+        if keep_client_after_scenario and client.process.poll() is None:
+            summary["clientExit"] = leave_client_running(client)
+            summary["clientKeptRunning"] = True
+        else:
+            summary["clientExit"] = stop_client(client, args.client_stop_timeout_seconds)
+            summary["clientKeptRunning"] = False
         summary["finishedAt"] = utc_now_iso()
         write_json(scenario_dir / "summary.json", summary)
     return summary
@@ -512,6 +581,7 @@ def write_summary_markdown(run_dir: Path, manifest: dict[str, Any]) -> None:
         f"- Finished: `{manifest.get('finishedAt', '')}`",
         f"- Git commit: `{manifest.get('gitCommit', '')}`",
         f"- Dirty before run: `{manifest.get('gitDirty', '')}`",
+        f"- Stop client after scenario: `{manifest.get('stopClientAfterScenario', '')}`",
         "",
         "## Results",
         "",
@@ -531,6 +601,17 @@ def write_summary_markdown(run_dir: Path, manifest: dict[str, Any]) -> None:
         lines.extend(["", "## Skipped", "", "| Scenario | Reason |", "| --- | --- |"])
         for item in manifest["skipped"]:
             lines.append(f"| `{item.get('id', '')}` | `{item.get('reason', '')}` |")
+    if manifest.get("keptClient"):
+        kept = manifest["keptClient"]
+        lines.extend([
+            "",
+            "## Kept Client",
+            "",
+            f"- Scenario: `{kept.get('scenario', '')}`",
+            f"- PID: `{kept.get('pid', '')}`",
+            f"- Log: `{kept.get('logPath', '')}`",
+            f"- Bridge state: `{kept.get('bridgeStatePath', '')}`",
+        ])
     (run_dir / "summary.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
@@ -569,6 +650,12 @@ def run_self_test() -> None:
     runnable, skipped = selected_scenarios(scenarios, ["a"])
     assert [item["id"] for item in runnable] == ["a"]
     assert skipped == []
+    default_args = argparse.Namespace(stop_client_after_scenario=False)
+    stopping_args = argparse.Namespace(stop_client_after_scenario=True)
+    assert keep_client_for_scenario(default_args, 1, 1)
+    assert not keep_client_for_scenario(default_args, 1, 2)
+    assert keep_client_for_scenario(default_args, 2, 2)
+    assert not keep_client_for_scenario(stopping_args, 1, 1)
     try:
         selected_scenarios(scenarios, ["missing"])
     except RunnerError:
@@ -587,6 +674,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--poll-seconds", type=float, default=5.0, help="Seconds between evaluation result polls.")
     parser.add_argument("--bridge-timeout-seconds", type=float, default=180.0, help="Seconds to wait for the bridge at startup.")
     parser.add_argument("--client-stop-timeout-seconds", type=float, default=45.0, help="Seconds to wait after SIGINT before SIGTERM.")
+    parser.add_argument(
+        "--stop-client-after-scenario",
+        action="store_true",
+        help="Stop the scenario Minecraft client after each scenario. By default the final scenario client is left running.",
+    )
     parser.add_argument("--self-test", action="store_true", help="Run built-in unit checks and exit.")
     return parser.parse_args(argv)
 
@@ -615,6 +707,7 @@ def main(argv: list[str]) -> int:
         "gitCommit": git_value(repo_root, ["rev-parse", "HEAD"]),
         "gitDirty": bool(git_value(repo_root, ["status", "--short"])),
         "scenarioFilters": args.scenario_filters or [],
+        "stopClientAfterScenario": args.stop_client_after_scenario,
         "skipped": [],
         "results": [],
     }
@@ -636,11 +729,32 @@ def main(argv: list[str]) -> int:
         interrupted = False
         for index, scenario in enumerate(runnable, start=1):
             print(f"[{index}/{len(runnable)}] running {scenario['id']}")
-            result = run_scenario(repo_root, run_dir, scenario_root, scenario, index, client_command, args)
+            keep_client_after_scenario = keep_client_for_scenario(args, index, len(runnable))
+            result = run_scenario(
+                repo_root,
+                run_dir,
+                scenario_root,
+                scenario,
+                index,
+                client_command,
+                args,
+                keep_client_after_scenario,
+            )
             manifest["results"].append(result)
+            if result.get("clientKeptRunning"):
+                client_exit = result.get("clientExit", {})
+                manifest["keptClient"] = {
+                    "scenario": result.get("id"),
+                    "pid": client_exit.get("pid"),
+                    "logPath": client_exit.get("logPath"),
+                    "bridgeStatePath": str(bridge_state_path()),
+                }
             write_json(run_dir / "manifest.json", manifest)
             write_summary_markdown(run_dir, manifest)
             print(f"[{index}/{len(runnable)}] {scenario['id']}: {result.get('harnessStatus')} {result.get('reportStatus')}")
+            if result.get("clientKeptRunning"):
+                kept = result.get("clientExit", {})
+                print(f"[{index}/{len(runnable)}] kept client running pid={kept.get('pid')} log={kept.get('logPath')}")
             if result.get("interrupted"):
                 interrupted = True
                 break
