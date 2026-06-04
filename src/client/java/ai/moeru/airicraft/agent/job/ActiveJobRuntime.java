@@ -111,7 +111,10 @@ public final class ActiveJobRuntime {
 		if (blockId == null || blockId.isBlank()) {
 			return Optional.empty();
 		}
-		if (activeJob.type() != ActiveJobType.MINE_BLOCKS || activeJob.status().terminal()) {
+		if (
+			(activeJob.type() != ActiveJobType.MINE_BLOCKS && activeJob.type() != ActiveJobType.ENSURE_BLOCKS_IN_INVENTORY)
+				|| activeJob.status().terminal()
+		) {
 			return Optional.empty();
 		}
 		GoalSnapshot goal = activeJob.directGoal();
@@ -122,11 +125,14 @@ public final class ActiveJobRuntime {
 
 		String taskId = desiredPrimitiveTask == null ? activeJob.jobId() : desiredPrimitiveTask.taskId();
 		int minedCount = activeJob.collectedCount() + 1;
-		ActiveJobStatus nextStatus = minedCount >= spec.quantity()
+		ActiveJobStatus nextStatus = activeJob.type() == ActiveJobType.MINE_BLOCKS && minedCount >= spec.quantity()
 			? ActiveJobStatus.COMPLETED
 			: activeMiningStatus(activeJob.status());
 		activeJob = updated(activeJob, nextStatus, null, null, minedCount, tick);
 		refreshDesiredTask(tick);
+		if (activeJob.type() == ActiveJobType.ENSURE_BLOCKS_IN_INVENTORY) {
+			return Optional.empty();
+		}
 		if (nextStatus != ActiveJobStatus.COMPLETED) {
 			return Optional.empty();
 		}
@@ -134,9 +140,47 @@ public final class ActiveJobRuntime {
 			taskId,
 			goal,
 			TaskExecutionState.COMPLETED,
-			"Mined requested blocks",
+			mineBlocksTerminalMessage("Mined requested blocks", minedCount, spec.quantity(), false),
 			TaskTerminationCause.GOAL_REACHED
 		));
+	}
+
+	public TerminalTaskReport reportTerminalTaskEvent(TaskTerminalEvent event, Optional<WorldTaskRequest> activeRequest) {
+		if (event == null) {
+			return TerminalTaskReport.empty();
+		}
+		if (!isActiveMiningInventoryTask(activeJob.type()) || activeJob.status().terminal()) {
+			return TerminalTaskReport.emit(event);
+		}
+		if (activeRequest.isEmpty() || !Objects.equals(activeRequest.get().sourceJobId(), activeJob.jobId())) {
+			return TerminalTaskReport.emit(event);
+		}
+		if (!Objects.equals(activeRequest.get().taskId(), event.taskId())) {
+			return TerminalTaskReport.emit(event);
+		}
+		GoalSnapshot goal = activeJob.directGoal();
+		GoalMineSpec spec = goal == null ? null : goal.mineSpec();
+		if (spec == null) {
+			return TerminalTaskReport.emit(event);
+		}
+
+		int brokenBlocks = activeJob.collectedCount();
+		if (activeJob.type() == ActiveJobType.ENSURE_BLOCKS_IN_INVENTORY) {
+			return TerminalTaskReport.emit(withTerminalMessage(
+				event,
+				appendBrokenBlocks(event.message(), brokenBlocks)
+			));
+		}
+
+		boolean mismatch = brokenBlocks != spec.quantity();
+		String message = mineBlocksTerminalMessage(event.message(), brokenBlocks, spec.quantity(), mismatch);
+		String warning = mismatch
+			? mineBlocksMismatchWarning(event.taskId(), brokenBlocks, spec.quantity())
+			: null;
+		if (mismatch && event.terminalState() == TaskExecutionState.COMPLETED) {
+			return TerminalTaskReport.warnOnly(warning);
+		}
+		return TerminalTaskReport.of(withTerminalMessage(event, message), warning);
 	}
 
 	public void submitTask(TaskSpec spec, int currentResourceCount, String source, long tick) {
@@ -604,6 +648,37 @@ public final class ActiveJobRuntime {
 			: status;
 	}
 
+	private static boolean isActiveMiningInventoryTask(ActiveJobType type) {
+		return type == ActiveJobType.MINE_BLOCKS || type == ActiveJobType.ENSURE_BLOCKS_IN_INVENTORY;
+	}
+
+	private static TaskTerminalEvent withTerminalMessage(TaskTerminalEvent event, String message) {
+		return new TaskTerminalEvent(
+			event.taskId(),
+			event.goal(),
+			event.terminalState(),
+			message,
+			event.terminationCause()
+		);
+	}
+
+	private static String appendBrokenBlocks(String message, int brokenBlocks) {
+		return nonEmpty(message, "Task finished") + " brokenBlocks=" + Math.max(0, brokenBlocks);
+	}
+
+	private static String mineBlocksTerminalMessage(String message, int brokenBlocks, int requestedBlocks, boolean mismatch) {
+		String result = appendBrokenBlocks(message, brokenBlocks) + " requestedBlocks=" + Math.max(0, requestedBlocks);
+		return mismatch ? result + " warning=broken_block_count_mismatch" : result;
+	}
+
+	private static String mineBlocksMismatchWarning(String taskId, int brokenBlocks, int requestedBlocks) {
+		return "TASK WARNING: mine_blocks broken_block_count_mismatch"
+			+ " taskId=" + nonEmpty(taskId, "")
+			+ " brokenBlocks=" + Math.max(0, brokenBlocks)
+			+ " requestedBlocks=" + Math.max(0, requestedBlocks)
+			+ ". Runtime will keep mining until the requested broken block count is reached.";
+	}
+
 	private static int matchingItemCount(Map<String, Integer> itemCounts, List<String> blockIds) {
 		if (itemCounts == null || itemCounts.isEmpty() || blockIds == null || blockIds.isEmpty()) {
 			return 0;
@@ -613,6 +688,31 @@ public final class ActiveJobRuntime {
 			total += itemCounts.getOrDefault(blockId, 0);
 		}
 		return total;
+	}
+
+	public record TerminalTaskReport(Optional<TaskTerminalEvent> event, Optional<String> warning) {
+		public TerminalTaskReport {
+			event = event == null ? Optional.empty() : event;
+			warning = warning == null ? Optional.empty() : warning
+				.map(String::trim)
+				.filter(value -> !value.isEmpty());
+		}
+
+		public static TerminalTaskReport empty() {
+			return new TerminalTaskReport(Optional.empty(), Optional.empty());
+		}
+
+		public static TerminalTaskReport emit(TaskTerminalEvent event) {
+			return new TerminalTaskReport(Optional.ofNullable(event), Optional.empty());
+		}
+
+		public static TerminalTaskReport warnOnly(String warning) {
+			return new TerminalTaskReport(Optional.empty(), Optional.ofNullable(warning));
+		}
+
+		public static TerminalTaskReport of(TaskTerminalEvent event, String warning) {
+			return new TerminalTaskReport(Optional.ofNullable(event), Optional.ofNullable(warning));
+		}
 	}
 
 	private ActiveJob fromLedger(TaskLedger ledger, int currentResourceCount, String source, long tick) {

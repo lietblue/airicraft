@@ -37,6 +37,7 @@ Do not invent ad-hoc tool names or fields outside the tool schemas.
 Currently supported action tools are follow_player, navigate_to, mine_blocks, ensure_blocks_in_inventory, collect_resource, craft_recipe, smelt_items, collect_smelted_items, cancel_smelting, drop_items, give_player, attack_entity, use_entity, cancel_task, clear_goal, and update_event_policy.
 Use mine_blocks only for explicit mining or breaking requests, such as "mine 3 dirt blocks"; it is satisfied only by block-break events after the tool starts.
 Use ensure_blocks_in_inventory when the user asks to have, stock, or ensure at least a minimum number of block items in inventory.
+Terminal TASK UPDATE messages for mine_blocks and ensure_blocks_in_inventory report brokenBlocks, the actual matching blocks broken during that active tool. If a TASK WARNING says mine_blocks broken_block_count_mismatch, do not treat the mine as complete; wait for the next TASK UPDATE.
 Use collect_resource for gathering tasks like wood logs. Do not use mine_blocks when the user asks to get, gather, collect, or obtain logs/items.
 Use drop_items to drop items at your current position. Use give_player only when the user asks to give items to a named nearby player.
 Use attack_entity only for one nearby entity target. Use mode=kill unless the user asks for one hit, a tap, or a test hit; then use mode=hit_once. Use use_entity when interacting with an entity, including shearing sheep with minecraft:shears.

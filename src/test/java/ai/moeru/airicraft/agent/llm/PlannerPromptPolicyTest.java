@@ -60,6 +60,8 @@ class PlannerPromptPolicyTest {
 		assertTrue(prompt.contains("ensure_blocks_in_inventory"));
 		assertTrue(prompt.contains("inventory should contain at least"));
 		assertTrue(prompt.contains("Existing inventory and picked-up ground items count"));
+		assertTrue(prompt.contains("report brokenBlocks"));
+		assertTrue(prompt.contains("mine_blocks broken_block_count_mismatch"));
 		assertTrue(prompt.contains("Use collect_resource for gathering tasks like wood logs"));
 	}
 

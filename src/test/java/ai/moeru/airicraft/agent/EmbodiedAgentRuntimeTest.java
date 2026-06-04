@@ -383,6 +383,49 @@ class EmbodiedAgentRuntimeTest {
 	}
 
 	@Test
+	void mineBlocksEarlyTerminalMismatchWarnsAndKeepsMining() {
+		FakeWorldTaskExecutor executor = new FakeWorldTaskExecutor();
+		EmbodiedAgentRuntime runtime = EmbodiedAgentRuntime.createForTests(executor);
+		runtime.overrideSessionSnapshotForTests(loadedRemoteSession());
+
+		runtime.executePlannerToolCallForTests(new PlannerToolCall(
+			"call_mine",
+			"mine_blocks",
+			JsonParser.parseString("""
+				{"blockIds":["minecraft:dirt"],"quantity":3}
+				""").getAsJsonObject(),
+			null,
+			null
+		));
+		runtime.onClientTick(null);
+		WorldTaskRequest firstAttempt = executor.lastActiveTask.orElseThrow();
+		executor.nextTerminalEvent = Optional.of(new TaskTerminalEvent(
+			firstAttempt.taskId(),
+			firstAttempt.goal(),
+			TaskExecutionState.COMPLETED,
+			"Goal reached",
+			TaskTerminationCause.GOAL_REACHED
+		));
+
+		runtime.onClientTick(null);
+
+		assertFalse(runtime.recentEvents(null).events().stream().anyMatch(event -> "task.completed".equals(event.type())));
+		assertTrue(runtime.dialogueSnapshot().recentTurns().stream().anyMatch(turn ->
+			"system".equals(turn.speaker())
+				&& turn.text().contains("TASK WARNING: mine_blocks broken_block_count_mismatch")
+				&& turn.text().contains("brokenBlocks=0")
+				&& turn.text().contains("requestedBlocks=3")
+		));
+
+		runtime.onClientTick(null);
+		WorldTaskRequest secondAttempt = executor.lastActiveTask.orElseThrow();
+
+		assertTrue(runtime.activeGoal().isPresent());
+		assertTrue(secondAttempt.taskId().endsWith(":mine:2"));
+		assertEquals(new GoalMineSpec(List.of("minecraft:dirt"), 3), secondAttempt.goal().mineSpec());
+	}
+
+	@Test
 	void ensureBlocksInInventoryToolRoutesAbsoluteMineGoal() {
 		FakeWorldTaskExecutor executor = new FakeWorldTaskExecutor();
 		EmbodiedAgentRuntime runtime = EmbodiedAgentRuntime.createForTests(executor);
@@ -405,6 +448,45 @@ class EmbodiedAgentRuntimeTest {
 		assertTrue(result.contains("TASK UPDATE"));
 		assertEquals(WorldTaskType.MINE, request.type());
 		assertEquals(new GoalMineSpec(List.of("minecraft:dirt"), 3), request.goal().mineSpec());
+	}
+
+	@Test
+	void ensureBlocksInInventoryTerminalUpdateReportsBrokenBlockCount() {
+		FakeWorldTaskExecutor executor = new FakeWorldTaskExecutor();
+		EmbodiedAgentRuntime runtime = EmbodiedAgentRuntime.createForTests(executor);
+		runtime.overrideSessionSnapshotForTests(loadedRemoteSession());
+
+		runtime.executePlannerToolCallForTests(new PlannerToolCall(
+			"call_ensure_blocks",
+			"ensure_blocks_in_inventory",
+			JsonParser.parseString("""
+				{"blockIds":["minecraft:dirt"],"quantity":3}
+				""").getAsJsonObject(),
+			null,
+			null
+		));
+		runtime.onClientTick(null);
+		WorldTaskRequest request = executor.lastActiveTask.orElseThrow();
+		runtime.onPlayerMinedBlock("minecraft:dirt", 0, 64, 0);
+		executor.nextTerminalEvent = Optional.of(new TaskTerminalEvent(
+			request.taskId(),
+			request.goal(),
+			TaskExecutionState.COMPLETED,
+			"Goal reached",
+			TaskTerminationCause.GOAL_REACHED
+		));
+
+		runtime.onClientTick(null);
+
+		assertTrue(runtime.dialogueSnapshot().recentTurns().stream().anyMatch(turn ->
+			"system".equals(turn.speaker())
+				&& turn.text().contains("TASK UPDATE: state=COMPLETED")
+				&& turn.text().contains("brokenBlocks=1")
+		));
+		assertTrue(runtime.recentEvents(null).events().stream().anyMatch(event ->
+			"task.completed".equals(event.type())
+				&& String.valueOf(event.payload().get("message")).contains("brokenBlocks=1")
+		));
 	}
 
 	@Test

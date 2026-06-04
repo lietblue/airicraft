@@ -64,7 +64,7 @@ class ActiveJobRuntimeTest {
 
 		assertTrue(completed.isPresent());
 		assertEquals(TaskExecutionState.COMPLETED, completed.orElseThrow().terminalState());
-		assertEquals("Mined requested blocks", completed.orElseThrow().message());
+		assertEquals("Mined requested blocks brokenBlocks=2 requestedBlocks=2", completed.orElseThrow().message());
 		assertEquals(ActiveJobStatus.COMPLETED, runtime.current().status());
 		assertTrue(runtime.activeTaskRequest().isEmpty());
 	}
@@ -158,6 +158,74 @@ class ActiveJobRuntimeTest {
 		assertEquals(ActiveJobType.ENSURE_BLOCKS_IN_INVENTORY, runtime.current().type());
 		assertEquals(GoalType.MINE_BLOCKS, request.goal().type());
 		assertEquals(mineSpec, request.goal().mineSpec());
+		assertTrue(runtime.recordMinedBlock("minecraft:dirt", 2L).isEmpty());
+		assertTrue(runtime.recordMinedBlock("minecraft:stone", 3L).isEmpty());
+		assertEquals(1, runtime.current().collectedCount());
+		assertNotEquals(ActiveJobStatus.COMPLETED, runtime.current().status());
+	}
+
+	@Test
+	void ensureBlocksInInventoryTerminalReportIncludesBrokenBlockCount() {
+		ActiveJobRuntime runtime = new ActiveJobRuntime();
+		runtime.applyPlannerResponse(
+			new DialogueResponse(
+				"Ensuring dirt.",
+				new DialogueIntent(DialogueIntentType.JOB_UPDATE, ActiveJobProposal.ensureBlocksInInventory(new GoalMineSpec(List.of("minecraft:dirt"), 3))),
+				1L
+			),
+			0,
+			"test",
+			1L
+		);
+		WorldTaskRequest request = runtime.activeTaskRequest().orElseThrow();
+		runtime.recordMinedBlock("minecraft:dirt", 2L);
+
+		ActiveJobRuntime.TerminalTaskReport report = runtime.reportTerminalTaskEvent(
+			new TaskTerminalEvent(
+				request.taskId(),
+				request.goal(),
+				TaskExecutionState.COMPLETED,
+				"Goal reached",
+				TaskTerminationCause.GOAL_REACHED
+			),
+			Optional.of(request)
+		);
+
+		assertTrue(report.warning().isEmpty());
+		assertEquals("Goal reached brokenBlocks=1", report.event().orElseThrow().message());
+	}
+
+	@Test
+	void mineBlocksCompletedTerminalMismatchReportsWarningOnly() {
+		ActiveJobRuntime runtime = new ActiveJobRuntime();
+		runtime.applyPlannerResponse(
+			new DialogueResponse(
+				"Mining dirt.",
+				new DialogueIntent(DialogueIntentType.JOB_UPDATE, ActiveJobProposal.mineBlocks(new GoalMineSpec(List.of("minecraft:dirt"), 3))),
+				1L
+			),
+			0,
+			"test",
+			1L
+		);
+		runtime.tick(TaskExecutionSnapshot.idle(), evidence(Map.of("minecraft:dirt", 0), 2L), true, true, 2L);
+		WorldTaskRequest request = runtime.activeTaskRequest().orElseThrow();
+
+		ActiveJobRuntime.TerminalTaskReport report = runtime.reportTerminalTaskEvent(
+			new TaskTerminalEvent(
+				request.taskId(),
+				request.goal(),
+				TaskExecutionState.COMPLETED,
+				"Goal reached",
+				TaskTerminationCause.GOAL_REACHED
+			),
+			Optional.of(request)
+		);
+
+		assertTrue(report.event().isEmpty());
+		assertTrue(report.warning().orElseThrow().contains("broken_block_count_mismatch"));
+		assertTrue(report.warning().orElseThrow().contains("brokenBlocks=0"));
+		assertTrue(report.warning().orElseThrow().contains("requestedBlocks=3"));
 	}
 
 	@Test

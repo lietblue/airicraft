@@ -415,8 +415,12 @@ public final class EmbodiedAgentRuntime {
 		taskExecutionSnapshot = worldTaskExecutor.snapshot();
 		boolean semanticTaskContext = hasSemanticTaskContext(previousTaskSnapshot, taskSnapshot);
 		recordTaskStateTransition(previousTaskExecutionSnapshot, taskExecutionSnapshot, semanticTaskContext);
-		terminalTaskEvent.ifPresent(this::completePendingCraftToolResult);
-		terminalTaskEvent.ifPresent(event -> handleTerminalTaskEvent(event, semanticTaskContext));
+		terminalTaskEvent.ifPresent(event -> {
+			ActiveJobRuntime.TerminalTaskReport report = activeJobRuntime.reportTerminalTaskEvent(event, activeTaskRequest);
+			report.warning().ifPresent(this::handleInternalTaskWarning);
+			report.event().ifPresent(this::completePendingCraftToolResult);
+			report.event().ifPresent(reportedEvent -> handleTerminalTaskEvent(reportedEvent, semanticTaskContext));
+		});
 		completePendingCraftToolResultFromTaskSnapshot(taskSnapshot);
 		expirePendingCraftToolResultIfTimedOut();
 		behaviorTreeRuntime.tick(
@@ -2412,6 +2416,21 @@ public final class EmbodiedAgentRuntime {
 				+ " goalType=" + event.goal().type().name()
 				+ " message=" + (event.message() == null ? "" : event.message())
 				+ " terminationCause=" + (event.terminationCause() == null ? "" : event.terminationCause().name()),
+			tickCount,
+			sessionSnapshot,
+			activeGoal(),
+			taskSnapshot,
+			missionExecutionSnapshot,
+			eventBuffer
+		);
+	}
+
+	private void handleInternalTaskWarning(String warning) {
+		if (warning == null || warning.isBlank()) {
+			return;
+		}
+		dialogueRuntime.onInternalTaskUpdate(
+			warning,
 			tickCount,
 			sessionSnapshot,
 			activeGoal(),
