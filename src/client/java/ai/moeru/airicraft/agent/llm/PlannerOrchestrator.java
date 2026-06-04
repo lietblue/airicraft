@@ -33,6 +33,7 @@ public final class PlannerOrchestrator {
 	private static final String INVENTORY_BOOTSTRAP_TOOL_CALL_ID = "bootstrap_inspect_inventory";
 	private static final String INVENTORY_BOOTSTRAP_PROMPT = "startup inventory context";
 	private static final String NATIVE_TOOL_RESULT_TEXT = "Tool result for take_a_look: current first-person view attached.";
+	private static final String TOOL_CALL_REPAIR_PREFIX = "TOOL CALL FORMAT REMINDER:";
 	private static final int MAX_TOOL_CALLS_PER_TOOL_PLAN = 20;
 	private static final int SESSION_MAX_ATTEMPTS = 2;
 	private static final long SESSION_RETRY_BACKOFF_MS = 250L;
@@ -670,6 +671,9 @@ public final class PlannerOrchestrator {
 			return null;
 		}
 		if (!plannerResult.succeeded()) {
+			if (scheduleParseRepairRetry(plannerResult)) {
+				return null;
+			}
 			return finishFailedPlannerResult(plannerResult);
 		}
 
@@ -719,6 +723,12 @@ public final class PlannerOrchestrator {
 
 		PlannerExecutionResult toolRequestFailure = validateToolRequest(plannerResult, toolCalls);
 		if (toolRequestFailure != null) {
+			if (scheduleParseRepairRetry(toolRequestFailure)) {
+				return null;
+			}
+			appendFailureCard(toolRequestFailure);
+			debugRecorder.recordPlannerCompletion(toolRequestFailure);
+			sessionCoordinator.finishGeneration(plannerResult.generation(), true);
 			return toolRequestFailure;
 		}
 		startToolExecution(plannerResult, toolCalls);
@@ -787,11 +797,31 @@ public final class PlannerOrchestrator {
 	}
 
 	private PlannerExecutionResult rejectToolRequest(PlannerExecutionResult plannerResult, String message) {
-		PlannerExecutionResult failure = parseFailure(plannerResult, message);
-		appendFailureCard(failure);
-		debugRecorder.recordPlannerCompletion(failure);
-		sessionCoordinator.finishGeneration(plannerResult.generation(), true);
-		return failure;
+		return parseFailure(plannerResult, message);
+	}
+
+	private boolean scheduleParseRepairRetry(PlannerExecutionResult failure) {
+		if (failure == null || failure.failureType() != LlmFailureType.PARSE_ERROR) {
+			return false;
+		}
+		boolean scheduled = sessionCoordinator.scheduleParseRepairRetry(
+			failure.generation(),
+			LlmChatMessage.user(toolCallRepairMessage(failure.failureMessage()), LlmMessageKind.NOTICE)
+		);
+		if (scheduled) {
+			Airicraft.LOGGER.info("Planner parse failure scheduled tool-call repair retry generation={} attempt={}", failure.generation(), failure.attempt());
+		}
+		return scheduled;
+	}
+
+	private static String toolCallRepairMessage(String failureMessage) {
+		return TOOL_CALL_REPAIR_PREFIX
+			+ " Previous response was rejected: "
+			+ (failureMessage == null || failureMessage.isBlank() ? "parse error" : failureMessage)
+			+ "\nCall exactly one tool in this response unless every tool call is a read-only text tool."
+			+ "\nDo not batch action tools such as navigate_to, mine_blocks, collect_resource, craft_recipe, smelt_items, drop_items, give_player, attack_entity, use_entity, cancel_task, clear_goal, or update_event_policy."
+			+ "\nIf multiple actions are needed, call only the next single action tool now and wait for the tool result or TASK UPDATE before another action."
+			+ "\nWhen calling a tool, leave assistant content empty and put visible pre-action text in the tool narration argument.";
 	}
 
 	private void startToolExecution(PlannerExecutionResult plannerResult, List<PlannerToolCall> toolCalls) {

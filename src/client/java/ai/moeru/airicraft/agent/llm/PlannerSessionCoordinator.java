@@ -166,6 +166,20 @@ public final class PlannerSessionCoordinator {
 		return true;
 	}
 
+	public boolean scheduleParseRepairRetry(long generation, LlmChatMessage repairMessage) {
+		if (
+			activeSession == null
+				|| activeSession.generation() != generation
+				|| !activeSession.replaceable()
+				|| activeSession.conversation() == null
+				|| activeSession.attemptCount() >= maxAttempts
+		) {
+			return false;
+		}
+		activeSession.scheduleRetry(clock.millis(), activeSession.conversation().withAppended(repairMessage));
+		return true;
+	}
+
 	public void finishGeneration(long generation, boolean failed) {
 		if (activeSession == null || activeSession.generation() != generation) {
 			return;

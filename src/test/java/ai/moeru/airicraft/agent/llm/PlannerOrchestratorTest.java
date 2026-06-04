@@ -644,7 +644,7 @@ class PlannerOrchestratorTest {
 		int toolRequestCountLimit = 20;
 
 		OpenAiCompatibleLlmBackend backend = new OpenAiCompatibleLlmBackend(AgentConfig.LlmConfig.defaults());
-		for (int index = 0; index <= toolRequestCountLimit; index++) {
+		for (int index = 0; index <= toolRequestCountLimit + 1; index++) {
 			backend.injectMockResponse(new PlannerResponse(
 				"",
 				new PlannerIntent("none", null, null),
@@ -671,6 +671,7 @@ class PlannerOrchestratorTest {
 		assertNotNull(result);
 		assertEquals(LlmFailureType.PARSE_ERROR, result.failureType());
 		assertTrue(result.failureMessage().contains("too many tools"));
+		assertEquals(2, result.attempt());
 		assertNull(result.response());
 	}
 
@@ -1635,11 +1636,21 @@ class PlannerOrchestratorTest {
 			new PlannerToolCall("call_nav", PlannerToolCatalog.NAVIGATE_TO, navigateArgs, null, null),
 			new PlannerToolCall("call_craft", PlannerToolCatalog.CRAFT_RECIPE, craftArgs, null, null)
 		), null));
+		awaitBackendCallCount(orchestrator, backend, 2, Duration.ofSeconds(1));
+		assertTrue(
+			conversationText(backend.conversation(1)).contains("TOOL CALL FORMAT REMINDER"),
+			conversationText(backend.conversation(1))
+		);
+		backend.succeed(1, PlannerResponse.toolCalls(List.of(
+			new PlannerToolCall("call_nav_retry", PlannerToolCatalog.NAVIGATE_TO, navigateArgs, null, null),
+			new PlannerToolCall("call_craft_retry", PlannerToolCatalog.CRAFT_RECIPE, craftArgs, null, null)
+		), null));
 
 		PlannerExecutionResult result = awaitResult(orchestrator);
 		assertFalse(result.succeeded());
 		assertEquals(LlmFailureType.PARSE_ERROR, result.failureType());
 		assertTrue(result.failureMessage().contains("only read-only text tools can be batched"));
+		assertEquals(2, result.attempt());
 		assertTrue(invokedTools.isEmpty());
 	}
 
@@ -1765,12 +1776,22 @@ class PlannerOrchestratorTest {
 			new PlannerToolCall("call_inventory", "inspect_inventory", inventoryArgs, null, null),
 			new PlannerToolCall("call_look", "take_a_look", lookArgs, null, null)
 		), null));
+		awaitBackendCallCount(orchestrator, backend, 2, Duration.ofSeconds(1));
+		assertTrue(
+			conversationText(backend.conversation(1)).contains("TOOL CALL FORMAT REMINDER"),
+			conversationText(backend.conversation(1))
+		);
+		backend.succeed(1, new PlannerResponse("", List.of(
+			new PlannerToolCall("call_inventory_retry", "inspect_inventory", inventoryArgs, null, null),
+			new PlannerToolCall("call_look_retry", "take_a_look", lookArgs, null, null)
+		), null));
 
 		PlannerExecutionResult result = awaitResult(orchestrator);
 
 		assertFalse(result.succeeded());
 		assertEquals(LlmFailureType.PARSE_ERROR, result.failureType());
 		assertTrue(result.failureMessage().contains("multiple tools"));
+		assertEquals(2, result.attempt());
 		assertEquals(0, inventoryTool.inventoryRequestCount());
 	}
 
@@ -3092,5 +3113,11 @@ class PlannerOrchestratorTest {
 
 	private static String terminalPrompt(LlmConversation conversation) {
 		return conversation.messages().get(conversation.messages().size() - 1).content();
+	}
+
+	private static String conversationText(LlmConversation conversation) {
+		return conversation.messages().stream()
+			.map(LlmChatMessage::content)
+			.reduce("", (left, right) -> left + "\n" + right);
 	}
 }

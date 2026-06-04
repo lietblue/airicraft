@@ -22,6 +22,8 @@ import ai.moeru.airicraft.agent.llm.PlannerExecutor;
 import ai.moeru.airicraft.agent.llm.PlannerIntent;
 import ai.moeru.airicraft.agent.llm.PlannerOrchestrator;
 import ai.moeru.airicraft.agent.llm.PlannerResponse;
+import ai.moeru.airicraft.agent.llm.PlannerToolCall;
+import ai.moeru.airicraft.agent.llm.PlannerToolCatalog;
 import ai.moeru.airicraft.agent.llm.PlannerTrigger;
 import ai.moeru.airicraft.agent.llm.PlannerTriggerType;
 import ai.moeru.airicraft.agent.llm.PlannerVisionMode;
@@ -51,6 +53,7 @@ import ai.moeru.airicraft.agent.tasks.TaskStep;
 import ai.moeru.airicraft.agent.tasks.TaskType;
 import ai.moeru.airicraft.agent.tasks.WorldEvidence;
 import ai.moeru.airicraft.agent.session.SessionSnapshot;
+import com.google.gson.JsonObject;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
@@ -469,6 +472,38 @@ class DialogueRuntimeTest {
 		assertTrue(replayedPrompt.contains("current-step"));
 		assertFalse(replayedPrompt.contains("Stale craft planks"));
 		assertFalse(replayedPrompt.contains("stale-step"));
+		runtime.shutdown();
+	}
+
+	@Test
+	void parseFailureRetryCanRecoverWithoutVisibleFailure() {
+		OpenAiCompatibleLlmBackend backend = new OpenAiCompatibleLlmBackend(AgentConfig.LlmConfig.defaults());
+		DialogueRuntime runtime = newDialogueRuntime(backend);
+		SemanticEventBuffer eventBuffer = new SemanticEventBuffer(32);
+		JsonObject navigateArgs = new JsonObject();
+		navigateArgs.addProperty("x", 1);
+		navigateArgs.addProperty("y", 64);
+		navigateArgs.addProperty("z", 2);
+		navigateArgs.addProperty("exactY", false);
+		JsonObject craftArgs = new JsonObject();
+		craftArgs.addProperty("recipeId", "minecraft:oak_planks");
+		craftArgs.addProperty("times", 1);
+		backend.injectMockResponse(PlannerResponse.toolCalls(List.of(
+			new PlannerToolCall("call_nav", PlannerToolCatalog.NAVIGATE_TO, navigateArgs, null, null),
+			new PlannerToolCall("call_craft", PlannerToolCatalog.CRAFT_RECIPE, craftArgs, null, null)
+		), null));
+		backend.injectMockResponse(new PlannerResponse(
+			"I will do one step at a time.",
+			new PlannerIntent("reply_only", null, null)
+		));
+
+		runtime.onPlayerChat("Alice", "@agent move and craft", 10L, SessionSnapshot.initial(), "Alice", Optional.empty(), eventBuffer);
+		DialogueResponse response = awaitResponse(runtime, eventBuffer, Duration.ofSeconds(1));
+
+		assertEquals("I will do one step at a time.", response.text());
+		assertEquals(0, runtime.consecutiveFailureCount());
+		assertFalse(runtime.isDegraded());
+		assertFalse(eventBuffer.containsType("planner.parse_error"));
 		runtime.shutdown();
 	}
 

@@ -84,6 +84,11 @@ final class PlannerSession {
 		retryReadyAtMs = whenMs;
 	}
 
+	void scheduleRetry(long whenMs, LlmConversation replacementConversation) {
+		conversation = replacementConversation;
+		retryReadyAtMs = whenMs;
+	}
+
 	void clearRetry() {
 		retryReadyAtMs = -1L;
 	}
