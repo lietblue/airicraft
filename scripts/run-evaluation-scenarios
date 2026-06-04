@@ -431,6 +431,7 @@ def collect_final_bundle(bridge: BridgeState, scenario_dir: Path) -> dict[str, A
         "agent-status-final.json": "/v1/agent/status",
         "agent-debug-state-final.json": "/v1/agent/debug/state",
         "agent-debug-timeline-final.json": "/v1/agent/debug/timeline",
+        "agent-debug-llm-calls-final.json": "/v1/agent/debug/llm-calls",
         "agent-events-final.json": "/v1/agent/events/recent",
         "world-snapshot-final.json": "/v1/world-snapshot?radius=4",
     }
@@ -440,6 +441,80 @@ def collect_final_bundle(bridge: BridgeState, scenario_dir: Path) -> dict[str, A
         write_json(scenario_dir / filename, result)
         summary[filename] = {"ok": result.get("ok", False)}
     return summary
+
+
+def drain_debug_timeline(
+    bridge: BridgeState,
+    scenario_dir: Path,
+    latest_entry_id: int | None,
+    collected_at: str,
+) -> tuple[int | None, bool]:
+    path = "/v1/agent/debug/timeline"
+    if latest_entry_id is not None:
+        path += f"?since={latest_entry_id}"
+    payload = bridge_json(bridge, "GET", path, timeout_seconds=10)
+    for entry in payload.get("entries", []):
+        append_jsonl(scenario_dir / "debug-timeline.jsonl", {
+            "collectedAt": collected_at,
+            "entry": entry,
+        })
+    latest = payload.get("latestEntryId", latest_entry_id)
+    return latest, bool(payload.get("truncated", False))
+
+
+def drain_llm_calls(
+    bridge: BridgeState,
+    scenario_dir: Path,
+    latest_sequence_id: int | None,
+    collected_at: str,
+) -> tuple[int | None, bool]:
+    path = "/v1/agent/debug/llm-calls"
+    if latest_sequence_id is not None:
+        path += f"?since={latest_sequence_id}"
+    payload = bridge_json(bridge, "GET", path, timeout_seconds=10)
+    for record in payload.get("records", []):
+        append_jsonl(scenario_dir / "llm-calls.jsonl", {
+            "collectedAt": collected_at,
+            "record": record,
+        })
+    latest = payload.get("latestSequenceId", latest_sequence_id)
+    return latest, bool(payload.get("truncated", False))
+
+
+def drain_debug_recorders(
+    bridge: BridgeState,
+    scenario_dir: Path,
+    latest_timeline_entry_id: int | None,
+    latest_llm_sequence_id: int | None,
+    collected_at: str,
+) -> tuple[int | None, int | None, dict[str, Any]]:
+    result: dict[str, Any] = {
+        "timelineOk": False,
+        "llmCallsOk": False,
+        "timelineTruncated": False,
+        "llmCallsTruncated": False,
+    }
+    try:
+        latest_timeline_entry_id, result["timelineTruncated"] = drain_debug_timeline(
+            bridge,
+            scenario_dir,
+            latest_timeline_entry_id,
+            collected_at,
+        )
+        result["timelineOk"] = True
+    except Exception as error:
+        result["timelineError"] = endpoint_error(error)
+    try:
+        latest_llm_sequence_id, result["llmCallsTruncated"] = drain_llm_calls(
+            bridge,
+            scenario_dir,
+            latest_llm_sequence_id,
+            collected_at,
+        )
+        result["llmCallsOk"] = True
+    except Exception as error:
+        result["llmCallsError"] = endpoint_error(error)
+    return latest_timeline_entry_id, latest_llm_sequence_id, result
 
 
 def run_scenario(
@@ -479,6 +554,8 @@ def run_scenario(
     )
     bridge: BridgeState | None = None
     latest_event_seq: int | None = None
+    latest_timeline_entry_id: int | None = None
+    latest_llm_sequence_id: int | None = None
     bridge_failures = 0
     final_results: dict[str, Any] | None = None
 
@@ -531,6 +608,24 @@ def run_scenario(
                         "event": event,
                     })
 
+                latest_timeline_entry_id, latest_llm_sequence_id, debug_drain = drain_debug_recorders(
+                    bridge,
+                    scenario_dir,
+                    latest_timeline_entry_id,
+                    latest_llm_sequence_id,
+                    collected_at,
+                )
+                if debug_drain.get("timelineTruncated") or debug_drain.get("llmCallsTruncated") or not debug_drain.get("timelineOk") or not debug_drain.get("llmCallsOk"):
+                    append_jsonl(scenario_dir / "status-samples.jsonl", {
+                        "collectedAt": collected_at,
+                        "kind": "debug_drain",
+                        "payload": debug_drain,
+                    })
+                summary["debugTimelineLatestEntryId"] = latest_timeline_entry_id
+                summary["llmCallsLatestSequenceId"] = latest_llm_sequence_id
+                summary["debugTimelineTruncated"] = bool(summary.get("debugTimelineTruncated", False) or debug_drain.get("timelineTruncated"))
+                summary["llmCallsTruncated"] = bool(summary.get("llmCallsTruncated", False) or debug_drain.get("llmCallsTruncated"))
+
                 if report_status in TERMINAL_STATUSES:
                     summary["harnessStatus"] = "OK"
                     break
@@ -549,6 +644,24 @@ def run_scenario(
             time.sleep(args.poll_seconds)
 
         if bridge is not None:
+            collected_at = utc_now_iso()
+            latest_timeline_entry_id, latest_llm_sequence_id, debug_drain = drain_debug_recorders(
+                bridge,
+                scenario_dir,
+                latest_timeline_entry_id,
+                latest_llm_sequence_id,
+                collected_at,
+            )
+            if debug_drain.get("timelineTruncated") or debug_drain.get("llmCallsTruncated") or not debug_drain.get("timelineOk") or not debug_drain.get("llmCallsOk"):
+                append_jsonl(scenario_dir / "status-samples.jsonl", {
+                    "collectedAt": collected_at,
+                    "kind": "debug_drain_final",
+                    "payload": debug_drain,
+                })
+            summary["debugTimelineLatestEntryId"] = latest_timeline_entry_id
+            summary["llmCallsLatestSequenceId"] = latest_llm_sequence_id
+            summary["debugTimelineTruncated"] = bool(summary.get("debugTimelineTruncated", False) or debug_drain.get("timelineTruncated"))
+            summary["llmCallsTruncated"] = bool(summary.get("llmCallsTruncated", False) or debug_drain.get("llmCallsTruncated"))
             summary["finalEndpointCollection"] = collect_final_bundle(bridge, scenario_dir)
         if final_results is not None:
             write_json(scenario_dir / "results-final-raw.json", final_results)

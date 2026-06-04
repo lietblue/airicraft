@@ -15,6 +15,8 @@ import ai.moeru.airicraft.agent.debug.CollectResourceTaskDebugSnapshot;
 import ai.moeru.airicraft.agent.debug.ConversationSourcesDebugSnapshot;
 import ai.moeru.airicraft.agent.debug.DialogueDebugSnapshot;
 import ai.moeru.airicraft.agent.debug.EventPipelineDebugSnapshot;
+import ai.moeru.airicraft.agent.debug.LlmFlightRecordQueryResult;
+import ai.moeru.airicraft.agent.debug.LlmFlightRecorder;
 import ai.moeru.airicraft.agent.debug.PlannerAttemptDebugSnapshot;
 import ai.moeru.airicraft.agent.dialogue.DialogueIntent;
 import ai.moeru.airicraft.agent.dialogue.DialogueIntentType;
@@ -37,6 +39,7 @@ import ai.moeru.airicraft.agent.evaluation.EvaluationReport;
 import ai.moeru.airicraft.agent.evaluation.EvaluationScenario;
 import ai.moeru.airicraft.agent.evaluation.ScenarioEvaluationRunner;
 import ai.moeru.airicraft.agent.observability.AgentObservability;
+import ai.moeru.airicraft.agent.observability.FlightRecordingObservability;
 import ai.moeru.airicraft.agent.events.SemanticEventBuffer;
 import ai.moeru.airicraft.agent.events.SemanticEvent;
 import ai.moeru.airicraft.agent.events.SemanticEventQueryResult;
@@ -150,6 +153,7 @@ public final class EmbodiedAgentRuntime {
 	private final LanHostingService lanHostingService = new LanHostingService();
 	private final AutoLanOpenState autoLanOpenState = new AutoLanOpenState();
 	private final AgentObservability observability;
+	private final LlmFlightRecorder llmFlightRecorder = new LlmFlightRecorder();
 	private final AgentDebugRecorder debugRecorder = new AgentDebugRecorder();
 	private final SemanticEventBuffer eventBuffer = new SemanticEventBuffer(512);
 	private final SemanticEventBuffer plannerEventBuffer = new SemanticEventBuffer(512);
@@ -211,7 +215,7 @@ public final class EmbodiedAgentRuntime {
 		this.airicraftConfig = Objects.requireNonNull(airicraftConfig, "airicraftConfig");
 		this.config = Objects.requireNonNull(config, "config");
 		this.worldTaskExecutor = Objects.requireNonNull(worldTaskExecutor, "worldTaskExecutor");
-		this.observability = Objects.requireNonNull(observability, "observability");
+		this.observability = new FlightRecordingObservability(Objects.requireNonNull(observability, "observability"), llmFlightRecorder);
 		this.smeltingProcessManager = Objects.requireNonNull(smeltingProcessManager, "smeltingProcessManager");
 		this.nearbyPlayerTracker = new NearbyPlayerTracker(resolveNearbyPlayerTrackingRadius(airicraftConfig));
 		this.idleIdeaScheduler = new IdleIdeaScheduler(effectiveIdleIdeasConfig(IdleIdeasConfig.defaults()));
@@ -668,6 +672,10 @@ public final class EmbodiedAgentRuntime {
 
 	public AgentDebugTimelineQueryResult debugTimeline(Long sinceEntryId) {
 		return debugRecorder.queryTimeline(sinceEntryId);
+	}
+
+	public LlmFlightRecordQueryResult llmFlightRecords(Long sinceSequenceId) {
+		return llmFlightRecorder.query(sinceSequenceId);
 	}
 
 	public List<String> plannerContextExcerpt() {

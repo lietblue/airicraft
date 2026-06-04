@@ -160,6 +160,7 @@ public final class ModBridgeServer {
 			httpServer.createContext("/v1/agent/debug/compact", this::handleAgentDebugCompact);
 			httpServer.createContext("/v1/agent/debug/state", exchange -> handleJson(exchange, this::createAgentDebugStateResponse));
 			httpServer.createContext("/v1/agent/debug/timeline", exchange -> handleJson(exchange, () -> createAgentDebugTimelineResponse(exchange)));
+			httpServer.createContext("/v1/agent/debug/llm-calls", exchange -> handleJson(exchange, () -> createAgentDebugLlmCallsResponse(exchange)));
 			httpServer.createContext("/v1/evaluation/status", exchange -> handleJson(exchange, this::createEvaluationStatusResponse));
 			httpServer.createContext("/v1/evaluation/scenarios", exchange -> handleJson(exchange, this::createEvaluationScenariosResponse));
 			httpServer.createContext("/v1/evaluation/config", exchange -> handleJson(exchange, this::createEvaluationConfigResponse));
@@ -1238,6 +1239,22 @@ public final class ModBridgeServer {
 			response.put("latestEntryId", result.latestEntryId());
 			response.put("truncated", result.truncated());
 			response.put("entries", result.entries());
+			return response;
+		});
+	}
+
+	private Object createAgentDebugLlmCallsResponse(HttpExchange exchange) {
+		long defaultSince = Long.MIN_VALUE;
+		long since = getLongQuery(exchange, "since", defaultSince);
+		Long sinceSequenceId = since == defaultSince ? null : since;
+		return onClientThread(() -> {
+			var result = agentRuntime().llmFlightRecords(sinceSequenceId);
+			Map<String, Object> response = new LinkedHashMap<>();
+			response.put("available", true);
+			response.put("oldestSequenceId", result.oldestSequenceId());
+			response.put("latestSequenceId", result.latestSequenceId());
+			response.put("truncated", result.truncated());
+			response.put("records", result.records());
 			return response;
 		});
 	}

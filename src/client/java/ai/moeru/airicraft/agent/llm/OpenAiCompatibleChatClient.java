@@ -137,6 +137,13 @@ public final class OpenAiCompatibleChatClient {
 
 		try {
 			HttpResponse<String> response = httpClient.send(httpRequest, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+			observability.recordRawLlmResponse(
+				Context.current(),
+				response.statusCode(),
+				responseModel(response.body()).orElse(config.model()),
+				parseUsage(response.body()),
+				response.body()
+			);
 			Airicraft.LOGGER.info(
 				"LLM response model={} status={} summary={}",
 				config.model(),

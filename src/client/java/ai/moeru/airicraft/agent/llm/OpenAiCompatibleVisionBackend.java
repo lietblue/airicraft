@@ -90,6 +90,13 @@ public final class OpenAiCompatibleVisionBackend implements VisionBackend {
 
 		try {
 			HttpResponse<String> response = httpClient.send(httpRequest, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+			observability.recordRawLlmResponse(
+				Context.current(),
+				response.statusCode(),
+				OpenAiCompatibleChatClient.responseModel(response.body()).orElse(config.visionModel()),
+				OpenAiCompatibleChatClient.parseUsage(response.body()),
+				response.body()
+			);
 			Airicraft.LOGGER.info(
 				"Vision response model={} status={} summary={}",
 				config.visionModel(),
