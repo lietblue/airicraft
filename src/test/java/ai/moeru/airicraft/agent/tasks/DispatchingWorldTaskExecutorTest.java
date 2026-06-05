@@ -129,6 +129,37 @@ class DispatchingWorldTaskExecutorTest {
 		assertEquals(Optional.empty(), entityInteraction.lastTask);
 	}
 
+	@Test
+	void returnToSurfaceRequestsRouteToReturnExecutor() {
+		RecordingExecutor baritone = new RecordingExecutor();
+		RecordingExecutor crafting = new RecordingExecutor();
+		RecordingExecutor dropItems = new RecordingExecutor();
+		RecordingExecutor entityInteraction = new RecordingExecutor();
+		RecordingExecutor smelting = new RecordingExecutor();
+		RecordingExecutor returnToSurface = new RecordingExecutor();
+		DispatchingWorldTaskExecutor executor = new DispatchingWorldTaskExecutor(
+			baritone,
+			crafting,
+			dropItems,
+			entityInteraction,
+			smelting,
+			returnToSurface
+		);
+
+		executor.tick(snapshot(), Optional.of(WorldTaskRequest.returnToSurface(
+			"task-5",
+			"job-5",
+			new ReturnToSurfaceStepArgs(new GoalPosition(0, 70, 0, false), "nearest_surface", true, List.of("minecraft:dirt"))
+		)));
+
+		assertEquals(WorldTaskType.RETURN_TO_SURFACE, returnToSurface.lastTask.orElseThrow().type());
+		assertEquals(Optional.empty(), baritone.lastTask);
+		assertEquals(Optional.empty(), crafting.lastTask);
+		assertEquals(Optional.empty(), dropItems.lastTask);
+		assertEquals(Optional.empty(), entityInteraction.lastTask);
+		assertEquals(Optional.empty(), smelting.lastTask);
+	}
+
 	private static SessionSnapshot snapshot() {
 		return new SessionSnapshot(SessionMode.REMOTE_MULTIPLAYER, true, true, "minecraft:overworld", false, 0, 0L);
 	}

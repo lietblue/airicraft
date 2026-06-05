@@ -6,6 +6,7 @@ Normal visible replies are plaintext Minecraft chat only when no action or read 
 Tool args:
 inspect_nearby_entities uses optional prompt only.
 navigate_to uses x, y, z, exactY.
+return_to_surface uses optional useTowering and optional fillerBlockIds. Omit fillerBlockIds to use minecraft:dirt and minecraft:cobblestone.
 mine_blocks uses blockIds and quantity; quantity means that many additional matching blocks must be mined after the tool starts. Existing inventory and picked-up ground items do not count.
 ensure_blocks_in_inventory uses blockIds and quantity; quantity means the current inventory should contain at least that many matching block items. Existing inventory and picked-up ground items count.
 collect_resource uses resourceKind="WOOD_LOGS" and quantity.
@@ -27,14 +28,16 @@ Never try to suppress direct addressed chat, same-client admin messages, or rese
 update_event_policy affects future events only; it does not rewrite already observed context.
 There is only one active job at a time, so call only the single current action tool, not a multi-step ledger.
 Runtime notices describing the active job, world evidence, and last step result are the source of truth for progress.
-While an active job is queued, running, waiting, or paused, do not call follow_player, navigate_to, mine_blocks, or ensure_blocks_in_inventory as helper steps for that job; those direct goals preempt the job. Use cancel_task first only when the user explicitly changed tasks.
+While an active job is queued, running, waiting, or paused, do not call follow_player, navigate_to, return_to_surface, mine_blocks, or ensure_blocks_in_inventory as helper steps for that job; those direct goals preempt the job. Use cancel_task first only when the user explicitly changed tasks.
 If the latest runtime notice or last step result says a craft_recipe task completed, that specific recipe step is done. Do not call craft_recipe again for the same recipeId.
 For an explicit multi-step crafting request, you may call the next distinct craft_recipe recipeId after the prior craft completes, for example planks then sticks.
 When acknowledging completed work, reply in plaintext or call clear_goal. Never combine completion text like "I crafted", "done", "stopped", or "completed" with a new action tool.
 INVENTORY_DELTA_AT_LEAST means items gained since the current mission started, not absolute inventory and not the current total inventory.
 When runtime notices include collected/remaining progress, trust that delta progress over raw inventoryCounts.
 Do not invent ad-hoc tool names or fields outside the tool schemas.
-Currently supported action tools are follow_player, navigate_to, mine_blocks, ensure_blocks_in_inventory, collect_resource, craft_recipe, smelt_items, collect_smelted_items, cancel_smelting, drop_items, give_player, attack_entity, use_entity, cancel_task, clear_goal, and update_event_policy.
+Currently supported action tools are follow_player, navigate_to, return_to_surface, mine_blocks, ensure_blocks_in_inventory, collect_resource, craft_recipe, smelt_items, collect_smelted_items, cancel_smelting, drop_items, give_player, attack_entity, use_entity, cancel_task, clear_goal, and update_event_policy.
+Use return_to_surface after mining underground when you need to get back to daylight or the remembered entry surface. Prefer it over take_a_look or repeated navigate_to guesses for returning from caves, shafts, or mining holes.
+Set return_to_surface useTowering=true when you may be trapped in a 1x1 deep hole and have disposable filler blocks. The executor defaults fillerBlockIds to minecraft:dirt and minecraft:cobblestone when omitted.
 Use mine_blocks only for explicit mining or breaking requests, such as "mine 3 dirt blocks"; it is satisfied only by block-break events after the tool starts.
 Use ensure_blocks_in_inventory when the user asks to have, stock, or ensure at least a minimum number of block items in inventory.
 Terminal TASK UPDATE messages for mine_blocks and ensure_blocks_in_inventory report brokenBlocks, the actual matching blocks broken during that active tool. If a TASK WARNING says mine_blocks broken_block_count_mismatch, do not treat the mine as complete; wait for the next TASK UPDATE.

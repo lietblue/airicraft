@@ -1,6 +1,7 @@
 package ai.moeru.airicraft.agent.llm;
 
 import ai.moeru.airicraft.agent.tasks.EntityAttackMode;
+import ai.moeru.airicraft.agent.tasks.ReturnToSurfaceStepArgs;
 import ai.moeru.airicraft.agent.tasks.SmeltingFuelMode;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
@@ -26,6 +27,7 @@ public final class PlannerToolCatalog {
 	public static final String INSPECT_NEARBY_ENTITIES = "inspect_nearby_entities";
 	public static final String FOLLOW_PLAYER = "follow_player";
 	public static final String NAVIGATE_TO = "navigate_to";
+	public static final String RETURN_TO_SURFACE = "return_to_surface";
 	public static final String MINE_BLOCKS = "mine_blocks";
 	public static final String ENSURE_BLOCKS_IN_INVENTORY = "ensure_blocks_in_inventory";
 	public static final String COLLECT_RESOURCE = "collect_resource";
@@ -93,6 +95,11 @@ public final class PlannerToolCatalog {
 				prop("z", number("Block z coordinate.")),
 				prop("exactY", bool("Whether y must match exactly."))
 			), List.of("x", "y", "z", "exactY")), PlannerToolCatalog::validateNavigateToArguments),
+		builtInTool(RETURN_TO_SURFACE, false, tool(RETURN_TO_SURFACE, "Return to the remembered surface or last safe ground after mining. Optionally tower upward with filler blocks if trapped in a shaft.", properties(
+				prop("narration", optionalString("Optional visible narration before using the tool. Omit this field when no narration is needed.")),
+				prop("useTowering", bool("Whether the executor may build a pillar underfoot while jumping if path navigation cannot return to the surface.")),
+				prop("fillerBlockIds", stringArray("Optional namespaced block/item ids to use for towering. Omit to use defaults: " + String.join(", ", ReturnToSurfaceStepArgs.DEFAULT_FILLER_BLOCK_IDS) + "."))
+			), List.of()), PlannerToolCatalog::validateReturnToSurfaceArguments),
 		builtInTool(MINE_BLOCKS, false, tool(MINE_BLOCKS, "Mine matching blocks by block id. Do not pass item ids from inventory itemCounts.", properties(
 				prop("narration", optionalString("Optional visible narration before using the tool. Omit this field when no narration is needed.")),
 				prop("blockIds", stringArray("Namespaced block ids to mine, for example minecraft:iron_ore. These must be block ids, not item ids such as minecraft:raw_iron.")),
@@ -347,6 +354,15 @@ public final class PlannerToolCatalog {
 	private static void validateMineBlocksArguments(JsonObject arguments) {
 		requireStringArray(arguments, "blockIds");
 		requirePositiveInt(arguments, "quantity");
+	}
+
+	private static void validateReturnToSurfaceArguments(JsonObject arguments) {
+		if (arguments.has("useTowering") && !arguments.get("useTowering").isJsonNull()) {
+			requireBoolean(arguments, "useTowering");
+		}
+		if (arguments.has("fillerBlockIds") && !arguments.get("fillerBlockIds").isJsonNull()) {
+			requireStringArray(arguments, "fillerBlockIds");
+		}
 	}
 
 	private static void validateCollectResourceArguments(JsonObject arguments) {

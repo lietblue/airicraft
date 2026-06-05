@@ -174,6 +174,31 @@ class PlannerToolCallInterfaceTest {
 	}
 
 	@Test
+	void exposesAndParsesReturnToSurfaceTool() {
+		JsonArray tools = JsonParser.parseString(gson().toJson(PlannerToolCatalog.openAiTools())).getAsJsonArray();
+		JsonObject parameters = toolSchema(tools, "return_to_surface");
+
+		assertTrue(toolNames(tools).contains("return_to_surface"));
+		assertEquals(0, parameters.getAsJsonArray("required").size());
+		assertTrue(parameters.getAsJsonObject("properties").has("useTowering"));
+		assertTrue(parameters.getAsJsonObject("properties").has("fillerBlockIds"));
+		assertEquals("return_to_surface", PlannerToolCatalog.parseToolCall(toolCall("return_to_surface", "{}")).name());
+
+		PlannerToolCall call = PlannerToolCatalog.parseToolCall(toolCall("return_to_surface", """
+			{"useTowering":true,"fillerBlockIds":["minecraft:dirt","minecraft:cobblestone"]}
+			"""));
+
+		assertEquals("return_to_surface", call.name());
+		assertTrue(call.arguments().get("useTowering").getAsBoolean());
+		assertEquals("minecraft:dirt", call.arguments().getAsJsonArray("fillerBlockIds").get(0).getAsString());
+		assertThrows(com.google.gson.JsonParseException.class, () ->
+			PlannerToolCatalog.parseToolCall(toolCall("return_to_surface", """
+				{"useTowering":true,"fillerBlockIds":[]}
+				"""))
+		);
+	}
+
+	@Test
 	void exposesAndParsesEntityInteractionTools() {
 		JsonArray tools = JsonParser.parseString(gson().toJson(PlannerToolCatalog.openAiTools())).getAsJsonArray();
 

@@ -34,6 +34,7 @@ import ai.moeru.airicraft.agent.tasks.LedgerStepKind;
 import ai.moeru.airicraft.agent.tasks.LedgerStepPayload;
 import ai.moeru.airicraft.agent.tasks.LedgerStepStatus;
 import ai.moeru.airicraft.agent.tasks.MissionType;
+import ai.moeru.airicraft.agent.tasks.ReturnToSurfaceStepArgs;
 import ai.moeru.airicraft.agent.tasks.SmeltItemsStepArgs;
 import ai.moeru.airicraft.agent.tasks.SmeltingFuelMode;
 import ai.moeru.airicraft.agent.tasks.SmeltingOption;
@@ -469,6 +470,33 @@ class EmbodiedAgentRuntimeTest {
 		assertTrue(result.contains("TASK UPDATE"));
 		assertEquals(WorldTaskType.MINE, request.type());
 		assertEquals(new GoalMineSpec(List.of("minecraft:dirt"), 3), request.goal().mineSpec());
+	}
+
+	@Test
+	void returnToSurfaceToolRoutesWorldTaskRequestWithDefaultFiller() {
+		FakeWorldTaskExecutor executor = new FakeWorldTaskExecutor();
+		EmbodiedAgentRuntime runtime = EmbodiedAgentRuntime.createForTests(executor);
+		runtime.overrideSessionSnapshotForTests(loadedRemoteSession());
+
+		String result = runtime.executePlannerToolCallForTests(new PlannerToolCall(
+			"call_return",
+			"return_to_surface",
+			JsonParser.parseString("""
+				{"useTowering":true}
+				""").getAsJsonObject(),
+			null,
+			null
+		));
+		runtime.onClientTick(null);
+
+		WorldTaskRequest request = executor.lastActiveTask.orElseThrow();
+		assertTrue(result.contains("accepted"));
+		assertTrue(result.contains("queued"));
+		assertTrue(result.contains("useTowering=true"));
+		assertEquals(WorldTaskType.RETURN_TO_SURFACE, request.type());
+		assertTrue(request.returnToSurface().useTowering());
+		assertEquals("none", request.returnToSurface().targetKind());
+		assertEquals(ReturnToSurfaceStepArgs.DEFAULT_FILLER_BLOCK_IDS, request.returnToSurface().fillerBlockIds());
 	}
 
 	@Test
@@ -1342,6 +1370,18 @@ class EmbodiedAgentRuntimeTest {
 
 		assertTrue(ensureResult.contains("TOOL_ERROR: ensure_blocks_in_inventory denied"));
 		assertTrue(ensureResult.contains("active_task_in_progress"));
+		String returnResult = runtime.executePlannerToolCallForTests(new PlannerToolCall(
+			"call_return",
+			"return_to_surface",
+			JsonParser.parseString("""
+				{"useTowering":true}
+				""").getAsJsonObject(),
+			null,
+			null
+		));
+
+		assertTrue(returnResult.contains("TOOL_ERROR: return_to_surface denied"));
+		assertTrue(returnResult.contains("active_task_in_progress"));
 		assertEquals(TaskState.WAITING_FOR_PICKUP, runtime.taskSnapshot().state());
 		assertEquals(TaskType.COLLECT_RESOURCE, runtime.taskSnapshot().spec().type());
 		assertEquals(GoalType.MINE_BLOCKS, runtime.activeGoal().orElseThrow().type());

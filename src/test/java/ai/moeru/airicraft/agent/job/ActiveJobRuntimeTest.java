@@ -4,12 +4,14 @@ import ai.moeru.airicraft.agent.dialogue.DialogueIntent;
 import ai.moeru.airicraft.agent.dialogue.DialogueIntentType;
 import ai.moeru.airicraft.agent.dialogue.DialogueResponse;
 import ai.moeru.airicraft.agent.goals.GoalMineSpec;
+import ai.moeru.airicraft.agent.goals.GoalPosition;
 import ai.moeru.airicraft.agent.goals.GoalType;
 import ai.moeru.airicraft.agent.tasks.CraftRecipeStepArgs;
 import ai.moeru.airicraft.agent.tasks.CollectSmeltedItemsStepArgs;
 import ai.moeru.airicraft.agent.tasks.DropItemsStepArgs;
 import ai.moeru.airicraft.agent.tasks.EntityInteractionStepArgs;
 import ai.moeru.airicraft.agent.tasks.EntitySelector;
+import ai.moeru.airicraft.agent.tasks.ReturnToSurfaceStepArgs;
 import ai.moeru.airicraft.agent.tasks.SmeltItemsStepArgs;
 import ai.moeru.airicraft.agent.tasks.SmeltingFuelMode;
 import ai.moeru.airicraft.agent.tasks.WorldTaskRequest;
@@ -443,6 +445,36 @@ class ActiveJobRuntimeTest {
 		assertNull(request.goal());
 		assertEquals(ActiveJobType.COLLECT_SMELTED_ITEMS, runtime.current().type());
 		assertEquals(collect, runtime.current().collectSmeltedItems());
+	}
+
+	@Test
+	void returnToSurfaceActiveJobProjectsWorldTaskRequest() {
+		ActiveJobRuntime runtime = new ActiveJobRuntime();
+		ReturnToSurfaceStepArgs returnToSurface = new ReturnToSurfaceStepArgs(
+			new GoalPosition(12, 70, -8, false),
+			"nearest_surface",
+			true,
+			List.of("minecraft:dirt")
+		);
+
+		runtime.applyPlannerResponse(
+			new DialogueResponse(
+				"Returning to surface.",
+				new DialogueIntent(DialogueIntentType.JOB_UPDATE, ActiveJobProposal.returnToSurface(returnToSurface)),
+				1L
+			),
+			0,
+			"test",
+			1L
+		);
+
+		WorldTaskRequest request = runtime.activeTaskRequest().orElseThrow();
+
+		assertEquals(WorldTaskType.RETURN_TO_SURFACE, request.type());
+		assertEquals(returnToSurface, request.returnToSurface());
+		assertNull(request.goal());
+		assertEquals(ActiveJobType.RETURN_TO_SURFACE, runtime.current().type());
+		assertEquals(returnToSurface, runtime.current().returnToSurface());
 	}
 
 	@Test

@@ -108,6 +108,7 @@ import ai.moeru.airicraft.agent.tasks.DropItemsStepArgs;
 import ai.moeru.airicraft.agent.tasks.EntityAttackMode;
 import ai.moeru.airicraft.agent.tasks.EntityInteractionStepArgs;
 import ai.moeru.airicraft.agent.tasks.EntitySelector;
+import ai.moeru.airicraft.agent.tasks.ReturnToSurfaceStepArgs;
 import ai.moeru.airicraft.agent.tasks.SmeltItemsStepArgs;
 import ai.moeru.airicraft.agent.tasks.SmeltingActionResult;
 import ai.moeru.airicraft.agent.tasks.SmeltingFuelMode;
@@ -115,6 +116,7 @@ import ai.moeru.airicraft.agent.tasks.SmeltingOption;
 import ai.moeru.airicraft.agent.tasks.SmeltingOutputReadyEvent;
 import ai.moeru.airicraft.agent.tasks.SmeltingPlannerService;
 import ai.moeru.airicraft.agent.tasks.SmeltingProcessManager;
+import ai.moeru.airicraft.agent.tasks.SurfaceMemory;
 import ai.moeru.airicraft.agent.tasks.WorldTaskType;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.entity.damage.DamageSource;
@@ -178,6 +180,7 @@ public final class EmbodiedAgentRuntime {
 	private final WorldTaskExecutor worldTaskExecutor;
 	private final InventoryResourceCounter inventoryResourceCounter = new InventoryResourceCounter();
 	private final InventoryItemCounter inventoryItemCounter = new InventoryItemCounter();
+	private final SurfaceMemory surfaceMemory = new SurfaceMemory();
 	private final SmeltingProcessManager smeltingProcessManager;
 	private final SmeltingPlannerService smeltingPlannerService = new SmeltingPlannerService();
 
@@ -340,6 +343,7 @@ public final class EmbodiedAgentRuntime {
 		completePendingCraftToolResult("Tool result for craft_recipe: cancelled reason=world_left");
 		dialogueRuntime.clear();
 		worldTaskExecutor.onWorldLeave();
+		surfaceMemory.clear();
 		activeJobRuntime.clear();
 		idleIdeaScheduler.reset();
 		followCapability.clear();
@@ -370,6 +374,7 @@ public final class EmbodiedAgentRuntime {
 			localDamageTracker.onLifecycleReset(tickCount);
 		}
 		openLanIfSingleplayerLocal(client);
+		surfaceMemory.tick(client, tickCount);
 
 		nearbyPlayerTracker.poll(client, tickCount, eventBuffer);
 		primaryInteractionResolver.current().ifPresent(current ->
@@ -507,6 +512,7 @@ public final class EmbodiedAgentRuntime {
 		observability.shutdown();
 		visionService.shutdown();
 		worldTaskExecutor.shutdown();
+		surfaceMemory.clear();
 		activeJobRuntime.clear();
 		followCapability.clear();
 		followState = FollowState.idle();
@@ -1096,6 +1102,38 @@ public final class EmbodiedAgentRuntime {
 				applyPlannerJobTool(ActiveJobProposal.navigateTo(position));
 				yield queuedActionToolResult("navigate_to", "x=" + position.x() + " y=" + position.y() + " z=" + position.z() + " exactY=" + position.exactY());
 			}
+			case PlannerToolCatalog.RETURN_TO_SURFACE -> {
+				if (plannerToolWouldPreemptActiveTask(toolCall)) {
+					yield plannerActiveTaskPreemptionError(toolCall);
+				}
+				boolean useTowering = booleanArg(args, "useTowering").orElse(false);
+				List<String> fillerBlockIds = args != null && args.has("fillerBlockIds")
+					? stringArrayArg(args, "fillerBlockIds")
+					: ReturnToSurfaceStepArgs.DEFAULT_FILLER_BLOCK_IDS;
+				fillerBlockIds = ReturnToSurfaceStepArgs.normalizeFillerBlockIds(fillerBlockIds);
+				Optional<String> validationError = validateFillerBlockIds(fillerBlockIds);
+				if (validationError.isPresent()) {
+					yield "TOOL_ERROR: return_to_surface " + validationError.get();
+				}
+				Optional<SurfaceMemory.SurfaceTarget> target = surfaceMemory.bestTarget();
+				if (target.isEmpty() && !useTowering) {
+					yield "TOOL_ERROR: return_to_surface surface_target_unavailable. No remembered surface is available; retry with useTowering=true if filler blocks are available.";
+				}
+				ReturnToSurfaceStepArgs returnToSurface = new ReturnToSurfaceStepArgs(
+					target.map(SurfaceMemory.SurfaceTarget::position).orElse(null),
+					target.map(SurfaceMemory.SurfaceTarget::kind).orElse("none"),
+					useTowering,
+					fillerBlockIds
+				);
+				applyPlannerJobTool(ActiveJobProposal.returnToSurface(returnToSurface));
+				String targetDetails = target
+					.map(surfaceTarget -> surfaceTarget.kind() + "=" + formatPosition(surfaceTarget.position()))
+					.orElse("none");
+				yield queuedActionToolResult(
+					"return_to_surface",
+					"target=" + targetDetails + " useTowering=" + useTowering + " fillerBlockIds=" + String.join(",", returnToSurface.fillerBlockIds())
+				);
+			}
 			case PlannerToolCatalog.MINE_BLOCKS -> {
 				if (plannerToolWouldPreemptActiveTask(toolCall)) {
 					yield plannerActiveTaskPreemptionError(toolCall);
@@ -1289,6 +1327,7 @@ public final class EmbodiedAgentRuntime {
 		String normalizedToolName = PlannerToolCatalog.normalizeName(toolCall == null ? null : toolCall.name());
 		return PlannerToolCatalog.FOLLOW_PLAYER.equals(normalizedToolName)
 			|| PlannerToolCatalog.NAVIGATE_TO.equals(normalizedToolName)
+			|| PlannerToolCatalog.RETURN_TO_SURFACE.equals(normalizedToolName)
 			|| PlannerToolCatalog.MINE_BLOCKS.equals(normalizedToolName)
 			|| PlannerToolCatalog.ENSURE_BLOCKS_IN_INVENTORY.equals(normalizedToolName);
 	}
@@ -1300,12 +1339,19 @@ public final class EmbodiedAgentRuntime {
 		return "TOOL_ERROR: " + toolName + " denied reason=active_task_in_progress"
 			+ " taskState=" + taskState
 			+ " activeStepKind=" + activeStep
-			+ ". Direct movement or mining tools would preempt the active job. Use cancel_task first only if the user explicitly changed tasks; otherwise wait for TASK UPDATE or ask the user.";
+			+ ". Direct movement, surface-return, or mining tools would preempt the active job. Use cancel_task first only if the user explicitly changed tasks; otherwise wait for TASK UPDATE or ask the user.";
 	}
 
 	private static String queuedActionToolResult(String toolName, String details) {
 		return "Tool result for " + toolName + ": accepted queued " + details
 			+ ". Accepted does not mean completed. Wait for TASK UPDATE before saying the action completed.";
+	}
+
+	private static String formatPosition(GoalPosition position) {
+		if (position == null) {
+			return "none";
+		}
+		return "x=" + position.x() + " y=" + position.y() + " z=" + position.z();
 	}
 
 	String executePlannerToolCallForTests(PlannerToolCall toolCall) {
@@ -1523,6 +1569,19 @@ public final class EmbodiedAgentRuntime {
 			Optional<String> error = validateMineBlockId(blockId);
 			if (error.isPresent()) {
 				return error;
+			}
+		}
+		return Optional.empty();
+	}
+
+	private static Optional<String> validateFillerBlockIds(List<String> blockIds) {
+		if (blockIds == null || blockIds.isEmpty()) {
+			return Optional.of("missing_filler_block_id");
+		}
+		for (String blockId : blockIds) {
+			Optional<String> error = validateMineBlockId(blockId);
+			if (error.isPresent()) {
+				return Optional.of(error.get().replace("missing_block_id", "missing_filler_block_id"));
 			}
 		}
 		return Optional.empty();
@@ -2414,7 +2473,7 @@ public final class EmbodiedAgentRuntime {
 				|| current.state() == TaskState.FAILED
 				|| current.state() == TaskState.CANCELLED
 		) {
-			String inventorySnapshot = inventorySnapshotForTaskUpdate(current.activeStepKind());
+			String inventorySnapshot = inventorySnapshotForTaskUpdate(current.activeStepKind(), current.activeStepId());
 			dialogueRuntime.onInternalTaskUpdate(
 				"TASK UPDATE: state=" + current.state().name()
 					+ " missionId=" + (current.mission() == null ? "" : current.mission().missionId())
@@ -2453,7 +2512,7 @@ public final class EmbodiedAgentRuntime {
 			return false;
 		}
 		return switch (intent.activeJob().type()) {
-			case FOLLOW_PLAYER, NAVIGATE_TO, MINE_BLOCKS, ENSURE_BLOCKS_IN_INVENTORY -> true;
+			case FOLLOW_PLAYER, NAVIGATE_TO, MINE_BLOCKS, ENSURE_BLOCKS_IN_INVENTORY, RETURN_TO_SURFACE -> true;
 			case IDLE, COLLECT_RESOURCE, CRAFT_RECIPE, DROP_ITEMS, SMELT_ITEMS, COLLECT_SMELTED_ITEMS, ATTACK_ENTITY, USE_ENTITY, ASK_USER -> false;
 		};
 	}
@@ -2466,6 +2525,9 @@ public final class EmbodiedAgentRuntime {
 			return true;
 		}
 		if (Objects.equals(snapshot.activeStepId(), ActiveJobType.ENSURE_BLOCKS_IN_INVENTORY.name().toLowerCase())) {
+			return true;
+		}
+		if (Objects.equals(snapshot.activeStepId(), ActiveJobType.RETURN_TO_SURFACE.name().toLowerCase())) {
 			return true;
 		}
 		return snapshot.activeStepKind() == ai.moeru.airicraft.agent.tasks.LedgerStepKind.COLLECT_RESOURCE
@@ -2599,6 +2661,13 @@ public final class EmbodiedAgentRuntime {
 		return formatInventorySnapshotForTaskUpdate(currentWorldEvidence(MinecraftClient.getInstance()));
 	}
 
+	private String inventorySnapshotForTaskUpdate(LedgerStepKind stepKind, String activeStepId) {
+		if (Objects.equals(activeStepId, ActiveJobType.RETURN_TO_SURFACE.name().toLowerCase())) {
+			return formatInventorySnapshotForTaskUpdate(currentWorldEvidence(MinecraftClient.getInstance()));
+		}
+		return inventorySnapshotForTaskUpdate(stepKind);
+	}
+
 	static String formatInventorySnapshotForTaskUpdate(WorldEvidence evidence) {
 		if (evidence == null) {
 			return "";
@@ -2634,7 +2703,7 @@ public final class EmbodiedAgentRuntime {
 			return false;
 		}
 		return switch (type) {
-			case MINE, CRAFT_RECIPE, DROP_ITEMS, SMELT_ITEMS, COLLECT_SMELTED_ITEMS -> true;
+			case MINE, CRAFT_RECIPE, DROP_ITEMS, SMELT_ITEMS, COLLECT_SMELTED_ITEMS, RETURN_TO_SURFACE -> true;
 			case FOLLOW, NAVIGATE, ATTACK_ENTITY, USE_ENTITY -> false;
 		};
 	}
