@@ -160,9 +160,8 @@ public final class SmeltingTaskExecutor implements WorldTaskExecutor {
 			return fail(request, "furnace_screen_not_open");
 		}
 		if (handler.getSlot(2).getStack().isEmpty()) {
-			// TODO: For estimated ready events, consider requeueing a delayed collect instead of
-			// failing the foreground job immediately.
-			return fail(request, "output_not_ready");
+			snapshot = snapshot(TaskExecutionState.RUNNING, request, "waiting_for_output");
+			return Optional.empty();
 		}
 		client.interactionManager.clickSlot(handler.syncId, 2, 0, SlotActionType.QUICK_MOVE, player);
 		if (args.processId() != null) {
@@ -203,7 +202,12 @@ public final class SmeltingTaskExecutor implements WorldTaskExecutor {
 
 	private boolean ensureExistingStationOpen(WorldTaskRequest request, MinecraftClient client, ClientPlayerEntity player, BlockPos stationPos) {
 		if (player.currentScreenHandler instanceof AbstractFurnaceScreenHandler) {
-			return true;
+			if (openedStationForTask) {
+				return true;
+			}
+			player.closeHandledScreen();
+			snapshot = snapshot(TaskExecutionState.RUNNING, request, "closing_existing_furnace_screen");
+			return false;
 		}
 		if (!isFurnaceBlock(client, stationPos)) {
 			snapshot = snapshot(TaskExecutionState.FAILED, request, "station_unavailable");
@@ -528,6 +532,9 @@ public final class SmeltingTaskExecutor implements WorldTaskExecutor {
 	private Optional<TaskTerminalEvent> fail(WorldTaskRequest request, String reason) {
 		cancelNavigationIfStarted();
 		closeOpenedStationIfSafe();
+		if (request.type() == WorldTaskType.SMELT_ITEMS && request.smeltItems() != null) {
+			processManager.cancelProcessesForOption(request.smeltItems().optionId());
+		}
 		snapshot = snapshot(TaskExecutionState.FAILED, request, reason);
 		if (terminalEventEmitted) {
 			return Optional.empty();
