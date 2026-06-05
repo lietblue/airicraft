@@ -1,0 +1,45 @@
+id: iron-pickaxe
+name: iron pickaxe
+metadata:
+  minecraftVersion: 1.21.8
+  airicraftVersion: dev
+worldArchive: world.zip
+frozen: true
+prompt: >-
+  Starting from only the resources available in this world, obtain one
+  minecraft:iron_pickaxe. Gather logs, craft planks and sticks, make the
+  required wooden and stone tools, mine stone and iron ore, smelt the raw iron
+  if needed, then craft the iron pickaxe. Work from current inventory counts and
+  mine only the shortfall for the next craft or smelt step. For inventory
+  targets from block drops, prefer the inventory-aware direct mining tool
+  ensure_blocks_in_inventory with the block id; for example, ensure
+  minecraft:stone only until enough cobblestone is in inventory, and ensure
+  minecraft:iron_ore only until enough raw iron or ingots are available.
+  Use mine_blocks only when you intentionally need that many additional broken
+  blocks after the tool starts. Do not repeat a mining, crafting, smelting, or
+  collection tool with the same arguments while the previous accepted job is
+  still queued, running, waiting, or missing a final TASK UPDATE. Do not use
+  take_a_look or vision to locate mineable blocks, resources, furnaces, or
+  crafting stations. Use check_craftables to craft a furnace when needed, then
+  check_smeltables and smelt_items with the exact listed optionId. After
+  smelt_items is accepted, raw iron leaving inventory means it is in the furnace;
+  do not mine more iron for that reason. Use inspect_smelting, wait for output
+  ready, then collect_smelted_items. Do not use commands, creative-mode
+  shortcuts, or preexisting items unless they were gathered or crafted during
+  this scenario. Stop after a task update or inventory check confirms the iron
+  pickaxe is in your inventory.
+budget:
+  maxPlannerTurns: 40
+  maxElapsedTicks: 72000
+  maxElapsedMillis: 0
+  heartbeatIntervalTicks: 80
+checks:
+  - type: inventory_contains
+    itemId: minecraft:iron_pickaxe
+    count: 1
+evidence:
+  includePlannerJournal: true
+  includeDebugTimeline: true
+  includeRecentEvents: true
+  includeTaskState: true
+  includeWorldSnapshot: true
