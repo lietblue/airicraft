@@ -5,7 +5,6 @@ import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class SmeltingProcessManagerTest {
@@ -177,54 +176,6 @@ class SmeltingProcessManagerTest {
 
 		assertTrue(started.accepted());
 		assertEquals(SmeltingStationState.AIRICRAFT_OWNED, manager.classify(inserted, 401L));
-	}
-
-	@Test
-	void startingNewProcessAtSameStationReplacesStaleProcessHandle() {
-		SmeltingProcessManager manager = new SmeltingProcessManager();
-		SmeltingStationObservation empty = new SmeltingStationObservation(
-			new SmeltingStationKey("minecraft:overworld", 1, 64, 1),
-			SmeltingStationKind.FURNACE,
-			new SmeltingSlotSnapshot(null, 0, null, 0, null, 0, 0, 200, false),
-			false,
-			1.0D
-		);
-		SmeltItemsStepArgs firstRequest = new SmeltItemsStepArgs("smelt:iron:nearby-1", 1, SmeltingFuelMode.AUTO, null, 0, null);
-		SmeltItemsStepArgs secondRequest = new SmeltItemsStepArgs("smelt:iron:nearby-2", 1, SmeltingFuelMode.AUTO, null, 0, null);
-
-		SmeltingActionResult first = manager.startProcess(firstRequest, empty, 410L);
-		SmeltingActionResult second = manager.startProcess(secondRequest, empty, 420L);
-		String summary = manager.inspectSummary();
-
-		assertTrue(first.accepted());
-		assertTrue(second.accepted());
-		assertNull(manager.processStationKey(first.processId()));
-		assertEquals(empty.key(), manager.processStationKey(second.processId()));
-		assertFalse(manager.cancel(first.processId()));
-		assertEquals(empty.key(), manager.processStationKey(second.processId()));
-		assertFalse(summary.contains(first.processId()));
-		assertTrue(summary.contains(second.processId()));
-	}
-
-	@Test
-	void cancelProcessesForOptionClearsFailedSmeltRegistration() {
-		SmeltingProcessManager manager = new SmeltingProcessManager();
-		SmeltingStationObservation empty = new SmeltingStationObservation(
-			new SmeltingStationKey("minecraft:overworld", 1, 64, 1),
-			SmeltingStationKind.FURNACE,
-			new SmeltingSlotSnapshot(null, 0, null, 0, null, 0, 0, 200, false),
-			false,
-			1.0D
-		);
-		SmeltItemsStepArgs request = new SmeltItemsStepArgs("smelt:iron:nearby-1", 1, SmeltingFuelMode.AUTO, null, 0, null);
-		SmeltingActionResult started = manager.startProcess(request, empty, 430L);
-
-		boolean cancelled = manager.cancelProcessesForOption(request.optionId());
-
-		assertTrue(started.accepted());
-		assertTrue(cancelled);
-		assertNull(manager.processStationKey(started.processId()));
-		assertEquals(SmeltingStationState.EMPTY, manager.classify(empty, 431L));
 	}
 
 	@Test

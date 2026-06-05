@@ -201,10 +201,7 @@ public final class SmeltingProcessManager {
 			Long.MAX_VALUE,
 			false
 		);
-		TrackedProcess replaced = processesByStation.put(observation.key(), process);
-		if (replaced != null && !Objects.equals(replaced.processId(), processId)) {
-			processesById.remove(replaced.processId());
-		}
+		processesByStation.put(observation.key(), process);
 		processesById.put(processId, process);
 		return SmeltingActionResult.accepted(
 			processId,
@@ -320,25 +317,8 @@ public final class SmeltingProcessManager {
 		if (process == null) {
 			return false;
 		}
-		TrackedProcess current = processesByStation.get(process.stationKey());
-		if (current != null && Objects.equals(current.processId(), process.processId())) {
-			processesByStation.remove(process.stationKey());
-		}
+		processesByStation.remove(process.stationKey());
 		return true;
-	}
-
-	public boolean cancelProcessesForOption(String optionId) {
-		if (optionId == null || optionId.isBlank()) {
-			return false;
-		}
-		String normalized = optionId.trim();
-		boolean cancelled = false;
-		for (TrackedProcess process : List.copyOf(processesById.values())) {
-			if (Objects.equals(process.optionId(), normalized)) {
-				cancelled |= cancel(process.processId());
-			}
-		}
-		return cancelled;
 	}
 
 	private SmeltingOutputReadyEvent markObservedReadyOutput(SmeltingStationObservation observation) {
