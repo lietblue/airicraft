@@ -472,7 +472,7 @@ class EmbodiedAgentRuntimeTest {
 	}
 
 	@Test
-	void ensureBlocksInInventoryTerminalUpdateReportsBrokenBlockCount() {
+	void ensureBlocksInInventoryPrimitiveCompletionWarnsUntilInventorySatisfied() {
 		FakeWorldTaskExecutor executor = new FakeWorldTaskExecutor();
 		EmbodiedAgentRuntime runtime = EmbodiedAgentRuntime.createForTests(executor);
 		runtime.overrideSessionSnapshotForTests(loadedRemoteSession());
@@ -501,13 +501,18 @@ class EmbodiedAgentRuntimeTest {
 
 		assertTrue(runtime.dialogueSnapshot().recentTurns().stream().anyMatch(turn ->
 			"system".equals(turn.speaker())
-				&& turn.text().contains("TASK UPDATE: state=COMPLETED")
+				&& turn.text().contains("TASK WARNING: ensure_blocks_in_inventory inventory_target_not_satisfied")
 				&& turn.text().contains("brokenBlocks=1")
+				&& turn.text().contains("itemCount=0")
+				&& turn.text().contains("requestedItemCount=3")
 		));
-		assertTrue(runtime.recentEvents(null).events().stream().anyMatch(event ->
-			"task.completed".equals(event.type())
-				&& String.valueOf(event.payload().get("message")).contains("brokenBlocks=1")
-		));
+		assertFalse(runtime.recentEvents(null).events().stream().anyMatch(event -> "task.completed".equals(event.type())));
+
+		runtime.onClientTick(null);
+		WorldTaskRequest secondAttempt = executor.lastActiveTask.orElseThrow();
+
+		assertTrue(runtime.activeGoal().isPresent());
+		assertTrue(secondAttempt.taskId().endsWith(":mine:2"), secondAttempt.taskId());
 	}
 
 	@Test
@@ -543,6 +548,40 @@ class EmbodiedAgentRuntimeTest {
 		assertTrue(result.contains("queued"));
 		assertEquals(WorldTaskType.COLLECT_SMELTED_ITEMS, request.type());
 		assertEquals(new CollectSmeltedItemsStepArgs(processId, "confirm-2"), request.collectSmeltedItems());
+	}
+
+	@Test
+	void collectSmeltedItemsWithoutProcessUsesTrackedSmeltingProcess() {
+		FakeWorldTaskExecutor executor = new FakeWorldTaskExecutor();
+		EmbodiedAgentRuntime runtime = EmbodiedAgentRuntime.createForTests(executor);
+		runtime.overrideSessionSnapshotForTests(loadedRemoteSession());
+		runtime.registerSmeltingOptionsForTests(List.of(testSmeltingOption("smelt:iron:nearby-1", 3)));
+		String startResult = runtime.executePlannerToolCallForTests(new PlannerToolCall(
+			"call_smelt",
+			"smelt_items",
+			JsonParser.parseString("""
+				{"optionId":"smelt:iron:nearby-1","inputQuantity":1}
+				""").getAsJsonObject(),
+			null,
+			null
+		));
+		String processId = extractProcessId(startResult);
+
+		String result = runtime.executePlannerToolCallForTests(new PlannerToolCall(
+			"call_collect_smelted",
+			"collect_smelted_items",
+			JsonParser.parseString("""
+				{}
+				""").getAsJsonObject(),
+			null,
+			null
+		));
+		runtime.onClientTick(null);
+
+		WorldTaskRequest request = executor.lastActiveTask.orElseThrow();
+		assertTrue(result.contains("accepted"));
+		assertTrue(result.contains("processId=" + processId));
+		assertEquals(new CollectSmeltedItemsStepArgs(processId, null), request.collectSmeltedItems());
 	}
 
 	@Test

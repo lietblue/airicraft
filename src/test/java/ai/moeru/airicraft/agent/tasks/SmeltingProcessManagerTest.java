@@ -184,6 +184,40 @@ class SmeltingProcessManagerTest {
 	}
 
 	@Test
+	void preferredCollectionProcessChoosesTrackedReadyProcessFirst() {
+		SmeltingProcessManager manager = new SmeltingProcessManager();
+		SmeltingStationObservation empty = emptyStation();
+		SmeltingOption firstOption = option("smelt:iron:nearby-1", empty);
+		SmeltingOption secondOption = option("smelt:iron:nearby-2", new SmeltingStationObservation(
+			new SmeltingStationKey("minecraft:overworld", 2, 64, 1),
+			SmeltingStationKind.FURNACE,
+			new SmeltingSlotSnapshot(null, 0, null, 0, null, 0, 0, 200, false),
+			false,
+			2.0D
+		));
+		manager.registerOptions(java.util.List.of(firstOption, secondOption));
+		SmeltingActionResult first = manager.startRegisteredProcess(
+			new SmeltItemsStepArgs(firstOption.optionId(), 1, SmeltingFuelMode.AUTO, null, 0, null),
+			380L
+		);
+		SmeltingActionResult second = manager.startRegisteredProcess(
+			new SmeltItemsStepArgs(secondOption.optionId(), 1, SmeltingFuelMode.AUTO, null, 0, null),
+			390L
+		);
+		manager.markReadyOutputs(java.util.List.of(new SmeltingStationObservation(
+			secondOption.stationObservation().key(),
+			SmeltingStationKind.FURNACE,
+			new SmeltingSlotSnapshot(null, 0, null, 0, "minecraft:iron_ingot", 1, 0, 200, false),
+			false,
+			2.0D
+		)), 600L);
+
+		assertTrue(first.accepted());
+		assertTrue(second.accepted());
+		assertEquals(second.processId(), manager.preferredCollectionProcessId());
+	}
+
+	@Test
 	void ownedProcessFingerprintCanAdvanceAfterExecutorMutation() {
 		SmeltingProcessManager manager = new SmeltingProcessManager();
 		SmeltingStationObservation empty = new SmeltingStationObservation(

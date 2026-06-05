@@ -91,6 +91,7 @@ import ai.moeru.airicraft.agent.tasks.InventoryItemCounter;
 import ai.moeru.airicraft.agent.tasks.InventoryResourceCounter;
 import ai.moeru.airicraft.agent.tasks.LedgerStepKind;
 import ai.moeru.airicraft.agent.tasks.MissionExecutionSnapshot;
+import ai.moeru.airicraft.agent.tasks.MinedBlockDropMapper;
 import ai.moeru.airicraft.agent.tasks.NearbyEntityService;
 import ai.moeru.airicraft.agent.tasks.TaskResourceKind;
 import ai.moeru.airicraft.agent.tasks.TaskSnapshot;
@@ -1122,6 +1123,18 @@ public final class EmbodiedAgentRuntime {
 				if (validationError.isPresent()) {
 					yield "TOOL_ERROR: ensure_blocks_in_inventory " + validationError.get();
 				}
+				WorldEvidence evidence = currentWorldEvidence(MinecraftClient.getInstance());
+				int currentItemCount = MinedBlockDropMapper.matchingInventoryItemCount(evidence.itemCounts(), mineSpec.blockIds());
+				if (currentItemCount >= mineSpec.quantity()) {
+					yield "Tool result for ensure_blocks_in_inventory: already_satisfied blockIds="
+						+ String.join(",", mineSpec.blockIds())
+						+ " quantity="
+						+ mineSpec.quantity()
+						+ " itemCount="
+						+ currentItemCount
+						+ " matchingItemIds="
+						+ MinedBlockDropMapper.matchingInventoryItemIds(mineSpec.blockIds());
+				}
 				applyPlannerJobTool(ActiveJobProposal.ensureBlocksInInventory(mineSpec));
 				yield queuedActionToolResult("ensure_blocks_in_inventory", "blockIds=" + String.join(",", mineSpec.blockIds()) + " quantity=" + mineSpec.quantity());
 			}
@@ -1196,10 +1209,13 @@ public final class EmbodiedAgentRuntime {
 						+ " message="
 						+ collectResult.message();
 				}
-				applyPlannerJobTool(ActiveJobProposal.collectSmeltedItems(collect));
+				CollectSmeltedItemsStepArgs queuedCollect = collect.processId() == null && collectResult.processId() != null
+					? new CollectSmeltedItemsStepArgs(collectResult.processId(), collect.confirmationToken())
+					: collect;
+				applyPlannerJobTool(ActiveJobProposal.collectSmeltedItems(queuedCollect));
 				yield queuedActionToolResult(
 					"collect_smelted_items",
-					(collect.processId() == null ? "processId=untracked" : "processId=" + collect.processId())
+					(queuedCollect.processId() == null ? "processId=untracked" : "processId=" + queuedCollect.processId())
 				);
 			}
 			case PlannerToolCatalog.CANCEL_SMELTING -> {
@@ -2447,6 +2463,9 @@ public final class EmbodiedAgentRuntime {
 			return false;
 		}
 		if (snapshot.spec() != null) {
+			return true;
+		}
+		if (Objects.equals(snapshot.activeStepId(), ActiveJobType.ENSURE_BLOCKS_IN_INVENTORY.name().toLowerCase())) {
 			return true;
 		}
 		return snapshot.activeStepKind() == ai.moeru.airicraft.agent.tasks.LedgerStepKind.COLLECT_RESOURCE

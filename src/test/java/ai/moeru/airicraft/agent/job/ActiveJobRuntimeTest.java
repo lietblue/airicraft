@@ -165,6 +165,27 @@ class ActiveJobRuntimeTest {
 	}
 
 	@Test
+	void ensureBlocksInInventoryCompletesFromMappedDropInventory() {
+		ActiveJobRuntime runtime = new ActiveJobRuntime();
+		GoalMineSpec mineSpec = new GoalMineSpec(List.of("minecraft:iron_ore"), 3);
+		runtime.applyPlannerResponse(
+			new DialogueResponse(
+				"Ensuring iron.",
+				new DialogueIntent(DialogueIntentType.JOB_UPDATE, ActiveJobProposal.ensureBlocksInInventory(mineSpec)),
+				1L
+			),
+			0,
+			"test",
+			1L
+		);
+
+		runtime.tick(TaskExecutionSnapshot.idle(), evidence(Map.of("minecraft:raw_iron", 3), 2L), true, true, 2L);
+
+		assertEquals(ActiveJobStatus.COMPLETED, runtime.current().status());
+		assertTrue(runtime.activeTaskRequest().isEmpty());
+	}
+
+	@Test
 	void ensureBlocksInInventoryTerminalReportIncludesBrokenBlockCount() {
 		ActiveJobRuntime runtime = new ActiveJobRuntime();
 		runtime.applyPlannerResponse(
@@ -191,8 +212,11 @@ class ActiveJobRuntimeTest {
 			Optional.of(request)
 		);
 
-		assertTrue(report.warning().isEmpty());
-		assertEquals("Goal reached brokenBlocks=1", report.event().orElseThrow().message());
+		assertTrue(report.event().isEmpty());
+		assertTrue(report.warning().orElseThrow().contains("inventory_target_not_satisfied"));
+		assertTrue(report.warning().orElseThrow().contains("brokenBlocks=1"));
+		assertTrue(report.warning().orElseThrow().contains("itemCount=0"));
+		assertTrue(report.warning().orElseThrow().contains("requestedItemCount=3"));
 	}
 
 	@Test

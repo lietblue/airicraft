@@ -110,6 +110,12 @@ public final class SmeltingPlannerService {
 	public SmeltingActionResult collectSmelted(MinecraftClient client, SmeltingProcessManager manager, CollectSmeltedItemsStepArgs request, long tick) {
 		Objects.requireNonNull(manager, "manager");
 		Objects.requireNonNull(request, "request");
+		if (request.processId() == null && request.confirmationToken() == null) {
+			String processId = manager.preferredCollectionProcessId();
+			if (processId != null) {
+				return SmeltingActionResult.accepted(processId, "accepted processId=" + processId + " trackedPending=true");
+			}
+		}
 		SmeltingStationKey key = request.processId() == null
 			? manager.confirmationStationKey(request.confirmationToken())
 			: manager.processStationKey(request.processId());

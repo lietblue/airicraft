@@ -15,6 +15,7 @@ import ai.moeru.airicraft.agent.tasks.DropItemsStepArgs;
 import ai.moeru.airicraft.agent.tasks.EntityInteractionStepArgs;
 import ai.moeru.airicraft.agent.tasks.LedgerStep;
 import ai.moeru.airicraft.agent.tasks.LedgerStepKind;
+import ai.moeru.airicraft.agent.tasks.MinedBlockDropMapper;
 import ai.moeru.airicraft.agent.tasks.MissionExecutionSnapshot;
 import ai.moeru.airicraft.agent.tasks.MissionSpec;
 import ai.moeru.airicraft.agent.tasks.MissionType;
@@ -166,9 +167,20 @@ public final class ActiveJobRuntime {
 
 		int brokenBlocks = activeJob.collectedCount();
 		if (activeJob.type() == ActiveJobType.ENSURE_BLOCKS_IN_INVENTORY) {
+			int itemCount = MinedBlockDropMapper.matchingInventoryItemCount(lastEvidence.itemCounts(), spec.blockIds());
+			if (event.terminalState() == TaskExecutionState.COMPLETED && itemCount < spec.quantity()) {
+				return TerminalTaskReport.warnOnly(ensureBlocksInventoryShortfallWarning(
+					event.taskId(),
+					brokenBlocks,
+					itemCount,
+					spec
+				));
+			}
 			return TerminalTaskReport.emit(withTerminalMessage(
 				event,
 				appendBrokenBlocks(event.message(), brokenBlocks)
+					+ " itemCount=" + itemCount
+					+ " requestedItemCount=" + spec.quantity()
 			));
 		}
 
@@ -327,7 +339,8 @@ public final class ActiveJobRuntime {
 			case ATTACK_ENTITY, USE_ENTITY -> tickPrimitiveJob(activeJob, lastPrimitiveExecution, actuationAllowed, tick);
 			case ASK_USER -> tickAskUser(activeJob, tick);
 			case MINE_BLOCKS -> tickMineBlocks(activeJob, lastPrimitiveExecution, actuationAllowed, tick);
-			case FOLLOW_PLAYER, NAVIGATE_TO, ENSURE_BLOCKS_IN_INVENTORY -> tickGoalJob(activeJob, lastPrimitiveExecution, actuationAllowed, tick);
+			case ENSURE_BLOCKS_IN_INVENTORY -> tickEnsureBlocksInInventory(activeJob, lastPrimitiveExecution, lastEvidence, actuationAllowed, tick);
+			case FOLLOW_PLAYER, NAVIGATE_TO -> tickGoalJob(activeJob, lastPrimitiveExecution, actuationAllowed, tick);
 			case IDLE -> ActiveJob.idle();
 		};
 		if (activeJob.type() != ActiveJobType.COLLECT_RESOURCE) {
@@ -341,7 +354,10 @@ public final class ActiveJobRuntime {
 			clearDesiredTaskState();
 			return;
 		}
-		if (activeJob.type() == ActiveJobType.MINE_BLOCKS && activeJob.directGoal() != null) {
+		if (
+			(activeJob.type() == ActiveJobType.MINE_BLOCKS || activeJob.type() == ActiveJobType.ENSURE_BLOCKS_IN_INVENTORY)
+				&& activeJob.directGoal() != null
+		) {
 			refreshMineBlocksAttempt(tick);
 			return;
 		}
@@ -405,7 +421,10 @@ public final class ActiveJobRuntime {
 
 	private void refreshMineBlocksAttempt(long tick) {
 		GoalMineSpec spec = activeJob.directGoal().mineSpec();
-		if (spec == null || activeJob.collectedCount() >= spec.quantity()) {
+		int satisfiedCount = activeJob.type() == ActiveJobType.ENSURE_BLOCKS_IN_INVENTORY
+			? MinedBlockDropMapper.matchingInventoryItemCount(lastEvidence.itemCounts(), spec == null ? null : spec.blockIds())
+			: activeJob.collectedCount();
+		if (spec == null || satisfiedCount >= spec.quantity()) {
 			clearDesiredTaskState();
 			return;
 		}
@@ -415,18 +434,20 @@ public final class ActiveJobRuntime {
 			&& desiredPrimitiveTask != null
 			&& Objects.equals(lastPrimitiveExecution.taskId(), desiredPrimitiveTask.taskId());
 		if (mineTaskChanged || mineTaskMissing || primitiveCompleted) {
-			startMineBlocksAttempt(spec, tick);
+			startMineBlocksAttempt(spec, tick, satisfiedCount);
 		}
 	}
 
-	private void startMineBlocksAttempt(GoalMineSpec requestedSpec, long tick) {
+	private void startMineBlocksAttempt(GoalMineSpec requestedSpec, long tick, int satisfiedCount) {
 		if (!Objects.equals(mineAttemptJobId, activeJob.jobId())) {
 			mineAttemptJobId = activeJob.jobId();
 			mineAttemptSequence = 0;
 		}
 		mineAttemptSequence++;
-		int remainingToMine = Math.max(1, requestedSpec.quantity() - activeJob.collectedCount());
-		int absoluteInventoryTarget = matchingItemCount(lastEvidence.itemCounts(), requestedSpec.blockIds()) + remainingToMine;
+		int remainingToMine = Math.max(1, requestedSpec.quantity() - satisfiedCount);
+		int absoluteInventoryTarget = activeJob.type() == ActiveJobType.ENSURE_BLOCKS_IN_INVENTORY
+			? requestedSpec.quantity()
+			: matchingItemCount(lastEvidence.itemCounts(), requestedSpec.blockIds()) + remainingToMine;
 		GoalSnapshot executionGoal = new GoalSnapshot(
 			GoalType.MINE_BLOCKS,
 			null,
@@ -559,6 +580,33 @@ public final class ActiveJobRuntime {
 		return updated(job, ActiveJobStatus.BLOCKED, "waiting_for_user", null, job.collectedCount(), tick);
 	}
 
+	private static ActiveJob tickEnsureBlocksInInventory(
+		ActiveJob job,
+		TaskExecutionSnapshot primitiveExecution,
+		WorldEvidence evidence,
+		boolean actuationAllowed,
+		long tick
+	) {
+		GoalMineSpec spec = job.directGoal() == null ? null : job.directGoal().mineSpec();
+		if (spec == null) {
+			return updated(job, ActiveJobStatus.FAILED, null, "missing_mine_blocks_args", job.collectedCount(), tick);
+		}
+		int currentItemCount = MinedBlockDropMapper.matchingInventoryItemCount(evidence.itemCounts(), spec.blockIds());
+		if (currentItemCount >= spec.quantity()) {
+			return updated(job, ActiveJobStatus.COMPLETED, null, null, job.collectedCount(), tick);
+		}
+		if (!actuationAllowed || primitiveExecution.state() == TaskExecutionState.PAUSED_BY_SESSION_GATE) {
+			return updated(job, ActiveJobStatus.BLOCKED, "session_gate", null, job.collectedCount(), tick);
+		}
+		return switch (primitiveExecution.state()) {
+			case RUNNING -> updated(job, ActiveJobStatus.RUNNING, null, null, job.collectedCount(), tick);
+			case COMPLETED, IDLE -> updated(job, ActiveJobStatus.QUEUED, null, null, job.collectedCount(), tick);
+			case FAILED -> updated(job, ActiveJobStatus.FAILED, null, nonEmpty(primitiveExecution.lastPathEvent(), "task_failed"), job.collectedCount(), tick);
+			case CANCELLED -> updated(job, ActiveJobStatus.CANCELLED, null, nonEmpty(primitiveExecution.lastPathEvent(), "task_cancelled"), job.collectedCount(), tick);
+			case PAUSED_BY_SESSION_GATE -> updated(job, ActiveJobStatus.BLOCKED, "session_gate", null, job.collectedCount(), tick);
+		};
+	}
+
 	private static ActiveJob tickPrimitiveJob(
 		ActiveJob job,
 		TaskExecutionSnapshot primitiveExecution,
@@ -677,6 +725,16 @@ public final class ActiveJobRuntime {
 			+ " brokenBlocks=" + Math.max(0, brokenBlocks)
 			+ " requestedBlocks=" + Math.max(0, requestedBlocks)
 			+ ". Runtime will keep mining until the requested broken block count is reached.";
+	}
+
+	private static String ensureBlocksInventoryShortfallWarning(String taskId, int brokenBlocks, int itemCount, GoalMineSpec spec) {
+		return "TASK WARNING: ensure_blocks_in_inventory inventory_target_not_satisfied"
+			+ " taskId=" + nonEmpty(taskId, "")
+			+ " brokenBlocks=" + Math.max(0, brokenBlocks)
+			+ " itemCount=" + Math.max(0, itemCount)
+			+ " requestedItemCount=" + (spec == null ? 0 : Math.max(0, spec.quantity()))
+			+ " matchingItemIds=" + (spec == null ? List.of() : MinedBlockDropMapper.matchingInventoryItemIds(spec.blockIds()))
+			+ ". Runtime will keep mining until the requested inventory count is reached.";
 	}
 
 	private static int matchingItemCount(Map<String, Integer> itemCounts, List<String> blockIds) {

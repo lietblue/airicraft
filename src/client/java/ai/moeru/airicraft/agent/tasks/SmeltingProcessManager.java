@@ -49,6 +49,18 @@ public final class SmeltingProcessManager {
 		return process == null ? null : process.stationKey();
 	}
 
+	public String preferredCollectionProcessId() {
+		return processesById.values().stream()
+			.sorted(Comparator
+				.comparing((TrackedProcess process) -> !process.outputReadyNotified())
+				.thenComparingLong(TrackedProcess::estimatedReadyTick)
+				.thenComparingLong(TrackedProcess::startedTick)
+				.thenComparing(TrackedProcess::processId))
+			.map(TrackedProcess::processId)
+			.findFirst()
+			.orElse(null);
+	}
+
 	public boolean hasTrackedProcesses() {
 		return !processesById.isEmpty();
 	}
