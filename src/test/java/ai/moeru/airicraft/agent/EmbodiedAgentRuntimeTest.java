@@ -55,6 +55,7 @@ import ai.moeru.airicraft.agent.tasks.TaskType;
 import ai.moeru.airicraft.agent.tasks.TaskTerminalEvent;
 import ai.moeru.airicraft.agent.tasks.WorldTaskExecutor;
 import ai.moeru.airicraft.agent.tasks.WorldTaskType;
+import ai.moeru.airicraft.agent.tasks.WorldEvidence;
 import ai.moeru.airicraft.agent.llm.PlannerToolCall;
 import ai.moeru.airicraft.agent.llm.PlannerTrigger;
 import ai.moeru.airicraft.agent.llm.PlannerTriggerType;
@@ -756,6 +757,28 @@ class EmbodiedAgentRuntimeTest {
 		assertTrue(result.contains("completed"));
 		assertTrue(result.contains("state=COMPLETED"));
 		assertFalse(result.contains("accepted queued"));
+	}
+
+	@Test
+	void inventoryTaskUpdateSnapshotFormatsPlannerVisibleInventoryEvidence() {
+		String result = EmbodiedAgentRuntime.formatInventorySnapshotForTaskUpdate(new WorldEvidence(
+			Map.of(),
+			Map.of("minecraft:stone_pickaxe", 1, "minecraft:stick", 4),
+			Map.of(),
+			"minecraft:overworld",
+			0,
+			64,
+			0,
+			"minecraft:stone_pickaxe",
+			2,
+			List.of("0=minecraft:stickx4", "1=empty", "2=minecraft:stone_pickaxex1"),
+			10L
+		));
+
+		assertTrue(result.contains("inventorySnapshot={itemCounts={minecraft:stick=4, minecraft:stone_pickaxe=1}"));
+		assertTrue(result.contains("selectedHotbarSlot=2"));
+		assertTrue(result.contains("equippedItemId=minecraft:stone_pickaxe"));
+		assertTrue(result.contains("hotbarItems=[0=minecraft:stickx4, 1=empty, 2=minecraft:stone_pickaxex1]"));
 	}
 
 	@Test

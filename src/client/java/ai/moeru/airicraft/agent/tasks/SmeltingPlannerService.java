@@ -289,7 +289,7 @@ public final class SmeltingPlannerService {
 					input.outputItemId(),
 					input.outputCount(),
 					input.availableCount(),
-					input.cookTimeTicks(),
+					effectiveCookTimeTicks(input.cookTimeTicks(), candidate.kind()),
 					candidate,
 					observation
 				));
@@ -517,6 +517,15 @@ public final class SmeltingPlannerService {
 			case NEARBY_EXISTING -> "nearby";
 			case PLACE_FROM_INVENTORY -> "carried_furnace";
 		};
+	}
+
+	static int effectiveCookTimeTicks(int recipeCookTimeTicks, SmeltingStationKind stationKind) {
+		int recipeTicks = recipeCookTimeTicks <= 0 ? DEFAULT_COOK_TIME_TICKS : recipeCookTimeTicks;
+		int minimumTicks = switch (stationKind) {
+			case BLAST_FURNACE, SMOKER -> DEFAULT_COOK_TIME_TICKS / 2;
+			case FURNACE -> DEFAULT_COOK_TIME_TICKS;
+		};
+		return Math.max(recipeTicks, minimumTicks);
 	}
 
 	private record SmeltableInput(

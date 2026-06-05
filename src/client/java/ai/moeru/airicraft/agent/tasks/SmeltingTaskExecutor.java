@@ -160,9 +160,8 @@ public final class SmeltingTaskExecutor implements WorldTaskExecutor {
 			return fail(request, "furnace_screen_not_open");
 		}
 		if (handler.getSlot(2).getStack().isEmpty()) {
-			// TODO: For estimated ready events, consider requeueing a delayed collect instead of
-			// failing the foreground job immediately.
-			return fail(request, "output_not_ready");
+			snapshot = snapshot(TaskExecutionState.RUNNING, request, "waiting_for_output");
+			return Optional.empty();
 		}
 		client.interactionManager.clickSlot(handler.syncId, 2, 0, SlotActionType.QUICK_MOVE, player);
 		if (args.processId() != null) {
@@ -203,6 +202,13 @@ public final class SmeltingTaskExecutor implements WorldTaskExecutor {
 
 	private boolean ensureExistingStationOpen(WorldTaskRequest request, MinecraftClient client, ClientPlayerEntity player, BlockPos stationPos) {
 		if (player.currentScreenHandler instanceof AbstractFurnaceScreenHandler) {
+			if (!openedStationForTask) {
+				if (player.currentScreenHandler.getCursorStack().isEmpty()) {
+					player.closeHandledScreen();
+				}
+				snapshot = snapshot(TaskExecutionState.RUNNING, request, "closing_existing_furnace_screen");
+				return false;
+			}
 			return true;
 		}
 		if (!isFurnaceBlock(client, stationPos)) {
@@ -242,10 +248,10 @@ public final class SmeltingTaskExecutor implements WorldTaskExecutor {
 		SmeltingOption option,
 		SmeltItemsStepArgs args
 	) {
-		if (args.fuelMode() == SmeltingFuelMode.MANUAL) {
-			return Optional.of(new FuelSelection(args.fuelItemId(), args.fuelQuantity()));
-		}
 		int requiredFuelTicks = args.inputQuantity() * option.cookTimeTicks();
+		if (args.fuelMode() == SmeltingFuelMode.MANUAL) {
+			return manualFuelSelection(client, handler, args, requiredFuelTicks);
+		}
 		ItemStack existingFuel = handler.getSlot(1).getStack();
 		if (existingFuel.isEmpty() && furnaceBurning(handler)) {
 			return Optional.of(new FuelSelection(null, 0));
@@ -287,6 +293,50 @@ public final class SmeltingTaskExecutor implements WorldTaskExecutor {
 		return Optional.ofNullable(best);
 	}
 
+	private static Optional<FuelSelection> manualFuelSelection(
+		MinecraftClient client,
+		ScreenHandler handler,
+		SmeltItemsStepArgs args,
+		int requiredFuelTicks
+	) {
+		if (client == null || client.world == null || args.fuelItemId() == null || args.fuelItemId().isBlank()) {
+			return Optional.empty();
+		}
+		String requestedFuelItemId = args.fuelItemId();
+		int matchingFuelCount = 0;
+		int fuelTicksPerItem = 0;
+
+		ItemStack existingFuel = handler.getSlot(1).getStack();
+		if (!existingFuel.isEmpty()) {
+			if (!requestedFuelItemId.equals(itemId(existingFuel)) || !client.world.getFuelRegistry().isFuel(existingFuel)) {
+				return Optional.empty();
+			}
+			matchingFuelCount += existingFuel.getCount();
+			fuelTicksPerItem = client.world.getFuelRegistry().getFuelTicks(existingFuel);
+		}
+
+		for (int slot = 3; slot < handler.slots.size(); slot++) {
+			ItemStack stack = handler.getSlot(slot).getStack();
+			if (stack.isEmpty() || !requestedFuelItemId.equals(itemId(stack))) {
+				continue;
+			}
+			if (!client.world.getFuelRegistry().isFuel(stack)) {
+				return Optional.empty();
+			}
+			matchingFuelCount += stack.getCount();
+			if (fuelTicksPerItem <= 0) {
+				fuelTicksPerItem = client.world.getFuelRegistry().getFuelTicks(stack);
+			}
+		}
+
+		if (!fuelQuantityCoversCookTime(1, requiredFuelTicks, fuelTicksPerItem, args.fuelQuantity())) {
+			return Optional.empty();
+		}
+		return matchingFuelCount >= args.fuelQuantity()
+			? Optional.of(new FuelSelection(requestedFuelItemId, args.fuelQuantity()))
+			: Optional.empty();
+	}
+
 	static int fuelItemsNeeded(int requiredFuelTicks, int fuelTicksPerItem) {
 		if (requiredFuelTicks <= 0) {
 			return 0;
@@ -295,6 +345,13 @@ public final class SmeltingTaskExecutor implements WorldTaskExecutor {
 			return Integer.MAX_VALUE;
 		}
 		return (requiredFuelTicks + fuelTicksPerItem - 1) / fuelTicksPerItem;
+	}
+
+	static boolean fuelQuantityCoversCookTime(int inputQuantity, int cookTimeTicks, int fuelTicksPerItem, int fuelQuantity) {
+		if (inputQuantity <= 0 || cookTimeTicks <= 0 || fuelQuantity <= 0) {
+			return false;
+		}
+		return fuelItemsNeeded(inputQuantity * cookTimeTicks, fuelTicksPerItem) <= fuelQuantity;
 	}
 
 	private static boolean furnaceBurning(ScreenHandler handler) {
@@ -528,6 +585,9 @@ public final class SmeltingTaskExecutor implements WorldTaskExecutor {
 	private Optional<TaskTerminalEvent> fail(WorldTaskRequest request, String reason) {
 		cancelNavigationIfStarted();
 		closeOpenedStationIfSafe();
+		if (request.type() == WorldTaskType.SMELT_ITEMS) {
+			processManager.cancelProcessesForOption(request.smeltItems().optionId());
+		}
 		snapshot = snapshot(TaskExecutionState.FAILED, request, reason);
 		if (terminalEventEmitted) {
 			return Optional.empty();

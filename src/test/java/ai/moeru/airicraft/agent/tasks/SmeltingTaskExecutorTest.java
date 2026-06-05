@@ -13,6 +13,13 @@ class SmeltingTaskExecutorTest {
 	}
 
 	@Test
+	void fuelQuantityMustCoverFullCookTime() {
+		assertEquals(false, SmeltingTaskExecutor.fuelQuantityCoversCookTime(1, 200, 100, 1));
+		assertEquals(true, SmeltingTaskExecutor.fuelQuantityCoversCookTime(1, 200, 100, 2));
+		assertEquals(true, SmeltingTaskExecutor.fuelQuantityCoversCookTime(3, 200, 1600, 1));
+	}
+
+	@Test
 	void remainingItemsToMoveCountsMatchingTargetSlotContents() {
 		assertEquals(3, SmeltingTaskExecutor.remainingItemsToMove(null, 0, "minecraft:raw_iron", 3));
 		assertEquals(1, SmeltingTaskExecutor.remainingItemsToMove("minecraft:raw_iron", 2, "minecraft:raw_iron", 3));

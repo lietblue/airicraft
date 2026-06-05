@@ -139,6 +139,51 @@ class SmeltingProcessManagerTest {
 	}
 
 	@Test
+	void startingNewProcessAtSameStationReplacesStaleProcessHandle() {
+		SmeltingProcessManager manager = new SmeltingProcessManager();
+		SmeltingStationObservation empty = emptyStation();
+		SmeltingOption option = option("smelt:iron:nearby-1", empty);
+		manager.registerOptions(java.util.List.of(option));
+
+		SmeltingActionResult first = manager.startRegisteredProcess(
+			new SmeltItemsStepArgs(option.optionId(), 1, SmeltingFuelMode.AUTO, null, 0, null),
+			350L
+		);
+		SmeltingActionResult second = manager.startRegisteredProcess(
+			new SmeltItemsStepArgs(option.optionId(), 1, SmeltingFuelMode.AUTO, null, 0, null),
+			360L
+		);
+
+		assertTrue(first.accepted());
+		assertTrue(second.accepted());
+		assertEquals(null, manager.processStationKey(first.processId()));
+		assertEquals(empty.key(), manager.processStationKey(second.processId()));
+		assertEquals("Tool result for inspect_smelting: processes=1\nprocessId="
+			+ second.processId()
+			+ " optionId=smelt:iron:nearby-1 station=minecraft:overworld@1,64,1 inputQuantity=1",
+			manager.inspectSummary());
+	}
+
+	@Test
+	void cancelProcessesForOptionClearsFailedSmeltRegistration() {
+		SmeltingProcessManager manager = new SmeltingProcessManager();
+		SmeltingStationObservation empty = emptyStation();
+		SmeltingOption option = option("smelt:iron:nearby-1", empty);
+		manager.registerOptions(java.util.List.of(option));
+		SmeltingActionResult started = manager.startRegisteredProcess(
+			new SmeltItemsStepArgs(option.optionId(), 1, SmeltingFuelMode.AUTO, null, 0, null),
+			370L
+		);
+
+		int cancelled = manager.cancelProcessesForOption(option.optionId());
+
+		assertTrue(started.accepted());
+		assertEquals(1, cancelled);
+		assertEquals(null, manager.processStationKey(started.processId()));
+		assertEquals("Tool result for inspect_smelting: processes=0", manager.inspectSummary());
+	}
+
+	@Test
 	void ownedProcessFingerprintCanAdvanceAfterExecutorMutation() {
 		SmeltingProcessManager manager = new SmeltingProcessManager();
 		SmeltingStationObservation empty = new SmeltingStationObservation(
@@ -392,6 +437,36 @@ class SmeltingProcessManagerTest {
 			),
 			false,
 			1.0D
+		);
+	}
+
+	private static SmeltingStationObservation emptyStation() {
+		return new SmeltingStationObservation(
+			new SmeltingStationKey("minecraft:overworld", 1, 64, 1),
+			SmeltingStationKind.FURNACE,
+			new SmeltingSlotSnapshot(null, 0, null, 0, null, 0, 0, 200, false),
+			false,
+			1.0D
+		);
+	}
+
+	private static SmeltingOption option(String optionId, SmeltingStationObservation observation) {
+		return new SmeltingOption(
+			optionId,
+			"minecraft:raw_iron",
+			"minecraft:iron_ingot",
+			1,
+			3,
+			200,
+			new SmeltingStationCandidate(
+				SmeltingStationSource.NEARBY_EXISTING,
+				SmeltingStationState.EMPTY,
+				SmeltingStationKind.FURNACE,
+				observation.key(),
+				1.0D,
+				false
+			),
+			observation
 		);
 	}
 }

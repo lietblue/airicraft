@@ -89,6 +89,7 @@ import ai.moeru.airicraft.agent.tasks.WorldTaskRequest;
 import ai.moeru.airicraft.agent.tasks.CollectResourceTaskHandler;
 import ai.moeru.airicraft.agent.tasks.InventoryItemCounter;
 import ai.moeru.airicraft.agent.tasks.InventoryResourceCounter;
+import ai.moeru.airicraft.agent.tasks.LedgerStepKind;
 import ai.moeru.airicraft.agent.tasks.MissionExecutionSnapshot;
 import ai.moeru.airicraft.agent.tasks.NearbyEntityService;
 import ai.moeru.airicraft.agent.tasks.TaskResourceKind;
@@ -113,6 +114,7 @@ import ai.moeru.airicraft.agent.tasks.SmeltingOption;
 import ai.moeru.airicraft.agent.tasks.SmeltingOutputReadyEvent;
 import ai.moeru.airicraft.agent.tasks.SmeltingPlannerService;
 import ai.moeru.airicraft.agent.tasks.SmeltingProcessManager;
+import ai.moeru.airicraft.agent.tasks.WorldTaskType;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.entity.damage.DamageSource;
 import net.minecraft.registry.Registries;
@@ -135,6 +137,7 @@ import java.util.UUID;
 import java.time.Clock;
 import java.util.Locale;
 import java.util.concurrent.CompletableFuture;
+import java.util.TreeMap;
 
 public final class EmbodiedAgentRuntime {
 	static final long CHAT_ECHO_SUPPRESSION_TICKS = 40L;
@@ -429,7 +432,7 @@ public final class EmbodiedAgentRuntime {
 			ActiveJobRuntime.TerminalTaskReport report = activeJobRuntime.reportTerminalTaskEvent(event, activeTaskRequest);
 			report.warning().ifPresent(this::handleInternalTaskWarning);
 			report.event().ifPresent(this::completePendingCraftToolResult);
-			report.event().ifPresent(reportedEvent -> handleTerminalTaskEvent(reportedEvent, semanticTaskContext));
+			report.event().ifPresent(reportedEvent -> handleTerminalTaskEvent(reportedEvent, semanticTaskContext, activeTaskRequest));
 		});
 		completePendingCraftToolResultFromTaskSnapshot(taskSnapshot);
 		expirePendingCraftToolResultIfTimedOut();
@@ -832,7 +835,7 @@ public final class EmbodiedAgentRuntime {
 	}
 
 	public void onPlayerMinedBlock(String blockId, int x, int y, int z) {
-		activeJobRuntime.recordMinedBlock(blockId, tickCount).ifPresent(event -> handleTerminalTaskEvent(event, false));
+		activeJobRuntime.recordMinedBlock(blockId, tickCount).ifPresent(event -> handleTerminalTaskEvent(event, false, Optional.empty()));
 	}
 
 	public void onPlayerDamageObserved(DamageSource damageSource) {
@@ -2395,6 +2398,7 @@ public final class EmbodiedAgentRuntime {
 				|| current.state() == TaskState.FAILED
 				|| current.state() == TaskState.CANCELLED
 		) {
+			String inventorySnapshot = inventorySnapshotForTaskUpdate(current.activeStepKind());
 			dialogueRuntime.onInternalTaskUpdate(
 				"TASK UPDATE: state=" + current.state().name()
 					+ " missionId=" + (current.mission() == null ? "" : current.mission().missionId())
@@ -2405,7 +2409,8 @@ public final class EmbodiedAgentRuntime {
 					+ " resourceKind=" + (current.spec() == null ? "" : current.spec().resourceKind().name())
 					+ " collected=" + current.progress().collected()
 					+ " remaining=" + current.progress().remaining()
-					+ " failure=" + (current.lastFailure() == null ? "" : current.lastFailure()),
+					+ " failure=" + (current.lastFailure() == null ? "" : current.lastFailure())
+					+ inventorySnapshot,
 				tickCount,
 				sessionSnapshot,
 				activeGoal(),
@@ -2467,7 +2472,7 @@ public final class EmbodiedAgentRuntime {
 			|| state == TaskState.CANCELLED;
 	}
 
-	private void handleTerminalTaskEvent(TaskTerminalEvent event, boolean semanticTaskContext) {
+	private void handleTerminalTaskEvent(TaskTerminalEvent event, boolean semanticTaskContext, Optional<WorldTaskRequest> activeTaskRequest) {
 		if (event == null || event.goal() == null || event.terminalState() == null) {
 			return;
 		}
@@ -2495,12 +2500,14 @@ public final class EmbodiedAgentRuntime {
 			eventBuffer.append(tickCount, eventType, payload);
 		}
 
+		String inventorySnapshot = inventorySnapshotForTaskUpdate(event, activeTaskRequest);
 		dialogueRuntime.onInternalTaskUpdate(
 			"TASK UPDATE: state=" + event.terminalState().name()
 				+ " taskId=" + event.taskId()
 				+ " goalType=" + event.goal().type().name()
 				+ " message=" + (event.message() == null ? "" : event.message())
-				+ " terminationCause=" + (event.terminationCause() == null ? "" : event.terminationCause().name()),
+				+ " terminationCause=" + (event.terminationCause() == null ? "" : event.terminationCause().name())
+				+ inventorySnapshot,
 			tickCount,
 			sessionSnapshot,
 			activeGoal(),
@@ -2530,7 +2537,7 @@ public final class EmbodiedAgentRuntime {
 		if (pending == null || event == null || !Objects.equals(pending.taskId(), event.taskId())) {
 			return;
 		}
-		completePendingCraftToolResult(formatCraftTerminalToolResult(pending.craftRecipe(), event));
+		completePendingCraftToolResult(formatCraftTerminalToolResult(pending.craftRecipe(), event) + inventorySnapshotForTaskUpdate(WorldTaskType.CRAFT_RECIPE));
 	}
 
 	private void completePendingCraftToolResultFromTaskSnapshot(TaskSnapshot snapshot) {
@@ -2543,7 +2550,74 @@ public final class EmbodiedAgentRuntime {
 		) {
 			return;
 		}
-		completePendingCraftToolResult(formatCraftSnapshotToolResult(pending.craftRecipe(), snapshot));
+		completePendingCraftToolResult(formatCraftSnapshotToolResult(pending.craftRecipe(), snapshot) + inventorySnapshotForTaskUpdate(WorldTaskType.CRAFT_RECIPE));
+	}
+
+	private String inventorySnapshotForTaskUpdate(LedgerStepKind activeStepKind) {
+		if (!inventoryMutatingStepKind(activeStepKind)) {
+			return "";
+		}
+		return formatInventorySnapshotForTaskUpdate(currentWorldEvidence(MinecraftClient.getInstance()));
+	}
+
+	private String inventorySnapshotForTaskUpdate(TaskTerminalEvent event, Optional<WorldTaskRequest> activeTaskRequest) {
+		WorldTaskType taskType = activeTaskRequest == null
+			? null
+			: activeTaskRequest
+				.filter(request -> event != null && Objects.equals(request.taskId(), event.taskId()))
+				.map(WorldTaskRequest::type)
+				.orElse(null);
+		if (taskType == null && event != null && event.goal() != null && event.goal().type() == GoalType.MINE_BLOCKS) {
+			taskType = WorldTaskType.MINE;
+		}
+		return inventorySnapshotForTaskUpdate(taskType);
+	}
+
+	private String inventorySnapshotForTaskUpdate(WorldTaskType taskType) {
+		if (!inventoryMutatingTaskType(taskType)) {
+			return "";
+		}
+		return formatInventorySnapshotForTaskUpdate(currentWorldEvidence(MinecraftClient.getInstance()));
+	}
+
+	static String formatInventorySnapshotForTaskUpdate(WorldEvidence evidence) {
+		if (evidence == null) {
+			return "";
+		}
+		Map<String, Integer> itemCounts = evidence.itemCounts() == null ? Map.of() : new TreeMap<>(evidence.itemCounts());
+		List<String> hotbarItems = evidence.hotbarItems() == null ? List.of() : evidence.hotbarItems();
+		boolean hasSnapshot = !itemCounts.isEmpty()
+			|| !hotbarItems.isEmpty()
+			|| evidence.selectedHotbarSlot() >= 0
+			|| (evidence.equippedItemId() != null && !evidence.equippedItemId().isBlank());
+		if (!hasSnapshot) {
+			return "";
+		}
+		return " inventorySnapshot={itemCounts=" + itemCounts
+			+ ", selectedHotbarSlot=" + evidence.selectedHotbarSlot()
+			+ ", equippedItemId=" + (evidence.equippedItemId() == null ? "" : evidence.equippedItemId())
+			+ ", hotbarItems=" + hotbarItems
+			+ "}";
+	}
+
+	private static boolean inventoryMutatingStepKind(LedgerStepKind kind) {
+		if (kind == null) {
+			return false;
+		}
+		return switch (kind) {
+			case COLLECT_RESOURCE, MINE_BLOCKS, CRAFT_RECIPE, TRANSFER_ITEMS, PLACE_BLOCK, DROP_ITEMS, SMELT_ITEMS, COLLECT_SMELTED_ITEMS -> true;
+			case NAVIGATE_TO_POSITION, NAVIGATE_TO_BLOCK_KIND, OPEN_CONTAINER, ATTACK_ENTITY, USE_ENTITY, ASK_USER, FINISH -> false;
+		};
+	}
+
+	private static boolean inventoryMutatingTaskType(WorldTaskType type) {
+		if (type == null) {
+			return false;
+		}
+		return switch (type) {
+			case MINE, CRAFT_RECIPE, DROP_ITEMS, SMELT_ITEMS, COLLECT_SMELTED_ITEMS -> true;
+			case FOLLOW, NAVIGATE, ATTACK_ENTITY, USE_ENTITY -> false;
+		};
 	}
 
 	private void expirePendingCraftToolResultIfTimedOut() {
