@@ -35,6 +35,10 @@ public final class ActionFactStore {
 			.toList();
 	}
 
+	public synchronized List<ActionFact> queryAll() {
+		return List.copyOf(facts.values());
+	}
+
 	public synchronized int size() {
 		return facts.size();
 	}

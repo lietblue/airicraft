@@ -85,6 +85,10 @@ interface MinecraftTransport {
 
 	Map<String, Object> cancelAgentActionGoal();
 
+	Map<String, Object> listAgentActionFacts(String worldId, String type);
+
+	Map<String, Object> clearAgentActionFacts(String worldId);
+
 	Map<String, Object> submitAgentTask(Map<String, Object> taskPayload);
 
 	Map<String, Object> submitAgentMission(Map<String, Object> missionPayload);

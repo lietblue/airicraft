@@ -25,10 +25,13 @@ import ai.moeru.airicraft.agent.actions.ActionGraphExecutionSnapshot;
 import ai.moeru.airicraft.agent.actions.ActionGraphPrimitiveDispatch;
 import ai.moeru.airicraft.agent.actions.ActionGraphPrimitiveDispatchResult;
 import ai.moeru.airicraft.agent.actions.ActionGraphPrimitiveMapper;
+import ai.moeru.airicraft.agent.actions.ActionFact;
+import ai.moeru.airicraft.agent.actions.ActionFactType;
 import ai.moeru.airicraft.agent.actions.ActionGoal;
 import ai.moeru.airicraft.agent.actions.ActionPlanStep;
 import ai.moeru.airicraft.agent.actions.ActionResolverContext;
 import ai.moeru.airicraft.agent.actions.ActionsetLibraryPaths;
+import ai.moeru.airicraft.agent.actions.PersistentActionFactStore;
 import ai.moeru.airicraft.agent.dialogue.DialogueIntent;
 import ai.moeru.airicraft.agent.dialogue.DialogueIntentType;
 import ai.moeru.airicraft.agent.dialogue.DialogueResponse;
@@ -207,6 +210,7 @@ public final class EmbodiedAgentRuntime {
 	private final WorldReadLedger worldReadLedger = new WorldReadLedger();
 	private final CurrentWorldQueryService guardedWorldQueryService = new CurrentWorldQueryService(MinecraftClient::getInstance);
 	private final ActionGraphExecutionRuntime actionGraphRuntime;
+	private final PersistentActionFactStore persistentActionFactStore = PersistentActionFactStore.defaults();
 
 	private boolean initialized;
 	private long tickCount;
@@ -679,6 +683,34 @@ public final class EmbodiedAgentRuntime {
 			"reason", reason == null || reason.isBlank() ? "cancelled" : reason
 		));
 		return snapshot;
+	}
+
+	public Map<String, Object> inspectPersistentActionFacts(String worldId, String factTypeId) {
+		String resolvedWorldId = resolveActionFactWorldId(worldId);
+		ActionFactType type = parseOptionalFactType(factTypeId);
+		List<ActionFact> facts = persistentActionFactStore.list(resolvedWorldId).stream()
+			.filter(fact -> type == null || fact.identity().type() == type)
+			.toList();
+		LinkedHashMap<String, Object> payload = new LinkedHashMap<>();
+		payload.put("available", true);
+		payload.put("worldId", resolvedWorldId);
+		payload.put("factCount", facts.size());
+		payload.put("facts", facts.stream().map(EmbodiedAgentRuntime::actionFactPayload).toList());
+		if (type != null) {
+			payload.put("type", type.id());
+		}
+		return payload;
+	}
+
+	public Map<String, Object> clearPersistentActionFacts(String worldId) {
+		String resolvedWorldId = resolveActionFactWorldId(worldId);
+		int cleared = persistentActionFactStore.clear(resolvedWorldId);
+		return Map.of(
+			"available", true,
+			"worldId", resolvedWorldId,
+			"cleared", true,
+			"clearedCount", cleared
+		);
 	}
 
 	public Optional<DialogueResponse> lastDialogueResponse() {
@@ -1205,6 +1237,36 @@ public final class EmbodiedAgentRuntime {
 			dimension == null || dimension.isBlank() ? "unknown" : dimension,
 			tickCount
 		);
+	}
+
+	private String resolveActionFactWorldId(String requestedWorldId) {
+		if (requestedWorldId != null && !requestedWorldId.isBlank()) {
+			return requestedWorldId.trim();
+		}
+		String dimension = sessionSnapshot.dimensionId();
+		if (dimension != null && !dimension.isBlank()) {
+			return sessionSnapshot.mode().name() + ":" + dimension;
+		}
+		return sessionSnapshot.mode().name();
+	}
+
+	private static ActionFactType parseOptionalFactType(String factTypeId) {
+		if (factTypeId == null || factTypeId.isBlank()) {
+			return null;
+		}
+		return ActionFactType.fromId(factTypeId.trim())
+			.orElseThrow(() -> new IllegalArgumentException("Unknown action fact type: " + factTypeId));
+	}
+
+	private static Map<String, Object> actionFactPayload(ActionFact fact) {
+		LinkedHashMap<String, Object> payload = new LinkedHashMap<>();
+		payload.put("type", fact.identity().type().id());
+		payload.put("keys", fact.identity().keys());
+		payload.put("provenance", fact.provenance().name());
+		payload.put("observedTick", fact.observedTick());
+		payload.put("staleAfterTick", fact.staleAfterTick());
+		payload.put("payload", fact.payload());
+		return payload;
 	}
 
 	private static Map<String, Object> actionGraphSubmittedPayload(ActionGraphPrimitiveDispatch dispatch) {
