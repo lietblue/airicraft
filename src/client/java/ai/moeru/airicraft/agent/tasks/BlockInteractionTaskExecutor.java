@@ -63,6 +63,7 @@ public final class BlockInteractionTaskExecutor implements WorldTaskExecutor {
 	private boolean navigationStarted;
 	private int navigationTargetIndex = -1;
 	private BlockPos navigationTarget;
+	private GoalPosition navigationGoal;
 	private long navigationStartTick;
 
 	public BlockInteractionTaskExecutor() {
@@ -226,25 +227,31 @@ public final class BlockInteractionTaskExecutor implements WorldTaskExecutor {
 		HitTarget hitTarget
 	) {
 		if (!withinInteractionRange(player, hitTarget.hitVec())) {
-			return navigateTowardInteractionRange(tick, request, target, "target_out_of_range supportPos=" + compactPos(hitTarget.supportPos()));
+			return navigateTowardInteractionRange(tick, client, player, request, target, hitTarget, "target_out_of_range supportPos=" + compactPos(hitTarget.supportPos()));
 		}
 		cameraController.lookAtNow(client, hitTarget.hitVec());
-		if (requiresSupportRaycast(before, target, hitTarget) && !raycastMatchesHitTarget(client, player, hitTarget)) {
-			return navigateTowardInteractionRange(tick, request, target, "target_not_visible supportPos=" + compactPos(hitTarget.supportPos()));
+		boolean raycastMatchesHitTarget = raycastMatchesHitTarget(client, player, hitTarget);
+		boolean shouldNavigateForMissingRaycast = shouldNavigateForMissingRaycast(request, player, hand, before, target, hitTarget, raycastMatchesHitTarget);
+		if (shouldNavigateForMissingRaycast) {
+			return navigateTowardInteractionRange(tick, client, player, request, target, hitTarget, "target_not_visible supportPos=" + compactPos(hitTarget.supportPos()));
 		}
 		clearNavigation();
 		ActionResult blockResult = client.interactionManager.interactBlock(player, hand, hitTarget.hitResult());
 		ActionResult itemResult = null;
 		if (!blockResult.isAccepted() && request.type() == WorldTaskType.USE_BLOCK && !(blockResult instanceof ActionResult.Fail)) {
 			cameraController.lookAtNow(client, hitTarget.hitVec());
-			if (raycastMatchesHitTarget(client, player, hitTarget)) {
+			raycastMatchesHitTarget = raycastMatchesHitTarget(client, player, hitTarget);
+			if (raycastMatchesHitTarget) {
 				itemResult = client.interactionManager.interactItem(player, hand);
 			}
 		}
 		if (!blockResult.isAccepted() && (itemResult == null || !itemResult.isAccepted())) {
+			if (shouldNavigateForMissingRaycast) {
+				return navigateTowardInteractionRange(tick, client, player, request, target, hitTarget, "target_not_visible supportPos=" + compactPos(hitTarget.supportPos()));
+			}
 			return fail(request, targetFailure(target, "interaction_failed blockInteractionResult=" + blockResult
 				+ " itemInteractionResult=" + (itemResult == null ? "not_attempted" : itemResult)
-				+ " itemRaycastMatches=" + raycastMatchesHitTarget(client, player, hitTarget)
+				+ " itemRaycastMatches=" + raycastMatchesHitTarget
 				+ " supportPos=" + compactPos(hitTarget.supportPos())
 				+ " face=" + hitTarget.face().asString()
 				+ " beforeBlockId=" + blockId(before)
@@ -277,7 +284,7 @@ public final class BlockInteractionTaskExecutor implements WorldTaskExecutor {
 		BlockState before
 	) {
 		if (!withinInteractionRange(player, Vec3d.ofCenter(target))) {
-			return navigateTowardInteractionRange(tick, request, target, "target_out_of_range");
+			return navigateTowardTargetRange(tick, request, target, "target_out_of_range");
 		}
 		clearNavigation();
 		Vec3d hitVec = Vec3d.ofCenter(target);
@@ -327,7 +334,7 @@ public final class BlockInteractionTaskExecutor implements WorldTaskExecutor {
 		BlockState before
 	) {
 		if (!withinInteractionRange(player, Vec3d.ofCenter(target))) {
-			return navigateTowardInteractionRange(tick, request, target, "target_out_of_range");
+			return navigateTowardTargetRange(tick, request, target, "target_out_of_range");
 		}
 		clearNavigation();
 		if (!before.isAir() && !before.isReplaceable()) {
@@ -360,33 +367,151 @@ public final class BlockInteractionTaskExecutor implements WorldTaskExecutor {
 		return fail(request, targetFailure(target, "direct_fluid_placement_unavailable"));
 	}
 
-	private Optional<TaskTerminalEvent> navigateTowardInteractionRange(long tick, WorldTaskRequest request, BlockPos target, String outOfRangeReason) {
+	private Optional<TaskTerminalEvent> navigateTowardInteractionRange(
+		long tick,
+		MinecraftClient client,
+		ClientPlayerEntity player,
+		WorldTaskRequest request,
+		BlockPos target,
+		HitTarget hitTarget,
+		String outOfRangeReason
+	) {
 		if (baritoneFacade == null || !baritoneFacade.isLoaded()) {
 			return fail(request, targetFailure(target, outOfRangeReason));
 		}
+		Optional<GoalPosition> standGoal = interactionStandPosition(client, player, target, hitTarget);
 		if (!navigationStarted || navigationTargetIndex != targetIndex || !target.equals(navigationTarget)) {
-			baritoneFacade.startNavigateNear(
-				new GoalPosition(target.getX(), target.getY(), target.getZ(), false),
-				INTERACTION_NAVIGATION_RADIUS_BLOCKS
-			);
+			if (standGoal.isPresent()) {
+				navigationGoal = standGoal.get();
+				baritoneFacade.startNavigate(navigationGoal);
+			}
+			else {
+				navigationGoal = new GoalPosition(target.getX(), target.getY(), target.getZ(), false);
+				baritoneFacade.startNavigateNear(navigationGoal, INTERACTION_NAVIGATION_RADIUS_BLOCKS);
+			}
 			navigationStarted = true;
 			navigationTargetIndex = targetIndex;
 			navigationTarget = target;
 			navigationStartTick = tick;
-			snapshot = snapshot(TaskExecutionState.RUNNING, request, "interaction_navigation_started targetIndex=" + targetIndex + " targetPos=" + compactPos(target));
+			snapshot = snapshot(TaskExecutionState.RUNNING, request, "interaction_navigation_started targetIndex=" + targetIndex + " targetPos=" + compactPos(target)
+				+ " navigationGoal=" + compactGoal(navigationGoal)
+				+ " navigationMode=" + (standGoal.isPresent() ? "stand_position" : "near_target"));
 			return Optional.empty();
 		}
 		Optional<String> pathEvent = baritoneFacade.pollPathEvent();
+		if (navigationGoalReached(pathEvent)) {
+			snapshot = snapshot(TaskExecutionState.RUNNING, request, "interaction_navigation_goal_reached targetIndex=" + targetIndex
+				+ " targetPos=" + compactPos(target)
+				+ " navigationGoal=" + compactGoal(navigationGoal)
+				+ " navigationEvent=" + pathEvent.orElse("reached"));
+			return Optional.empty();
+		}
 		BlockInteractionNavigationOutcome outcome = blockInteractionNavigationOutcome(pathEvent, tick - navigationStartTick);
 		if (outcome == BlockInteractionNavigationOutcome.FAILED) {
 			String suffix = pathEvent.map(event -> " navigationEvent=" + event).orElse(" navigationTimeoutTicks=" + (tick - navigationStartTick));
-			return fail(request, targetFailure(target, outOfRangeReason + suffix));
+			return fail(request, targetFailure(target, outOfRangeReason + suffix + " navigationGoal=" + compactGoal(navigationGoal)));
 		}
 		if (outcome == BlockInteractionNavigationOutcome.AT_GOAL_BUT_STILL_OUT_OF_RANGE) {
-			return fail(request, targetFailure(target, outOfRangeReason + " navigationEvent=" + pathEvent.orElse("AT_GOAL")));
+			return fail(request, targetFailure(target, outOfRangeReason + " navigationEvent=" + pathEvent.orElse("AT_GOAL") + " navigationGoal=" + compactGoal(navigationGoal)));
 		}
-		snapshot = snapshot(TaskExecutionState.RUNNING, request, "interaction_navigating targetIndex=" + targetIndex + " targetPos=" + compactPos(target));
+		snapshot = snapshot(TaskExecutionState.RUNNING, request, "interaction_navigating targetIndex=" + targetIndex
+			+ " targetPos=" + compactPos(target)
+			+ " navigationGoal=" + compactGoal(navigationGoal));
 		return Optional.empty();
+	}
+
+	private Optional<TaskTerminalEvent> navigateTowardTargetRange(long tick, WorldTaskRequest request, BlockPos target, String outOfRangeReason) {
+		if (baritoneFacade == null || !baritoneFacade.isLoaded()) {
+			return fail(request, targetFailure(target, outOfRangeReason));
+		}
+		if (!navigationStarted || navigationTargetIndex != targetIndex || !target.equals(navigationTarget)) {
+			navigationGoal = new GoalPosition(target.getX(), target.getY(), target.getZ(), false);
+			baritoneFacade.startNavigateNear(navigationGoal, INTERACTION_NAVIGATION_RADIUS_BLOCKS);
+			navigationStarted = true;
+			navigationTargetIndex = targetIndex;
+			navigationTarget = target;
+			navigationStartTick = tick;
+			snapshot = snapshot(TaskExecutionState.RUNNING, request, "interaction_navigation_started targetIndex=" + targetIndex
+				+ " targetPos=" + compactPos(target)
+				+ " navigationGoal=" + compactGoal(navigationGoal)
+				+ " navigationMode=near_target");
+			return Optional.empty();
+		}
+		Optional<String> pathEvent = baritoneFacade.pollPathEvent();
+		if (navigationGoalReached(pathEvent)) {
+			snapshot = snapshot(TaskExecutionState.RUNNING, request, "interaction_navigation_goal_reached targetIndex=" + targetIndex
+				+ " targetPos=" + compactPos(target)
+				+ " navigationGoal=" + compactGoal(navigationGoal)
+				+ " navigationEvent=" + pathEvent.orElse("reached"));
+			return Optional.empty();
+		}
+		BlockInteractionNavigationOutcome outcome = blockInteractionNavigationOutcome(pathEvent, tick - navigationStartTick);
+		if (outcome == BlockInteractionNavigationOutcome.FAILED) {
+			String suffix = pathEvent.map(event -> " navigationEvent=" + event).orElse(" navigationTimeoutTicks=" + (tick - navigationStartTick));
+			return fail(request, targetFailure(target, outOfRangeReason + suffix + " navigationGoal=" + compactGoal(navigationGoal)));
+		}
+		if (outcome == BlockInteractionNavigationOutcome.AT_GOAL_BUT_STILL_OUT_OF_RANGE) {
+			return fail(request, targetFailure(target, outOfRangeReason + " navigationEvent=" + pathEvent.orElse("AT_GOAL") + " navigationGoal=" + compactGoal(navigationGoal)));
+		}
+		snapshot = snapshot(TaskExecutionState.RUNNING, request, "interaction_navigating targetIndex=" + targetIndex
+			+ " targetPos=" + compactPos(target)
+			+ " navigationGoal=" + compactGoal(navigationGoal));
+		return Optional.empty();
+	}
+
+	private boolean navigationGoalReached(Optional<String> pathEvent) {
+		if (baritoneFacade == null || navigationGoal == null || pathEvent.isEmpty()) {
+			return false;
+		}
+		String normalized = pathEvent.get().trim().toUpperCase(Locale.ROOT);
+		if (!"AT_GOAL".equals(normalized) && !"CANCELED".equals(normalized) && !"CANCELLED".equals(normalized)) {
+			return false;
+		}
+		return baritoneFacade.navigationGoalReached(navigationGoal);
+	}
+
+	private static Optional<GoalPosition> interactionStandPosition(MinecraftClient client, ClientPlayerEntity player, BlockPos target, HitTarget hitTarget) {
+		if (client == null || client.world == null || player == null || target == null || hitTarget == null) {
+			return Optional.empty();
+		}
+		BlockPos current = player.getBlockPos();
+		GoalPosition best = null;
+		double bestDistance = Double.MAX_VALUE;
+		for (BlockPos candidate : interactionStandCandidates(target, hitTarget.supportPos())) {
+			if (candidate.equals(current) || !isStandable(client, candidate)) {
+				continue;
+			}
+			if (!withinInteractionRange(candidate, hitTarget.hitVec())) {
+				continue;
+			}
+			double distance = current.getSquaredDistance(candidate);
+			if (distance < bestDistance) {
+				best = new GoalPosition(candidate.getX(), candidate.getY(), candidate.getZ(), true);
+				bestDistance = distance;
+			}
+		}
+		return Optional.ofNullable(best);
+	}
+
+	static List<BlockPos> interactionStandCandidates(BlockPos target, BlockPos support) {
+		return List.of(
+			target.north(),
+			target.north().up(),
+			target.south(),
+			target.south().up(),
+			target.west(),
+			target.west().up(),
+			target.east(),
+			target.east().up(),
+			support.north(),
+			support.north().up(),
+			support.south(),
+			support.south().up(),
+			support.west(),
+			support.west().up(),
+			support.east(),
+			support.east().up()
+		);
 	}
 
 	static BlockInteractionNavigationOutcome blockInteractionNavigationOutcome(Optional<String> pathEvent, long elapsedTicks) {
@@ -519,6 +644,43 @@ public final class BlockInteractionTaskExecutor implements WorldTaskExecutor {
 
 	static boolean requiresSupportRaycast(boolean targetAirOrReplaceable, boolean supportIsTarget) {
 		return targetAirOrReplaceable || !supportIsTarget;
+	}
+
+	static boolean shouldNavigateForMissingRaycast(
+		WorldTaskRequest request,
+		ClientPlayerEntity player,
+		Hand hand,
+		BlockState before,
+		BlockPos target,
+		HitTarget hitTarget,
+		boolean raycastMatchesHitTarget
+	) {
+		if (raycastMatchesHitTarget) {
+			return false;
+		}
+		if (request.type() == WorldTaskType.USE_BLOCK && isCropPlantingItem(heldStack(player, hand))) {
+			return false;
+		}
+		if (requiresSupportRaycast(before, target, hitTarget)) {
+			return true;
+		}
+		return request.type() == WorldTaskType.USE_BLOCK && isHeldItem(player, hand, Items.WATER_BUCKET);
+	}
+
+	static boolean isCropPlantingItem(ItemStack stack) {
+		return isCropPlantingItemId(itemId(stack));
+	}
+
+	static boolean isCropPlantingItemId(String itemId) {
+		return "minecraft:wheat_seeds".equals(itemId)
+			|| "minecraft:beetroot_seeds".equals(itemId)
+			|| "minecraft:melon_seeds".equals(itemId)
+			|| "minecraft:pumpkin_seeds".equals(itemId)
+			|| "minecraft:torchflower_seeds".equals(itemId)
+			|| "minecraft:pitcher_pod".equals(itemId)
+			|| "minecraft:carrot".equals(itemId)
+			|| "minecraft:potato".equals(itemId)
+			|| "minecraft:nether_wart".equals(itemId);
 	}
 
 	private static Optional<String> placeWaterDirectly(MinecraftClient client, ClientPlayerEntity player, Hand hand, BlockPos target) {
@@ -702,6 +864,22 @@ public final class BlockInteractionTaskExecutor implements WorldTaskExecutor {
 		return player.squaredDistanceTo(pos) <= INTERACTION_RANGE_SQUARED;
 	}
 
+	private static boolean withinInteractionRange(BlockPos standingPos, Vec3d pos) {
+		return Vec3d.ofCenter(standingPos).squaredDistanceTo(pos) <= INTERACTION_RANGE_SQUARED;
+	}
+
+	private static boolean isStandable(MinecraftClient client, BlockPos pos) {
+		if (client.world == null || !client.world.isChunkLoaded(pos) || !client.world.isChunkLoaded(pos.up())) {
+			return false;
+		}
+		BlockState feet = client.world.getBlockState(pos);
+		BlockState head = client.world.getBlockState(pos.up());
+		BlockState floor = client.world.getBlockState(pos.down());
+		return (feet.isAir() || feet.isReplaceable())
+			&& (head.isAir() || head.isReplaceable())
+			&& floor.isSideSolidFullSquare(client.world, pos.down(), Direction.UP);
+	}
+
 	private static BlockPos blockPos(GoalPosition position) {
 		return new BlockPos(position.x(), position.y(), position.z());
 	}
@@ -716,6 +894,10 @@ public final class BlockInteractionTaskExecutor implements WorldTaskExecutor {
 
 	private static String compactPos(BlockPos pos) {
 		return pos.getX() + "," + pos.getY() + "," + pos.getZ();
+	}
+
+	private static String compactGoal(GoalPosition position) {
+		return position == null ? "none" : position.x() + "," + position.y() + "," + position.z();
 	}
 
 	private String targetFailure(BlockPos target, String reason) {
@@ -784,6 +966,7 @@ public final class BlockInteractionTaskExecutor implements WorldTaskExecutor {
 		navigationStarted = false;
 		navigationTargetIndex = -1;
 		navigationTarget = null;
+		navigationGoal = null;
 		navigationStartTick = 0L;
 	}
 

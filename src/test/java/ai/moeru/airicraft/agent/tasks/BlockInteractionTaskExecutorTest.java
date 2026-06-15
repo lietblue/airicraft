@@ -3,6 +3,7 @@ package ai.moeru.airicraft.agent.tasks;
 import ai.moeru.airicraft.agent.goals.GoalPosition;
 import ai.moeru.airicraft.agent.session.SessionMode;
 import ai.moeru.airicraft.agent.session.SessionSnapshot;
+import net.minecraft.util.math.BlockPos;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -83,6 +84,34 @@ class BlockInteractionTaskExecutorTest {
 	}
 
 	@Test
+	void interactionStandCandidatesPreferPositionsBesideTargetAndSupport() {
+		assertEquals(
+			List.of(
+				new BlockPos(10, 65, 9),
+				new BlockPos(10, 66, 9),
+				new BlockPos(10, 65, 11),
+				new BlockPos(10, 66, 11),
+				new BlockPos(9, 65, 10),
+				new BlockPos(9, 66, 10),
+				new BlockPos(11, 65, 10),
+				new BlockPos(11, 66, 10),
+				new BlockPos(10, 64, 9),
+				new BlockPos(10, 65, 9),
+				new BlockPos(10, 64, 11),
+				new BlockPos(10, 65, 11),
+				new BlockPos(9, 64, 10),
+				new BlockPos(9, 65, 10),
+				new BlockPos(11, 64, 10),
+				new BlockPos(11, 65, 10)
+			),
+			BlockInteractionTaskExecutor.interactionStandCandidates(
+				new BlockPos(10, 65, 10),
+				new BlockPos(10, 64, 10)
+			)
+		);
+	}
+
+	@Test
 	void interactionBusyDispositionClosesEmptyOpenContainer() {
 		assertEquals(
 			BlockInteractionTaskExecutor.InteractionBusyDisposition.CLOSE_OPEN_SCREEN,
@@ -115,6 +144,13 @@ class BlockInteractionTaskExecutorTest {
 		assertFalse(BlockInteractionTaskExecutor.requiresSupportRaycast(false, true));
 		assertTrue(BlockInteractionTaskExecutor.requiresSupportRaycast(true, false));
 		assertTrue(BlockInteractionTaskExecutor.requiresSupportRaycast(false, false));
+	}
+
+	@Test
+	void cropPlantingItemsDoNotRequireSupportRaycastAfterReachableNavigation() {
+		assertTrue(BlockInteractionTaskExecutor.isCropPlantingItemId("minecraft:wheat_seeds"));
+		assertTrue(BlockInteractionTaskExecutor.isCropPlantingItemId("minecraft:carrot"));
+		assertFalse(BlockInteractionTaskExecutor.isCropPlantingItemId("minecraft:oak_planks"));
 	}
 
 	@Test
