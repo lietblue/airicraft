@@ -40,6 +40,7 @@ public final class BlockInteractionTaskExecutor implements WorldTaskExecutor {
 	private static final int MIN_DIRECT_WATER_HORIZONTAL_SUPPORTS = 3;
 	private static final int INTERACTION_NAVIGATION_RADIUS_BLOCKS = 3;
 	private static final long INTERACTION_NAVIGATION_TIMEOUT_TICKS = 160L;
+	private static final long PLACEMENT_CONFIRMATION_TIMEOUT_TICKS = 20L;
 	private static final List<Direction> DEFAULT_SUPPORT_ORDER = List.of(
 		Direction.DOWN,
 		Direction.NORTH,
@@ -65,6 +66,7 @@ public final class BlockInteractionTaskExecutor implements WorldTaskExecutor {
 	private BlockPos navigationTarget;
 	private GoalPosition navigationGoal;
 	private long navigationStartTick;
+	private PendingPlacementConfirmation pendingPlacementConfirmation;
 
 	public BlockInteractionTaskExecutor() {
 		this(0);
@@ -145,6 +147,9 @@ public final class BlockInteractionTaskExecutor implements WorldTaskExecutor {
 				"waiting_between_targets targetIndex=" + targetIndex + " remainingTicks=" + (nextInteractionTick - tick)
 			);
 			return Optional.empty();
+		}
+		if (pendingPlacementConfirmation != null) {
+			return confirmPendingPlacement(tick, client, request);
 		}
 		return request.type() == WorldTaskType.PLACE_BLOCK
 			? placeBlock(tick, client, player, request, request.blockPlacement().targets().get(targetIndex))
@@ -271,7 +276,49 @@ public final class BlockInteractionTaskExecutor implements WorldTaskExecutor {
 			+ " itemInteractionResult=" + (itemResult == null ? "not_attempted" : itemResult)
 			+ " beforeBlockId=" + blockId(before)
 			+ " afterBlockId=" + blockId(after);
+		if (request.type() == WorldTaskType.PLACE_BLOCK && !placementConfirmed(after)) {
+			pendingPlacementConfirmation = new PendingPlacementConfirmation(target, tick, message);
+			snapshot = snapshot(TaskExecutionState.RUNNING, request, "waiting_for_place_block_confirmation"
+				+ " targetIndex=" + targetIndex
+				+ " targetPos=" + compactPos(target)
+				+ " beforeBlockId=" + blockId(before)
+				+ " afterBlockId=" + blockId(after));
+			return Optional.empty();
+		}
 		return completeTarget(tick, request, message);
+	}
+
+	private Optional<TaskTerminalEvent> confirmPendingPlacement(
+		long tick,
+		MinecraftClient client,
+		WorldTaskRequest request
+	) {
+		PendingPlacementConfirmation pending = pendingPlacementConfirmation;
+		if (pending == null) {
+			return Optional.empty();
+		}
+		if (!client.world.isChunkLoaded(pending.target())) {
+			return fail(request, targetFailure(pending.target(), "target_unloaded_during_confirmation"));
+		}
+		BlockState current = client.world.getBlockState(pending.target());
+		if (placementConfirmed(current)) {
+			pendingPlacementConfirmation = null;
+			return completeTarget(tick, request, pending.successMessage()
+				+ " confirmedBlockId=" + blockId(current)
+				+ " confirmationTicks=" + (tick - pending.startedTick()));
+		}
+		if (tick - pending.startedTick() > PLACEMENT_CONFIRMATION_TIMEOUT_TICKS) {
+			pendingPlacementConfirmation = null;
+			return fail(request, targetFailure(pending.target(), "placement_not_confirmed"
+				+ " afterBlockId=" + blockId(current)
+				+ " confirmationTimeoutTicks=" + (tick - pending.startedTick())));
+		}
+		snapshot = snapshot(TaskExecutionState.RUNNING, request, "waiting_for_place_block_confirmation"
+			+ " targetIndex=" + targetIndex
+			+ " targetPos=" + compactPos(pending.target())
+			+ " afterBlockId=" + blockId(current)
+			+ " elapsedTicks=" + (tick - pending.startedTick()));
+		return Optional.empty();
 	}
 
 	private Optional<TaskTerminalEvent> useItemOnFluidTarget(
@@ -683,6 +730,14 @@ public final class BlockInteractionTaskExecutor implements WorldTaskExecutor {
 			|| "minecraft:nether_wart".equals(itemId);
 	}
 
+	static boolean placementConfirmed(BlockState state) {
+		return state != null && placementConfirmed(!(state.isAir() || state.isReplaceable()));
+	}
+
+	static boolean placementConfirmed(boolean targetSolid) {
+		return targetSolid;
+	}
+
 	private static Optional<String> placeWaterDirectly(MinecraftClient client, ClientPlayerEntity player, Hand hand, BlockPos target) {
 		if (client.getServer() == null || client.world == null) {
 			return Optional.empty();
@@ -957,6 +1012,7 @@ public final class BlockInteractionTaskExecutor implements WorldTaskExecutor {
 		targetIndex = 0;
 		completedTargets = 0;
 		nextInteractionTick = 0L;
+		pendingPlacementConfirmation = null;
 	}
 
 	private void clearNavigation() {
@@ -1008,6 +1064,13 @@ public final class BlockInteractionTaskExecutor implements WorldTaskExecutor {
 		Direction face,
 		Vec3d hitVec,
 		BlockHitResult hitResult
+	) {
+	}
+
+	private record PendingPlacementConfirmation(
+		BlockPos target,
+		long startedTick,
+		String successMessage
 	) {
 	}
 }

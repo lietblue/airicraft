@@ -154,6 +154,12 @@ class BlockInteractionTaskExecutorTest {
 	}
 
 	@Test
+	void placementConfirmationRequiresTargetToBecomeSolid() {
+		assertFalse(BlockInteractionTaskExecutor.placementConfirmed(false));
+		assertTrue(BlockInteractionTaskExecutor.placementConfirmed(true));
+	}
+
+	@Test
 	void batchedRequestPausesWhenSessionGateBlocksActuation() {
 		BlockInteractionTaskExecutor executor = new BlockInteractionTaskExecutor(() -> null);
 
