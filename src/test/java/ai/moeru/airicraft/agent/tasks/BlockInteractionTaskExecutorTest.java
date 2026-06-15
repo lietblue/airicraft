@@ -83,6 +83,34 @@ class BlockInteractionTaskExecutorTest {
 	}
 
 	@Test
+	void interactionBusyDispositionClosesEmptyOpenContainer() {
+		assertEquals(
+			BlockInteractionTaskExecutor.InteractionBusyDisposition.CLOSE_OPEN_SCREEN,
+			BlockInteractionTaskExecutor.interactionBusyDisposition(true, true)
+		);
+	}
+
+	@Test
+	void interactionBusyDispositionFailsWhenCursorCarriesItem() {
+		assertEquals(
+			BlockInteractionTaskExecutor.InteractionBusyDisposition.FAIL,
+			BlockInteractionTaskExecutor.interactionBusyDisposition(true, false)
+		);
+		assertEquals(
+			BlockInteractionTaskExecutor.InteractionBusyDisposition.FAIL,
+			BlockInteractionTaskExecutor.interactionBusyDisposition(false, false)
+		);
+	}
+
+	@Test
+	void interactionBusyDispositionAllowsNormalPlayerInventory() {
+		assertEquals(
+			BlockInteractionTaskExecutor.InteractionBusyDisposition.READY,
+			BlockInteractionTaskExecutor.interactionBusyDisposition(false, true)
+		);
+	}
+
+	@Test
 	void batchedRequestPausesWhenSessionGateBlocksActuation() {
 		BlockInteractionTaskExecutor executor = new BlockInteractionTaskExecutor(() -> null);
 

@@ -124,7 +124,16 @@ public final class BlockInteractionTaskExecutor implements WorldTaskExecutor {
 		if (client == null || client.interactionManager == null || client.world == null || player == null) {
 			return fail(request, "world_unavailable");
 		}
-		if (player.currentScreenHandler != player.playerScreenHandler || !player.currentScreenHandler.getCursorStack().isEmpty()) {
+		InteractionBusyDisposition busyDisposition = interactionBusyDisposition(
+			player.currentScreenHandler != player.playerScreenHandler,
+			player.currentScreenHandler == null || player.currentScreenHandler.getCursorStack().isEmpty()
+		);
+		if (busyDisposition == InteractionBusyDisposition.CLOSE_OPEN_SCREEN) {
+			player.closeHandledScreen();
+			snapshot = snapshot(TaskExecutionState.RUNNING, request, "closing_open_screen");
+			return Optional.empty();
+		}
+		if (busyDisposition == InteractionBusyDisposition.FAIL) {
 			return fail(request, "interaction_busy");
 		}
 		long tick = sessionSnapshot == null ? 0L : sessionSnapshot.tickCount();
@@ -497,6 +506,13 @@ public final class BlockInteractionTaskExecutor implements WorldTaskExecutor {
 			: UseBlockInteractionMode.BLOCK_INTERACTION;
 	}
 
+	static InteractionBusyDisposition interactionBusyDisposition(boolean containerOpen, boolean cursorEmpty) {
+		if (!cursorEmpty) {
+			return InteractionBusyDisposition.FAIL;
+		}
+		return containerOpen ? InteractionBusyDisposition.CLOSE_OPEN_SCREEN : InteractionBusyDisposition.READY;
+	}
+
 	private static Optional<String> placeWaterDirectly(MinecraftClient client, ClientPlayerEntity player, Hand hand, BlockPos target) {
 		if (client.getServer() == null || client.world == null) {
 			return Optional.empty();
@@ -787,6 +803,12 @@ public final class BlockInteractionTaskExecutor implements WorldTaskExecutor {
 		WAIT,
 		AT_GOAL_BUT_STILL_OUT_OF_RANGE,
 		FAILED
+	}
+
+	enum InteractionBusyDisposition {
+		READY,
+		CLOSE_OPEN_SCREEN,
+		FAIL
 	}
 
 	private record HitTarget(
