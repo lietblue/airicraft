@@ -62,6 +62,7 @@ import ai.moeru.airicraft.agent.tasks.WorldTaskExecutor;
 import ai.moeru.airicraft.agent.tasks.WorldTaskType;
 import ai.moeru.airicraft.agent.tasks.WorldEvidence;
 import ai.moeru.airicraft.agent.llm.PlannerToolCall;
+import ai.moeru.airicraft.agent.llm.PlannerToolCatalog;
 import ai.moeru.airicraft.agent.llm.PlannerTrigger;
 import ai.moeru.airicraft.agent.llm.PlannerTriggerType;
 import com.google.gson.JsonParser;
@@ -241,6 +242,80 @@ class EmbodiedAgentRuntimeTest {
 				&& started.executionId().equals(event.payload().get("executionId"))
 				&& "user_cancelled".equals(event.payload().get("reason"))
 		));
+	}
+
+	@Test
+	void startActionGoalPlannerToolStartsInventoryGraphGoal() {
+		EmbodiedAgentRuntime runtime = EmbodiedAgentRuntime.createForTests(new FakeWorldTaskExecutor());
+
+		String result = runtime.executePlannerToolCallForTests(new PlannerToolCall(
+			"call_goal",
+			PlannerToolCatalog.START_ACTION_GOAL,
+			JsonParser.parseString("""
+				{"kind":"inventory_item","itemId":"minecraft:bread","quantity":1}
+				""").getAsJsonObject(),
+			null,
+			null
+		));
+
+		assertTrue(result.contains("Tool result for start_action_goal: state=RESOLVING"));
+		assertTrue(result.contains("executionId="));
+		assertTrue(result.contains("minecraft:bread"));
+		assertEquals(ActionGraphExecutionState.RESOLVING, runtime.actionGraphExecutionSnapshot().state());
+	}
+
+	@Test
+	void inspectAndCancelActionGoalPlannerToolsUseGraphPath() {
+		EmbodiedAgentRuntime runtime = EmbodiedAgentRuntime.createForTests(new FakeWorldTaskExecutor());
+		runtime.startActionGoal(ActionGoal.inventoryItem("minecraft:bread", 1), "test");
+
+		String inspect = runtime.executePlannerToolCallForTests(new PlannerToolCall(
+			"call_inspect",
+			PlannerToolCatalog.INSPECT_ACTION_GOAL,
+			new com.google.gson.JsonObject(),
+			null,
+			null
+		));
+		String trace = runtime.executePlannerToolCallForTests(new PlannerToolCall(
+			"call_trace",
+			PlannerToolCatalog.INSPECT_ACTION_TRACE,
+			new com.google.gson.JsonObject(),
+			null,
+			null
+		));
+		String cancel = runtime.executePlannerToolCallForTests(new PlannerToolCall(
+			"call_cancel",
+			PlannerToolCatalog.CANCEL_ACTION_GOAL,
+			JsonParser.parseString("""
+				{"reason":"user_changed_task"}
+				""").getAsJsonObject(),
+			null,
+			null
+		));
+
+		assertTrue(inspect.contains("Tool result for inspect_action_goal: state=RESOLVING"));
+		assertTrue(trace.contains("Tool result for inspect_action_trace: state=RESOLVING"));
+		assertTrue(trace.contains("trace="));
+		assertTrue(cancel.contains("Tool result for cancel_action_goal: state=CANCELLED"));
+		assertEquals(ActionGraphExecutionState.CANCELLED, runtime.actionGraphExecutionSnapshot().state());
+	}
+
+	@Test
+	void listActionCapabilitiesPlannerToolReportsExecutableInventoryGoal() {
+		EmbodiedAgentRuntime runtime = EmbodiedAgentRuntime.createForTests(new FakeWorldTaskExecutor());
+
+		String result = runtime.executePlannerToolCallForTests(new PlannerToolCall(
+			"call_capabilities",
+			PlannerToolCatalog.LIST_ACTION_CAPABILITIES,
+			new com.google.gson.JsonObject(),
+			null,
+			null
+		));
+
+		assertTrue(result.contains("Tool result for list_action_capabilities"));
+		assertTrue(result.contains("inventory_item"));
+		assertTrue(result.contains("supported"));
+		assertTrue(result.contains("primitiveCount="));
 	}
 
 	@Test

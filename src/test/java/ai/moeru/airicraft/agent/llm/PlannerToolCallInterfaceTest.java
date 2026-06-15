@@ -400,6 +400,37 @@ class PlannerToolCallInterfaceTest {
 	}
 
 	@Test
+	void exposesActionGraphPlannerTools() {
+		JsonArray tools = JsonParser.parseString(gson().toJson(PlannerToolCatalog.openAiTools())).getAsJsonArray();
+		JsonObject startParameters = toolSchema(tools, "start_action_goal");
+
+		assertTrue(toolNames(tools).contains("start_action_goal"));
+		assertTrue(toolNames(tools).contains("inspect_action_goal"));
+		assertTrue(toolNames(tools).contains("cancel_action_goal"));
+		assertTrue(toolNames(tools).contains("inspect_action_trace"));
+		assertTrue(toolNames(tools).contains("list_action_capabilities"));
+		assertTrue(startParameters.getAsJsonObject("properties").has("kind"));
+		assertTrue(startParameters.getAsJsonObject("properties").has("itemId"));
+		assertTrue(startParameters.getAsJsonObject("properties").has("quantity"));
+
+		PlannerToolCall startCall = PlannerToolCatalog.parseToolCall(toolCall("start_action_goal", """
+			{"kind":"inventory_item","itemId":"minecraft:bread","quantity":1}
+			"""));
+		PlannerToolCall cancelCall = PlannerToolCatalog.parseToolCall(toolCall("cancel_action_goal", """
+			{"reason":"user_changed_task"}
+			"""));
+
+		assertEquals("start_action_goal", startCall.name());
+		assertEquals("minecraft:bread", startCall.arguments().get("itemId").getAsString());
+		assertEquals("cancel_action_goal", cancelCall.name());
+		assertThrows(com.google.gson.JsonParseException.class, () ->
+			PlannerToolCatalog.parseToolCall(toolCall("start_action_goal", """
+				{"kind":"inventory_item","itemId":"minecraft:bread"}
+				"""))
+		);
+	}
+
+	@Test
 	void exposesAndParsesInspectWorldTool() {
 		JsonArray tools = JsonParser.parseString(gson().toJson(PlannerToolCatalog.openAiTools())).getAsJsonArray();
 		JsonObject parameters = toolSchema(tools, "inspect_world");

@@ -22,6 +22,7 @@ import ai.moeru.airicraft.agent.debug.PlannerAttemptDebugSnapshot;
 import ai.moeru.airicraft.agent.actions.ActionGraphExecutionInput;
 import ai.moeru.airicraft.agent.actions.ActionGraphExecutionRuntime;
 import ai.moeru.airicraft.agent.actions.ActionGraphExecutionSnapshot;
+import ai.moeru.airicraft.agent.actions.ActionGraphDebugService;
 import ai.moeru.airicraft.agent.actions.ActionGraphPrimitiveDispatch;
 import ai.moeru.airicraft.agent.actions.ActionGraphPrimitiveDispatchResult;
 import ai.moeru.airicraft.agent.actions.ActionGraphPrimitiveMapper;
@@ -1388,6 +1389,23 @@ public final class EmbodiedAgentRuntime {
 			return plannerActiveTaskPreemptionError(toolCall);
 		}
 		return switch (PlannerToolCatalog.normalizeName(toolCall.name())) {
+			case PlannerToolCatalog.START_ACTION_GOAL -> {
+				ActionGraphExecutionSnapshot snapshot = startActionGoal(parseActionGoalArgs(args), "planner_tool");
+				yield actionGraphToolResult("start_action_goal", snapshot, false);
+			}
+			case PlannerToolCatalog.INSPECT_ACTION_GOAL -> {
+				yield actionGraphToolResult("inspect_action_goal", actionGraphExecutionSnapshot(), false);
+			}
+			case PlannerToolCatalog.CANCEL_ACTION_GOAL -> {
+				String reason = stringArg(args, "reason").orElse("planner_tool_cancelled");
+				yield actionGraphToolResult("cancel_action_goal", cancelActionGoal(reason), false);
+			}
+			case PlannerToolCatalog.INSPECT_ACTION_TRACE -> {
+				yield actionGraphToolResult("inspect_action_trace", actionGraphExecutionSnapshot(), true);
+			}
+			case PlannerToolCatalog.LIST_ACTION_CAPABILITIES -> {
+				yield actionGraphCapabilitiesToolResult();
+			}
 			case PlannerToolCatalog.FOLLOW_PLAYER -> {
 				String targetPlayer = stringArg(args, "targetPlayer").orElseThrow(() -> new IllegalArgumentException("targetPlayer is required"));
 				applyPlannerJobTool(ActiveJobProposal.followPlayer(targetPlayer));
@@ -1671,6 +1689,7 @@ public final class EmbodiedAgentRuntime {
 			return activeJob == null || activeJob.type() != ActiveJobType.SMELT_ITEMS;
 		}
 		return PlannerToolCatalog.FOLLOW_PLAYER.equals(normalizedToolName)
+			|| PlannerToolCatalog.START_ACTION_GOAL.equals(normalizedToolName)
 			|| PlannerToolCatalog.NAVIGATE_TO.equals(normalizedToolName)
 			|| PlannerToolCatalog.RETURN_TO_SURFACE.equals(normalizedToolName)
 			|| PlannerToolCatalog.MINE_BLOCKS.equals(normalizedToolName)
@@ -1721,6 +1740,42 @@ public final class EmbodiedAgentRuntime {
 	private static String queuedActionToolResult(String toolName, String details) {
 		return "Tool result for " + toolName + ": accepted queued " + details
 			+ ". Accepted does not mean completed. Wait for TASK UPDATE before saying the action completed.";
+	}
+
+	private static String actionGraphToolResult(String toolName, ActionGraphExecutionSnapshot snapshot, boolean verbose) {
+		Map<String, Object> payload = snapshot == null ? ActionGraphExecutionSnapshot.idle().toPayload(verbose) : snapshot.toPayload(verbose);
+		return "Tool result for " + toolName
+			+ ": state=" + payload.get("state")
+			+ " accepted=" + payload.get("accepted")
+			+ " executionId=" + payload.get("executionId")
+			+ " activeTaskId=" + payload.get("activeTaskId")
+			+ " traceEventCount=" + payload.get("traceEventCount")
+			+ " failureCode=" + payload.get("failureCode")
+			+ " payload=" + payload;
+	}
+
+	private static String actionGraphCapabilitiesToolResult() {
+		Map<String, Object> graph = new ActionGraphDebugService().inspectActionGraph();
+		Map<String, Object> goalKinds = Map.of(
+			"inventory_item", Map.of("status", "supported", "fields", List.of("itemId", "quantity")),
+			"resource_collection", Map.of("status", "planned", "fields", List.of("resourceKind", "quantity")),
+			"movement", Map.of("status", "planned", "fields", List.of("x", "y", "z", "operation")),
+			"block_modification", Map.of("status", "planned", "fields", List.of("x", "y", "z", "operation", "itemId")),
+			"entity_interaction", Map.of("status", "planned", "fields", List.of("entityTypeId", "operation")),
+			"item_transfer", Map.of("status", "planned", "fields", List.of("targetPlayer", "itemId", "quantity")),
+			"smelting_output", Map.of("status", "planned", "fields", List.of("itemId", "quantity")),
+			"crafting_output", Map.of("status", "planned", "fields", List.of("itemId", "quantity"))
+		);
+		return "Tool result for list_action_capabilities: supportedGoalKinds="
+			+ goalKinds
+			+ " primitiveCount="
+			+ graph.get("primitiveCount")
+			+ " actionsetCount="
+			+ graph.get("actionsetCount")
+			+ " domainProviderCount="
+			+ graph.get("domainProviderCount")
+			+ " graph="
+			+ graph;
 	}
 
 	private static String formatPosition(GoalPosition position) {
@@ -2015,6 +2070,17 @@ public final class EmbodiedAgentRuntime {
 		catch (RuntimeException exception) {
 			return Optional.empty();
 		}
+	}
+
+	private static ActionGoal parseActionGoalArgs(JsonObject args) {
+		String kind = stringArg(args, "kind").orElseThrow(() -> new IllegalArgumentException("kind is required"));
+		if ("inventory_item".equals(kind)) {
+			return ActionGoal.inventoryItem(
+				stringArg(args, "itemId").orElseThrow(() -> new IllegalArgumentException("itemId is required")),
+				intArg(args, "quantity").orElseThrow(() -> new IllegalArgumentException("quantity is required"))
+			);
+		}
+		throw new IllegalArgumentException("unsupported_action_goal_kind " + kind + ". Supported executable goal kind: inventory_item");
 	}
 
 	private static Optional<Integer> intArg(JsonObject object, String key) {

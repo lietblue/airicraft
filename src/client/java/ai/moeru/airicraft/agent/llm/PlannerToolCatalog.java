@@ -26,6 +26,11 @@ public final class PlannerToolCatalog {
 	public static final String CHECK_SMELTABLES = "check_smeltables";
 	public static final String INSPECT_SMELTING = "inspect_smelting";
 	public static final String INSPECT_NEARBY_ENTITIES = "inspect_nearby_entities";
+	public static final String START_ACTION_GOAL = "start_action_goal";
+	public static final String INSPECT_ACTION_GOAL = "inspect_action_goal";
+	public static final String CANCEL_ACTION_GOAL = "cancel_action_goal";
+	public static final String INSPECT_ACTION_TRACE = "inspect_action_trace";
+	public static final String LIST_ACTION_CAPABILITIES = "list_action_capabilities";
 	public static final String FOLLOW_PLAYER = "follow_player";
 	public static final String NAVIGATE_TO = "navigate_to";
 	public static final String RETURN_TO_SURFACE = "return_to_surface";
@@ -116,6 +121,41 @@ public final class PlannerToolCatalog {
 		builtInTool(INSPECT_NEARBY_ENTITIES, true, tool(INSPECT_NEARBY_ENTITIES, "List nearby loaded entities with exact selectors such as uuid, name, entityTypeId, distance, and health when available.", properties(
 				prop("narration", optionalString("Optional visible narration before using the tool. Omit this field when no narration is needed.")),
 				prop("prompt", string("Optional nearby-entity question."))
+			), List.of()), NO_ARGUMENT_VALIDATION),
+		builtInTool(START_ACTION_GOAL, false, tool(START_ACTION_GOAL, "Start one runtime-owned action graph goal from a high-level typed intent. Prefer this over low-level action tools for execution.", properties(
+				prop("narration", optionalString("Optional visible narration before using the tool. Omit this field when no narration is needed.")),
+				prop("kind", enumString("Typed action goal kind. inventory_item is executable in v1; other kinds are reserved graph goal surfaces during migration.", List.of(
+					"inventory_item",
+					"resource_collection",
+					"movement",
+					"block_modification",
+					"entity_interaction",
+					"item_transfer",
+					"smelting_output",
+					"crafting_output"
+				))),
+				prop("itemId", optionalString("Inventory/crafting/smelting output item id, for example minecraft:bread.")),
+				prop("quantity", integer("Desired minimum quantity.")),
+				prop("resourceKind", optionalString("Resource kind for resource_collection goals.")),
+				prop("x", integer("Target block x coordinate for movement or block goals.")),
+				prop("y", integer("Target block y coordinate for movement or block goals.")),
+				prop("z", integer("Target block z coordinate for movement or block goals.")),
+				prop("targetPlayer", optionalString("Target player for item transfer goals.")),
+				prop("entityTypeId", optionalString("Entity type id for entity interaction goals.")),
+				prop("operation", optionalString("Goal operation, for example move_to, place, use, break, attack, give, collect."))
+			), List.of("kind")), PlannerToolCatalog::validateStartActionGoalArguments),
+		builtInTool(INSPECT_ACTION_GOAL, true, tool(INSPECT_ACTION_GOAL, "Inspect the currently active action graph goal status.", properties(
+				prop("narration", optionalString("Optional visible narration before using the tool. Omit this field when no narration is needed."))
+			), List.of()), NO_ARGUMENT_VALIDATION),
+		builtInTool(CANCEL_ACTION_GOAL, false, tool(CANCEL_ACTION_GOAL, "Cancel the active action graph goal and any foreground primitive through the unified graph cancellation path.", properties(
+				prop("narration", optionalString("Optional visible narration before using the tool. Omit this field when no narration is needed.")),
+				prop("reason", optionalString("Optional cancellation reason."))
+			), List.of()), NO_ARGUMENT_VALIDATION),
+		builtInTool(INSPECT_ACTION_TRACE, true, tool(INSPECT_ACTION_TRACE, "Inspect the current action graph trace, route, facts, watches, and terminal status.", properties(
+				prop("narration", optionalString("Optional visible narration before using the tool. Omit this field when no narration is needed."))
+			), List.of()), NO_ARGUMENT_VALIDATION),
+		builtInTool(LIST_ACTION_CAPABILITIES, true, tool(LIST_ACTION_CAPABILITIES, "List runtime action graph capabilities, primitives, providers, and supported goal kinds.", properties(
+				prop("narration", optionalString("Optional visible narration before using the tool. Omit this field when no narration is needed."))
 			), List.of()), NO_ARGUMENT_VALIDATION),
 		builtInTool(FOLLOW_PLAYER, false, tool(FOLLOW_PLAYER, "Follow a named player.", properties(
 				prop("narration", optionalString("Optional visible narration before using the tool. Omit this field when no narration is needed.")),
@@ -429,6 +469,43 @@ public final class PlannerToolCatalog {
 			throw new JsonParseException("Unsupported resourceKind: " + kind);
 		}
 		requirePositiveInt(arguments, "quantity");
+	}
+
+	private static void validateStartActionGoalArguments(JsonObject arguments) {
+		String kind = requireString(arguments, "kind");
+		if (!List.of(
+			"inventory_item",
+			"resource_collection",
+			"movement",
+			"block_modification",
+			"entity_interaction",
+			"item_transfer",
+			"smelting_output",
+			"crafting_output"
+		).contains(kind)) {
+			throw new JsonParseException("Unsupported action goal kind: " + kind);
+		}
+		if ("inventory_item".equals(kind) || "smelting_output".equals(kind) || "crafting_output".equals(kind)) {
+			requireString(arguments, "itemId");
+			requirePositiveInt(arguments, "quantity");
+		}
+		if ("resource_collection".equals(kind)) {
+			requireString(arguments, "resourceKind");
+			requirePositiveInt(arguments, "quantity");
+		}
+		if ("movement".equals(kind) || "block_modification".equals(kind)) {
+			requireInt(arguments, "x");
+			requireInt(arguments, "y");
+			requireInt(arguments, "z");
+		}
+		if ("entity_interaction".equals(kind)) {
+			requireString(arguments, "entityTypeId");
+		}
+		if ("item_transfer".equals(kind)) {
+			requireString(arguments, "targetPlayer");
+			requireString(arguments, "itemId");
+			requirePositiveInt(arguments, "quantity");
+		}
 	}
 
 	private static void validateCraftRecipeArguments(JsonObject arguments) {
