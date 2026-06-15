@@ -97,6 +97,109 @@ class ActionGraphExecutionRuntimeTest {
 	}
 
 	@Test
+	void breadRouteHarvestsMatureWheatThenCraftsAfterWheatObserved() {
+		RecordingDispatcher dispatcher = new RecordingDispatcher();
+		ActionGraphExecutionRuntime runtime = new ActionGraphExecutionRuntime(defaultIndex(), dispatcher);
+		runtime.submit(ActionGoal.inventoryItem("minecraft:bread", 1), Map.of(), CONTEXT, 100);
+
+		ActionGraphExecutionSnapshot harvestDispatched = runtime.tick(input(
+			Map.of(),
+			null,
+			101,
+			List.of(),
+			List.of(wheatCropGroup(3, 3, 101))
+		));
+
+		assertEquals(ActionGraphExecutionState.WAITING_PRIMITIVE, harvestDispatched.state());
+		assertEquals(1, dispatcher.dispatchedSteps.size());
+		ActionPlanStep harvest = dispatcher.dispatchedSteps.getFirst();
+		assertEquals("obtain_wheat", harvest.actionId());
+		assertEquals("harvest_loaded_mature_wheat", harvest.alternativeId());
+		assertEquals("mine_block", harvest.targetId());
+
+		ActionGraphExecutionSnapshot craftDispatched = runtime.tick(input(
+			Map.of("minecraft:wheat", 3),
+			new TaskTerminalEvent("task-1", null, TaskExecutionState.COMPLETED, "harvested", null),
+			102,
+			List.of(),
+			List.of(wheatCropGroup(3, 3, 102))
+		));
+
+		assertEquals(ActionGraphExecutionState.WAITING_PRIMITIVE, craftDispatched.state());
+		assertEquals(2, dispatcher.dispatchedSteps.size());
+		ActionPlanStep craft = dispatcher.dispatchedSteps.get(1);
+		assertEquals("make_bread", craft.actionId());
+		assertEquals("craft_bread", craft.stepId());
+		assertEquals("craft_item", craft.targetId());
+
+		ActionGraphExecutionSnapshot completed = runtime.tick(input(
+			Map.of("minecraft:wheat", 3, "minecraft:bread", 1),
+			new TaskTerminalEvent("task-2", null, TaskExecutionState.COMPLETED, "crafted", null),
+			103,
+			List.of(),
+			List.of(wheatCropGroup(3, 3, 103))
+		));
+
+		assertEquals(ActionGraphExecutionState.SUCCEEDED, completed.state());
+		assertTrace(completed.trace(), "execution_succeeded");
+	}
+
+	@Test
+	void breadRouteWaitsForGrowingWheatThenHarvestsAndCrafts() {
+		RecordingDispatcher dispatcher = new RecordingDispatcher();
+		ActionGraphExecutionRuntime runtime = new ActionGraphExecutionRuntime(defaultIndex(), dispatcher);
+		runtime.submit(ActionGoal.inventoryItem("minecraft:bread", 1), Map.of(), CONTEXT, 100);
+
+		ActionGraphExecutionSnapshot watching = runtime.tick(input(
+			Map.of(),
+			null,
+			101,
+			List.of(),
+			List.of(wheatCropGroup(0, 3, 101))
+		));
+
+		assertEquals(ActionGraphExecutionState.WATCHING, watching.state());
+		assertTrue(watching.pendingWatch().contains("wait_for_wheat_maturity"));
+		assertTrue(dispatcher.dispatchedSteps.isEmpty());
+
+		ActionGraphExecutionSnapshot harvestDispatched = runtime.tick(input(
+			Map.of(),
+			null,
+			102,
+			List.of(),
+			List.of(wheatCropGroup(3, 3, 102))
+		));
+
+		assertEquals(ActionGraphExecutionState.WAITING_PRIMITIVE, harvestDispatched.state());
+		assertEquals(1, dispatcher.dispatchedSteps.size());
+		assertEquals("harvest_wheat", dispatcher.dispatchedSteps.getFirst().stepId());
+		assertTrace(harvestDispatched.trace(), "watch_fulfilled");
+
+		ActionGraphExecutionSnapshot craftDispatched = runtime.tick(input(
+			Map.of("minecraft:wheat", 3),
+			new TaskTerminalEvent("task-1", null, TaskExecutionState.COMPLETED, "harvested", null),
+			103,
+			List.of(),
+			List.of(wheatCropGroup(3, 3, 103))
+		));
+
+		assertEquals(ActionGraphExecutionState.WAITING_PRIMITIVE, craftDispatched.state());
+		assertEquals(2, dispatcher.dispatchedSteps.size());
+		assertEquals("craft_bread", dispatcher.dispatchedSteps.get(1).stepId());
+
+		ActionGraphExecutionSnapshot completed = runtime.tick(input(
+			Map.of("minecraft:wheat", 3, "minecraft:bread", 1),
+			new TaskTerminalEvent("task-2", null, TaskExecutionState.COMPLETED, "crafted", null),
+			104,
+			List.of(),
+			List.of(wheatCropGroup(3, 3, 104))
+		));
+
+		assertEquals(ActionGraphExecutionState.SUCCEEDED, completed.state());
+		assertTrace(completed.trace(), "execution_succeeded");
+	}
+
+	@Test
 	void nestedCraftingRouteDispatchesIngredientCraftFirst() {
 		RecordingDispatcher dispatcher = new RecordingDispatcher();
 		ActionGraphExecutionRuntime runtime = new ActionGraphExecutionRuntime(ActionsetIndex.empty(), dispatcher);
@@ -228,13 +331,34 @@ class ActionGraphExecutionRuntimeTest {
 		long tick,
 		List<CraftingOpportunity> availableCrafts
 	) {
+		return input(observedInventory, terminalEvent, tick, availableCrafts, List.of());
+	}
+
+	private static ActionGraphExecutionInput input(
+		Map<String, Integer> observedInventory,
+		TaskTerminalEvent terminalEvent,
+		long tick,
+		List<CraftingOpportunity> availableCrafts,
+		List<ActionFact> observedFacts
+	) {
 		return new ActionGraphExecutionInput(
 			new ActionResolverContext(CONTEXT.worldId(), CONTEXT.actorId(), CONTEXT.dimension(), tick),
 			observedInventory,
 			true,
 			true,
 			terminalEvent,
-			availableCrafts
+			availableCrafts,
+			observedFacts
+		);
+	}
+
+	private static ActionFact wheatCropGroup(int matureCount, int totalCount, long tick) {
+		return new ActionFact(
+			ActionFactIdentity.worldCropGroup(CONTEXT.worldId(), CONTEXT.dimension(), "farm-1", "minecraft:wheat"),
+			Map.of("matureCount", matureCount, "totalCount", totalCount),
+			ActionFactProvenance.OBSERVED,
+			tick,
+			ActionFact.NEVER_STALE
 		);
 	}
 

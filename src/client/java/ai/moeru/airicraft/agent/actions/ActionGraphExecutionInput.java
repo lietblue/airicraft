@@ -15,7 +15,8 @@ public record ActionGraphExecutionInput(
 	boolean worldLoaded,
 	boolean actuationAllowed,
 	TaskTerminalEvent terminalTaskEvent,
-	List<CraftingOpportunity> availableCrafts
+	List<CraftingOpportunity> availableCrafts,
+	List<ActionFact> observedFacts
 ) {
 	public ActionGraphExecutionInput(
 		ActionResolverContext context,
@@ -24,13 +25,25 @@ public record ActionGraphExecutionInput(
 		boolean actuationAllowed,
 		TaskTerminalEvent terminalTaskEvent
 	) {
-		this(context, observedInventory, worldLoaded, actuationAllowed, terminalTaskEvent, List.of());
+		this(context, observedInventory, worldLoaded, actuationAllowed, terminalTaskEvent, List.of(), List.of());
+	}
+
+	public ActionGraphExecutionInput(
+		ActionResolverContext context,
+		Map<String, Integer> observedInventory,
+		boolean worldLoaded,
+		boolean actuationAllowed,
+		TaskTerminalEvent terminalTaskEvent,
+		List<CraftingOpportunity> availableCrafts
+	) {
+		this(context, observedInventory, worldLoaded, actuationAllowed, terminalTaskEvent, availableCrafts, List.of());
 	}
 
 	public ActionGraphExecutionInput {
 		context = Objects.requireNonNull(context, "context");
 		observedInventory = copyInventory(observedInventory);
 		availableCrafts = availableCrafts == null ? List.of() : List.copyOf(availableCrafts);
+		observedFacts = observedFacts == null ? List.of() : List.copyOf(observedFacts);
 	}
 
 	private static Map<String, Integer> copyInventory(Map<String, Integer> inventory) {

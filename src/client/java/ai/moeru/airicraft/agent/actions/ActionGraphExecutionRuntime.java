@@ -471,6 +471,24 @@ public final class ActionGraphExecutionRuntime {
 	private void ingestObservedFacts(ActionGraphExecutionInput input) {
 		addInventoryFacts(input.observedInventory(), ActionFactProvenance.OBSERVED, input.context(), true);
 		addCraftRecipeFacts(input.availableCrafts(), input.context());
+		addObservedFacts(input.observedFacts());
+	}
+
+	private void addObservedFacts(List<ActionFact> observedFacts) {
+		if (observedFacts == null || observedFacts.isEmpty()) {
+			return;
+		}
+		for (ActionFact fact : observedFacts) {
+			if (fact == null) {
+				continue;
+			}
+			facts.upsert(fact);
+			LinkedHashMap<String, Object> payload = new LinkedHashMap<>();
+			payload.put("fact", fact.identity().type().id());
+			payload.putAll(fact.identity().keys());
+			payload.put("provenance", fact.provenance().name());
+			traceFactObservedIfChanged(fact, payload);
+		}
 	}
 
 	private void addCraftRecipeFacts(List<CraftingOpportunity> availableCrafts, ActionResolverContext context) {
