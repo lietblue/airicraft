@@ -1,6 +1,7 @@
 package ai.moeru.airicraft.agent.actions;
 
 import ai.moeru.airicraft.agent.tasks.CraftingOpportunity;
+import ai.moeru.airicraft.agent.tasks.SmeltingOption;
 import ai.moeru.airicraft.agent.tasks.TaskExecutionState;
 import ai.moeru.airicraft.agent.tasks.TaskTerminalEvent;
 
@@ -471,6 +472,7 @@ public final class ActionGraphExecutionRuntime {
 	private void ingestObservedFacts(ActionGraphExecutionInput input) {
 		addInventoryFacts(input.observedInventory(), ActionFactProvenance.OBSERVED, input.context(), true);
 		addCraftRecipeFacts(input.availableCrafts(), input.context());
+		addSmeltRecipeFacts(input.availableSmelts(), input.context());
 		addObservedFacts(input.observedFacts());
 	}
 
@@ -518,6 +520,35 @@ public final class ActionGraphExecutionRuntime {
 				"fact", ActionFactType.CRAFT_RECIPE.id(),
 				"recipeId", opportunity.recipeId(),
 				"outputItemId", opportunity.outputItemId(),
+				"provenance", ActionFactProvenance.OBSERVED.name()
+			));
+		}
+	}
+
+	private void addSmeltRecipeFacts(List<SmeltingOption> availableSmelts, ActionResolverContext context) {
+		if (availableSmelts == null || availableSmelts.isEmpty()) {
+			return;
+		}
+		for (SmeltingOption option : availableSmelts) {
+			ActionFact fact = new ActionFact(
+				ActionFactIdentity.smeltRecipe(context.worldId(), context.actorId(), option.optionId()),
+				Map.of(
+					"inputItemId", option.inputItemId(),
+					"outputItemId", option.outputItemId(),
+					"outputCount", option.outputCount(),
+					"maxInputQuantity", option.maxInputQuantity(),
+					"cookTimeTicks", option.cookTimeTicks()
+				),
+				ActionFactProvenance.OBSERVED,
+				context.currentTick(),
+				context.currentTick() + 1
+			);
+			facts.upsert(fact);
+			traceFactObservedIfChanged(fact, Map.of(
+				"fact", ActionFactType.SMELT_RECIPE.id(),
+				"optionId", option.optionId(),
+				"inputItemId", option.inputItemId(),
+				"outputItemId", option.outputItemId(),
 				"provenance", ActionFactProvenance.OBSERVED.name()
 			));
 		}

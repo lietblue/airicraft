@@ -146,9 +146,10 @@ public final class SmeltingTaskExecutor implements WorldTaskExecutor {
 
 	private Optional<TaskTerminalEvent> tickCollectSmeltedItems(WorldTaskRequest request, MinecraftClient client, ClientPlayerEntity player) {
 		CollectSmeltedItemsStepArgs args = request.collectSmeltedItems();
-		SmeltingStationKey key = args.processId() == null
+		String processId = args.processId() == null ? processManager.preferredCollectionProcessId() : args.processId();
+		SmeltingStationKey key = processId == null
 			? processManager.confirmedCollectionStationKey(args.confirmationToken())
-			: processManager.processStationKey(args.processId());
+			: processManager.processStationKey(processId);
 		BlockPos stationPos = stationPos(key);
 		if (stationPos == null) {
 			return fail(request, "station_unavailable");
@@ -161,13 +162,13 @@ public final class SmeltingTaskExecutor implements WorldTaskExecutor {
 		}
 		SmeltingSlotSnapshot slots = screenSlotSnapshot(handler);
 		if (handler.getSlot(2).getStack().isEmpty()
-			|| args.processId() != null && !processManager.processOutputReadyForCollection(args.processId(), slots)) {
+			|| processId != null && !processManager.processOutputReadyForCollection(processId, slots)) {
 			snapshot = snapshot(TaskExecutionState.RUNNING, request, "waiting_for_output");
 			return Optional.empty();
 		}
 		client.interactionManager.clickSlot(handler.syncId, 2, 0, SlotActionType.QUICK_MOVE, player);
-		if (args.processId() != null) {
-			processManager.cancel(args.processId());
+		if (processId != null) {
+			processManager.cancel(processId);
 		}
 		return complete(request, "smelting_collected");
 	}

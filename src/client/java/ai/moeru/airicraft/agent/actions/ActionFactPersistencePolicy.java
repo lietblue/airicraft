@@ -13,7 +13,7 @@ public final class ActionFactPersistencePolicy {
 		}
 		return switch (fact.identity().type()) {
 			case WORLD_BLOCK, WORLD_CROP, WORLD_CROP_GROUP, WORLD_SITE, WORLD_ENTITY, WATCH_FULFILLED -> ActionFactDurability.PERSISTENT;
-			case INVENTORY_ITEM, INVENTORY_TOOL, CRAFT_RECIPE, WATCH_PENDING, ROUTE_FAILURE -> ActionFactDurability.VOLATILE;
+			case INVENTORY_ITEM, INVENTORY_TOOL, CRAFT_RECIPE, SMELT_RECIPE, WATCH_PENDING, ROUTE_FAILURE -> ActionFactDurability.VOLATILE;
 		};
 	}
 

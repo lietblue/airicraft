@@ -1191,13 +1191,15 @@ public final class EmbodiedAgentRuntime {
 			sessionSnapshot.worldLoaded(),
 			sessionSnapshot.companionActuationAllowed(),
 			terminalEvent,
-			worldEvidence.availableCrafts()
+			worldEvidence.availableCrafts(),
+			worldEvidence.availableSmelts(),
+			List.of()
 		));
 	}
 
 	private ActionGraphPrimitiveDispatchResult dispatchActionGraphPrimitive(ActionPlanStep step) {
 		WorldEvidence evidence = currentWorldEvidence(MinecraftClient.getInstance());
-		ActionGraphPrimitiveDispatch dispatch = ActionGraphPrimitiveMapper.map(step, evidence.availableCrafts());
+		ActionGraphPrimitiveDispatch dispatch = ActionGraphPrimitiveMapper.map(step, evidence.availableCrafts(), evidence.availableSmelts());
 		if (!dispatch.dispatchable()) {
 			return ActionGraphPrimitiveDispatchResult.failed(
 				dispatch.failureCode(),
@@ -1205,8 +1207,16 @@ public final class EmbodiedAgentRuntime {
 				dispatch.payload()
 			);
 		}
+		ActiveJobProposal proposal = prepareActionGraphPrimitiveProposal(dispatch.proposal());
+		if (proposal == null) {
+			return ActionGraphPrimitiveDispatchResult.failed(
+				"primitive_preflight_failed",
+				"Action graph primitive preflight failed",
+				dispatch.payload()
+			);
+		}
 		TaskSnapshot submittedTask = submitActiveJobProposal(
-			dispatch.proposal(),
+			proposal,
 			"action_graph",
 			actionGraphSubmittedPayload(dispatch)
 		);
@@ -1218,6 +1228,39 @@ public final class EmbodiedAgentRuntime {
 			actionGraphTaskPayload(submittedTask, activeTask),
 			Map.of("taskId", taskId, "state", TaskExecutionState.RUNNING.name())
 		);
+	}
+
+	private ActiveJobProposal prepareActionGraphPrimitiveProposal(ActiveJobProposal proposal) {
+		if (proposal == null) {
+			return null;
+		}
+		if (proposal.type() == ActiveJobType.SMELT_ITEMS && proposal.smeltItems() != null) {
+			SmeltingActionResult result = smeltingPlannerService.startSmelting(
+				MinecraftClient.getInstance(),
+				smeltingProcessManager,
+				proposal.smeltItems(),
+				tickCount
+			);
+			return result.accepted() && !result.confirmationRequired() ? proposal : null;
+		}
+		if (proposal.type() == ActiveJobType.COLLECT_SMELTED_ITEMS && proposal.collectSmeltedItems() != null) {
+			SmeltingActionResult result = smeltingPlannerService.collectSmelted(
+				MinecraftClient.getInstance(),
+				smeltingProcessManager,
+				proposal.collectSmeltedItems(),
+				tickCount
+			);
+			if (!result.accepted() || result.confirmationRequired()) {
+				return null;
+			}
+			if (proposal.collectSmeltedItems().processId() == null && result.processId() != null) {
+				return ActiveJobProposal.collectSmeltedItems(new CollectSmeltedItemsStepArgs(
+					result.processId(),
+					proposal.collectSmeltedItems().confirmationToken()
+				));
+			}
+		}
+		return proposal;
 	}
 
 	private void captureActionGraphTerminalEvent(TaskTerminalEvent event) {
@@ -2388,10 +2431,11 @@ public final class EmbodiedAgentRuntime {
 		Map<String, Integer> itemCounts = inventoryItemCounter.count(client.player.getInventory());
 		return new WorldEvidence(
 			resourceCounts,
-			itemCounts,
-			collectNearbyBlocks(client, origin),
-			CraftingOpportunityResolver.availableCrafts(client.player),
-			client.world == null ? null : client.world.getRegistryKey().getValue().toString(),
+				itemCounts,
+				collectNearbyBlocks(client, origin),
+				CraftingOpportunityResolver.availableCrafts(client.player),
+				smeltingPlannerService.availableSmeltingOptions(client, smeltingProcessManager, tickCount),
+				client.world == null ? null : client.world.getRegistryKey().getValue().toString(),
 			origin.getX(),
 			origin.getY(),
 			origin.getZ(),

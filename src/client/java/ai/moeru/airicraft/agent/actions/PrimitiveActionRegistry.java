@@ -138,6 +138,32 @@ public final class PrimitiveActionRegistry {
 			"WorldTaskRequest.CRAFT_RECIPE"
 		));
 		register(actions, metadata(
+			"smelt_item",
+			"Smelt an inventory item through a current smelting option.",
+			Map.of(
+				"itemId", param("string", true, "Namespaced output item id."),
+				"optionId", param("string", true, "Current smelting option id."),
+				"inputQuantity", param("integer", true, "Input items to smelt.")
+			),
+			List.of("smelt.recipe", "inventory.item"),
+			List.of("inventory.item"),
+			List.of("smelting"),
+			true,
+			true,
+			"WorldTaskRequest.SMELT_ITEMS"
+		));
+		register(actions, metadata(
+			"collect_smelted_item",
+			"Collect output from an Airicraft-owned smelting process.",
+			Map.of("itemId", param("string", false, "Expected output item id.")),
+			List.of("watch.fulfilled"),
+			List.of("inventory.item"),
+			List.of("smelting"),
+			true,
+			true,
+			"WorldTaskRequest.COLLECT_SMELTED_ITEMS"
+		));
+		register(actions, metadata(
 			"attack_entity",
 			"Attack a nearby entity.",
 			Map.of("uuid", param("string", true, "Entity uuid token.")),

@@ -55,6 +55,21 @@ public final class SmeltingPlannerService {
 		return renderCheckSmeltables(options, candidates, fuelSummary);
 	}
 
+	public List<SmeltingOption> availableSmeltingOptions(MinecraftClient client, SmeltingProcessManager manager, long tick) {
+		Objects.requireNonNull(manager, "manager");
+		ClientPlayerEntity player = client == null ? null : client.player;
+		ClientWorld world = client == null ? null : client.world;
+		if (player == null || world == null) {
+			manager.registerOptions(List.of());
+			return List.of();
+		}
+		List<SmeltableInput> inputs = smeltableInputs(player, world);
+		List<SmeltingStationCandidate> candidates = manager.rankCandidates(stationCandidates(client, manager, tick));
+		List<SmeltingOption> options = buildOptions(inputs, candidates, observeStations(client), manager, tick);
+		manager.registerOptions(options);
+		return options;
+	}
+
 	public String inspectSmelting(MinecraftClient client, SmeltingProcessManager manager, long tick) {
 		Objects.requireNonNull(manager, "manager");
 		StringBuilder builder = new StringBuilder(manager.inspectSummary());

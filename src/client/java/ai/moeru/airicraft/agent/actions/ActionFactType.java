@@ -14,6 +14,7 @@ public enum ActionFactType {
 	WORLD_SITE("world.site"),
 	WORLD_ENTITY("world.entity"),
 	CRAFT_RECIPE("craft.recipe"),
+	SMELT_RECIPE("smelt.recipe"),
 	WATCH_PENDING("watch.pending"),
 	WATCH_FULFILLED("watch.fulfilled"),
 	ROUTE_FAILURE("route.failure");

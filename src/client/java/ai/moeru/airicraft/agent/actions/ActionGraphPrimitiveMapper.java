@@ -5,6 +5,10 @@ import ai.moeru.airicraft.agent.goals.GoalPosition;
 import ai.moeru.airicraft.agent.job.ActiveJobProposal;
 import ai.moeru.airicraft.agent.tasks.CraftRecipeStepArgs;
 import ai.moeru.airicraft.agent.tasks.CraftingOpportunity;
+import ai.moeru.airicraft.agent.tasks.CollectSmeltedItemsStepArgs;
+import ai.moeru.airicraft.agent.tasks.SmeltItemsStepArgs;
+import ai.moeru.airicraft.agent.tasks.SmeltingFuelMode;
+import ai.moeru.airicraft.agent.tasks.SmeltingOption;
 
 import java.util.Comparator;
 import java.util.LinkedHashMap;
@@ -16,6 +20,14 @@ public final class ActionGraphPrimitiveMapper {
 	}
 
 	public static ActionGraphPrimitiveDispatch map(ActionPlanStep step, List<CraftingOpportunity> craftingOpportunities) {
+		return map(step, craftingOpportunities, List.of());
+	}
+
+	public static ActionGraphPrimitiveDispatch map(
+		ActionPlanStep step,
+		List<CraftingOpportunity> craftingOpportunities,
+		List<SmeltingOption> smeltingOptions
+	) {
 		if (step == null) {
 			return ActionGraphPrimitiveDispatch.failed("missing_step", "No executable action graph step was selected", null);
 		}
@@ -24,6 +36,8 @@ public final class ActionGraphPrimitiveMapper {
 		}
 		return switch (step.targetId()) {
 			case "craft_item" -> craftItem(step, craftingOpportunities);
+			case "smelt_item" -> smeltItem(step, smeltingOptions);
+			case "collect_smelted_item" -> collectSmeltedItem(step);
 			case "mine_block" -> mineBlock(step);
 			case "pathfind_to" -> pathfindTo(step);
 			default -> ActionGraphPrimitiveDispatch.failed(
@@ -64,6 +78,54 @@ public final class ActionGraphPrimitiveMapper {
 		return ActionGraphPrimitiveDispatch.dispatchable(
 			step,
 			ActiveJobProposal.craftRecipe(new CraftRecipeStepArgs(opportunity.recipeId(), times)),
+			payload
+		);
+	}
+
+	private static ActionGraphPrimitiveDispatch smeltItem(ActionPlanStep step, List<SmeltingOption> smeltingOptions) {
+		String itemId = stringArg(step, "itemId");
+		String optionId = stringArg(step, "optionId");
+		int inputQuantity = intArg(step, "inputQuantity", 1);
+		if (itemId.isBlank()) {
+			return ActionGraphPrimitiveDispatch.failed("invalid_step_args", "smelt_item requires itemId", step);
+		}
+		if (inputQuantity < 1) {
+			return ActionGraphPrimitiveDispatch.failed("invalid_step_args", "smelt_item inputQuantity must be positive", step);
+		}
+		SmeltingOption option = safeSmeltingOptions(smeltingOptions).stream()
+			.filter(candidate -> itemId.equals(candidate.outputItemId()))
+			.filter(candidate -> optionId.isBlank() || optionId.equals(candidate.optionId()))
+			.filter(candidate -> inputQuantity <= candidate.maxInputQuantity())
+			.min(Comparator.comparing(SmeltingOption::optionId))
+			.orElse(null);
+		if (option == null) {
+			String detail = optionId.isBlank() ? itemId : itemId + " with option " + optionId;
+			return ActionGraphPrimitiveDispatch.failed("smelting_option_not_found", "No current smelting option produces " + detail, step);
+		}
+		LinkedHashMap<String, Object> payload = new LinkedHashMap<>();
+		payload.put("jobType", "SMELT_ITEMS");
+		payload.put("optionId", option.optionId());
+		payload.put("inputItemId", option.inputItemId());
+		payload.put("outputItemId", option.outputItemId());
+		payload.put("outputCount", option.outputCount());
+		payload.put("inputQuantity", inputQuantity);
+		return ActionGraphPrimitiveDispatch.dispatchable(
+			step,
+			ActiveJobProposal.smeltItems(new SmeltItemsStepArgs(option.optionId(), inputQuantity, SmeltingFuelMode.AUTO, null, 0, null)),
+			payload
+		);
+	}
+
+	private static ActionGraphPrimitiveDispatch collectSmeltedItem(ActionPlanStep step) {
+		String itemId = stringArg(step, "itemId");
+		LinkedHashMap<String, Object> payload = new LinkedHashMap<>();
+		payload.put("jobType", "COLLECT_SMELTED_ITEMS");
+		if (!itemId.isBlank()) {
+			payload.put("outputItemId", itemId);
+		}
+		return ActionGraphPrimitiveDispatch.dispatchable(
+			step,
+			ActiveJobProposal.collectSmeltedItems(new CollectSmeltedItemsStepArgs(null, null)),
 			payload
 		);
 	}
@@ -111,6 +173,10 @@ public final class ActionGraphPrimitiveMapper {
 
 	private static List<CraftingOpportunity> safeCraftingOpportunities(List<CraftingOpportunity> opportunities) {
 		return opportunities == null ? List.of() : opportunities;
+	}
+
+	private static List<SmeltingOption> safeSmeltingOptions(List<SmeltingOption> options) {
+		return options == null ? List.of() : options;
 	}
 
 	private static String stringArg(ActionPlanStep step, String key) {

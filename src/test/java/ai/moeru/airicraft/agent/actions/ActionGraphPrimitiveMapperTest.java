@@ -3,6 +3,14 @@ package ai.moeru.airicraft.agent.actions;
 import ai.moeru.airicraft.agent.job.ActiveJobType;
 import ai.moeru.airicraft.agent.tasks.CraftingGridKind;
 import ai.moeru.airicraft.agent.tasks.CraftingOpportunity;
+import ai.moeru.airicraft.agent.tasks.SmeltingOption;
+import ai.moeru.airicraft.agent.tasks.SmeltingSlotSnapshot;
+import ai.moeru.airicraft.agent.tasks.SmeltingStationCandidate;
+import ai.moeru.airicraft.agent.tasks.SmeltingStationKey;
+import ai.moeru.airicraft.agent.tasks.SmeltingStationKind;
+import ai.moeru.airicraft.agent.tasks.SmeltingStationObservation;
+import ai.moeru.airicraft.agent.tasks.SmeltingStationSource;
+import ai.moeru.airicraft.agent.tasks.SmeltingStationState;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -78,6 +86,31 @@ class ActionGraphPrimitiveMapperTest {
 	}
 
 	@Test
+	void mapsSmeltItemToSmeltingJob() {
+		ActionGraphPrimitiveDispatch dispatch = ActionGraphPrimitiveMapper.map(primitive("smelt_item", Map.of(
+			"itemId", "minecraft:iron_ingot",
+			"optionId", "smelt:minecraft_raw_iron_to_minecraft_iron_ingot:nearby-1",
+			"inputQuantity", 3
+		)), List.of(), List.of(smeltingOption()));
+
+		assertTrue(dispatch.dispatchable());
+		assertEquals(ActiveJobType.SMELT_ITEMS, dispatch.proposal().type());
+		assertEquals("smelt:minecraft_raw_iron_to_minecraft_iron_ingot:nearby-1", dispatch.proposal().smeltItems().optionId());
+		assertEquals(3, dispatch.proposal().smeltItems().inputQuantity());
+	}
+
+	@Test
+	void mapsCollectSmeltedItemToCollectionJob() {
+		ActionGraphPrimitiveDispatch dispatch = ActionGraphPrimitiveMapper.map(primitive("collect_smelted_item", Map.of(
+			"itemId", "minecraft:iron_ingot"
+		)), List.of(), List.of());
+
+		assertTrue(dispatch.dispatchable());
+		assertEquals(ActiveJobType.COLLECT_SMELTED_ITEMS, dispatch.proposal().type());
+		assertEquals(null, dispatch.proposal().collectSmeltedItems().processId());
+	}
+
+	@Test
 	void mapsPathfindToNavigateGoal() {
 		ActionGraphPrimitiveDispatch dispatch = ActionGraphPrimitiveMapper.map(primitive("pathfind_to", Map.of(
 			"x", 1,
@@ -113,6 +146,30 @@ class ActionGraphPrimitiveMapperTest {
 			"test_step",
 			primitiveId,
 			args
+		);
+	}
+
+	private static SmeltingOption smeltingOption() {
+		SmeltingStationKey key = new SmeltingStationKey("minecraft:overworld", 1, 64, 1);
+		SmeltingSlotSnapshot slots = new SmeltingSlotSnapshot(null, 0, null, 0, null, 0, 0, 200, false);
+		SmeltingStationCandidate candidate = new SmeltingStationCandidate(
+			SmeltingStationSource.NEARBY_EXISTING,
+			SmeltingStationState.EMPTY,
+			SmeltingStationKind.FURNACE,
+			key,
+			2.0D,
+			false
+		);
+		SmeltingStationObservation observation = new SmeltingStationObservation(key, SmeltingStationKind.FURNACE, slots, false, 2.0D);
+		return new SmeltingOption(
+			"smelt:minecraft_raw_iron_to_minecraft_iron_ingot:nearby-1",
+			"minecraft:raw_iron",
+			"minecraft:iron_ingot",
+			1,
+			3,
+			200,
+			candidate,
+			observation
 		);
 	}
 }

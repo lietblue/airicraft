@@ -79,6 +79,14 @@ public record ActionFactIdentity(
 		));
 	}
 
+	public static ActionFactIdentity smeltRecipe(String worldId, String actorId, String optionId) {
+		return new ActionFactIdentity(ActionFactType.SMELT_RECIPE, keys(
+			"worldId", worldId,
+			"actorId", actorId,
+			"optionId", optionId
+		));
+	}
+
 	public static ActionFactIdentity watchPending(String worldId, String watchId) {
 		return watch(ActionFactType.WATCH_PENDING, worldId, watchId);
 	}

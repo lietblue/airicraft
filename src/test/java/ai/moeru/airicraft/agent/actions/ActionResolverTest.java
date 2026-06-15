@@ -195,6 +195,90 @@ class ActionResolverTest {
 	}
 
 	@Test
+	void resolvesInventoryItemThroughSmeltingRecipeFact() {
+		ActionFactStore facts = new ActionFactStore();
+		facts.upsert(new ActionFact(
+			ActionFactIdentity.inventoryItem("world-a", "bot", "minecraft:raw_iron"),
+			Map.of("count", 3),
+			ActionFactProvenance.OBSERVED,
+			90,
+			ActionFact.NEVER_STALE
+		));
+		facts.upsert(new ActionFact(
+			ActionFactIdentity.smeltRecipe("world-a", "bot", "smelt:minecraft_raw_iron_to_minecraft_iron_ingot:nearby-1"),
+			Map.of(
+				"inputItemId", "minecraft:raw_iron",
+				"outputItemId", "minecraft:iron_ingot",
+				"outputCount", 1,
+				"maxInputQuantity", 3
+			),
+			ActionFactProvenance.OBSERVED,
+			90,
+			ActionFact.NEVER_STALE
+		));
+
+		ActionResolveResult result = new ActionResolver(ActionsetIndex.empty(), facts, CONTEXT)
+			.resolve(ActionGoal.inventoryItem("minecraft:iron_ingot", 3));
+
+		assertTrue(result.resolved(), () -> result.trace().toString());
+		assertEquals(List.of("smelt_item", "collect_smelted_item"), result.route().steps().stream().map(ActionPlanStep::targetId).toList());
+		ActionPlanStep smelt = result.route().steps().getFirst();
+		assertEquals("smelting_provider", smelt.actionId());
+		assertEquals("minecraft:raw_iron", smelt.args().get("inputItemId"));
+		assertEquals(3, smelt.args().get("inputQuantity"));
+		assertTrace(result.trace(), "route_selected", "smelting_provider", "smelt:minecraft_raw_iron_to_minecraft_iron_ingot:nearby-1");
+	}
+
+	@Test
+	void recipeProviderCanUseSmeltingProviderForCraftInputs() {
+		ActionFactStore facts = new ActionFactStore();
+		facts.upsert(new ActionFact(
+			ActionFactIdentity.inventoryItem("world-a", "bot", "minecraft:raw_iron"),
+			Map.of("count", 3),
+			ActionFactProvenance.OBSERVED,
+			90,
+			ActionFact.NEVER_STALE
+		));
+		facts.upsert(new ActionFact(
+			ActionFactIdentity.inventoryItem("world-a", "bot", "minecraft:stick"),
+			Map.of("count", 2),
+			ActionFactProvenance.OBSERVED,
+			90,
+			ActionFact.NEVER_STALE
+		));
+		facts.upsert(new ActionFact(
+			ActionFactIdentity.smeltRecipe("world-a", "bot", "smelt:minecraft_raw_iron_to_minecraft_iron_ingot:nearby-1"),
+			Map.of(
+				"inputItemId", "minecraft:raw_iron",
+				"outputItemId", "minecraft:iron_ingot",
+				"outputCount", 1,
+				"maxInputQuantity", 3
+			),
+			ActionFactProvenance.OBSERVED,
+			90,
+			ActionFact.NEVER_STALE
+		));
+		facts.upsert(new ActionFact(
+			ActionFactIdentity.craftRecipe("world-a", "bot", "iron_ingot_x3_and_stick_x2_to_iron_pickaxe"),
+			Map.of(
+				"outputItemId", "minecraft:iron_pickaxe",
+				"outputCount", 1,
+				"inputCounts", Map.of("minecraft:iron_ingot", 3, "minecraft:stick", 2)
+			),
+			ActionFactProvenance.OBSERVED,
+			90,
+			ActionFact.NEVER_STALE
+		));
+
+		ActionResolveResult result = new ActionResolver(ActionsetIndex.empty(), facts, CONTEXT)
+			.resolve(ActionGoal.inventoryItem("minecraft:iron_pickaxe", 1));
+
+		assertTrue(result.resolved(), () -> result.trace().toString());
+		assertEquals(List.of("smelt_item", "collect_smelted_item", "craft_item"), result.route().steps().stream().map(ActionPlanStep::targetId).toList());
+		assertEquals("iron_ingot_x3_and_stick_x2_to_iron_pickaxe", result.route().steps().get(2).args().get("recipeId"));
+	}
+
+	@Test
 	void recursivelyExpandsNeedsBeforeCurrentPrimitiveSteps() {
 		ActionFactStore facts = new ActionFactStore();
 		facts.upsert(new ActionFact(

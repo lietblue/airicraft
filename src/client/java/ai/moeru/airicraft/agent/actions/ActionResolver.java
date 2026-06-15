@@ -97,6 +97,11 @@ public final class ActionResolver {
 				resolving.remove(goal.normalizedKey());
 				return providerRoute;
 			}
+			Optional<ActionRoute> smeltingRoute = resolveSmeltingProviderGoal(goal, depth, resolving, trace);
+			if (smeltingRoute.isPresent()) {
+				resolving.remove(goal.normalizedKey());
+				return smeltingRoute;
+			}
 		}
 
 		Optional<ActionRoute> actionsetRoute = resolveActionsetGoal(goal, depth, resolving, trace);
@@ -110,6 +115,11 @@ public final class ActionResolver {
 			if (providerRoute.isPresent()) {
 				resolving.remove(goal.normalizedKey());
 				return providerRoute;
+			}
+			Optional<ActionRoute> smeltingRoute = resolveSmeltingProviderGoal(goal, depth, resolving, trace);
+			if (smeltingRoute.isPresent()) {
+				resolving.remove(goal.normalizedKey());
+				return smeltingRoute;
 			}
 		}
 
@@ -244,6 +254,103 @@ public final class ActionResolver {
 			steps.add(new ActionPlanStep(ActionStepKind.PRIMITIVE, "recipe_provider", recipeId, "craft_item", "craft_item", args));
 			trace.add(event("primitive_planned", "recipe_provider", recipeId, "craft_item", Map.of("primitive", "craft_item", "itemId", outputItemId)));
 			trace.add(event("route_selected", "recipe_provider", recipeId, "", Map.of("goal", goal.normalizedKey())));
+			return Optional.of(new ActionRoute(steps, routeCost));
+		}
+
+		return Optional.empty();
+	}
+
+	private Optional<ActionRoute> resolveSmeltingProviderGoal(
+		ActionGoal goal,
+		int depth,
+		LinkedHashSet<String> resolving,
+		List<ActionTraceEvent> trace
+	) {
+		if (goal.factType() != ActionFactType.INVENTORY_ITEM) {
+			return Optional.empty();
+		}
+		String outputItemId = goal.keys().getOrDefault("itemId", "");
+		if (outputItemId.isBlank()) {
+			return Optional.empty();
+		}
+		int targetCount = goal.minimum("countAtLeast", 1);
+		int deficitCount = Math.max(0, targetCount - existingGoalCount(goal));
+		if (deficitCount <= 0) {
+			return Optional.of(ActionRoute.empty());
+		}
+
+		Map<String, String> recipeQuery = new LinkedHashMap<>();
+		recipeQuery.put("worldId", context.worldId());
+		recipeQuery.put("actorId", context.actorId());
+		for (ActionFact recipe : facts.query(ActionFactType.SMELT_RECIPE, recipeQuery).stream()
+			.filter(this::usableFact)
+			.filter(fact -> outputItemId.equals(scalar(fact.payload().get("outputItemId"), "")))
+			.sorted(Comparator.comparing(fact -> fact.identity().keys().getOrDefault("optionId", "")))
+			.toList()) {
+			String optionId = recipe.identity().keys().getOrDefault("optionId", "");
+			String alternativeKey = "smelting_provider:" + optionId;
+			if (blockedAlternativeKeys.contains(alternativeKey)) {
+				trace.add(event(
+					"route_candidate_blocked",
+					"smelting_provider",
+					optionId,
+					"",
+					Map.of("goal", goal.normalizedKey(), "reason", "previous_failure")
+				));
+				continue;
+			}
+			String inputItemId = scalar(recipe.payload().get("inputItemId"), "");
+			if (inputItemId.isBlank()) {
+				continue;
+			}
+			int outputCount = Math.max(1, intPayload(recipe, "outputCount", 1));
+			int inputQuantity = Math.max(1, (int) Math.ceil(deficitCount / (double) outputCount));
+			int maxInputQuantity = Math.max(1, intPayload(recipe, "maxInputQuantity", inputQuantity));
+			if (inputQuantity > maxInputQuantity) {
+				continue;
+			}
+			trace.add(event(
+				"route_candidate_built",
+				"smelting_provider",
+				optionId,
+				"",
+				Map.of("goal", goal.normalizedKey(), "cost", 25, "outputItemId", outputItemId)
+			));
+
+			Optional<ActionRoute> inputRoute = resolveGoal(
+				ActionGoal.inventoryItem(inputItemId, inputQuantity),
+				depth + 1,
+				resolving,
+				trace
+			);
+			if (inputRoute.isEmpty()) {
+				continue;
+			}
+
+			ArrayList<ActionPlanStep> steps = new ArrayList<>(inputRoute.get().steps());
+			int routeCost = 25 + inputRoute.get().cost();
+			LinkedHashMap<String, Object> smeltArgs = new LinkedHashMap<>();
+			smeltArgs.put("itemId", outputItemId);
+			smeltArgs.put("inputItemId", inputItemId);
+			smeltArgs.put("optionId", optionId);
+			smeltArgs.put("quantity", deficitCount);
+			smeltArgs.put("inputQuantity", inputQuantity);
+			steps.add(new ActionPlanStep(ActionStepKind.PRIMITIVE, "smelting_provider", optionId, "smelt_item", "smelt_item", smeltArgs));
+			trace.add(event("primitive_planned", "smelting_provider", optionId, "smelt_item", Map.of(
+				"primitive", "smelt_item",
+				"itemId", outputItemId,
+				"inputItemId", inputItemId
+			)));
+
+			LinkedHashMap<String, Object> collectArgs = new LinkedHashMap<>();
+			collectArgs.put("itemId", outputItemId);
+			collectArgs.put("quantity", deficitCount);
+			steps.add(new ActionPlanStep(ActionStepKind.PRIMITIVE, "smelting_provider", optionId, "collect_smelted_item", "collect_smelted_item", collectArgs));
+			trace.add(event("primitive_planned", "smelting_provider", optionId, "collect_smelted_item", Map.of(
+				"primitive", "collect_smelted_item",
+				"itemId", outputItemId
+			)));
+			trace.add(event("route_selected", "smelting_provider", optionId, "", Map.of("goal", goal.normalizedKey())));
 			return Optional.of(new ActionRoute(steps, routeCost));
 		}
 
@@ -453,7 +560,7 @@ public final class ActionResolver {
 			.orElseThrow(() -> new IllegalArgumentException("unknown fact type " + factSpec.get("fact")));
 		LinkedHashMap<String, String> queryKeys = new LinkedHashMap<>();
 		queryKeys.put("worldId", context.worldId());
-		if (factType == ActionFactType.INVENTORY_ITEM || factType == ActionFactType.INVENTORY_TOOL || factType == ActionFactType.CRAFT_RECIPE) {
+		if (factType == ActionFactType.INVENTORY_ITEM || factType == ActionFactType.INVENTORY_TOOL || factType == ActionFactType.CRAFT_RECIPE || factType == ActionFactType.SMELT_RECIPE) {
 			queryKeys.put("actorId", context.actorId());
 		}
 		if (factType == ActionFactType.WORLD_BLOCK || factType == ActionFactType.WORLD_CROP || factType == ActionFactType.WORLD_CROP_GROUP || factType == ActionFactType.WORLD_SITE || factType == ActionFactType.WORLD_ENTITY) {
@@ -568,7 +675,7 @@ public final class ActionResolver {
 	}
 
 	private static List<String> identityKeyNames() {
-		return List.of("itemId", "toolTag", "dimension", "blockPos", "cropId", "siteId", "siteType", "entityTypeId", "entityId", "recipeId", "watchId", "goalId");
+		return List.of("itemId", "toolTag", "dimension", "blockPos", "cropId", "siteId", "siteType", "entityTypeId", "entityId", "recipeId", "optionId", "watchId", "goalId");
 	}
 
 	private static Map<String, Object> objectMap(Object value) {

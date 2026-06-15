@@ -1,6 +1,7 @@
 package ai.moeru.airicraft.agent.actions;
 
 import ai.moeru.airicraft.agent.tasks.CraftingOpportunity;
+import ai.moeru.airicraft.agent.tasks.SmeltingOption;
 import ai.moeru.airicraft.agent.tasks.TaskTerminalEvent;
 
 import java.util.Collections;
@@ -16,6 +17,7 @@ public record ActionGraphExecutionInput(
 	boolean actuationAllowed,
 	TaskTerminalEvent terminalTaskEvent,
 	List<CraftingOpportunity> availableCrafts,
+	List<SmeltingOption> availableSmelts,
 	List<ActionFact> observedFacts
 ) {
 	public ActionGraphExecutionInput(
@@ -25,7 +27,7 @@ public record ActionGraphExecutionInput(
 		boolean actuationAllowed,
 		TaskTerminalEvent terminalTaskEvent
 	) {
-		this(context, observedInventory, worldLoaded, actuationAllowed, terminalTaskEvent, List.of(), List.of());
+		this(context, observedInventory, worldLoaded, actuationAllowed, terminalTaskEvent, List.of(), List.of(), List.of());
 	}
 
 	public ActionGraphExecutionInput(
@@ -36,13 +38,26 @@ public record ActionGraphExecutionInput(
 		TaskTerminalEvent terminalTaskEvent,
 		List<CraftingOpportunity> availableCrafts
 	) {
-		this(context, observedInventory, worldLoaded, actuationAllowed, terminalTaskEvent, availableCrafts, List.of());
+		this(context, observedInventory, worldLoaded, actuationAllowed, terminalTaskEvent, availableCrafts, List.of(), List.of());
+	}
+
+	public ActionGraphExecutionInput(
+		ActionResolverContext context,
+		Map<String, Integer> observedInventory,
+		boolean worldLoaded,
+		boolean actuationAllowed,
+		TaskTerminalEvent terminalTaskEvent,
+		List<CraftingOpportunity> availableCrafts,
+		List<ActionFact> observedFacts
+	) {
+		this(context, observedInventory, worldLoaded, actuationAllowed, terminalTaskEvent, availableCrafts, List.of(), observedFacts);
 	}
 
 	public ActionGraphExecutionInput {
 		context = Objects.requireNonNull(context, "context");
 		observedInventory = copyInventory(observedInventory);
 		availableCrafts = availableCrafts == null ? List.of() : List.copyOf(availableCrafts);
+		availableSmelts = availableSmelts == null ? List.of() : List.copyOf(availableSmelts);
 		observedFacts = observedFacts == null ? List.of() : List.copyOf(observedFacts);
 	}
 
