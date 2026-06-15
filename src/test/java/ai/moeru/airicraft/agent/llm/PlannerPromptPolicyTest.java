@@ -107,6 +107,16 @@ class PlannerPromptPolicyTest {
 	}
 
 	@Test
+	void systemPromptKeepsFlatFarmCropsOnGroundLayerPlusOne() {
+		String prompt = PlannerPromptPolicy.systemPrompt(PlannerVisionMode.EXTERNAL_SUMMARY);
+
+		assertTrue(prompt.contains("For flat 3x3 farm construction"));
+		assertTrue(prompt.contains("same inspected ground layer as the center water"));
+		assertTrue(prompt.contains("plant seeds in the air block one block above it"));
+		assertTrue(prompt.contains("Do not declare a flat farm complete when one crop is growing one block lower"));
+	}
+
+	@Test
 	void systemPromptExplainsSmeltingConfirmationAndAsyncCompletion() {
 		String prompt = PlannerPromptPolicy.systemPrompt(PlannerVisionMode.EXTERNAL_SUMMARY);
 
