@@ -212,7 +212,7 @@ public final class ClientRuntimeController {
 		SmeltingProcessManager smeltingProcessManager = new SmeltingProcessManager();
 		WorldTaskExecutor worldTaskExecutor = new DispatchingWorldTaskExecutor(
 			new BaritoneTaskExecutor(baritoneFacade),
-			new CraftingTaskExecutor(baritoneFacade),
+			new CraftingTaskExecutor(baritoneFacade, cameraController),
 			new DropItemsTaskExecutor(),
 			new EntityInteractionTaskExecutor(baritoneFacade, cameraController),
 			new SmeltingTaskExecutor(smeltingProcessManager, baritoneFacade),

@@ -1,6 +1,7 @@
 package ai.moeru.airicraft.agent.tasks;
 
 import ai.moeru.airicraft.agent.baritone.BaritoneFacade;
+import ai.moeru.airicraft.agent.control.CameraController;
 import ai.moeru.airicraft.agent.goals.GoalPosition;
 import ai.moeru.airicraft.agent.session.SessionSnapshot;
 import net.minecraft.block.BlockState;
@@ -36,6 +37,7 @@ public final class CraftingTaskExecutor implements WorldTaskExecutor {
 
 	private final Supplier<MinecraftClient> clientSupplier;
 	private final BaritoneFacade baritoneFacade;
+	private final CameraController cameraController;
 
 	private WorldTaskRequest appliedTask;
 	private CraftingPlan plan;
@@ -52,20 +54,29 @@ public final class CraftingTaskExecutor implements WorldTaskExecutor {
 	private TaskExecutionSnapshot snapshot = TaskExecutionSnapshot.idle();
 
 	public CraftingTaskExecutor() {
-		this(MinecraftClient::getInstance, null);
+		this(MinecraftClient::getInstance, null, new CameraController());
 	}
 
 	public CraftingTaskExecutor(BaritoneFacade baritoneFacade) {
-		this(MinecraftClient::getInstance, baritoneFacade);
+		this(MinecraftClient::getInstance, baritoneFacade, new CameraController());
+	}
+
+	public CraftingTaskExecutor(BaritoneFacade baritoneFacade, CameraController cameraController) {
+		this(MinecraftClient::getInstance, baritoneFacade, cameraController);
 	}
 
 	CraftingTaskExecutor(Supplier<MinecraftClient> clientSupplier) {
-		this(clientSupplier, null);
+		this(clientSupplier, null, new CameraController());
 	}
 
 	CraftingTaskExecutor(Supplier<MinecraftClient> clientSupplier, BaritoneFacade baritoneFacade) {
+		this(clientSupplier, baritoneFacade, new CameraController());
+	}
+
+	CraftingTaskExecutor(Supplier<MinecraftClient> clientSupplier, BaritoneFacade baritoneFacade, CameraController cameraController) {
 		this.clientSupplier = Objects.requireNonNull(clientSupplier, "clientSupplier");
 		this.baritoneFacade = baritoneFacade;
+		this.cameraController = Objects.requireNonNull(cameraController, "cameraController");
 	}
 
 	@Override
@@ -612,8 +623,10 @@ public final class CraftingTaskExecutor implements WorldTaskExecutor {
 			return false;
 		}
 		BlockPos support = placedTablePos.down();
+		Vec3d hitVec = new Vec3d(support.getX() + 0.5D, support.getY() + 1.0D, support.getZ() + 0.5D);
+		cameraController.lookAtNow(client, hitVec);
 		BlockHitResult hitResult = new BlockHitResult(
-			new Vec3d(support.getX() + 0.5D, support.getY() + 1.0D, support.getZ() + 0.5D),
+			hitVec,
 			Direction.UP,
 			support,
 			false
@@ -710,7 +723,9 @@ public final class CraftingTaskExecutor implements WorldTaskExecutor {
 		if (!withinInteractionRange(player, pos)) {
 			return false;
 		}
-		BlockHitResult hitResult = new BlockHitResult(Vec3d.ofCenter(pos), Direction.UP, pos, false);
+		Vec3d hitVec = Vec3d.ofCenter(pos);
+		cameraController.lookAtNow(client, hitVec);
+		BlockHitResult hitResult = new BlockHitResult(hitVec, Direction.UP, pos, false);
 		ActionResult result = client.interactionManager.interactBlock(player, Hand.MAIN_HAND, hitResult);
 		if (result.isAccepted()) {
 			player.swingHand(Hand.MAIN_HAND);

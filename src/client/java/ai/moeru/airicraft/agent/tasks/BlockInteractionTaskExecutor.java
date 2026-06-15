@@ -228,8 +228,11 @@ public final class BlockInteractionTaskExecutor implements WorldTaskExecutor {
 		if (!withinInteractionRange(player, hitTarget.hitVec())) {
 			return navigateTowardInteractionRange(tick, request, target, "target_out_of_range supportPos=" + compactPos(hitTarget.supportPos()));
 		}
-		clearNavigation();
 		cameraController.lookAtNow(client, hitTarget.hitVec());
+		if (requiresSupportRaycast(before, target, hitTarget) && !raycastMatchesHitTarget(client, player, hitTarget)) {
+			return navigateTowardInteractionRange(tick, request, target, "target_not_visible supportPos=" + compactPos(hitTarget.supportPos()));
+		}
+		clearNavigation();
 		ActionResult blockResult = client.interactionManager.interactBlock(player, hand, hitTarget.hitResult());
 		ActionResult itemResult = null;
 		if (!blockResult.isAccepted() && request.type() == WorldTaskType.USE_BLOCK && !(blockResult instanceof ActionResult.Fail)) {
@@ -418,14 +421,11 @@ public final class BlockInteractionTaskExecutor implements WorldTaskExecutor {
 				continue;
 			}
 			HitTarget hitTarget = hitOnBlock(support, supportState, face);
-			if (!withinInteractionRange(player, hitTarget.hitVec())) {
-				continue;
-			}
-			if (raycastMatchesHitTarget(client, player, hitTarget)) {
-				return Optional.of(hitTarget);
-			}
 			if (fallback == null) {
 				fallback = hitTarget;
+			}
+			if (withinInteractionRange(player, hitTarget.hitVec()) && raycastMatchesHitTarget(client, player, hitTarget)) {
+				return Optional.of(hitTarget);
 			}
 		}
 		return Optional.ofNullable(fallback);
@@ -511,6 +511,14 @@ public final class BlockInteractionTaskExecutor implements WorldTaskExecutor {
 			return InteractionBusyDisposition.FAIL;
 		}
 		return containerOpen ? InteractionBusyDisposition.CLOSE_OPEN_SCREEN : InteractionBusyDisposition.READY;
+	}
+
+	static boolean requiresSupportRaycast(BlockState before, BlockPos target, HitTarget hitTarget) {
+		return requiresSupportRaycast(before.isAir() || before.isReplaceable(), target.equals(hitTarget.supportPos()));
+	}
+
+	static boolean requiresSupportRaycast(boolean targetAirOrReplaceable, boolean supportIsTarget) {
+		return targetAirOrReplaceable || !supportIsTarget;
 	}
 
 	private static Optional<String> placeWaterDirectly(MinecraftClient client, ClientPlayerEntity player, Hand hand, BlockPos target) {

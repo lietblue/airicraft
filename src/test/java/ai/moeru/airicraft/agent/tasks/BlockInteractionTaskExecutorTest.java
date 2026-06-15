@@ -111,6 +111,13 @@ class BlockInteractionTaskExecutorTest {
 	}
 
 	@Test
+	void supportRaycastOnlyRequiredForPlacementStyleInteractions() {
+		assertFalse(BlockInteractionTaskExecutor.requiresSupportRaycast(false, true));
+		assertTrue(BlockInteractionTaskExecutor.requiresSupportRaycast(true, false));
+		assertTrue(BlockInteractionTaskExecutor.requiresSupportRaycast(false, false));
+	}
+
+	@Test
 	void batchedRequestPausesWhenSessionGateBlocksActuation() {
 		BlockInteractionTaskExecutor executor = new BlockInteractionTaskExecutor(() -> null);
 
@@ -151,4 +158,5 @@ class BlockInteractionTaskExecutorTest {
 			)
 		);
 	}
+
 }
