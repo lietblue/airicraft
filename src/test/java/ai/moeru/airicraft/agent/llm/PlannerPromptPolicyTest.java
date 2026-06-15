@@ -112,8 +112,10 @@ class PlannerPromptPolicyTest {
 
 		assertTrue(prompt.contains("For flat 3x3 farm construction"));
 		assertTrue(prompt.contains("same inspected ground layer as the center water"));
+		assertTrue(prompt.contains("do not use or verify a one-block-lower water source as equivalent"));
 		assertTrue(prompt.contains("plant seeds in the air block one block above it"));
 		assertTrue(prompt.contains("Do not declare a flat farm complete when one crop is growing one block lower"));
+		assertTrue(prompt.contains("exact coordinates are authoritative"));
 	}
 
 	@Test
