@@ -112,6 +112,47 @@ class ActionResolverTest {
 	}
 
 	@Test
+	void recipeProviderUsesGoalDeficitForInputsAndCraftQuantity() {
+		ActionFactStore facts = new ActionFactStore();
+		facts.upsert(new ActionFact(
+			ActionFactIdentity.inventoryItem("world-a", "bot", "minecraft:bread"),
+			Map.of("count", 1),
+			ActionFactProvenance.OBSERVED,
+			90,
+			ActionFact.NEVER_STALE
+		));
+		facts.upsert(new ActionFact(
+			ActionFactIdentity.inventoryItem("world-a", "bot", "minecraft:wheat"),
+			Map.of("count", 6),
+			ActionFactProvenance.OBSERVED,
+			90,
+			ActionFact.NEVER_STALE
+		));
+		facts.upsert(new ActionFact(
+			ActionFactIdentity.craftRecipe("world-a", "bot", "wheat_wheat_wheat_to_bread"),
+			Map.of(
+				"outputItemId", "minecraft:bread",
+				"outputCount", 1,
+				"inputCounts", Map.of("minecraft:wheat", 3)
+			),
+			ActionFactProvenance.OBSERVED,
+			90,
+			ActionFact.NEVER_STALE
+		));
+
+		ActionResolveResult result = new ActionResolver(ActionsetIndex.empty(), facts, CONTEXT)
+			.resolve(ActionGoal.inventoryItem("minecraft:bread", 3));
+
+		assertTrue(result.resolved(), () -> result.trace().toString());
+		assertEquals(List.of("craft_item"), result.route().steps().stream().map(ActionPlanStep::targetId).toList());
+		ActionPlanStep craft = result.route().steps().getFirst();
+		assertEquals("recipe_provider", craft.actionId());
+		assertEquals("wheat_wheat_wheat_to_bread", craft.args().get("recipeId"));
+		assertEquals(2, craft.args().get("quantity"));
+		assertTrace(result.trace(), "route_selected", "recipe_provider", "wheat_wheat_wheat_to_bread");
+	}
+
+	@Test
 	void resolvesNestedCraftingRecipesFromLogToSticks() {
 		ActionFactStore facts = new ActionFactStore();
 		facts.upsert(new ActionFact(
