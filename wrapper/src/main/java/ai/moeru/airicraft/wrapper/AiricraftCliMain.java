@@ -76,6 +76,9 @@ public final class AiricraftCliMain {
 		CommandLine agentActionsFacts = agentActions.getSubcommands().get("facts");
 		agentActionsFacts.addSubcommand(new AgentActionsFactsListCommand(context));
 		agentActionsFacts.addSubcommand(new AgentActionsFactsClearCommand(context));
+		agentActions.addSubcommand("watches", new UsageCommand(out, "airicraft agent actions watches", "Action graph watch commands"));
+		CommandLine agentActionsWatches = agentActions.getSubcommands().get("watches");
+		agentActionsWatches.addSubcommand(new AgentActionsWatchesListCommand(context));
 		agent.addSubcommand("mission", new UsageCommand(out, "airicraft agent mission", "Mission-level agent commands"));
 		CommandLine agentMission = agent.getSubcommands().get("mission");
 		agentMission.addSubcommand(new AgentMissionSubmitCommand(context));
@@ -447,6 +450,18 @@ public final class AiricraftCliMain {
 		@Override
 		Map<String, Object> runCommand() {
 			return PayloadViews.agentActionFacts(transport().clearAgentActionFacts(worldId), verbose());
+		}
+	}
+
+	@Command(name = "list", mixinStandardHelpOptions = true, description = "List active action graph watches.")
+	private static final class AgentActionsWatchesListCommand extends BaseCommand {
+		private AgentActionsWatchesListCommand(CliContext context) {
+			super(context, "agent actions watches list");
+		}
+
+		@Override
+		Map<String, Object> runCommand() {
+			return PayloadViews.agentActionWatches(transport().getAgentActionGoal(), verbose());
 		}
 	}
 
@@ -1704,6 +1719,15 @@ public final class AiricraftCliMain {
 					List.of("type", "keys", "provenance", "observedTick", "staleAfterTick"),
 					List.of("payload")
 				));
+			}
+			return view;
+		}
+
+		private static Map<String, Object> agentActionWatches(Map<String, Object> payload, boolean verbose) {
+			LinkedHashMap<String, Object> view = new LinkedHashMap<>();
+			copy(view, payload, "available", "executionId", "state", "watchCount", "pendingWatch", "activeTaskId", "traceEventCount");
+			if (verbose) {
+				copy(view, payload, "trace", "recoveryHistory");
 			}
 			return view;
 		}

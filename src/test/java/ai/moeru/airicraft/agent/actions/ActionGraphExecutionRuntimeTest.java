@@ -202,6 +202,22 @@ class ActionGraphExecutionRuntimeTest {
 		assertTrace(fulfilled.trace(), "watch_fulfilled");
 	}
 
+	@Test
+	void cancellingWatchingGoalUsesGraphCancellationPath() {
+		RecordingDispatcher dispatcher = new RecordingDispatcher();
+		ActionGraphExecutionRuntime runtime = new ActionGraphExecutionRuntime(watchIndex(), dispatcher);
+		runtime.submit(ActionGoal.inventoryItem("minecraft:bread", 1), Map.of(), CONTEXT, 100);
+		runtime.tick(input(Map.of(), null, 101));
+
+		ActionGraphExecutionSnapshot cancelled = runtime.cancel("user_cancelled", 102);
+
+		assertEquals(ActionGraphExecutionState.CANCELLED, cancelled.state());
+		assertEquals("user_cancelled", cancelled.message());
+		assertEquals("", cancelled.activeTaskId());
+		assertTrace(cancelled.trace(), "execution_cancelled");
+		assertTrue(dispatcher.dispatchedSteps.isEmpty());
+	}
+
 	private static ActionGraphExecutionInput input(Map<String, Integer> observedInventory, TaskTerminalEvent terminalEvent, long tick) {
 		return input(observedInventory, terminalEvent, tick, List.of());
 	}

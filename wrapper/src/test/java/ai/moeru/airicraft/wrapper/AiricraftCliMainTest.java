@@ -723,6 +723,28 @@ class AiricraftCliMainTest {
 	}
 
 	@Test
+	void agentActionsWatchesListRendersActiveWatchSummary() {
+		TestTransport transport = new TestTransport();
+		transport.agentActionGoalPayload = linkedMap(
+			"available", true,
+			"executionId", "action-graph-watch",
+			"state", "WATCHING",
+			"watchCount", 1,
+			"pendingWatch", "action-graph-watch:wait_for_bread",
+			"activeTaskId", "",
+			"traceEventCount", 3
+		);
+
+		CliResult result = execute(transport, "agent", "actions", "watches", "list");
+
+		assertEquals(0, result.exitCode());
+		assertTrue(result.output().contains("command: agent actions watches list\n"));
+		assertTrue(result.output().contains("state: WATCHING\n"));
+		assertTrue(result.output().contains("watchCount: 1\n"));
+		assertTrue(result.output().contains("pendingWatch: action-graph-watch:wait_for_bread\n"));
+	}
+
+	@Test
 	void agentMissionSubmitPassesNormalizedMissionPayload() {
 		TestTransport transport = new TestTransport();
 		transport.agentMissionSubmitPayload = linkedMap(
