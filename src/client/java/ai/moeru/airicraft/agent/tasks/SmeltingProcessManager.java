@@ -49,6 +49,20 @@ public final class SmeltingProcessManager {
 		return process == null ? null : process.stationKey();
 	}
 
+	public boolean processOutputReadyForCollection(String processId, SmeltingSlotSnapshot slots) {
+		if (processId == null || processId.isBlank() || slots == null) {
+			return false;
+		}
+		TrackedProcess process = processesById.get(processId.trim());
+		if (process == null || slots.outputItemId() == null || slots.outputCount() <= 0) {
+			return false;
+		}
+		if (process.expectedOutputItemId() != null && !Objects.equals(process.expectedOutputItemId(), slots.outputItemId())) {
+			return false;
+		}
+		return slots.outputCount() >= Math.max(1, process.expectedOutputCount());
+	}
+
 	public String preferredCollectionProcessId() {
 		return processesById.values().stream()
 			.sorted(Comparator
@@ -371,6 +385,9 @@ public final class SmeltingProcessManager {
 			? option.outputItemId()
 			: process.expectedOutputItemId();
 		if (expectedOutputItemId != null && !Objects.equals(expectedOutputItemId, slots.outputItemId())) {
+			return null;
+		}
+		if (slots.outputCount() < Math.max(1, process.expectedOutputCount())) {
 			return null;
 		}
 		// TODO: Harden against remote-server desync by requiring a fresh post-open slot observation

@@ -357,6 +357,64 @@ class SmeltingProcessManagerTest {
 	}
 
 	@Test
+	void trackedProcessOutputReadyWaitsForExpectedOutputCount() {
+		SmeltingProcessManager manager = new SmeltingProcessManager();
+		SmeltingStationObservation empty = new SmeltingStationObservation(
+			new SmeltingStationKey("minecraft:overworld", 1, 64, 1),
+			SmeltingStationKind.FURNACE,
+			new SmeltingSlotSnapshot(null, 0, null, 0, null, 0, 0, 200, false),
+			false,
+			1.0D
+		);
+		SmeltingOption option = new SmeltingOption(
+			"smelt:iron:nearby-1",
+			"minecraft:raw_iron",
+			"minecraft:iron_ingot",
+			1,
+			2,
+			200,
+			new SmeltingStationCandidate(
+				SmeltingStationSource.NEARBY_EXISTING,
+				SmeltingStationState.EMPTY,
+				SmeltingStationKind.FURNACE,
+				empty.key(),
+				1.0D,
+				false
+			),
+			empty
+		);
+		manager.registerOptions(java.util.List.of(option));
+		SmeltingActionResult started = manager.startRegisteredProcess(
+			new SmeltItemsStepArgs(option.optionId(), 2, SmeltingFuelMode.AUTO, null, 0, null),
+			610L
+		);
+		SmeltingStationObservation partial = new SmeltingStationObservation(
+			empty.key(),
+			empty.kind(),
+			new SmeltingSlotSnapshot("minecraft:raw_iron", 1, null, 0, "minecraft:iron_ingot", 1, 0, 200, false),
+			false,
+			1.0D
+		);
+		SmeltingStationObservation complete = new SmeltingStationObservation(
+			empty.key(),
+			empty.kind(),
+			new SmeltingSlotSnapshot(null, 0, null, 0, "minecraft:iron_ingot", 2, 0, 200, false),
+			false,
+			1.0D
+		);
+
+		java.util.List<SmeltingOutputReadyEvent> partialEvents = manager.markReadyOutputs(java.util.List.of(partial), 700L);
+		java.util.List<SmeltingOutputReadyEvent> completeEvents = manager.markReadyOutputs(java.util.List.of(complete), 800L);
+
+		assertTrue(started.accepted());
+		assertTrue(partialEvents.isEmpty());
+		assertFalse(manager.processOutputReadyForCollection(started.processId(), partial.slots()));
+		assertEquals(1, completeEvents.size());
+		assertTrue(manager.processOutputReadyForCollection(started.processId(), complete.slots()));
+		assertEquals(2, completeEvents.getFirst().outputCount());
+	}
+
+	@Test
 	void trackedProcessOutputReadyIgnoresUnexpectedOutputItem() {
 		SmeltingProcessManager manager = new SmeltingProcessManager();
 		SmeltingStationObservation empty = new SmeltingStationObservation(

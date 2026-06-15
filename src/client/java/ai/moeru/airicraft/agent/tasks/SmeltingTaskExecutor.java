@@ -159,7 +159,9 @@ public final class SmeltingTaskExecutor implements WorldTaskExecutor {
 		if (!(player.currentScreenHandler instanceof AbstractFurnaceScreenHandler handler)) {
 			return fail(request, "furnace_screen_not_open");
 		}
-		if (handler.getSlot(2).getStack().isEmpty()) {
+		SmeltingSlotSnapshot slots = screenSlotSnapshot(handler);
+		if (handler.getSlot(2).getStack().isEmpty()
+			|| args.processId() != null && !processManager.processOutputReadyForCollection(args.processId(), slots)) {
 			snapshot = snapshot(TaskExecutionState.RUNNING, request, "waiting_for_output");
 			return Optional.empty();
 		}
