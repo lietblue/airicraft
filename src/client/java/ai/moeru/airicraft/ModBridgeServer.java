@@ -2,6 +2,7 @@ package ai.moeru.airicraft;
 
 import ai.moeru.airicraft.agent.EmbodiedAgentRuntime;
 import ai.moeru.airicraft.agent.actions.ActionGraphDebugService;
+import ai.moeru.airicraft.agent.actions.ActionGoal;
 import ai.moeru.airicraft.agent.control.CameraController;
 import ai.moeru.airicraft.bridge.BridgeExtensionRegistry;
 import ai.moeru.airicraft.bridge.BridgeRoute;
@@ -152,6 +153,7 @@ public final class ModBridgeServer {
 			httpServer.createContext("/v1/agent/evidence", exchange -> handleJson(exchange, this::createAgentEvidenceResponse));
 			httpServer.createContext("/v1/agent/step-execution", exchange -> handleJson(exchange, this::createAgentStepExecutionResponse));
 			httpServer.createContext("/v1/agent/action-graph/inspect", exchange -> handleJson(exchange, this::createAgentActionGraphInspectResponse));
+			httpServer.createContext("/v1/agent/action-goals", this::handleAgentActionGoals);
 			httpServer.createContext("/v1/agent/debug/chat", this::handleAgentDebugChat);
 			httpServer.createContext("/v1/agent/debug/idle-trigger", this::handleAgentDebugIdleTrigger);
 			httpServer.createContext("/v1/agent/debug/compact", this::handleAgentDebugCompact);
@@ -732,6 +734,61 @@ public final class ModBridgeServer {
 		return request.has("missionId") && request.has("missionType") && request.has("steps");
 	}
 
+	private void handleAgentActionGoals(HttpExchange exchange) throws IOException {
+		if (!authorize(exchange)) {
+			writeJson(exchange, 401, Map.of("error", "unauthorized", "message", "Invalid bridge token"));
+			return;
+		}
+		String method = exchange.getRequestMethod();
+		if ("GET".equalsIgnoreCase(method)) {
+			writeJson(exchange, 200, createAgentActionGoalResponse(true));
+			return;
+		}
+		if ("DELETE".equalsIgnoreCase(method)) {
+			Map<String, Object> response = onClientThread(() -> agentRuntime()
+				.cancelActionGoal("bridge_debug_cancel")
+				.toPayload(true));
+			writeJson(exchange, 200, response);
+			return;
+		}
+		if (!"POST".equalsIgnoreCase(method)) {
+			writeJson(exchange, 405, Map.of("error", "method_not_allowed"));
+			return;
+		}
+		try (InputStreamReader reader = new InputStreamReader(exchange.getRequestBody(), StandardCharsets.UTF_8)) {
+			ActionGoalRequest request = GSON.fromJson(reader, ActionGoalRequest.class);
+			ActionGoal goal = actionGoalFromRequest(request);
+			Map<String, Object> response = onClientThread(() -> agentRuntime()
+				.startActionGoal(goal, "bridge_debug")
+				.toPayload(true));
+			writeJson(exchange, 200, response);
+		}
+		catch (JsonSyntaxException exception) {
+			writeJson(exchange, 400, Map.of("error", "invalid_json", "message", "Malformed request payload"));
+		}
+		catch (BridgeUnavailableException exception) {
+			writeJson(exchange, 503, Map.of("error", exception.code(), "message", exception.getMessage()));
+		}
+	}
+
+	private static ActionGoal actionGoalFromRequest(ActionGoalRequest request) {
+		if (request == null) {
+			throw new BridgeUnavailableException("invalid_request", "Missing action goal payload");
+		}
+		String kind = request.kind() == null || request.kind().isBlank() ? "inventory_item" : request.kind().trim();
+		if (!"inventory_item".equals(kind)) {
+			throw new BridgeUnavailableException("unsupported_action_goal", "Only inventory_item action goals are supported in this shell");
+		}
+		if (request.itemId() == null || request.itemId().isBlank()) {
+			throw new BridgeUnavailableException("invalid_request", "inventory_item goals require itemId");
+		}
+		int quantity = request.quantity() == null ? 1 : request.quantity().intValue();
+		if (quantity < 1) {
+			throw new BridgeUnavailableException("invalid_request", "quantity must be positive");
+		}
+		return ActionGoal.inventoryItem(request.itemId(), quantity);
+	}
+
 	private EntityInteractionStepArgs parseEntityInteractionRequest(EntityInteractionRequest request, boolean allowItemId) {
 		if (request == null) {
 			throw new BridgeUnavailableException("invalid_request", "Missing entity interaction payload");
@@ -1210,6 +1267,10 @@ public final class ModBridgeServer {
 			response.put("sessionState", sessionState(client));
 			return response;
 		});
+	}
+
+	private Object createAgentActionGoalResponse(boolean verbose) {
+		return onClientThread(() -> agentRuntime().actionGraphExecutionSnapshot().toPayload(verbose));
 	}
 
 	private Object createAgentEventPolicyResponse() {
@@ -1816,6 +1877,9 @@ public final class ModBridgeServer {
 	}
 
 	private record AgentTaskRequest(String type, String resourceKind, Integer quantity) {
+	}
+
+	private record ActionGoalRequest(String kind, String itemId, Integer quantity) {
 	}
 
 	private record DebugChatRequest(String senderName, String message) {

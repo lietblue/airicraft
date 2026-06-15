@@ -2,6 +2,9 @@ package ai.moeru.airicraft.agent;
 
 import ai.moeru.airicraft.AiricraftConfig;
 import ai.moeru.airicraft.FirstPersonScreenshotService;
+import ai.moeru.airicraft.agent.actions.ActionGoal;
+import ai.moeru.airicraft.agent.actions.ActionGraphExecutionSnapshot;
+import ai.moeru.airicraft.agent.actions.ActionGraphExecutionState;
 import ai.moeru.airicraft.agent.goals.GoalMineSpec;
 import ai.moeru.airicraft.agent.goals.GoalPosition;
 import ai.moeru.airicraft.agent.goals.GoalSnapshot;
@@ -203,6 +206,41 @@ class EmbodiedAgentRuntimeTest {
 		runtime.onClientTick(null);
 
 		assertEquals(TaskExecutionState.PAUSED_BY_SESSION_GATE, runtime.taskExecutionSnapshot().state());
+	}
+
+	@Test
+	void actionGoalShellStartsAndBlocksWhenWorldIsNotLoaded() {
+		EmbodiedAgentRuntime runtime = EmbodiedAgentRuntime.createForTests(new FakeWorldTaskExecutor());
+
+		ActionGraphExecutionSnapshot started = runtime.startActionGoal(ActionGoal.inventoryItem("minecraft:bread", 1), "test");
+		runtime.onClientTick(null);
+		ActionGraphExecutionSnapshot blocked = runtime.actionGraphExecutionSnapshot();
+
+		assertEquals(ActionGraphExecutionState.RESOLVING, started.state());
+		assertEquals(ActionGraphExecutionState.BLOCKED, blocked.state());
+		assertEquals("world_not_loaded", blocked.failureCode());
+		assertTrue(runtime.recentEvents(null).events().stream().anyMatch(event ->
+			"action_graph.goal_started".equals(event.type())
+				&& started.executionId().equals(event.payload().get("executionId"))
+		));
+	}
+
+	@Test
+	void actionGoalShellCancelsThroughGraphPath() {
+		FakeWorldTaskExecutor executor = new FakeWorldTaskExecutor();
+		EmbodiedAgentRuntime runtime = EmbodiedAgentRuntime.createForTests(executor);
+		ActionGraphExecutionSnapshot started = runtime.startActionGoal(ActionGoal.inventoryItem("minecraft:bread", 1), "test");
+
+		ActionGraphExecutionSnapshot cancelled = runtime.cancelActionGoal("user_cancelled");
+
+		assertEquals(started.executionId(), cancelled.executionId());
+		assertEquals(ActionGraphExecutionState.CANCELLED, cancelled.state());
+		assertTrue(executor.lastActiveTask.isEmpty());
+		assertTrue(runtime.recentEvents(null).events().stream().anyMatch(event ->
+			"action_graph.goal_cancelled".equals(event.type())
+				&& started.executionId().equals(event.payload().get("executionId"))
+				&& "user_cancelled".equals(event.payload().get("reason"))
+		));
 	}
 
 	@Test

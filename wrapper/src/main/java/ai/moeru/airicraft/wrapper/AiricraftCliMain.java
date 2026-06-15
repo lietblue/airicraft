@@ -67,6 +67,11 @@ public final class AiricraftCliMain {
 		agent.addSubcommand("actions", new UsageCommand(out, "airicraft agent actions", "Composable action graph debug commands"));
 		CommandLine agentActions = agent.getSubcommands().get("actions");
 		agentActions.addSubcommand(new AgentActionsInspectCommand(context));
+		agentActions.addSubcommand("goal", new UsageCommand(out, "airicraft agent actions goal", "Action graph goal commands"));
+		CommandLine agentActionsGoal = agentActions.getSubcommands().get("goal");
+		agentActionsGoal.addSubcommand(new AgentActionsGoalInspectCommand(context));
+		agentActionsGoal.addSubcommand(new AgentActionsGoalStartCommand(context));
+		agentActionsGoal.addSubcommand(new AgentActionsGoalCancelCommand(context));
 		agent.addSubcommand("mission", new UsageCommand(out, "airicraft agent mission", "Mission-level agent commands"));
 		CommandLine agentMission = agent.getSubcommands().get("mission");
 		agentMission.addSubcommand(new AgentMissionSubmitCommand(context));
@@ -356,6 +361,55 @@ public final class AiricraftCliMain {
 		@Override
 		Map<String, Object> runCommand() {
 			return PayloadViews.agentActionInspect(transport().inspectAgentActionGraph(), verbose());
+		}
+	}
+
+	@Command(name = "inspect", mixinStandardHelpOptions = true, description = "Inspect the active action graph goal.")
+	private static final class AgentActionsGoalInspectCommand extends BaseCommand {
+		private AgentActionsGoalInspectCommand(CliContext context) {
+			super(context, "agent actions goal inspect");
+		}
+
+		@Override
+		Map<String, Object> runCommand() {
+			return PayloadViews.agentActionGoal(transport().getAgentActionGoal(), verbose());
+		}
+	}
+
+	@Command(name = "start", mixinStandardHelpOptions = true, description = "Start an action graph goal.")
+	private static final class AgentActionsGoalStartCommand extends BaseCommand {
+		@Option(names = "--kind", description = "Goal kind. v1 supports inventory_item.")
+		private String kind = "inventory_item";
+
+		@Option(names = "--item-id", required = true, description = "Inventory item id to obtain.")
+		private String itemId;
+
+		@Option(names = "--quantity", description = "Minimum item count.")
+		private int quantity = 1;
+
+		private AgentActionsGoalStartCommand(CliContext context) {
+			super(context, "agent actions goal start");
+		}
+
+		@Override
+		Map<String, Object> runCommand() {
+			Map<String, Object> payload = new LinkedHashMap<>();
+			payload.put("kind", kind);
+			payload.put("itemId", itemId);
+			payload.put("quantity", quantity);
+			return PayloadViews.agentActionGoal(transport().startAgentActionGoal(payload), verbose());
+		}
+	}
+
+	@Command(name = "cancel", mixinStandardHelpOptions = true, description = "Cancel the active action graph goal.")
+	private static final class AgentActionsGoalCancelCommand extends BaseCommand {
+		private AgentActionsGoalCancelCommand(CliContext context) {
+			super(context, "agent actions goal cancel");
+		}
+
+		@Override
+		Map<String, Object> runCommand() {
+			return PayloadViews.agentActionGoal(transport().cancelAgentActionGoal(), verbose());
 		}
 	}
 
@@ -1579,6 +1633,26 @@ public final class AiricraftCliMain {
 			List<Map<String, Object>> diagnostics = maps(payload.get("actionsetDiagnostics"));
 			if (verbose || !diagnostics.isEmpty()) {
 				view.put("actionsetDiagnostics", diagnostics);
+			}
+			return view;
+		}
+
+		private static Map<String, Object> agentActionGoal(Map<String, Object> payload, boolean verbose) {
+			LinkedHashMap<String, Object> view = new LinkedHashMap<>();
+			copy(view, payload, "available", "executionId", "state", "resolved", "accepted", "cursor", "stepAttempt", "replanCount", "watchCount", "pendingWatch", "activeTaskId", "failureCode", "message", "traceEventCount");
+			copy(view, payload, "goal", "currentStep", "dispatch", "task", "taskExecution");
+			Map<String, Object> route = map(payload.get("route"));
+			if (!route.isEmpty()) {
+				LinkedHashMap<String, Object> compactRoute = new LinkedHashMap<>();
+				copy(compactRoute, route, "cost");
+				compactRoute.put("stepCount", maps(route.get("steps")).size());
+				if (verbose) {
+					compactRoute.put("steps", maps(route.get("steps")));
+				}
+				view.put("route", compactRoute);
+			}
+			if (verbose) {
+				copy(view, payload, "factSourceCounts", "trace", "recoveryHistory");
 			}
 			return view;
 		}

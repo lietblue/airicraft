@@ -628,6 +628,44 @@ class AiricraftCliMainTest {
 	}
 
 	@Test
+	void agentActionsGoalStartSubmitsInventoryGoal() {
+		TestTransport transport = new TestTransport();
+		transport.agentActionGoalStartPayload = actionGoalPayload("action-graph-1", "RESOLVING");
+
+		CliResult result = execute(
+			transport,
+			"agent", "actions", "goal", "start",
+			"--item-id", "minecraft:bread",
+			"--quantity", "2"
+		);
+
+		assertEquals(0, result.exitCode());
+		assertEquals("inventory_item", transport.lastActionGoalPayload.get("kind"));
+		assertEquals("minecraft:bread", transport.lastActionGoalPayload.get("itemId"));
+		assertEquals(2, transport.lastActionGoalPayload.get("quantity"));
+		assertTrue(result.output().contains("command: agent actions goal start\n"));
+		assertTrue(result.output().contains("executionId: action-graph-1\n"));
+		assertTrue(result.output().contains("state: RESOLVING\n"));
+	}
+
+	@Test
+	void agentActionsGoalInspectAndCancelRenderSnapshot() {
+		TestTransport transport = new TestTransport();
+		transport.agentActionGoalPayload = actionGoalPayload("action-graph-2", "WAITING_PRIMITIVE");
+		transport.agentActionGoalCancelPayload = actionGoalPayload("action-graph-2", "CANCELLED");
+
+		CliResult inspect = execute(transport, "agent", "actions", "goal", "inspect");
+		CliResult cancel = execute(transport, "agent", "actions", "goal", "cancel");
+
+		assertEquals(0, inspect.exitCode());
+		assertEquals(0, cancel.exitCode());
+		assertTrue(inspect.output().contains("command: agent actions goal inspect\n"));
+		assertTrue(inspect.output().contains("state: WAITING_PRIMITIVE\n"));
+		assertTrue(cancel.output().contains("command: agent actions goal cancel\n"));
+		assertTrue(cancel.output().contains("state: CANCELLED\n"));
+	}
+
+	@Test
 	void agentMissionSubmitPassesNormalizedMissionPayload() {
 		TestTransport transport = new TestTransport();
 		transport.agentMissionSubmitPayload = linkedMap(
@@ -1166,6 +1204,20 @@ class AiricraftCliMainTest {
 		return map;
 	}
 
+	private static Map<String, Object> actionGoalPayload(String executionId, String state) {
+		return linkedMap(
+			"available", true,
+			"executionId", executionId,
+			"state", state,
+			"resolved", false,
+			"accepted", false,
+			"cursor", 0,
+			"traceEventCount", 1,
+			"goal", linkedMap("fact", "inventory.item", "itemId", "minecraft:bread", "countAtLeast", 1),
+			"route", linkedMap("cost", 0, "steps", List.of())
+		);
+	}
+
 	private record CliResult(int exitCode, String output) {
 	}
 
@@ -1193,6 +1245,9 @@ class AiricraftCliMainTest {
 		private Map<String, Object> agentEvidencePayload = Map.of();
 		private Map<String, Object> agentStepExecutionPayload = Map.of();
 		private Map<String, Object> agentActionGraphInspectPayload = Map.of();
+		private Map<String, Object> agentActionGoalPayload = Map.of();
+		private Map<String, Object> agentActionGoalStartPayload = Map.of();
+		private Map<String, Object> agentActionGoalCancelPayload = Map.of();
 		private Map<String, Object> agentTaskSubmitPayload = Map.of();
 		private Map<String, Object> agentMissionSubmitPayload = Map.of();
 		private Map<String, Object> agentEventsPayload = Map.of("events", List.of());
@@ -1233,6 +1288,7 @@ class AiricraftCliMainTest {
 		private boolean reloadCalled;
 		private Map<String, Object> lastSubmittedTask;
 		private Map<String, Object> lastSubmittedMission;
+		private Map<String, Object> lastActionGoalPayload;
 		private String lastDebugChatMessage;
 		private Long lastDebugTimelineSince;
 		private String lastAttackEntityUuid;
@@ -1485,6 +1541,22 @@ class AiricraftCliMainTest {
 		@Override
 		public Map<String, Object> inspectAgentActionGraph() {
 			return agentActionGraphInspectPayload;
+		}
+
+		@Override
+		public Map<String, Object> getAgentActionGoal() {
+			return agentActionGoalPayload;
+		}
+
+		@Override
+		public Map<String, Object> startAgentActionGoal(Map<String, Object> goalPayload) {
+			lastActionGoalPayload = goalPayload;
+			return agentActionGoalStartPayload;
+		}
+
+		@Override
+		public Map<String, Object> cancelAgentActionGoal() {
+			return agentActionGoalCancelPayload;
 		}
 
 		@Override

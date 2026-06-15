@@ -19,6 +19,16 @@ import ai.moeru.airicraft.agent.debug.EventPipelineDebugSnapshot;
 import ai.moeru.airicraft.agent.debug.LlmFlightRecordQueryResult;
 import ai.moeru.airicraft.agent.debug.LlmFlightRecorder;
 import ai.moeru.airicraft.agent.debug.PlannerAttemptDebugSnapshot;
+import ai.moeru.airicraft.agent.actions.ActionGraphExecutionInput;
+import ai.moeru.airicraft.agent.actions.ActionGraphExecutionRuntime;
+import ai.moeru.airicraft.agent.actions.ActionGraphExecutionSnapshot;
+import ai.moeru.airicraft.agent.actions.ActionGraphPrimitiveDispatch;
+import ai.moeru.airicraft.agent.actions.ActionGraphPrimitiveDispatchResult;
+import ai.moeru.airicraft.agent.actions.ActionGraphPrimitiveMapper;
+import ai.moeru.airicraft.agent.actions.ActionGoal;
+import ai.moeru.airicraft.agent.actions.ActionPlanStep;
+import ai.moeru.airicraft.agent.actions.ActionResolverContext;
+import ai.moeru.airicraft.agent.actions.ActionsetLibraryPaths;
 import ai.moeru.airicraft.agent.dialogue.DialogueIntent;
 import ai.moeru.airicraft.agent.dialogue.DialogueIntentType;
 import ai.moeru.airicraft.agent.dialogue.DialogueResponse;
@@ -111,6 +121,7 @@ import ai.moeru.airicraft.agent.tasks.WorldEvidence;
 import ai.moeru.airicraft.agent.tasks.WorldTaskExecutor;
 import ai.moeru.airicraft.agent.tasks.CollectSmeltedItemsStepArgs;
 import ai.moeru.airicraft.agent.tasks.CraftRecipeStepArgs;
+import ai.moeru.airicraft.agent.tasks.CraftingOpportunityResolver;
 import ai.moeru.airicraft.agent.tasks.DropItemsStepArgs;
 import ai.moeru.airicraft.agent.tasks.EntityAttackMode;
 import ai.moeru.airicraft.agent.tasks.EntityInteractionStepArgs;
@@ -195,6 +206,7 @@ public final class EmbodiedAgentRuntime {
 	private final SmeltingPlannerService smeltingPlannerService = new SmeltingPlannerService();
 	private final WorldReadLedger worldReadLedger = new WorldReadLedger();
 	private final CurrentWorldQueryService guardedWorldQueryService = new CurrentWorldQueryService(MinecraftClient::getInstance);
+	private final ActionGraphExecutionRuntime actionGraphRuntime;
 
 	private boolean initialized;
 	private long tickCount;
@@ -214,6 +226,7 @@ public final class EmbodiedAgentRuntime {
 	private final Map<UUID, String> seenPlayerNames = new LinkedHashMap<>();
 	private volatile PendingCraftToolResult pendingCraftToolResult;
 	private volatile PendingBlockModificationToolResult pendingBlockModificationToolResult;
+	private TaskTerminalEvent pendingActionGraphTerminalEvent;
 
 	public EmbodiedAgentRuntime(
 		AiricraftConfig airicraftConfig,
@@ -264,6 +277,7 @@ public final class EmbodiedAgentRuntime {
 		this.worldTaskExecutor = Objects.requireNonNull(worldTaskExecutor, "worldTaskExecutor");
 		this.observability = new FlightRecordingObservability(Objects.requireNonNull(observability, "observability"), llmFlightRecorder);
 		this.smeltingProcessManager = Objects.requireNonNull(smeltingProcessManager, "smeltingProcessManager");
+		this.actionGraphRuntime = new ActionGraphExecutionRuntime(ActionsetLibraryPaths.defaultRoot(), this::dispatchActionGraphPrimitive);
 		CameraController effectiveCameraController = Objects.requireNonNull(cameraController, "cameraController");
 		this.behaviorTreeRuntime = new BehaviorTreeRuntime(effectiveCameraController);
 		this.nearbyPlayerTracker = new NearbyPlayerTracker(resolveNearbyPlayerTrackingRadius(airicraftConfig));
@@ -390,6 +404,8 @@ public final class EmbodiedAgentRuntime {
 		worldTaskExecutor.onWorldLeave();
 		surfaceMemory.clear();
 		worldReadLedger.clear();
+		actionGraphRuntime.clear();
+		pendingActionGraphTerminalEvent = null;
 		activeJobRuntime.clear();
 		idleIdeaScheduler.reset();
 		followCapability.clear();
@@ -450,6 +466,7 @@ public final class EmbodiedAgentRuntime {
 		debugRecorder.recordDialogueState(dialogueRuntime.snapshot());
 
 		TaskSnapshot previousTaskSnapshot = taskSnapshot;
+		tickActionGraph(worldEvidence);
 		activeJobRuntime.tick(
 			taskExecutionSnapshot,
 			worldEvidence,
@@ -486,7 +503,10 @@ public final class EmbodiedAgentRuntime {
 			report.warning().ifPresent(this::handleInternalTaskWarning);
 			report.event().ifPresent(this::completePendingCraftToolResult);
 			report.event().ifPresent(reportedEvent -> completePendingBlockModificationToolResult(reportedEvent, activeTaskRequest));
-			report.event().ifPresent(reportedEvent -> handleTerminalTaskEvent(reportedEvent, semanticTaskContext, activeTaskRequest));
+			report.event().ifPresent(reportedEvent -> {
+				captureActionGraphTerminalEvent(reportedEvent);
+				handleTerminalTaskEvent(reportedEvent, semanticTaskContext, activeTaskRequest);
+			});
 		});
 		completePendingCraftToolResultFromTaskSnapshot(taskSnapshot);
 		completePendingBlockModificationToolResultFromTaskSnapshot(taskSnapshot);
@@ -563,6 +583,8 @@ public final class EmbodiedAgentRuntime {
 		visionService.shutdown();
 		worldTaskExecutor.shutdown();
 		surfaceMemory.clear();
+		actionGraphRuntime.clear();
+		pendingActionGraphTerminalEvent = null;
 		activeJobRuntime.clear();
 		followCapability.clear();
 		followState = FollowState.idle();
@@ -621,6 +643,42 @@ public final class EmbodiedAgentRuntime {
 
 	public MissionExecutionSnapshot missionExecutionSnapshot() {
 		return missionExecutionSnapshot;
+	}
+
+	public ActionGraphExecutionSnapshot startActionGoal(ActionGoal goal, String source) {
+		Objects.requireNonNull(goal, "goal");
+		WorldEvidence evidence = currentWorldEvidence(MinecraftClient.getInstance());
+		ActionGraphExecutionSnapshot snapshot = actionGraphRuntime.submit(
+			goal,
+			evidence.itemCounts(),
+			actionResolverContext(evidence),
+			tickCount
+		);
+		eventBuffer.append(tickCount, "action_graph.goal_started", Map.of(
+			"executionId", snapshot.executionId(),
+			"goal", goal.normalizedKey(),
+			"source", source == null || source.isBlank() ? "bridge_debug" : source
+		));
+		return snapshot;
+	}
+
+	public ActionGraphExecutionSnapshot actionGraphExecutionSnapshot() {
+		return actionGraphRuntime.snapshot();
+	}
+
+	public ActionGraphExecutionSnapshot cancelActionGoal(String reason) {
+		ActionGraphExecutionSnapshot previous = actionGraphRuntime.snapshot();
+		ActionGraphExecutionSnapshot snapshot = actionGraphRuntime.cancel(reason, tickCount);
+		pendingActionGraphTerminalEvent = null;
+		if (!previous.activeTaskId().isBlank()) {
+			cancelTask(reason == null || reason.isBlank() ? "action_graph_cancelled" : reason);
+		}
+		eventBuffer.append(tickCount, "action_graph.goal_cancelled", Map.of(
+			"executionId", previous.executionId(),
+			"activeTaskId", previous.activeTaskId(),
+			"reason", reason == null || reason.isBlank() ? "cancelled" : reason
+		));
+		return snapshot;
 	}
 
 	public Optional<DialogueResponse> lastDialogueResponse() {
@@ -743,6 +801,8 @@ public final class EmbodiedAgentRuntime {
 		eventPipeline.clearPlannerFeed();
 		completePendingCraftToolResult("Tool result for craft_recipe: cancelled reason=evaluation_finished");
 		dialogueRuntime.clear();
+		actionGraphRuntime.clear();
+		pendingActionGraphTerminalEvent = null;
 		activeJobRuntime.clear();
 		worldTaskExecutor.onWorldLeave();
 		idleIdeaScheduler.reset();
@@ -1084,6 +1144,94 @@ public final class EmbodiedAgentRuntime {
 		debugRecorder.recordCollectResourceProbe(activeJobRuntime.collectResourceDebugSnapshot());
 		eventBuffer.append(tickCount, "task.submitted", submittedPayload);
 		return taskSnapshot;
+	}
+
+	private void tickActionGraph(WorldEvidence worldEvidence) {
+		if (!actionGraphRuntime.active() && pendingActionGraphTerminalEvent == null) {
+			return;
+		}
+		TaskTerminalEvent terminalEvent = pendingActionGraphTerminalEvent;
+		pendingActionGraphTerminalEvent = null;
+		actionGraphRuntime.tick(new ActionGraphExecutionInput(
+			actionResolverContext(worldEvidence),
+			worldEvidence.itemCounts(),
+			sessionSnapshot.worldLoaded(),
+			sessionSnapshot.companionActuationAllowed(),
+			terminalEvent,
+			worldEvidence.availableCrafts()
+		));
+	}
+
+	private ActionGraphPrimitiveDispatchResult dispatchActionGraphPrimitive(ActionPlanStep step) {
+		WorldEvidence evidence = currentWorldEvidence(MinecraftClient.getInstance());
+		ActionGraphPrimitiveDispatch dispatch = ActionGraphPrimitiveMapper.map(step, evidence.availableCrafts());
+		if (!dispatch.dispatchable()) {
+			return ActionGraphPrimitiveDispatchResult.failed(
+				dispatch.failureCode(),
+				dispatch.message(),
+				dispatch.payload()
+			);
+		}
+		TaskSnapshot submittedTask = submitActiveJobProposal(
+			dispatch.proposal(),
+			"action_graph",
+			actionGraphSubmittedPayload(dispatch)
+		);
+		Optional<WorldTaskRequest> activeTask = activeJobRuntime.activeTaskRequest();
+		String taskId = activeTask.map(WorldTaskRequest::taskId).orElse(activeJobRuntime.current().jobId());
+		return ActionGraphPrimitiveDispatchResult.accepted(
+			taskId,
+			dispatch.payload(),
+			actionGraphTaskPayload(submittedTask, activeTask),
+			Map.of("taskId", taskId, "state", TaskExecutionState.RUNNING.name())
+		);
+	}
+
+	private void captureActionGraphTerminalEvent(TaskTerminalEvent event) {
+		ActionGraphExecutionSnapshot snapshot = actionGraphRuntime.snapshot();
+		if (event == null || snapshot.activeTaskId().isBlank() || !Objects.equals(snapshot.activeTaskId(), event.taskId())) {
+			return;
+		}
+		pendingActionGraphTerminalEvent = event;
+	}
+
+	private ActionResolverContext actionResolverContext(WorldEvidence evidence) {
+		String dimension = evidence == null || evidence.dimension() == null || evidence.dimension().isBlank()
+			? sessionSnapshot.dimensionId()
+			: evidence.dimension();
+		return new ActionResolverContext(
+			sessionSnapshot.mode().name(),
+			"companion",
+			dimension == null || dimension.isBlank() ? "unknown" : dimension,
+			tickCount
+		);
+	}
+
+	private static Map<String, Object> actionGraphSubmittedPayload(ActionGraphPrimitiveDispatch dispatch) {
+		LinkedHashMap<String, Object> payload = new LinkedHashMap<>(dispatch.payload());
+		ActionPlanStep step = dispatch.selectedStep();
+		payload.put("type", dispatch.proposal().type().name());
+		payload.put("source", "action_graph");
+		if (step != null) {
+			payload.put("graphActionId", step.actionId());
+			payload.put("graphStepId", step.stepId());
+			payload.put("graphPrimitive", step.targetId());
+		}
+		return payload;
+	}
+
+	private static Map<String, Object> actionGraphTaskPayload(TaskSnapshot task, Optional<WorldTaskRequest> activeTask) {
+		LinkedHashMap<String, Object> payload = new LinkedHashMap<>();
+		if (task != null) {
+			payload.put("state", task.state().name());
+			payload.put("source", task.source() == null ? "" : task.source());
+		}
+		activeTask.ifPresent(request -> {
+			payload.put("taskId", request.taskId());
+			payload.put("type", request.type().name());
+			payload.put("sourceJobId", request.sourceJobId());
+		});
+		return payload;
 	}
 
 	private Map<String, Object> entityInteractionEventPayload(EntityInteractionStepArgs entityInteraction, String type, String source) {
@@ -2114,6 +2262,7 @@ public final class EmbodiedAgentRuntime {
 			resourceCounts,
 			itemCounts,
 			collectNearbyBlocks(client, origin),
+			CraftingOpportunityResolver.availableCrafts(client.player),
 			client.world == null ? null : client.world.getRegistryKey().getValue().toString(),
 			origin.getX(),
 			origin.getY(),

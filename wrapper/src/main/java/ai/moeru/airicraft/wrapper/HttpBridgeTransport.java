@@ -309,6 +309,21 @@ final class HttpBridgeTransport implements MinecraftTransport {
 	}
 
 	@Override
+	public Map<String, Object> getAgentActionGoal() {
+		return get("/v1/agent/action-goals");
+	}
+
+	@Override
+	public Map<String, Object> startAgentActionGoal(Map<String, Object> goalPayload) {
+		return send("POST", "/v1/agent/action-goals", goalPayload);
+	}
+
+	@Override
+	public Map<String, Object> cancelAgentActionGoal() {
+		return send("DELETE", "/v1/agent/action-goals", Map.of());
+	}
+
+	@Override
 	public Map<String, Object> submitAgentTask(Map<String, Object> taskPayload) {
 		return send("POST", "/v1/agent/tasks", taskPayload);
 	}
