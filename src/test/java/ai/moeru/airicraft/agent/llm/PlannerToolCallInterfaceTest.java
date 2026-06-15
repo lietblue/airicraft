@@ -220,6 +220,111 @@ class PlannerToolCallInterfaceTest {
 	}
 
 	@Test
+	void exposesAndParsesBlockInteractionTools() {
+		JsonArray tools = JsonParser.parseString(gson().toJson(PlannerToolCatalog.openAiTools())).getAsJsonArray();
+
+		assertTrue(toolNames(tools).contains("place_block"));
+		assertTrue(toolNames(tools).contains("use_block"));
+		assertTrue(toolNames(tools).contains("break_blocks"));
+		PlannerToolCall placeCall = PlannerToolCatalog.parseToolCall(toolCall("place_block", """
+			{"itemId":"minecraft:dirt","x":1,"y":64,"z":2,"facePreference":"down","requireCurrentTargetMaterial":"air_or_replaceable"}
+			"""));
+		PlannerToolCall useCall = PlannerToolCatalog.parseToolCall(toolCall("use_block", """
+			{"itemId":"minecraft:wheat_seeds","x":1,"y":65,"z":2,"expectedSupportBlockIds":["minecraft:farmland"],"expectedTargetMaterial":"air"}
+			"""));
+
+		assertEquals("place_block", placeCall.name());
+		assertEquals("minecraft:dirt", placeCall.arguments().get("itemId").getAsString());
+		assertEquals("use_block", useCall.name());
+		assertEquals("minecraft:wheat_seeds", useCall.arguments().get("itemId").getAsString());
+		PlannerToolCall breakCall = PlannerToolCatalog.parseToolCall(toolCall("break_blocks", """
+			{"targets":[{"x":1,"y":64,"z":2,"expectedBlockIds":["minecraft:grass_block","minecraft:dirt"]}]}
+			"""));
+
+		assertEquals("break_blocks", breakCall.name());
+		assertEquals(1, breakCall.arguments().getAsJsonArray("targets").size());
+		assertThrows(com.google.gson.JsonParseException.class, () ->
+			PlannerToolCatalog.parseToolCall(toolCall("place_block", """
+				{"itemId":"minecraft:dirt","x":1,"y":64,"z":2,"facePreference":"sideways"}
+				"""))
+		);
+		assertThrows(com.google.gson.JsonParseException.class, () ->
+			PlannerToolCatalog.parseToolCall(toolCall("use_block", """
+				{"x":1,"y":64,"z":2,"expectedTargetMaterial":"solid"}
+				"""))
+		);
+		assertThrows(com.google.gson.JsonParseException.class, () ->
+			PlannerToolCatalog.parseToolCall(toolCall("break_blocks", """
+				{"targets":[{"x":1,"y":64,"z":2}]}
+				"""))
+		);
+	}
+
+	@Test
+	void parsesBatchedBlockInteractionTools() {
+		PlannerToolCall placeCall = PlannerToolCatalog.parseToolCall(toolCall("place_block", """
+			{
+			  "itemId":"minecraft:dirt",
+			  "facePreference":"down",
+			  "requireCurrentTargetMaterial":"air_or_replaceable",
+			  "targets":[
+			    {"x":1,"y":64,"z":2},
+			    {"x":2,"y":64,"z":2,"facePreference":"north","requireCurrentTargetMaterial":"air"}
+			  ]
+			}
+			"""));
+		PlannerToolCall useCall = PlannerToolCatalog.parseToolCall(toolCall("use_block", """
+			{
+			  "itemId":"minecraft:wheat_seeds",
+			  "expectedSupportBlockIds":["minecraft:farmland"],
+			  "expectedTargetMaterial":"air",
+			  "targets":[
+			    {"x":1,"y":65,"z":2},
+			    {"x":2,"y":65,"z":2,"facePreference":"down","expectedSupportBlockIds":["minecraft:farmland"]}
+			  ]
+			}
+			"""));
+
+		assertEquals("place_block", placeCall.name());
+		assertEquals(2, placeCall.arguments().getAsJsonArray("targets").size());
+		assertEquals("use_block", useCall.name());
+		assertEquals(2, useCall.arguments().getAsJsonArray("targets").size());
+		assertThrows(com.google.gson.JsonParseException.class, () ->
+			PlannerToolCatalog.parseToolCall(toolCall("place_block", """
+				{"itemId":"minecraft:dirt","x":1,"y":64,"z":2,"targets":[{"x":2,"y":64,"z":2}]}
+				"""))
+		);
+		assertThrows(com.google.gson.JsonParseException.class, () ->
+			PlannerToolCatalog.parseToolCall(toolCall("use_block", """
+				{"targets":[]}
+				"""))
+		);
+		assertThrows(com.google.gson.JsonParseException.class, () ->
+			PlannerToolCatalog.parseToolCall(toolCall("use_block", """
+				{"targets":[
+				  {"x":1,"y":64,"z":2},
+				  {"x":2,"y":64,"z":2},
+				  {"x":3,"y":64,"z":2},
+				  {"x":4,"y":64,"z":2},
+				  {"x":5,"y":64,"z":2},
+				  {"x":6,"y":64,"z":2},
+				  {"x":7,"y":64,"z":2},
+				  {"x":8,"y":64,"z":2},
+				  {"x":9,"y":64,"z":2},
+				  {"x":10,"y":64,"z":2},
+				  {"x":11,"y":64,"z":2},
+				  {"x":12,"y":64,"z":2},
+				  {"x":13,"y":64,"z":2},
+				  {"x":14,"y":64,"z":2},
+				  {"x":15,"y":64,"z":2},
+				  {"x":16,"y":64,"z":2},
+				  {"x":17,"y":64,"z":2}
+				]}
+				"""))
+		);
+	}
+
+	@Test
 	void entityInteractionToolSchemasRequireUuid() {
 		JsonArray tools = JsonParser.parseString(gson().toJson(PlannerToolCatalog.openAiTools())).getAsJsonArray();
 		JsonObject attackParameters = toolSchema(tools, "attack_entity");
@@ -292,6 +397,75 @@ class PlannerToolCallInterfaceTest {
 		assertThrows(com.google.gson.JsonParseException.class, () ->
 			PlannerToolCatalog.parseToolCall(toolCall("inspect_recipes", "{}"))
 			);
+	}
+
+	@Test
+	void exposesAndParsesInspectWorldTool() {
+		JsonArray tools = JsonParser.parseString(gson().toJson(PlannerToolCatalog.openAiTools())).getAsJsonArray();
+		JsonObject parameters = toolSchema(tools, "inspect_world");
+
+		assertTrue(toolNames(tools).contains("inspect_world"));
+		assertTrue(parameters.getAsJsonObject("properties").has("mode"));
+		assertTrue(parameters.getAsJsonObject("properties").has("scope"));
+		assertTrue(parameters.getAsJsonObject("properties").has("x1"));
+		assertTrue(parameters.getAsJsonObject("properties").has("targetMaterial"));
+
+		PlannerToolCall areaCall = PlannerToolCatalog.parseToolCall(toolCall("inspect_world", """
+			{"mode":"inspect_area","scope":"self","horizontalRadius":6,"verticalRadius":2}
+			"""));
+		PlannerToolCall boxCall = PlannerToolCatalog.parseToolCall(toolCall("inspect_world", """
+			{"mode":"inspect_area","scope":"box","x1":10,"y1":63,"z1":10,"x2":18,"y2":66,"z2":18}
+			"""));
+		PlannerToolCall findBlocksCall = PlannerToolCatalog.parseToolCall(toolCall("inspect_world", """
+			{"mode":"find_blocks","scope":"self","blockIds":["minecraft:wheat"],"stateFilters":["age=7"],"maxResults":16}
+			"""));
+		PlannerToolCall placementCall = PlannerToolCatalog.parseToolCall(toolCall("inspect_world", """
+			{"mode":"find_placement_sites","scope":"self","supportBlockIds":["minecraft:farmland"],"supportStateFilters":["moisture=7"],"targetMaterial":"air","requireStandableAdjacent":true,"maxResults":16}
+			"""));
+
+		assertEquals("inspect_world", areaCall.name());
+		assertEquals("box", boxCall.arguments().get("scope").getAsString());
+		assertEquals("age=7", findBlocksCall.arguments().getAsJsonArray("stateFilters").get(0).getAsString());
+		assertEquals("air", placementCall.arguments().get("targetMaterial").getAsString());
+	}
+
+	@Test
+	void inspectWorldRejectsInvalidModeScopeAndFieldCombinations() {
+		assertThrows(com.google.gson.JsonParseException.class, () ->
+			PlannerToolCatalog.parseToolCall(toolCall("inspect_world", """
+				{"mode":"inspect_area","scope":"self","x":1}
+				"""))
+		);
+		assertThrows(com.google.gson.JsonParseException.class, () ->
+			PlannerToolCatalog.parseToolCall(toolCall("inspect_world", """
+				{"mode":"inspect_area","scope":"center","x":1,"y":64,"z":1,"x1":0}
+				"""))
+		);
+		assertThrows(com.google.gson.JsonParseException.class, () ->
+			PlannerToolCatalog.parseToolCall(toolCall("inspect_world", """
+				{"mode":"inspect_area","scope":"box","x1":0,"y1":64,"z1":0,"x2":1,"y2":65,"z2":1,"horizontalRadius":4}
+				"""))
+		);
+		assertThrows(com.google.gson.JsonParseException.class, () ->
+			PlannerToolCatalog.parseToolCall(toolCall("inspect_world", """
+				{"mode":"inspect_area","scope":"self","blockIds":["minecraft:dirt"]}
+				"""))
+		);
+		assertThrows(com.google.gson.JsonParseException.class, () ->
+			PlannerToolCatalog.parseToolCall(toolCall("inspect_world", """
+				{"mode":"find_blocks","scope":"self","blockIds":["minecraft:wheat"],"stateFilters":["age"]}
+				"""))
+		);
+		assertThrows(com.google.gson.JsonParseException.class, () ->
+			PlannerToolCatalog.parseToolCall(toolCall("inspect_world", """
+				{"mode":"find_blocks","scope":"self","blockIds":["minecraft:wheat"],"horizontalRadius":17}
+				"""))
+		);
+		assertThrows(com.google.gson.JsonParseException.class, () ->
+			PlannerToolCatalog.parseToolCall(toolCall("inspect_world", """
+				{"mode":"find_placement_sites","scope":"self","targetMaterial":"solid"}
+				"""))
+		);
 	}
 
 	@Test

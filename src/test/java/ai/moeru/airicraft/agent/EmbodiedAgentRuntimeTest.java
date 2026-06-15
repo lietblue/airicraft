@@ -19,6 +19,7 @@ import ai.moeru.airicraft.agent.job.ActiveJobType;
 import ai.moeru.airicraft.agent.session.SessionMode;
 import ai.moeru.airicraft.agent.session.SessionSnapshot;
 import ai.moeru.airicraft.agent.tasks.WorldTaskRequest;
+import ai.moeru.airicraft.agent.tasks.BlockPlacementStepArgs;
 import ai.moeru.airicraft.agent.tasks.CollectResourceStepArgs;
 import ai.moeru.airicraft.agent.tasks.CraftRecipeStepArgs;
 import ai.moeru.airicraft.agent.tasks.CollectSmeltedItemsStepArgs;
@@ -61,6 +62,7 @@ import ai.moeru.airicraft.agent.llm.PlannerToolCall;
 import ai.moeru.airicraft.agent.llm.PlannerTrigger;
 import ai.moeru.airicraft.agent.llm.PlannerTriggerType;
 import com.google.gson.JsonParser;
+import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Vec3d;
 import org.junit.jupiter.api.Test;
 
@@ -71,6 +73,7 @@ import java.util.concurrent.CompletableFuture;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class EmbodiedAgentRuntimeTest {
@@ -473,7 +476,7 @@ class EmbodiedAgentRuntimeTest {
 	}
 
 	@Test
-	void returnToSurfaceToolRoutesWorldTaskRequestWithDefaultFiller() {
+	void returnToSurfaceToolRoutesWorldTaskRequestWithDefaultFillerAndTowering() {
 		FakeWorldTaskExecutor executor = new FakeWorldTaskExecutor();
 		EmbodiedAgentRuntime runtime = EmbodiedAgentRuntime.createForTests(executor);
 		runtime.overrideSessionSnapshotForTests(loadedRemoteSession());
@@ -481,9 +484,7 @@ class EmbodiedAgentRuntimeTest {
 		String result = runtime.executePlannerToolCallForTests(new PlannerToolCall(
 			"call_return",
 			"return_to_surface",
-			JsonParser.parseString("""
-				{"useTowering":true}
-				""").getAsJsonObject(),
+			JsonParser.parseString("{}").getAsJsonObject(),
 			null,
 			null
 		));
@@ -497,6 +498,121 @@ class EmbodiedAgentRuntimeTest {
 		assertTrue(request.returnToSurface().useTowering());
 		assertEquals("none", request.returnToSurface().targetKind());
 		assertEquals(ReturnToSurfaceStepArgs.DEFAULT_FILLER_BLOCK_IDS, request.returnToSurface().fillerBlockIds());
+	}
+
+	@Test
+	void returnToSurfaceToolHonorsExplicitToweringFalse() {
+		FakeWorldTaskExecutor executor = new FakeWorldTaskExecutor();
+		EmbodiedAgentRuntime runtime = EmbodiedAgentRuntime.createForTests(executor);
+		runtime.overrideSessionSnapshotForTests(loadedRemoteSession());
+
+		String result = runtime.executePlannerToolCallForTests(new PlannerToolCall(
+			"call_return",
+			"return_to_surface",
+			JsonParser.parseString("""
+				{"useTowering":false}
+				""").getAsJsonObject(),
+			null,
+			null
+		));
+		runtime.onClientTick(null);
+
+		assertTrue(result.contains("TOOL_ERROR"));
+		assertTrue(result.contains("surface_target_unavailable"));
+		assertTrue(executor.lastActiveTask.isEmpty());
+	}
+
+	@Test
+	void directPlannerJobUpdateDoesNotPreemptRunningReturnToSurface() {
+		FakeWorldTaskExecutor executor = new FakeWorldTaskExecutor();
+		EmbodiedAgentRuntime runtime = EmbodiedAgentRuntime.createForTests(executor);
+		runtime.overrideSessionSnapshotForTests(loadedRemoteSession());
+
+		String result = runtime.executePlannerToolCallForTests(new PlannerToolCall(
+			"call_return",
+			"return_to_surface",
+			JsonParser.parseString("{}").getAsJsonObject(),
+			null,
+			null
+		));
+		runtime.onClientTick(null);
+		assertTrue(result.contains("useTowering=true"));
+		assertEquals(WorldTaskType.RETURN_TO_SURFACE, executor.lastActiveTask.orElseThrow().type());
+
+		runtime.injectDialogueResponseForTests(new DialogueResponse(
+			"",
+			new DialogueIntent(
+				DialogueIntentType.JOB_UPDATE,
+				ActiveJobProposal.placeBlock(new BlockPlacementStepArgs(
+					"minecraft:crafting_table",
+					new GoalPosition(1, 64, 2, true),
+					"auto",
+					"air_or_replaceable"
+				))
+			),
+			1L
+		));
+		runtime.onClientTick(null);
+
+		assertEquals(ActiveJobType.RETURN_TO_SURFACE, runtime.activeJob().type());
+		assertEquals(WorldTaskType.RETURN_TO_SURFACE, executor.lastActiveTask.orElseThrow().type());
+	}
+
+	@Test
+	void plannerToolDoesNotPreemptRunningTaskExecutionWhenSemanticJobIsIdle() {
+		FakeWorldTaskExecutor executor = new FakeWorldTaskExecutor();
+		EmbodiedAgentRuntime runtime = EmbodiedAgentRuntime.createForTests(executor);
+		runtime.overrideSessionSnapshotForTests(loadedRemoteSession());
+		executor.forcedSnapshot = new TaskExecutionSnapshot(
+			TaskExecutionState.RUNNING,
+			"return-task",
+			null,
+			"ReturnToSurface",
+			"towering:support_unavailable",
+			null,
+			null
+		);
+		runtime.onClientTick(null);
+		runtime.recordWorldReadForTests(new BlockPos(1, 64, 2));
+
+		String result = runtime.executePlannerToolCallForTests(new PlannerToolCall(
+			"call_place",
+			"place_block",
+			JsonParser.parseString("""
+				{"itemId":"minecraft:crafting_table","targets":[{"targetPosition":{"x":1,"y":64,"z":2,"exactY":true},"placementMode":"air_or_replaceable"}]}
+				""").getAsJsonObject(),
+			null,
+			null
+		));
+
+		assertTrue(result.contains("TOOL_ERROR"));
+		assertTrue(result.contains("active_task_in_progress"));
+		assertTrue(result.contains("taskExecutionState=RUNNING"));
+		assertEquals(ActiveJobType.IDLE, runtime.activeJob().type());
+	}
+
+	@Test
+	void craftRecipeToolDoesNotPreemptRunningTaskExecutionWhenSemanticJobIsIdle() {
+		FakeWorldTaskExecutor executor = new FakeWorldTaskExecutor();
+		EmbodiedAgentRuntime runtime = EmbodiedAgentRuntime.createForTests(executor);
+		runtime.overrideSessionSnapshotForTests(loadedRemoteSession());
+		executor.forcedSnapshot = new TaskExecutionSnapshot(
+			TaskExecutionState.RUNNING,
+			"return-task",
+			null,
+			"ReturnToSurface",
+			"towering:support_unavailable",
+			null,
+			null
+		);
+		runtime.onClientTick(null);
+
+		String result = runtime.executePlannerToolCallFutureForTests(craftRecipeToolCall()).join();
+
+		assertTrue(result.contains("TOOL_ERROR"));
+		assertTrue(result.contains("active_task_in_progress"));
+		assertTrue(result.contains("taskExecutionState=RUNNING"));
+		assertEquals(ActiveJobType.IDLE, runtime.activeJob().type());
 	}
 
 	@Test
@@ -636,7 +752,55 @@ class EmbodiedAgentRuntimeTest {
 		assertEquals(
 			"Smelting output ready: processId=smelt-process-1 output=minecraft:iron_ingotx1 station=minecraft:overworld@1,64,1.",
 			trigger.text()
-			);
+		);
+	}
+
+	@Test
+	void finishEvaluationSuppressesAutonomousPlannerTriggersUntilNextEvaluationStarts() {
+		EmbodiedAgentRuntime runtime = EmbodiedAgentRuntime.createForTests(new FakeWorldTaskExecutor());
+
+		runtime.finishEvaluation();
+		PlannerTrigger suppressed = runtime.createPlannerTriggerForTests(new SemanticEvent(
+			1L,
+			20L,
+			1000L,
+			"smelting.output_ready",
+			Map.of(
+				"processId", "smelt-process-1",
+				"station", "minecraft:overworld@1,64,1",
+				"outputItemId", "minecraft:iron_ingot",
+				"outputCount", 1
+			)
+		), new EventRoutingProfile("smelting.output_ready", true, PlannerTriggerType.SYSTEM, true));
+		PlannerTrigger explicitChat = runtime.createPlannerTriggerForTests(new SemanticEvent(
+			2L,
+			21L,
+			1001L,
+			"social.player_addressed_agent",
+			Map.of(
+				"player", "Player",
+				"message", "@agent are you there?"
+			)
+		), new EventRoutingProfile("social.player_addressed_agent", false, PlannerTriggerType.CHAT, true));
+
+		assertNull(suppressed);
+		assertEquals(PlannerTriggerType.CHAT, explicitChat.type());
+
+		runtime.prepareForEvaluation();
+		PlannerTrigger resumed = runtime.createPlannerTriggerForTests(new SemanticEvent(
+			3L,
+			22L,
+			1002L,
+			"smelting.output_ready",
+			Map.of(
+				"processId", "smelt-process-2",
+				"station", "minecraft:overworld@1,64,1",
+				"outputItemId", "minecraft:gold_ingot",
+				"outputCount", 1
+			)
+		), new EventRoutingProfile("smelting.output_ready", true, PlannerTriggerType.SYSTEM, true));
+
+		assertEquals(PlannerTriggerType.SYSTEM, resumed.type());
 	}
 
 	@Test
@@ -746,6 +910,248 @@ class EmbodiedAgentRuntimeTest {
 			new EntitySelector(null, "Dinner", null),
 			"minecraft:shears"
 		), request.entityInteraction());
+	}
+
+	@Test
+	void blockModificationToolInspectsInsteadOfQueuingUnreadTarget() {
+		FakeWorldTaskExecutor executor = new FakeWorldTaskExecutor();
+		EmbodiedAgentRuntime runtime = EmbodiedAgentRuntime.createForTests(executor);
+		runtime.overrideSessionSnapshotForTests(loadedRemoteSession());
+
+		String result = runtime.executePlannerToolCallForTests(new PlannerToolCall(
+			"call_place",
+			"place_block",
+			JsonParser.parseString("""
+				{"itemId":"minecraft:dirt","x":1,"y":64,"z":2}
+				""").getAsJsonObject(),
+			null,
+			null
+		));
+		runtime.onClientTick(null);
+
+		assertTrue(result.contains("blocked reason=target_not_inspected"));
+		assertTrue(result.contains("Runtime converted this request to inspect_world first"));
+		assertTrue(result.contains("Call place_block again"));
+		assertTrue(executor.lastActiveTask.isEmpty());
+	}
+
+	@Test
+	void blockModificationToolQueuesAfterFreshWorldRead() {
+		FakeWorldTaskExecutor executor = new FakeWorldTaskExecutor();
+		EmbodiedAgentRuntime runtime = EmbodiedAgentRuntime.createForTests(executor);
+		runtime.overrideSessionSnapshotForTests(loadedRemoteSession());
+		runtime.recordWorldReadForTests(new BlockPos(1, 65, 2));
+
+		CompletableFuture<String> resultFuture = runtime.executePlannerToolCallFutureForTests(new PlannerToolCall(
+			"call_use_block",
+			"use_block",
+			JsonParser.parseString("""
+				{"itemId":"minecraft:wheat_seeds","x":1,"y":65,"z":2,"expectedSupportBlockIds":["minecraft:farmland"],"expectedTargetMaterial":"air"}
+				""").getAsJsonObject(),
+			null,
+			null
+		));
+
+		assertFalse(resultFuture.isDone());
+		runtime.onClientTick(null);
+
+		WorldTaskRequest request = executor.lastActiveTask.orElseThrow();
+		assertEquals(WorldTaskType.USE_BLOCK, request.type());
+		assertEquals("minecraft:wheat_seeds", request.blockUse().itemId());
+		assertEquals(new GoalPosition(1, 65, 2, true), request.blockUse().targetPosition());
+		assertEquals(List.of("minecraft:farmland"), request.blockUse().expectedSupportBlockIds());
+		executor.nextTerminalEvent = Optional.of(new TaskTerminalEvent(
+			request.taskId(),
+			null,
+			TaskExecutionState.COMPLETED,
+			"used block",
+			null
+		));
+		runtime.onClientTick(null);
+
+		String result = resultFuture.join();
+		assertTrue(result.contains("completed"));
+		assertTrue(result.contains("state=COMPLETED"));
+		assertFalse(result.contains("accepted queued"));
+	}
+
+	@Test
+	void blockModificationToolFailureWaitsForTerminalFeedback() {
+		FakeWorldTaskExecutor executor = new FakeWorldTaskExecutor();
+		EmbodiedAgentRuntime runtime = EmbodiedAgentRuntime.createForTests(executor);
+		runtime.overrideSessionSnapshotForTests(loadedRemoteSession());
+		runtime.recordWorldReadForTests(new BlockPos(1, 65, 2));
+
+		CompletableFuture<String> resultFuture = runtime.executePlannerToolCallFutureForTests(new PlannerToolCall(
+			"call_use_block",
+			"use_block",
+			JsonParser.parseString("""
+				{"itemId":"minecraft:stone_hoe","x":1,"y":65,"z":2,"expectedSupportBlockIds":["minecraft:dirt"],"expectedTargetMaterial":"air"}
+				""").getAsJsonObject(),
+			null,
+			null
+		));
+
+		assertFalse(resultFuture.isDone());
+		runtime.onClientTick(null);
+		WorldTaskRequest request = executor.lastActiveTask.orElseThrow();
+		executor.nextTerminalEvent = Optional.of(new TaskTerminalEvent(
+			request.taskId(),
+			null,
+			TaskExecutionState.FAILED,
+			"interaction_failed itemRaycastMatches=false",
+			null
+		));
+		runtime.onClientTick(null);
+		String result = resultFuture.join();
+
+		assertTrue(result.contains("failed"));
+		assertTrue(result.contains("state=FAILED"));
+		assertTrue(result.contains("interaction_failed itemRaycastMatches=false"));
+		assertFalse(result.contains("accepted queued"));
+		runtime.onClientTick(null);
+		assertEquals(TaskState.FAILED, runtime.taskSnapshot().state());
+		assertTrue(runtime.dialogueSnapshot().recentTurns().stream().anyMatch(turn ->
+			"system".equals(turn.speaker())
+				&& turn.text().contains("TASK UPDATE: state=FAILED")
+				&& turn.text().contains("activeStepKind=USE_BLOCK")
+				&& turn.text().contains("failure=interaction_failed itemRaycastMatches=false")
+		));
+	}
+
+	@Test
+	void batchedBlockModificationToolInspectsInsteadOfQueuingUnreadTarget() {
+		FakeWorldTaskExecutor executor = new FakeWorldTaskExecutor();
+		EmbodiedAgentRuntime runtime = EmbodiedAgentRuntime.createForTests(executor);
+		runtime.overrideSessionSnapshotForTests(loadedRemoteSession());
+		runtime.recordWorldReadForTests(new BlockPos(1, 65, 2));
+
+		String result = runtime.executePlannerToolCallForTests(new PlannerToolCall(
+			"call_use_block",
+			"use_block",
+			JsonParser.parseString("""
+				{"itemId":"minecraft:wheat_seeds","targets":[{"x":1,"y":65,"z":2},{"x":2,"y":65,"z":2}]}
+				""").getAsJsonObject(),
+			null,
+			null
+		));
+		runtime.onClientTick(null);
+
+		assertTrue(result.contains("blocked reason=target_not_inspected"));
+		assertTrue(result.contains("Runtime converted this request to inspect_world first"));
+		assertTrue(result.contains("Call use_block again"));
+		assertTrue(executor.lastActiveTask.isEmpty());
+	}
+
+	@Test
+	void batchedBlockModificationToolQueuesAfterFreshWorldReads() {
+		FakeWorldTaskExecutor executor = new FakeWorldTaskExecutor();
+		EmbodiedAgentRuntime runtime = EmbodiedAgentRuntime.createForTests(executor);
+		runtime.overrideSessionSnapshotForTests(loadedRemoteSession());
+		runtime.recordWorldReadForTests(new BlockPos(1, 64, 2));
+		runtime.recordWorldReadForTests(new BlockPos(2, 64, 2));
+
+		CompletableFuture<String> resultFuture = runtime.executePlannerToolCallFutureForTests(new PlannerToolCall(
+			"call_place",
+			"place_block",
+			JsonParser.parseString("""
+				{
+				  "itemId":"minecraft:dirt",
+				  "facePreference":"down",
+				  "targets":[
+				    {"x":1,"y":64,"z":2},
+				    {"x":2,"y":64,"z":2,"facePreference":"north","requireCurrentTargetMaterial":"air"}
+				  ]
+				}
+				""").getAsJsonObject(),
+			null,
+			null
+		));
+		assertFalse(resultFuture.isDone());
+		runtime.onClientTick(null);
+
+		WorldTaskRequest request = executor.lastActiveTask.orElseThrow();
+		assertEquals(WorldTaskType.PLACE_BLOCK, request.type());
+		assertEquals("minecraft:dirt", request.blockPlacement().itemId());
+		assertEquals(2, request.blockPlacement().targets().size());
+		assertEquals(new GoalPosition(1, 64, 2, true), request.blockPlacement().targets().get(0).targetPosition());
+		assertEquals("down", request.blockPlacement().targets().get(0).facePreference());
+		assertEquals(new GoalPosition(2, 64, 2, true), request.blockPlacement().targets().get(1).targetPosition());
+		assertEquals("north", request.blockPlacement().targets().get(1).facePreference());
+		assertEquals("air", request.blockPlacement().targets().get(1).requiredTargetMaterial());
+		executor.nextTerminalEvent = Optional.of(new TaskTerminalEvent(
+			request.taskId(),
+			null,
+			TaskExecutionState.COMPLETED,
+			"placed blocks",
+			null
+		));
+		runtime.onClientTick(null);
+
+		String result = resultFuture.join();
+		assertTrue(result.contains("completed"));
+		assertTrue(result.contains("targets=2"));
+		assertFalse(result.contains("accepted queued"));
+	}
+
+	@Test
+	void breakBlocksToolInspectsInsteadOfQueuingUnreadTarget() {
+		FakeWorldTaskExecutor executor = new FakeWorldTaskExecutor();
+		EmbodiedAgentRuntime runtime = EmbodiedAgentRuntime.createForTests(executor);
+		runtime.overrideSessionSnapshotForTests(loadedRemoteSession());
+
+		String result = runtime.executePlannerToolCallForTests(new PlannerToolCall(
+			"call_break",
+			"break_blocks",
+			JsonParser.parseString("""
+				{"targets":[{"x":1,"y":64,"z":2,"expectedBlockIds":["minecraft:grass_block"]}]}
+				""").getAsJsonObject(),
+			null,
+			null
+		));
+		runtime.onClientTick(null);
+
+		assertTrue(result.contains("blocked reason=target_not_inspected"));
+		assertTrue(result.contains("Runtime converted this request to inspect_world first"));
+		assertTrue(result.contains("Call break_blocks again"));
+		assertTrue(executor.lastActiveTask.isEmpty());
+	}
+
+	@Test
+	void breakBlocksToolQueuesAfterFreshWorldRead() {
+		FakeWorldTaskExecutor executor = new FakeWorldTaskExecutor();
+		EmbodiedAgentRuntime runtime = EmbodiedAgentRuntime.createForTests(executor);
+		runtime.overrideSessionSnapshotForTests(loadedRemoteSession());
+		runtime.recordWorldReadForTests(new BlockPos(1, 64, 2));
+
+		CompletableFuture<String> resultFuture = runtime.executePlannerToolCallFutureForTests(new PlannerToolCall(
+			"call_break",
+			"break_blocks",
+			JsonParser.parseString("""
+				{"targets":[{"x":1,"y":64,"z":2,"expectedBlockIds":["minecraft:grass_block","minecraft:dirt"]}]}
+				""").getAsJsonObject(),
+			null,
+			null
+		));
+		assertFalse(resultFuture.isDone());
+		runtime.onClientTick(null);
+
+		WorldTaskRequest request = executor.lastActiveTask.orElseThrow();
+		assertEquals(WorldTaskType.BREAK_BLOCKS, request.type());
+		assertEquals(new GoalPosition(1, 64, 2, true), request.blockBreak().targets().getFirst().position());
+		assertEquals(List.of("minecraft:grass_block", "minecraft:dirt"), request.blockBreak().targets().getFirst().expectedBlockIds());
+		executor.nextTerminalEvent = Optional.of(new TaskTerminalEvent(
+			request.taskId(),
+			null,
+			TaskExecutionState.COMPLETED,
+			"broke blocks",
+			null
+		));
+		runtime.onClientTick(null);
+
+		String result = resultFuture.join();
+		assertTrue(result.contains("completed"));
+		assertFalse(result.contains("accepted queued"));
 	}
 
 	@Test
@@ -1248,7 +1654,7 @@ class EmbodiedAgentRuntimeTest {
 	}
 
 	@Test
-	void directGoalSubmissionCancelsActiveTaskFirst() {
+	void directGoalSubmissionDoesNotPreemptActiveTask() {
 		FakeWorldTaskExecutor executor = new FakeWorldTaskExecutor();
 		EmbodiedAgentRuntime runtime = EmbodiedAgentRuntime.createForTests(executor);
 		runtime.overrideSessionSnapshotForTests(new SessionSnapshot(
@@ -1286,12 +1692,12 @@ class EmbodiedAgentRuntimeTest {
 			30L
 		));
 
-		assertEquals(TaskState.CANCELLED, runtime.snapshot().task().state());
-		assertEquals(GoalType.NAVIGATE_TO, runtime.activeGoal().orElseThrow().type());
+		assertEquals(TaskState.QUEUED, runtime.snapshot().task().state());
+		assertTrue(runtime.activeGoal().isEmpty());
 	}
 
 	@Test
-	void directJobUpdateCancelsActiveTaskFirst() {
+	void directJobUpdateDoesNotPreemptActiveTask() {
 		FakeWorldTaskExecutor executor = new FakeWorldTaskExecutor();
 		EmbodiedAgentRuntime runtime = EmbodiedAgentRuntime.createForTests(executor);
 		runtime.overrideSessionSnapshotForTests(new SessionSnapshot(
@@ -1325,8 +1731,8 @@ class EmbodiedAgentRuntimeTest {
 			30L
 		));
 
-		assertEquals(TaskState.CANCELLED, runtime.snapshot().task().state());
-		assertEquals(GoalType.NAVIGATE_TO, runtime.activeGoal().orElseThrow().type());
+		assertEquals(TaskState.QUEUED, runtime.snapshot().task().state());
+		assertTrue(runtime.activeGoal().isEmpty());
 	}
 
 	@Test
@@ -1617,13 +2023,17 @@ class EmbodiedAgentRuntimeTest {
 
 	private static final class FakeWorldTaskExecutor implements WorldTaskExecutor {
 		private TaskExecutionSnapshot snapshot = TaskExecutionSnapshot.idle();
+		private TaskExecutionSnapshot forcedSnapshot;
 		private Optional<TaskTerminalEvent> nextTerminalEvent = Optional.empty();
 		private Optional<WorldTaskRequest> lastActiveTask = Optional.empty();
 
 		@Override
 		public Optional<TaskTerminalEvent> tick(SessionSnapshot sessionSnapshot, Optional<WorldTaskRequest> activeTask) {
 			lastActiveTask = activeTask;
-			if (!sessionSnapshot.companionActuationAllowed()) {
+			if (forcedSnapshot != null) {
+				snapshot = forcedSnapshot;
+			}
+			else if (!sessionSnapshot.companionActuationAllowed()) {
 				snapshot = new TaskExecutionSnapshot(
 					TaskExecutionState.PAUSED_BY_SESSION_GATE,
 					activeTask.map(WorldTaskRequest::taskId).orElse(null),

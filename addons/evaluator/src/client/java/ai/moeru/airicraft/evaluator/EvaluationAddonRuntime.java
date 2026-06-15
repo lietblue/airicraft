@@ -12,6 +12,7 @@ import ai.moeru.airicraft.agent.evaluation.ScenarioEvaluationRunner;
 import ai.moeru.airicraft.bridge.BridgeRouteContext;
 import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.client.MinecraftClient;
+import net.minecraft.util.math.BlockPos;
 
 import java.io.IOException;
 import java.nio.file.Path;
@@ -37,20 +38,44 @@ public final class EvaluationAddonRuntime {
 	private final SingleplayerWorldService singleplayerWorldService = new SingleplayerWorldService();
 	private final ScenarioEvaluationRunner runner = new ScenarioEvaluationRunner();
 	private final EvaluationFlightRecorder recorder = new EvaluationFlightRecorder();
+	private final EvaluationWaypointSeeder waypointSeeder = new EvaluationWaypointSeeder();
 
 	private EvaluationScenario scenario;
+	private boolean waypointsSeeded;
 
 	public EvaluationWorldFixtureService fixtures() {
 		return fixtures;
 	}
 
 	public void onClientTick(MinecraftClient client) {
-		if (scenario == null) {
+		EvaluationScenario activeScenario = scenario;
+		if (activeScenario == null) {
 			return;
 		}
 		EmbodiedAgentRuntime runtime = AiricraftClient.runtimeController().agentRuntime();
+		if (!waypointsSeeded && runtime.sessionSnapshot().worldLoaded()) {
+			try {
+				waypointSeeder.seed(activeScenario);
+				waypointsSeeded = true;
+			}
+			catch (BridgeUnavailableException exception) {
+				runner.failSetup(exception.getMessage(), runtime.tickCount());
+				var report = runner.report(runtime.tickCount());
+				recorder.recordTick(activeScenario, report, runtime, this::evidencePayload);
+				scenario = null;
+				waypointsSeeded = false;
+				runtime.finishEvaluation();
+				return;
+			}
+		}
 		runner.onTick(new RuntimeEvaluationContext(runtime));
-		recorder.recordTick(scenario, runner.report(runtime.tickCount()), runtime, this::evidencePayload);
+		var report = runner.report(runtime.tickCount());
+		recorder.recordTick(activeScenario, report, runtime, this::evidencePayload);
+		if (runner.terminal()) {
+			scenario = null;
+			waypointsSeeded = false;
+			runtime.finishEvaluation();
+		}
 	}
 
 	public void handleStatus(BridgeRouteContext context) throws Exception {
@@ -118,24 +143,27 @@ public final class EvaluationAddonRuntime {
 				throw new BridgeUnavailableException("invalid_scenario", "Scenario prompt is empty: " + nextScenario.id());
 			}
 			var restoredWorld = fixtures.restoreScenarioWorld(nextScenario);
-			Map<String, Object> joinPayload = singleplayerWorldService.joinWorldDirectory(restoredWorld.worldName());
 			Path outputDir = outputDir(request.outputDir(), nextScenario);
 			Map<String, Object> payload = context.onClientThread(() -> {
 				EmbodiedAgentRuntime runtime = AiricraftClient.runtimeController().agentRuntime();
 				runtime.prepareForEvaluation();
 				scenario = nextScenario;
+				waypointsSeeded = false;
 				runner.start(nextScenario, runtime.tickCount(), System.currentTimeMillis());
 				recorder.start(nextScenario, outputDir, restoredWorld);
-				Map<String, Object> response = new LinkedHashMap<>();
-				response.put("accepted", true);
-				response.put("scenario", nextScenario.id());
-				response.put("worldName", restoredWorld.worldName());
-				response.put("worldPath", restoredWorld.path().toString());
-				response.put("outputDir", outputDir.toString());
-				response.put("join", joinPayload);
-				response.put("report", runner.report(runtime.tickCount()));
-				return response;
+				return acceptedRunPayload(nextScenario, restoredWorld, outputDir, runner.report(runtime.tickCount()));
 			});
+			try {
+				payload.put("join", singleplayerWorldService.joinWorldDirectory(restoredWorld.worldName()));
+			}
+			catch (SingleplayerWorldService.SingleplayerWorldException exception) {
+				try {
+					context.onClientThread(this::rollbackAcceptedRun);
+				}
+				catch (RuntimeException ignored) {
+				}
+				throw exception;
+			}
 			context.writeJson(200, payload);
 		}
 		catch (EvaluationScenarioRepository.EvaluationScenarioRepositoryException exception) {
@@ -147,6 +175,31 @@ public final class EvaluationAddonRuntime {
 		catch (SingleplayerWorldService.SingleplayerWorldException exception) {
 			throw new BridgeUnavailableException(exception.code(), exception.getMessage());
 		}
+	}
+
+	private Map<String, Object> acceptedRunPayload(
+		EvaluationScenario nextScenario,
+		EvaluationWorldFixtureService.RestoredWorld restoredWorld,
+		Path outputDir,
+		Object report
+	) {
+		Map<String, Object> response = new LinkedHashMap<>();
+		response.put("accepted", true);
+		response.put("scenario", nextScenario.id());
+		response.put("worldName", restoredWorld.worldName());
+		response.put("worldPath", restoredWorld.path().toString());
+		response.put("outputDir", outputDir.toString());
+		response.put("report", report);
+		return response;
+	}
+
+	private Void rollbackAcceptedRun() {
+		scenario = null;
+		waypointsSeeded = false;
+		runner.reset();
+		recorder.reset();
+		AiricraftClient.runtimeController().agentRuntime().finishEvaluation();
+		return null;
 	}
 
 	private Map<String, Object> statusPayload() {
@@ -311,6 +364,26 @@ public final class EvaluationAddonRuntime {
 		}
 
 		@Override
+		public Map<String, String> blockPropertiesAt(int x, int y, int z) {
+			return runtime.blockPropertiesAt(x, y, z);
+		}
+
+		@Override
+		public int playerBlockX() {
+			return playerBlockPos().getX();
+		}
+
+		@Override
+		public int playerBlockY() {
+			return playerBlockPos().getY();
+		}
+
+		@Override
+		public int playerBlockZ() {
+			return playerBlockPos().getZ();
+		}
+
+		@Override
 		public boolean eventContains(String eventType) {
 			return runtime.semanticEventContains(eventType);
 		}
@@ -338,6 +411,14 @@ public final class EvaluationAddonRuntime {
 		@Override
 		public void emitHeartbeat(String message) {
 			runtime.emitEvaluationSystem(message);
+		}
+
+		private static BlockPos playerBlockPos() {
+			MinecraftClient client = MinecraftClient.getInstance();
+			if (client == null || client.player == null) {
+				return BlockPos.ORIGIN;
+			}
+			return client.player.getBlockPos();
 		}
 	}
 

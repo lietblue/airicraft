@@ -94,6 +94,19 @@ class PlannerPromptPolicyTest {
 	}
 
 	@Test
+	void systemPromptExplainsWorldInspectionTool() {
+		String prompt = PlannerPromptPolicy.systemPrompt(PlannerVisionMode.EXTERNAL_SUMMARY);
+
+		assertTrue(prompt.contains("inspect_world"));
+		assertTrue(prompt.contains("inspect_area/find_blocks/find_placement_sites"));
+		assertTrue(prompt.contains("scope self/center/box"));
+		assertTrue(prompt.contains("within 64 blocks"));
+		assertTrue(prompt.contains("exact block ids"));
+		assertTrue(prompt.contains("placement affordances"));
+		assertTrue(prompt.contains("stateFilters like age=7 or moisture=7"));
+	}
+
+	@Test
 	void systemPromptExplainsSmeltingConfirmationAndAsyncCompletion() {
 		String prompt = PlannerPromptPolicy.systemPrompt(PlannerVisionMode.EXTERNAL_SUMMARY);
 
@@ -143,6 +156,21 @@ class PlannerPromptPolicyTest {
 		assertTrue(prompt.contains("Use search_recipes for broad recipe-viewer searches"));
 		assertTrue(prompt.contains("Available tools:"));
 		assertTrue(prompt.contains("search_recipes"));
+	}
+
+	@Test
+	void systemPromptIncludesWorldFeatureUsageGuide() {
+		String prompt = PlannerPromptPolicy.systemPrompt(
+			PlannerVisionMode.EXTERNAL_SUMMARY,
+			PlannerToolRegistry.of(new WorldFeatureSearchToolProvider(WorldFeatureSearchTool.textOnly(ignored -> "unused")))
+		);
+
+		assertTrue(prompt.contains("find_world_features"));
+		assertTrue(prompt.contains("coordinate-grounded exploration targets"));
+		assertTrue(prompt.contains("featureKind=water_body"));
+		assertTrue(prompt.contains("navigate_to standPos"));
+		assertTrue(prompt.contains("use_block with itemId=minecraft:bucket on targetPos"));
+		assertTrue(prompt.contains("world read tool such as inspect_world or find_world_features"));
 	}
 
 	@Test

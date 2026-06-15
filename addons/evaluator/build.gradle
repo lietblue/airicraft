@@ -81,6 +81,7 @@ tasks.named("test") {
 }
 
 def sharedDevRunDir = rootProject.layout.projectDirectory.dir("run")
+def journeyMapCompatProject = rootProject.findProject(":compat:journeymap")
 
 tasks.register("runClientEvaluator", net.fabricmc.loom.task.prod.ClientProductionRunTask) {
 	group = "airicraft evaluation"
@@ -102,4 +103,29 @@ tasks.register("runClientEvaluator", net.fabricmc.loom.task.prod.ClientProductio
 		languageVersion = JavaLanguageVersion.of(21)
 	}
 	jvmArgs.add("-agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=127.0.0.1:5008")
+}
+
+if (journeyMapCompatProject != null) {
+	def journeyMapCompatCacheDir = rootProject.layout.projectDirectory.dir(".airicraft-compat/integration")
+	def journeyMapCompatModsDir = journeyMapCompatCacheDir.dir("mods")
+	def journeyMapCompatLibrariesDir = journeyMapCompatCacheDir.dir("libraries")
+
+	tasks.register("runClientCompatEvaluator", net.fabricmc.loom.task.prod.ClientProductionRunTask) {
+		group = "airicraft evaluation"
+		description = "Runs a production-style Fabric client with Airicraft, the evaluator addon, and all compatibility smoke mods."
+		dependsOn tasks.named("remapJar")
+		dependsOn journeyMapCompatProject.tasks.named("syncJourneyMapCompatMods")
+		dependsOn journeyMapCompatProject.tasks.named("syncJourneyMapCompatLibraries")
+		outputs.upToDateWhen { false }
+
+		mods.from(journeyMapCompatModsDir)
+		mods.from(tasks.named("remapJar").flatMap { it.archiveFile })
+		classpath.from(configurations.evaluatorRuntimeLibraries)
+		classpath.from(journeyMapCompatLibrariesDir)
+		runDir = sharedDevRunDir.asFile
+		javaLauncher = javaToolchains.launcherFor {
+			languageVersion = JavaLanguageVersion.of(21)
+		}
+		jvmArgs.add("-agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=127.0.0.1:5008")
+	}
 }

@@ -129,6 +129,43 @@ source .envrc
 ./gradlew test wrapper:test --rerun-tasks
 ```
 
+### Planner world inspection contract
+
+The planner has a read-only `inspect_world` tool for exact local block state. It complements vision: use `take_a_look` for visual semantics, and `inspect_world` when the planner needs precise coordinates, block ids, block-state properties, or placement affordances.
+
+`inspect_world` accepts fixed modes:
+
+- `inspect_area`: compact exact local block records.
+- `find_blocks`: exact `blockIds` plus optional `stateFilters` such as `age=7` or `moisture=7`.
+- `find_placement_sites`: conservative candidate target positions using constraints such as `targetMaterial`, `supportBlockIds`, `supportStateFilters`, `requireAirAbove`, `requireStandableAdjacent`, `requireWithinInteractionRange`, and nearby required blocks.
+
+Scopes are bounded to prevent broad world scans:
+
+- `scope=self`: player origin with `horizontalRadius` and `verticalRadius`.
+- `scope=center`: explicit `x/y/z` center with radii.
+- `scope=box`: explicit `x1/y1/z1` and `x2/y2/z2` corners.
+
+Every queried block must be within 64 blocks of the player. Radius defaults are 8 horizontal and 4 vertical, capped at 16 and 8. Search results default to 32 and cap at 64.
+
+Planner-facing block modification is guarded by the world-read ledger. `place_block` and `use_block` take an intended modified target `x/y/z`; for example, planting seeds targets the crop position above farmland, while the runtime derives the support click. The target position must have been returned by `inspect_world` within the last 10 planner tool calls. If not, the runtime does not queue the modification. It returns a `place_block`/`use_block` tool result containing a small `inspect_world` `inspect_area` query centered on the target and tells the planner to call the same tool again only if it still wants to proceed.
+
+### Evaluation scenario checks
+
+Evaluation scenarios in `scenarios/*/scenario.yml` can use deterministic checks. `inventory_contains` verifies an item count, `block_state` verifies one exact block position, and `block_count` verifies at least `count` matching blocks in either `scope: self` with `horizontalRadius`/`verticalRadius` or `scope: box` with `x1/y1/z1/x2/y2/z2`.
+
+To make frozen scenario worlds visible in the Minecraft singleplayer menu, unpack the archived fixtures into the dev game directory:
+
+```shell
+scenarios/unpack-worlds --dry-run
+scenarios/unpack-worlds
+```
+
+By default this installs every frozen `scenarios/*/world.zip` archive into `run/saves/<scenario-id>` and marks the installed save read-only. The evaluator uses that visible frozen world as a menu entry, then loads a disposable copy for the actual run. To refresh an existing installed fixture, pass `--force`; to install only one scenario, pass its id:
+
+```shell
+scenarios/unpack-worlds farm_easy --force
+```
+
 ### Normal dev client
 
 Use this for Airicraft-only development. It runs the Fabric dev client and opens JDWP on `127.0.0.1:5005`.

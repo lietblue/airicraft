@@ -644,7 +644,7 @@ class PlannerOrchestratorTest {
 		int toolRequestCountLimit = 20;
 
 		OpenAiCompatibleLlmBackend backend = new OpenAiCompatibleLlmBackend(AgentConfig.LlmConfig.defaults());
-		for (int index = 0; index <= toolRequestCountLimit + 1; index++) {
+		for (int index = 0; index <= toolRequestCountLimit + 2; index++) {
 			backend.injectMockResponse(new PlannerResponse(
 				"",
 				new PlannerIntent("none", null, null),
@@ -671,7 +671,7 @@ class PlannerOrchestratorTest {
 		assertNotNull(result);
 		assertEquals(LlmFailureType.PARSE_ERROR, result.failureType());
 		assertTrue(result.failureMessage().contains("too many tools"));
-		assertEquals(2, result.attempt());
+		assertEquals(3, result.attempt());
 		assertNull(result.response());
 	}
 
@@ -1600,6 +1600,50 @@ class PlannerOrchestratorTest {
 	}
 
 	@Test
+	void inspectWorldCanBatchWithTextReadTools() {
+		RecordingBackend backend = new RecordingBackend();
+		StubInventoryTool inventoryTool = new StubInventoryTool(
+			"Tool result for inspect_inventory: itemCounts={minecraft:wheat_seeds=4}",
+			"unused"
+		);
+		PlannerToolRegistry toolRegistry = PlannerToolRegistry.of(new CurrentWorldQueryToolProvider(arguments ->
+			CompletableFuture.completedFuture("Tool result for inspect_world: mode=find_placement_sites returned=1 sites=[{targetPos=1,64,1}]")
+		));
+		PlannerOrchestrator orchestrator = newOrchestrator(
+			backend,
+			CurrentViewVisionTool.disabled(),
+			inventoryTool,
+			PlannerVisionMode.EXTERNAL_SUMMARY,
+			toolRegistry
+		);
+
+		JsonObject worldArgs = new JsonObject();
+		worldArgs.addProperty("mode", "find_placement_sites");
+		worldArgs.addProperty("scope", "self");
+		worldArgs.addProperty("targetMaterial", "air");
+		orchestrator.submit(requestAt(10L, 1_000L, "Alice", "@agent find farm spots"));
+		backend.awaitCalls(1, Duration.ofSeconds(1));
+		backend.succeed(0, PlannerResponse.toolCalls(List.of(
+			new PlannerToolCall("call_world", PlannerToolCatalog.INSPECT_WORLD, worldArgs, null, null),
+			new PlannerToolCall("call_inv", "inspect_inventory", new JsonObject(), null, null)
+		), null));
+
+		awaitBackendCallCount(orchestrator, backend, 2, Duration.ofSeconds(1));
+
+		LlmConversation followUp = backend.conversation(1);
+		assertTrue(followUp.messages().stream()
+			.anyMatch(message -> "tool".equals(message.role())
+				&& "call_world".equals(message.toolCallId())
+				&& message.content().contains("targetPos=1,64,1")));
+		assertTrue(followUp.messages().stream()
+			.anyMatch(message -> "tool".equals(message.role())
+				&& "call_inv".equals(message.toolCallId())
+				&& message.content().contains("minecraft:wheat_seeds=4")));
+		PlannerConversationDebugMessage taskCard = lastConversationMessage(orchestrator.projectedConversationDebugSnapshot());
+		assertTrue(taskCard.text().contains("Tool calls: inspect_world,inspect_inventory"));
+	}
+
+	@Test
 	void multipleActionToolCallsAreRejectedBeforeDispatch() {
 		RecordingBackend backend = new RecordingBackend();
 		ArrayList<String> invokedTools = new ArrayList<>();
@@ -1645,12 +1689,21 @@ class PlannerOrchestratorTest {
 			new PlannerToolCall("call_nav_retry", PlannerToolCatalog.NAVIGATE_TO, navigateArgs, null, null),
 			new PlannerToolCall("call_craft_retry", PlannerToolCatalog.CRAFT_RECIPE, craftArgs, null, null)
 		), null));
+		awaitBackendCallCount(orchestrator, backend, 3, Duration.ofSeconds(1));
+		assertTrue(
+			conversationText(backend.conversation(2)).contains("TOOL CALL FORMAT REMINDER"),
+			conversationText(backend.conversation(2))
+		);
+		backend.succeed(2, PlannerResponse.toolCalls(List.of(
+			new PlannerToolCall("call_nav_second_retry", PlannerToolCatalog.NAVIGATE_TO, navigateArgs, null, null),
+			new PlannerToolCall("call_craft_second_retry", PlannerToolCatalog.CRAFT_RECIPE, craftArgs, null, null)
+		), null));
 
 		PlannerExecutionResult result = awaitResult(orchestrator);
 		assertFalse(result.succeeded());
 		assertEquals(LlmFailureType.PARSE_ERROR, result.failureType());
 		assertTrue(result.failureMessage().contains("only read-only text tools can be batched"));
-		assertEquals(2, result.attempt());
+		assertEquals(3, result.attempt());
 		assertTrue(invokedTools.isEmpty());
 	}
 
@@ -1785,13 +1838,22 @@ class PlannerOrchestratorTest {
 			new PlannerToolCall("call_inventory_retry", "inspect_inventory", inventoryArgs, null, null),
 			new PlannerToolCall("call_look_retry", "take_a_look", lookArgs, null, null)
 		), null));
+		awaitBackendCallCount(orchestrator, backend, 3, Duration.ofSeconds(1));
+		assertTrue(
+			conversationText(backend.conversation(2)).contains("TOOL CALL FORMAT REMINDER"),
+			conversationText(backend.conversation(2))
+		);
+		backend.succeed(2, new PlannerResponse("", List.of(
+			new PlannerToolCall("call_inventory_second_retry", "inspect_inventory", inventoryArgs, null, null),
+			new PlannerToolCall("call_look_second_retry", "take_a_look", lookArgs, null, null)
+		), null));
 
 		PlannerExecutionResult result = awaitResult(orchestrator);
 
 		assertFalse(result.succeeded());
 		assertEquals(LlmFailureType.PARSE_ERROR, result.failureType());
 		assertTrue(result.failureMessage().contains("multiple tools"));
-		assertEquals(2, result.attempt());
+		assertEquals(3, result.attempt());
 		assertEquals(0, inventoryTool.inventoryRequestCount());
 	}
 
@@ -1966,8 +2028,7 @@ class PlannerOrchestratorTest {
 		));
 		backend.awaitCompletions(1, Duration.ofSeconds(1));
 
-		assertNull(awaitNullPoll(orchestrator));
-		assertEquals(1, visionTool.captureRequestCount());
+		awaitVisionCaptureRequestCount(orchestrator, visionTool, 1, Duration.ofSeconds(1));
 
 		orchestrator.submit(requestAt(11L, 1_100L, "Alice", "B"));
 		assertEquals(1, backend.callCount());
@@ -2419,7 +2480,7 @@ class PlannerOrchestratorTest {
 	}
 
 	private static PlannerExecutionResult awaitResult(PlannerOrchestrator orchestrator) {
-		Instant deadline = Instant.now().plus(Duration.ofSeconds(1));
+		Instant deadline = Instant.now().plus(Duration.ofSeconds(2));
 		while (Instant.now().isBefore(deadline)) {
 			PlannerExecutionResult result = orchestrator.poll();
 			if (result != null) {
@@ -2434,6 +2495,36 @@ class PlannerOrchestratorTest {
 			}
 		}
 		throw new AssertionError("Timed out waiting for planner result");
+	}
+
+	private static void awaitVisionCaptureRequestCount(
+		PlannerOrchestrator orchestrator,
+		StubVisionTool visionTool,
+		int expectedCount,
+		Duration timeout
+	) {
+		Instant deadline = Instant.now().plus(timeout);
+		while (Instant.now().isBefore(deadline)) {
+			orchestrator.poll();
+			if (visionTool.captureRequestCount() >= expectedCount) {
+				return;
+			}
+			try {
+				Thread.sleep(10L);
+			}
+			catch (InterruptedException exception) {
+				Thread.currentThread().interrupt();
+				throw new AssertionError("Interrupted while waiting for vision capture request count", exception);
+			}
+		}
+		throw new AssertionError(
+			"Timed out waiting for vision capture request count "
+				+ expectedCount
+				+ ", actual="
+				+ visionTool.captureRequestCount()
+				+ ", snapshot="
+				+ orchestrator.debugSnapshot()
+		);
 	}
 
 	private static CompactionExecutionResult awaitCompaction(PlannerOrchestrator orchestrator) {

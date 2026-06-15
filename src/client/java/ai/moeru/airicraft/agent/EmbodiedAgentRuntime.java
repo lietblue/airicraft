@@ -6,6 +6,7 @@ import ai.moeru.airicraft.BridgeUnavailableException;
 import ai.moeru.airicraft.FirstPersonScreenshotService;
 import ai.moeru.airicraft.SingleplayerWorldService;
 import ai.moeru.airicraft.agent.behavior.BehaviorTreeRuntime;
+import ai.moeru.airicraft.agent.control.CameraController;
 import ai.moeru.airicraft.agent.behavior.BehaviorTreeSnapshot;
 import ai.moeru.airicraft.agent.chat.ChatService;
 import ai.moeru.airicraft.agent.debug.AgentDebugRecorder;
@@ -49,9 +50,11 @@ import ai.moeru.airicraft.agent.idle.IdleIdeaScheduler;
 import ai.moeru.airicraft.agent.idle.IdleIdeasConfig;
 import ai.moeru.airicraft.agent.job.ActiveJob;
 import ai.moeru.airicraft.agent.job.ActiveJobProposal;
+import ai.moeru.airicraft.agent.job.ActiveJobStatus;
 import ai.moeru.airicraft.agent.job.ActiveJobType;
 import ai.moeru.airicraft.agent.job.ActiveJobRuntime;
 import ai.moeru.airicraft.agent.llm.CompactionExecutionResult;
+import ai.moeru.airicraft.agent.llm.CurrentWorldQueryService;
 import ai.moeru.airicraft.agent.llm.CurrentViewVisionService;
 import ai.moeru.airicraft.agent.llm.LlmBackendException;
 import ai.moeru.airicraft.agent.llm.OpenAiCompatibleChatClient;
@@ -70,6 +73,7 @@ import ai.moeru.airicraft.agent.llm.PlannerToolCatalog;
 import ai.moeru.airicraft.agent.llm.PlannerTrigger;
 import ai.moeru.airicraft.agent.llm.PlannerTriggerType;
 import ai.moeru.airicraft.agent.llm.VisionDescription;
+import ai.moeru.airicraft.agent.llm.WorldReadLedger;
 import ai.moeru.airicraft.agent.session.AutoLanOpenState;
 import ai.moeru.airicraft.agent.session.LanHostingService;
 import ai.moeru.airicraft.agent.session.SessionSnapshot;
@@ -95,6 +99,9 @@ import ai.moeru.airicraft.agent.tasks.MinedBlockDropMapper;
 import ai.moeru.airicraft.agent.tasks.NearbyEntityService;
 import ai.moeru.airicraft.agent.tasks.TaskResourceKind;
 import ai.moeru.airicraft.agent.tasks.TaskSnapshot;
+import ai.moeru.airicraft.agent.tasks.BlockBreakStepArgs;
+import ai.moeru.airicraft.agent.tasks.BlockPlacementStepArgs;
+import ai.moeru.airicraft.agent.tasks.BlockUseStepArgs;
 import ai.moeru.airicraft.agent.tasks.TaskState;
 import ai.moeru.airicraft.agent.tasks.TaskSpec;
 import ai.moeru.airicraft.agent.tasks.TaskLedger;
@@ -118,9 +125,11 @@ import ai.moeru.airicraft.agent.tasks.SmeltingPlannerService;
 import ai.moeru.airicraft.agent.tasks.SmeltingProcessManager;
 import ai.moeru.airicraft.agent.tasks.SurfaceMemory;
 import ai.moeru.airicraft.agent.tasks.WorldTaskType;
+import net.minecraft.block.BlockState;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.entity.damage.DamageSource;
 import net.minecraft.registry.Registries;
+import net.minecraft.state.property.Property;
 import net.minecraft.text.Text;
 import net.minecraft.util.Identifier;
 import net.minecraft.util.math.BlockPos;
@@ -145,6 +154,7 @@ import java.util.TreeMap;
 public final class EmbodiedAgentRuntime {
 	static final long CHAT_ECHO_SUPPRESSION_TICKS = 40L;
 	static final int CRAFT_TOOL_RESULT_TIMEOUT_TICKS = 40;
+	static final int BLOCK_MODIFICATION_TOOL_RESULT_TIMEOUT_TICKS = 40;
 	private static final long SMELTING_OUTPUT_READY_POLL_INTERVAL_TICKS = 20L;
 	private static final List<String> KNOWN_NON_BLOCK_MINE_ITEM_IDS = List.of(
 		"minecraft:raw_iron",
@@ -172,7 +182,7 @@ public final class EmbodiedAgentRuntime {
 	private final ActiveJobRuntime activeJobRuntime = new ActiveJobRuntime();
 	private final IdleIdeaScheduler idleIdeaScheduler;
 	private final FollowCapability followCapability = new FollowCapability();
-	private final BehaviorTreeRuntime behaviorTreeRuntime = new BehaviorTreeRuntime();
+	private final BehaviorTreeRuntime behaviorTreeRuntime;
 	private final ChatService chatService = new ChatService();
 	private final CurrentViewVisionService visionService;
 	private final DialogueRuntime dialogueRuntime;
@@ -183,11 +193,14 @@ public final class EmbodiedAgentRuntime {
 	private final SurfaceMemory surfaceMemory = new SurfaceMemory();
 	private final SmeltingProcessManager smeltingProcessManager;
 	private final SmeltingPlannerService smeltingPlannerService = new SmeltingPlannerService();
+	private final WorldReadLedger worldReadLedger = new WorldReadLedger();
+	private final CurrentWorldQueryService guardedWorldQueryService = new CurrentWorldQueryService(MinecraftClient::getInstance);
 
 	private boolean initialized;
 	private long tickCount;
 	private long worldLoadTick = -1L;
 	private Boolean proactiveSocialModeOverride;
+	private boolean evaluationPlannerSuppressed;
 	private SessionSnapshot sessionSnapshot = SessionSnapshot.initial();
 	private SessionSnapshot sessionSnapshotOverrideForTests;
 	private FollowState followState = FollowState.idle();
@@ -200,6 +213,7 @@ public final class EmbodiedAgentRuntime {
 	private long lastSmeltingOutputReadyPollTick = Long.MIN_VALUE;
 	private final Map<UUID, String> seenPlayerNames = new LinkedHashMap<>();
 	private volatile PendingCraftToolResult pendingCraftToolResult;
+	private volatile PendingBlockModificationToolResult pendingBlockModificationToolResult;
 
 	public EmbodiedAgentRuntime(
 		AiricraftConfig airicraftConfig,
@@ -219,11 +233,39 @@ public final class EmbodiedAgentRuntime {
 		AgentObservability observability,
 		SmeltingProcessManager smeltingProcessManager
 	) {
+		this(airicraftConfig, config, screenshotService, worldTaskExecutor, observability, smeltingProcessManager, new CameraController(airicraftConfig.cameraLerpDefaultTicks()));
+	}
+
+	public EmbodiedAgentRuntime(
+		AiricraftConfig airicraftConfig,
+		AgentConfig config,
+		FirstPersonScreenshotService screenshotService,
+		WorldTaskExecutor worldTaskExecutor,
+		SmeltingProcessManager smeltingProcessManager,
+		CameraController cameraController
+	) {
+		this(airicraftConfig, config, screenshotService, worldTaskExecutor,
+			AgentObservability.create(config == null ? null : config.observability()),
+			smeltingProcessManager,
+			cameraController);
+	}
+
+	public EmbodiedAgentRuntime(
+		AiricraftConfig airicraftConfig,
+		AgentConfig config,
+		FirstPersonScreenshotService screenshotService,
+		WorldTaskExecutor worldTaskExecutor,
+		AgentObservability observability,
+		SmeltingProcessManager smeltingProcessManager,
+		CameraController cameraController
+	) {
 		this.airicraftConfig = Objects.requireNonNull(airicraftConfig, "airicraftConfig");
 		this.config = Objects.requireNonNull(config, "config");
 		this.worldTaskExecutor = Objects.requireNonNull(worldTaskExecutor, "worldTaskExecutor");
 		this.observability = new FlightRecordingObservability(Objects.requireNonNull(observability, "observability"), llmFlightRecorder);
 		this.smeltingProcessManager = Objects.requireNonNull(smeltingProcessManager, "smeltingProcessManager");
+		CameraController effectiveCameraController = Objects.requireNonNull(cameraController, "cameraController");
+		this.behaviorTreeRuntime = new BehaviorTreeRuntime(effectiveCameraController);
 		this.nearbyPlayerTracker = new NearbyPlayerTracker(resolveNearbyPlayerTrackingRadius(airicraftConfig));
 		this.idleIdeaScheduler = new IdleIdeaScheduler(effectiveIdleIdeasConfig(IdleIdeasConfig.defaults()));
 		Clock clock = Clock.systemDefaultZone();
@@ -234,7 +276,10 @@ public final class EmbodiedAgentRuntime {
 				clock,
 				debugRecorder,
 				this::executePlannerToolCall,
-				this::emitPlannerToolNarration
+				this::emitPlannerToolNarration,
+				this::beforePlannerToolExecution,
+				worldReadLedger::recordObserved,
+				effectiveCameraController
 			);
 		this.visionService = plannerShell.visionService();
 		this.dialogueRuntime = plannerShell.dialogueRuntime();
@@ -344,6 +389,7 @@ public final class EmbodiedAgentRuntime {
 		dialogueRuntime.clear();
 		worldTaskExecutor.onWorldLeave();
 		surfaceMemory.clear();
+		worldReadLedger.clear();
 		activeJobRuntime.clear();
 		idleIdeaScheduler.reset();
 		followCapability.clear();
@@ -354,6 +400,7 @@ public final class EmbodiedAgentRuntime {
 		behaviorTreeRuntime.stop(MinecraftClient.getInstance());
 		chatService.clear();
 		proactiveSocialModeOverride = null;
+		evaluationPlannerSuppressed = false;
 		lastSystemChatTick = -1L;
 		lastSystemChatText = null;
 		lastKnownPlayerHealth = null;
@@ -438,10 +485,13 @@ public final class EmbodiedAgentRuntime {
 			ActiveJobRuntime.TerminalTaskReport report = activeJobRuntime.reportTerminalTaskEvent(event, activeTaskRequest);
 			report.warning().ifPresent(this::handleInternalTaskWarning);
 			report.event().ifPresent(this::completePendingCraftToolResult);
+			report.event().ifPresent(reportedEvent -> completePendingBlockModificationToolResult(reportedEvent, activeTaskRequest));
 			report.event().ifPresent(reportedEvent -> handleTerminalTaskEvent(reportedEvent, semanticTaskContext, activeTaskRequest));
 		});
 		completePendingCraftToolResultFromTaskSnapshot(taskSnapshot);
+		completePendingBlockModificationToolResultFromTaskSnapshot(taskSnapshot);
 		expirePendingCraftToolResultIfTimedOut();
+		expirePendingBlockModificationToolResultIfTimedOut();
 		behaviorTreeRuntime.tick(
 			client,
 			sessionSnapshot,
@@ -522,6 +572,7 @@ public final class EmbodiedAgentRuntime {
 		behaviorTreeRuntime.stop(MinecraftClient.getInstance());
 		chatService.clear();
 		proactiveSocialModeOverride = null;
+		evaluationPlannerSuppressed = false;
 		lastSystemChatTick = -1L;
 		lastSystemChatText = null;
 		lastKnownPlayerHealth = null;
@@ -660,13 +711,47 @@ public final class EmbodiedAgentRuntime {
 		return Registries.BLOCK.getId(client.world.getBlockState(new BlockPos(x, y, z)).getBlock()).toString();
 	}
 
+	public Map<String, String> blockPropertiesAt(int x, int y, int z) {
+		MinecraftClient client = MinecraftClient.getInstance();
+		if (client == null || client.world == null) {
+			return Map.of();
+		}
+		BlockState state = client.world.getBlockState(new BlockPos(x, y, z));
+		Map<String, String> properties = new LinkedHashMap<>();
+		for (Property<?> property : state.getProperties()) {
+			properties.put(property.getName(), propertyValue(state, property));
+		}
+		return Map.copyOf(properties);
+	}
+
+	private static <T extends Comparable<T>> String propertyValue(BlockState state, Property<T> property) {
+		return property.name(state.get(property));
+	}
+
 	public boolean semanticEventContains(String eventType) {
 		return eventType != null && eventBuffer.containsType(eventType);
 	}
 
 	public void prepareForEvaluation() {
 		proactiveSocialModeOverride = null;
+		evaluationPlannerSuppressed = false;
 		prepareClientForEvaluation();
+	}
+
+	public void finishEvaluation() {
+		evaluationPlannerSuppressed = true;
+		eventPipeline.clearPlannerFeed();
+		completePendingCraftToolResult("Tool result for craft_recipe: cancelled reason=evaluation_finished");
+		dialogueRuntime.clear();
+		activeJobRuntime.clear();
+		worldTaskExecutor.onWorldLeave();
+		idleIdeaScheduler.reset();
+		followCapability.clear();
+		followState = FollowState.idle();
+		taskSnapshot = TaskSnapshot.idle();
+		taskExecutionSnapshot = TaskExecutionSnapshot.idle();
+		missionExecutionSnapshot = MissionExecutionSnapshot.idle();
+		behaviorTreeRuntime.stop(MinecraftClient.getInstance());
 	}
 
 	public void emitEvaluationChat(String message) {
@@ -1067,6 +1152,9 @@ public final class EmbodiedAgentRuntime {
 			if (toolCall != null && PlannerToolCatalog.CRAFT_RECIPE.equals(PlannerToolCatalog.normalizeName(toolCall.name()))) {
 				return executeCraftRecipePlannerTool(toolCall.arguments());
 			}
+			if (toolCall != null && blockModificationToolWaitsForTerminalResult(PlannerToolCatalog.normalizeName(toolCall.name()))) {
+				return executeBlockModificationPlannerTool(toolCall);
+			}
 			return CompletableFuture.completedFuture(executePlannerToolCallNow(toolCall));
 		}
 		catch (RuntimeException exception) {
@@ -1075,24 +1163,27 @@ public final class EmbodiedAgentRuntime {
 		}
 	}
 
+	private static boolean blockModificationToolWaitsForTerminalResult(String normalizedToolName) {
+		return PlannerToolCatalog.PLACE_BLOCK.equals(normalizedToolName)
+			|| PlannerToolCatalog.USE_BLOCK.equals(normalizedToolName)
+			|| PlannerToolCatalog.BREAK_BLOCKS.equals(normalizedToolName);
+	}
+
 	private String executePlannerToolCallNow(PlannerToolCall toolCall) {
 		if (toolCall == null) {
 			return "TOOL_ERROR: missing_tool_call";
 		}
 		JsonObject args = toolCall.arguments();
+		if (plannerToolWouldPreemptActiveTask(toolCall)) {
+			return plannerActiveTaskPreemptionError(toolCall);
+		}
 		return switch (PlannerToolCatalog.normalizeName(toolCall.name())) {
 			case PlannerToolCatalog.FOLLOW_PLAYER -> {
-				if (plannerToolWouldPreemptActiveTask(toolCall)) {
-					yield plannerActiveTaskPreemptionError(toolCall);
-				}
 				String targetPlayer = stringArg(args, "targetPlayer").orElseThrow(() -> new IllegalArgumentException("targetPlayer is required"));
 				applyPlannerJobTool(ActiveJobProposal.followPlayer(targetPlayer));
 				yield queuedActionToolResult("follow_player", "targetPlayer=" + targetPlayer);
 			}
 			case PlannerToolCatalog.NAVIGATE_TO -> {
-				if (plannerToolWouldPreemptActiveTask(toolCall)) {
-					yield plannerActiveTaskPreemptionError(toolCall);
-				}
 				GoalPosition position = new GoalPosition(
 					intArg(args, "x").orElseThrow(() -> new IllegalArgumentException("x is required")),
 					intArg(args, "y").orElseThrow(() -> new IllegalArgumentException("y is required")),
@@ -1103,10 +1194,7 @@ public final class EmbodiedAgentRuntime {
 				yield queuedActionToolResult("navigate_to", "x=" + position.x() + " y=" + position.y() + " z=" + position.z() + " exactY=" + position.exactY());
 			}
 			case PlannerToolCatalog.RETURN_TO_SURFACE -> {
-				if (plannerToolWouldPreemptActiveTask(toolCall)) {
-					yield plannerActiveTaskPreemptionError(toolCall);
-				}
-				boolean useTowering = booleanArg(args, "useTowering").orElse(false);
+				boolean useTowering = booleanArg(args, "useTowering").orElse(true);
 				List<String> fillerBlockIds = args != null && args.has("fillerBlockIds")
 					? stringArrayArg(args, "fillerBlockIds")
 					: ReturnToSurfaceStepArgs.DEFAULT_FILLER_BLOCK_IDS;
@@ -1135,9 +1223,6 @@ public final class EmbodiedAgentRuntime {
 				);
 			}
 			case PlannerToolCatalog.MINE_BLOCKS -> {
-				if (plannerToolWouldPreemptActiveTask(toolCall)) {
-					yield plannerActiveTaskPreemptionError(toolCall);
-				}
 				GoalMineSpec mineSpec = new GoalMineSpec(
 					stringArrayArg(args, "blockIds"),
 					intArg(args, "quantity").orElseThrow(() -> new IllegalArgumentException("quantity is required"))
@@ -1150,9 +1235,6 @@ public final class EmbodiedAgentRuntime {
 				yield queuedActionToolResult("mine_blocks", "blockIds=" + String.join(",", mineSpec.blockIds()) + " quantity=" + mineSpec.quantity());
 			}
 			case PlannerToolCatalog.ENSURE_BLOCKS_IN_INVENTORY -> {
-				if (plannerToolWouldPreemptActiveTask(toolCall)) {
-					yield plannerActiveTaskPreemptionError(toolCall);
-				}
 				GoalMineSpec mineSpec = new GoalMineSpec(
 					stringArrayArg(args, "blockIds"),
 					intArg(args, "quantity").orElseThrow(() -> new IllegalArgumentException("quantity is required"))
@@ -1300,6 +1382,55 @@ public final class EmbodiedAgentRuntime {
 					+ (entityInteraction.itemId() == null ? "" : " itemId=" + entityInteraction.itemId());
 				yield queuedActionToolResult("use_entity", details);
 			}
+			case PlannerToolCatalog.PLACE_BLOCK -> {
+				BlockPlacementStepArgs blockPlacement = parseBlockPlacementArgs(args);
+				for (BlockPlacementStepArgs.Target target : blockPlacement.targets()) {
+					BlockPos targetPos = blockPos(target.targetPosition());
+					if (!worldReadLedger.isFresh(targetPos)) {
+						yield guardedModificationNeedsInspect(PlannerToolCatalog.PLACE_BLOCK, targetPos);
+					}
+				}
+				applyPlannerJobTool(ActiveJobProposal.placeBlock(blockPlacement));
+				yield queuedActionToolResult("place_block", "itemId=" + blockPlacement.itemId()
+					+ " targets=" + blockPlacement.targets().size()
+					+ " firstTargetPos=" + compactPos(blockPos(blockPlacement.targets().getFirst().targetPosition()))
+					+ " readFreshnessRemainingToolCalls=" + worldReadLedger.freshnessRemaining(blockPos(blockPlacement.targets().getFirst().targetPosition())));
+			}
+			case PlannerToolCatalog.USE_BLOCK -> {
+				BlockUseStepArgs blockUse = parseBlockUseArgs(args);
+				for (BlockUseStepArgs.Target target : blockUse.targets()) {
+					BlockPos targetPos = blockPos(target.targetPosition());
+					if (!worldReadLedger.isFresh(targetPos)) {
+						yield guardedModificationNeedsInspect(PlannerToolCatalog.USE_BLOCK, targetPos);
+					}
+				}
+				applyPlannerJobTool(ActiveJobProposal.useBlock(blockUse));
+				yield queuedActionToolResult("use_block", (blockUse.itemId() == null ? "" : "itemId=" + blockUse.itemId() + " ")
+					+ "targets=" + blockUse.targets().size()
+					+ " firstTargetPos=" + compactPos(blockPos(blockUse.targets().getFirst().targetPosition()))
+					+ " readFreshnessRemainingToolCalls=" + worldReadLedger.freshnessRemaining(blockPos(blockUse.targets().getFirst().targetPosition())));
+			}
+			case PlannerToolCatalog.BREAK_BLOCKS -> {
+				BlockBreakStepArgs blockBreak = parseBlockBreakArgs(args);
+				for (BlockBreakStepArgs.Target target : blockBreak.targets()) {
+					Optional<String> validationError = validateMineBlockIds(target.expectedBlockIds());
+					if (validationError.isPresent()) {
+						yield "TOOL_ERROR: break_blocks " + validationError.get();
+					}
+				}
+				for (BlockBreakStepArgs.Target target : blockBreak.targets()) {
+					BlockPos targetPos = blockPos(target.position());
+					if (!worldReadLedger.isFresh(targetPos)) {
+						yield guardedModificationNeedsInspect(PlannerToolCatalog.BREAK_BLOCKS, targetPos);
+					}
+				}
+				applyPlannerJobTool(ActiveJobProposal.breakBlocks(blockBreak));
+				yield queuedActionToolResult(
+					"break_blocks",
+					"targets=" + blockBreak.targets().size()
+						+ " firstTargetPos=" + compactPos(blockPos(blockBreak.targets().getFirst().position()))
+				);
+			}
 			case PlannerToolCatalog.CANCEL_TASK -> {
 				String reason = stringArg(args, "reason").orElse("planner_tool_cancelled");
 				TaskSnapshot snapshot = cancelTask(reason);
@@ -1321,15 +1452,48 @@ public final class EmbodiedAgentRuntime {
 	}
 
 	private boolean plannerToolWouldPreemptActiveTask(PlannerToolCall toolCall) {
-		if (!isSemanticTaskSnapshot(taskSnapshot) || !isActiveSemanticTaskState(taskSnapshot.state())) {
+		if (!activeTaskInProgress()) {
 			return false;
 		}
 		String normalizedToolName = PlannerToolCatalog.normalizeName(toolCall == null ? null : toolCall.name());
+		if (PlannerToolCatalog.COLLECT_SMELTED_ITEMS.equals(normalizedToolName)) {
+			ActiveJob activeJob = activeJobRuntime.current();
+			return activeJob == null || activeJob.type() != ActiveJobType.SMELT_ITEMS;
+		}
 		return PlannerToolCatalog.FOLLOW_PLAYER.equals(normalizedToolName)
 			|| PlannerToolCatalog.NAVIGATE_TO.equals(normalizedToolName)
 			|| PlannerToolCatalog.RETURN_TO_SURFACE.equals(normalizedToolName)
 			|| PlannerToolCatalog.MINE_BLOCKS.equals(normalizedToolName)
-			|| PlannerToolCatalog.ENSURE_BLOCKS_IN_INVENTORY.equals(normalizedToolName);
+			|| PlannerToolCatalog.ENSURE_BLOCKS_IN_INVENTORY.equals(normalizedToolName)
+			|| PlannerToolCatalog.COLLECT_RESOURCE.equals(normalizedToolName)
+			|| PlannerToolCatalog.SMELT_ITEMS.equals(normalizedToolName)
+			|| PlannerToolCatalog.DROP_ITEMS.equals(normalizedToolName)
+			|| PlannerToolCatalog.GIVE_PLAYER.equals(normalizedToolName)
+			|| PlannerToolCatalog.ATTACK_ENTITY.equals(normalizedToolName)
+			|| PlannerToolCatalog.USE_ENTITY.equals(normalizedToolName)
+			|| PlannerToolCatalog.PLACE_BLOCK.equals(normalizedToolName)
+			|| PlannerToolCatalog.USE_BLOCK.equals(normalizedToolName)
+			|| PlannerToolCatalog.BREAK_BLOCKS.equals(normalizedToolName);
+	}
+
+	private boolean directPlannerIntentWouldPreemptActiveTask(DialogueIntent intent) {
+		return isDirectGoalIntent(intent) && activeTaskInProgress();
+	}
+
+	private boolean activeTaskInProgress() {
+		if (isActiveTaskExecutionState(taskExecutionSnapshot == null ? null : taskExecutionSnapshot.state())) {
+			return true;
+		}
+		if (isSemanticTaskSnapshot(taskSnapshot) && isActiveSemanticTaskState(taskSnapshot.state())) {
+			return true;
+		}
+		ActiveJob activeJob = activeJobRuntime.current();
+		if (activeJob == null || activeJob.isIdle() || activeJob.status() == null || activeJob.status().terminal()) {
+			return false;
+		}
+		return activeJob.status() == ActiveJobStatus.QUEUED
+			|| activeJob.status() == ActiveJobStatus.RUNNING
+			|| activeJob.status() == ActiveJobStatus.BLOCKED;
 	}
 
 	private String plannerActiveTaskPreemptionError(PlannerToolCall toolCall) {
@@ -1339,7 +1503,9 @@ public final class EmbodiedAgentRuntime {
 		return "TOOL_ERROR: " + toolName + " denied reason=active_task_in_progress"
 			+ " taskState=" + taskState
 			+ " activeStepKind=" + activeStep
-			+ ". Direct movement, surface-return, or mining tools would preempt the active job. Use cancel_task first only if the user explicitly changed tasks; otherwise wait for TASK UPDATE or ask the user.";
+			+ " taskExecutionState=" + (taskExecutionSnapshot == null || taskExecutionSnapshot.state() == null ? "UNKNOWN" : taskExecutionSnapshot.state().name())
+			+ " taskExecutionProcess=" + (taskExecutionSnapshot == null || taskExecutionSnapshot.processName() == null ? "UNKNOWN" : taskExecutionSnapshot.processName())
+			+ ". Task-changing tools would preempt the active job. Use cancel_task first only if the user explicitly changed tasks; otherwise wait for TASK UPDATE or ask the user.";
 	}
 
 	private static String queuedActionToolResult(String toolName, String details) {
@@ -1366,7 +1532,20 @@ public final class EmbodiedAgentRuntime {
 		smeltingProcessManager.registerOptions(options);
 	}
 
+	void recordWorldReadForTests(BlockPos pos) {
+		worldReadLedger.recordObserved(List.of(pos));
+	}
+
 	private CompletableFuture<String> executeCraftRecipePlannerTool(JsonObject args) {
+		if (activeTaskInProgress()) {
+			return CompletableFuture.completedFuture(plannerActiveTaskPreemptionError(new PlannerToolCall(
+				"craft_recipe_guard",
+				PlannerToolCatalog.CRAFT_RECIPE,
+				args,
+				null,
+				null
+			)));
+		}
 		CraftRecipeStepArgs craftRecipe = new CraftRecipeStepArgs(
 			stringArg(args, "recipeId").orElseThrow(() -> new IllegalArgumentException("recipeId is required")),
 			intArg(args, "times").orElseThrow(() -> new IllegalArgumentException("times is required"))
@@ -1388,11 +1567,129 @@ public final class EmbodiedAgentRuntime {
 		return future;
 	}
 
+	private CompletableFuture<String> executeBlockModificationPlannerTool(PlannerToolCall toolCall) {
+		if (plannerToolWouldPreemptActiveTask(toolCall)) {
+			return CompletableFuture.completedFuture(plannerActiveTaskPreemptionError(toolCall));
+		}
+		String toolName = PlannerToolCatalog.normalizeName(toolCall.name());
+		JsonObject args = toolCall.arguments();
+		ActiveJobProposal proposal;
+		WorldTaskType expectedTaskType;
+		LedgerStepKind expectedStepKind;
+		String details;
+		switch (toolName) {
+			case PlannerToolCatalog.PLACE_BLOCK -> {
+				BlockPlacementStepArgs blockPlacement = parseBlockPlacementArgs(args);
+				for (BlockPlacementStepArgs.Target target : blockPlacement.targets()) {
+					BlockPos targetPos = blockPos(target.targetPosition());
+					if (!worldReadLedger.isFresh(targetPos)) {
+						return CompletableFuture.completedFuture(guardedModificationNeedsInspect(PlannerToolCatalog.PLACE_BLOCK, targetPos));
+					}
+				}
+				proposal = ActiveJobProposal.placeBlock(blockPlacement);
+				expectedTaskType = WorldTaskType.PLACE_BLOCK;
+				expectedStepKind = LedgerStepKind.PLACE_BLOCK;
+				details = "itemId=" + blockPlacement.itemId()
+					+ " targets=" + blockPlacement.targets().size()
+					+ " firstTargetPos=" + compactPos(blockPos(blockPlacement.targets().getFirst().targetPosition()))
+					+ " readFreshnessRemainingToolCalls=" + worldReadLedger.freshnessRemaining(blockPos(blockPlacement.targets().getFirst().targetPosition()));
+			}
+			case PlannerToolCatalog.USE_BLOCK -> {
+				BlockUseStepArgs blockUse = parseBlockUseArgs(args);
+				for (BlockUseStepArgs.Target target : blockUse.targets()) {
+					BlockPos targetPos = blockPos(target.targetPosition());
+					if (!worldReadLedger.isFresh(targetPos)) {
+						return CompletableFuture.completedFuture(guardedModificationNeedsInspect(PlannerToolCatalog.USE_BLOCK, targetPos));
+					}
+				}
+				proposal = ActiveJobProposal.useBlock(blockUse);
+				expectedTaskType = WorldTaskType.USE_BLOCK;
+				expectedStepKind = LedgerStepKind.USE_BLOCK;
+				details = (blockUse.itemId() == null ? "" : "itemId=" + blockUse.itemId() + " ")
+					+ "targets=" + blockUse.targets().size()
+					+ " firstTargetPos=" + compactPos(blockPos(blockUse.targets().getFirst().targetPosition()))
+					+ " readFreshnessRemainingToolCalls=" + worldReadLedger.freshnessRemaining(blockPos(blockUse.targets().getFirst().targetPosition()));
+			}
+			case PlannerToolCatalog.BREAK_BLOCKS -> {
+				BlockBreakStepArgs blockBreak = parseBlockBreakArgs(args);
+				for (BlockBreakStepArgs.Target target : blockBreak.targets()) {
+					Optional<String> validationError = validateMineBlockIds(target.expectedBlockIds());
+					if (validationError.isPresent()) {
+						return CompletableFuture.completedFuture("TOOL_ERROR: break_blocks " + validationError.get());
+					}
+				}
+				for (BlockBreakStepArgs.Target target : blockBreak.targets()) {
+					BlockPos targetPos = blockPos(target.position());
+					if (!worldReadLedger.isFresh(targetPos)) {
+						return CompletableFuture.completedFuture(guardedModificationNeedsInspect(PlannerToolCatalog.BREAK_BLOCKS, targetPos));
+					}
+				}
+				proposal = ActiveJobProposal.breakBlocks(blockBreak);
+				expectedTaskType = WorldTaskType.BREAK_BLOCKS;
+				expectedStepKind = LedgerStepKind.BREAK_BLOCKS;
+				details = "targets=" + blockBreak.targets().size()
+					+ " firstTargetPos=" + compactPos(blockPos(blockBreak.targets().getFirst().position()));
+			}
+			default -> {
+				return CompletableFuture.completedFuture("TOOL_ERROR: unknown_tool " + toolCall.name());
+			}
+		}
+
+		applyPlannerJobTool(proposal);
+		Optional<WorldTaskRequest> activeTask = activeJobRuntime.activeTaskRequest();
+		if (activeTask.isEmpty() || activeTask.get().type() != expectedTaskType) {
+			return CompletableFuture.completedFuture("TOOL_ERROR: " + toolName + " task_not_started");
+		}
+
+		completePendingBlockModificationToolResult("Tool result for " + toolName + ": cancelled reason=superseded");
+		CompletableFuture<String> future = new CompletableFuture<>();
+		pendingBlockModificationToolResult = new PendingBlockModificationToolResult(
+			activeTask.get().taskId(),
+			toolName,
+			expectedTaskType,
+			expectedStepKind,
+			details,
+			tickCount,
+			future
+		);
+		return future;
+	}
+
 	private void emitPlannerToolNarration(PlannerToolCall toolCall) {
 		if (toolCall == null || toolCall.narration() == null || toolCall.narration().isBlank()) {
 			return;
 		}
 		chatService.send(MinecraftClient.getInstance(), toolCall.narration(), tickCount);
+	}
+
+	private void beforePlannerToolExecution(PlannerToolCall toolCall) {
+		worldReadLedger.advanceToolCall();
+	}
+
+	private String guardedModificationNeedsInspect(String toolName, BlockPos targetPos) {
+		JsonObject inspectArgs = new JsonObject();
+		inspectArgs.addProperty("mode", "inspect_area");
+		inspectArgs.addProperty("scope", "center");
+		inspectArgs.addProperty("x", targetPos.getX());
+		inspectArgs.addProperty("y", targetPos.getY());
+		inspectArgs.addProperty("z", targetPos.getZ());
+		inspectArgs.addProperty("horizontalRadius", 1);
+		inspectArgs.addProperty("verticalRadius", 1);
+		CurrentWorldQueryService.WorldQueryResult result = guardedWorldQueryService.inspectWorldDetailed(inspectArgs).join();
+		worldReadLedger.recordObserved(result.observedPositions());
+		return "Tool result for " + toolName + ": blocked reason=target_not_inspected"
+			+ " targetPos=" + compactPos(targetPos)
+			+ ". Runtime converted this request to inspect_world first.\n"
+			+ result.text()
+			+ "\nThe target has now been inspected. Call " + toolName + " again if you still want to modify it.";
+	}
+
+	private static BlockPos blockPos(GoalPosition position) {
+		return new BlockPos(position.x(), position.y(), position.z());
+	}
+
+	private static String compactPos(BlockPos pos) {
+		return pos.getX() + "," + pos.getY() + "," + pos.getZ();
 	}
 
 	private void applyPlannerJobTool(ActiveJobProposal proposal) {
@@ -1470,13 +1767,8 @@ public final class EmbodiedAgentRuntime {
 		int currentResourceCount = worldEvidence == null
 			? currentTaskResourceCount(MinecraftClient.getInstance())
 			: worldEvidence.inventoryCounts().getOrDefault(TaskResourceKind.WOOD_LOGS, 0);
-		if (isDirectGoalIntent(response.intent()) && isSemanticTaskSnapshot(taskSnapshot)) {
-			TaskSnapshot previousTaskSnapshot = taskSnapshot;
-			activeJobRuntime.cancel("preempted_by_direct_goal", response.tick());
-			taskSnapshot = activeJobRuntime.taskSnapshot();
-			missionExecutionSnapshot = activeJobRuntime.missionExecutionSnapshot();
-			debugRecorder.recordCollectResourceProbe(activeJobRuntime.collectResourceDebugSnapshot());
-			recordSemanticTaskTransition(previousTaskSnapshot, taskSnapshot);
+		if (directPlannerIntentWouldPreemptActiveTask(response.intent())) {
+			return;
 		}
 		activeJobRuntime.applyPlannerResponse(response, currentResourceCount, source == null || source.isBlank() ? "planner_response" : source, response.tick());
 		TaskSnapshot projectedTaskSnapshot = activeJobRuntime.taskSnapshot();
@@ -1525,6 +1817,103 @@ public final class EmbodiedAgentRuntime {
 		catch (RuntimeException exception) {
 			return Optional.empty();
 		}
+	}
+
+	private static BlockPlacementStepArgs parseBlockPlacementArgs(JsonObject args) {
+		String itemId = stringArg(args, "itemId").orElseThrow(() -> new IllegalArgumentException("itemId is required"));
+		String rootFacePreference = stringArg(args, "facePreference").orElse("auto");
+		String rootRequiredTargetMaterial = stringArg(args, "requireCurrentTargetMaterial").orElse("air_or_replaceable");
+		if (hasTargets(args)) {
+			ArrayList<BlockPlacementStepArgs.Target> targets = new ArrayList<>();
+			for (JsonElement element : args.getAsJsonArray("targets")) {
+				if (!element.isJsonObject()) {
+					throw new IllegalArgumentException("targets must contain objects");
+				}
+				JsonObject target = element.getAsJsonObject();
+				targets.add(new BlockPlacementStepArgs.Target(
+					parseTargetPosition(target),
+					stringArg(target, "facePreference").orElse(rootFacePreference),
+					stringArg(target, "requireCurrentTargetMaterial").orElse(rootRequiredTargetMaterial)
+				));
+			}
+			return new BlockPlacementStepArgs(itemId, targets);
+		}
+		return new BlockPlacementStepArgs(
+			itemId,
+			parseTargetPosition(args),
+			rootFacePreference,
+			rootRequiredTargetMaterial
+		);
+	}
+
+	private static BlockUseStepArgs parseBlockUseArgs(JsonObject args) {
+		String rootFacePreference = stringArg(args, "facePreference").orElse("auto");
+		List<String> rootExpectedSupportBlockIds = args != null && args.has("expectedSupportBlockIds") && !args.get("expectedSupportBlockIds").isJsonNull()
+			? stringArrayArg(args, "expectedSupportBlockIds")
+			: List.of();
+		String rootExpectedTargetMaterial = stringArg(args, "expectedTargetMaterial").orElse(null);
+		if (hasTargets(args)) {
+			ArrayList<BlockUseStepArgs.Target> targets = new ArrayList<>();
+			for (JsonElement element : args.getAsJsonArray("targets")) {
+				if (!element.isJsonObject()) {
+					throw new IllegalArgumentException("targets must contain objects");
+				}
+				JsonObject target = element.getAsJsonObject();
+				List<String> expectedSupportBlockIds = target.has("expectedSupportBlockIds") && !target.get("expectedSupportBlockIds").isJsonNull()
+					? stringArrayArg(target, "expectedSupportBlockIds")
+					: rootExpectedSupportBlockIds;
+				targets.add(new BlockUseStepArgs.Target(
+					parseTargetPosition(target),
+					stringArg(target, "facePreference").orElse(rootFacePreference),
+					expectedSupportBlockIds,
+					stringArg(target, "expectedTargetMaterial").orElse(rootExpectedTargetMaterial)
+				));
+			}
+			return new BlockUseStepArgs(stringArg(args, "itemId").orElse(null), targets);
+		}
+		return new BlockUseStepArgs(
+			stringArg(args, "itemId").orElse(null),
+			parseTargetPosition(args),
+			rootFacePreference,
+			rootExpectedSupportBlockIds,
+			rootExpectedTargetMaterial
+		);
+	}
+
+	private static BlockBreakStepArgs parseBlockBreakArgs(JsonObject args) {
+		if (args == null || !args.has("targets") || !args.get("targets").isJsonArray()) {
+			throw new IllegalArgumentException("targets is required");
+		}
+		ArrayList<BlockBreakStepArgs.Target> targets = new ArrayList<>();
+		for (JsonElement element : args.getAsJsonArray("targets")) {
+			if (!element.isJsonObject()) {
+				throw new IllegalArgumentException("targets must contain objects");
+			}
+			JsonObject target = element.getAsJsonObject();
+			targets.add(new BlockBreakStepArgs.Target(
+				new GoalPosition(
+					intArg(target, "x").orElseThrow(() -> new IllegalArgumentException("x is required")),
+					intArg(target, "y").orElseThrow(() -> new IllegalArgumentException("y is required")),
+					intArg(target, "z").orElseThrow(() -> new IllegalArgumentException("z is required")),
+					true
+				),
+				stringArrayArg(target, "expectedBlockIds")
+			));
+		}
+		return new BlockBreakStepArgs(targets);
+	}
+
+	private static boolean hasTargets(JsonObject args) {
+		return args != null && args.has("targets") && args.get("targets").isJsonArray();
+	}
+
+	private static GoalPosition parseTargetPosition(JsonObject object) {
+		return new GoalPosition(
+			intArg(object, "x").orElseThrow(() -> new IllegalArgumentException("x is required")),
+			intArg(object, "y").orElseThrow(() -> new IllegalArgumentException("y is required")),
+			intArg(object, "z").orElseThrow(() -> new IllegalArgumentException("z is required")),
+			true
+		);
 	}
 
 	private static Optional<Boolean> booleanArg(JsonObject object, String key) {
@@ -2014,7 +2403,7 @@ public final class EmbodiedAgentRuntime {
 	}
 
 	private void maybeFireIdleIdeaTrigger(Optional<GoalSnapshot> activeGoal) {
-		if (!sessionSnapshot.companionActuationAllowed() || !config.llm().isConfigured()) {
+		if (evaluationPlannerSuppressed || !sessionSnapshot.companionActuationAllowed() || !config.llm().isConfigured()) {
 			idleIdeaScheduler.reset();
 			return;
 		}
@@ -2054,6 +2443,9 @@ public final class EmbodiedAgentRuntime {
 		if (eventType == null) {
 			return null;
 		}
+		if (evaluationPlannerSuppressed && suppressAutonomousPlannerTriggerAfterEvaluation(eventType)) {
+			return null;
+		}
 		return switch (eventType) {
 			case "social.player_spoke" -> createPlayerSpokeTrigger(event);
 			case "social.player_addressed_agent" -> createAddressedChatTrigger(event);
@@ -2065,6 +2457,19 @@ public final class EmbodiedAgentRuntime {
 			case "smelting.output_ready" -> createSmeltingOutputReadyTrigger(event);
 			case "task.blocked" -> createTaskBlockedTrigger(event);
 			default -> null;
+		};
+	}
+
+	private static boolean suppressAutonomousPlannerTriggerAfterEvaluation(String eventType) {
+		return switch (eventType) {
+			case "social.player_spoke",
+				"social.system_message",
+				"pickup.item_picked_up",
+				"crafting.item_crafted",
+				"combat.damage_taken",
+				"smelting.output_ready",
+				"task.blocked" -> true;
+			default -> false;
 		};
 	}
 
@@ -2512,7 +2917,7 @@ public final class EmbodiedAgentRuntime {
 			return false;
 		}
 		return switch (intent.activeJob().type()) {
-			case FOLLOW_PLAYER, NAVIGATE_TO, MINE_BLOCKS, ENSURE_BLOCKS_IN_INVENTORY, RETURN_TO_SURFACE -> true;
+			case FOLLOW_PLAYER, NAVIGATE_TO, MINE_BLOCKS, ENSURE_BLOCKS_IN_INVENTORY, RETURN_TO_SURFACE, PLACE_BLOCK, USE_BLOCK, BREAK_BLOCKS -> true;
 			case IDLE, COLLECT_RESOURCE, CRAFT_RECIPE, DROP_ITEMS, SMELT_ITEMS, COLLECT_SMELTED_ITEMS, ATTACK_ENTITY, USE_ENTITY, ASK_USER -> false;
 		};
 	}
@@ -2537,6 +2942,8 @@ public final class EmbodiedAgentRuntime {
 			|| snapshot.activeStepKind() == ai.moeru.airicraft.agent.tasks.LedgerStepKind.COLLECT_SMELTED_ITEMS
 			|| snapshot.activeStepKind() == ai.moeru.airicraft.agent.tasks.LedgerStepKind.ATTACK_ENTITY
 			|| snapshot.activeStepKind() == ai.moeru.airicraft.agent.tasks.LedgerStepKind.USE_ENTITY
+			|| snapshot.activeStepKind() == ai.moeru.airicraft.agent.tasks.LedgerStepKind.PLACE_BLOCK
+			|| snapshot.activeStepKind() == ai.moeru.airicraft.agent.tasks.LedgerStepKind.USE_BLOCK
 			|| snapshot.activeStepKind() == ai.moeru.airicraft.agent.tasks.LedgerStepKind.ASK_USER;
 	}
 
@@ -2545,6 +2952,11 @@ public final class EmbodiedAgentRuntime {
 			|| state == TaskState.RUNNING
 			|| state == TaskState.WAITING_FOR_PICKUP
 			|| state == TaskState.PAUSED_BY_SESSION_GATE;
+	}
+
+	private static boolean isActiveTaskExecutionState(TaskExecutionState state) {
+		return state == TaskExecutionState.RUNNING
+			|| state == TaskExecutionState.PAUSED_BY_SESSION_GATE;
 	}
 
 	private static boolean isTerminalTaskState(TaskState state) {
@@ -2634,6 +3046,33 @@ public final class EmbodiedAgentRuntime {
 		completePendingCraftToolResult(formatCraftSnapshotToolResult(pending.craftRecipe(), snapshot) + inventorySnapshotForTaskUpdate(WorldTaskType.CRAFT_RECIPE));
 	}
 
+	private void completePendingBlockModificationToolResult(TaskTerminalEvent event, Optional<WorldTaskRequest> activeTaskRequest) {
+		PendingBlockModificationToolResult pending = pendingBlockModificationToolResult;
+		if (pending == null || event == null || !Objects.equals(pending.taskId(), event.taskId())) {
+			return;
+		}
+		completePendingBlockModificationToolResult(
+			formatBlockModificationTerminalToolResult(pending, event)
+				+ inventorySnapshotForTaskUpdate(event, activeTaskRequest)
+		);
+	}
+
+	private void completePendingBlockModificationToolResultFromTaskSnapshot(TaskSnapshot snapshot) {
+		PendingBlockModificationToolResult pending = pendingBlockModificationToolResult;
+		if (
+			pending == null
+				|| snapshot == null
+				|| snapshot.activeStepKind() != pending.stepKind()
+				|| !isTerminalTaskState(snapshot.state())
+		) {
+			return;
+		}
+		completePendingBlockModificationToolResult(
+			formatBlockModificationSnapshotToolResult(pending, snapshot)
+				+ inventorySnapshotForTaskUpdate(pending.taskType())
+		);
+	}
+
 	private String inventorySnapshotForTaskUpdate(LedgerStepKind activeStepKind) {
 		if (!inventoryMutatingStepKind(activeStepKind)) {
 			return "";
@@ -2693,7 +3132,7 @@ public final class EmbodiedAgentRuntime {
 			return false;
 		}
 		return switch (kind) {
-			case COLLECT_RESOURCE, MINE_BLOCKS, CRAFT_RECIPE, TRANSFER_ITEMS, PLACE_BLOCK, DROP_ITEMS, SMELT_ITEMS, COLLECT_SMELTED_ITEMS -> true;
+			case COLLECT_RESOURCE, MINE_BLOCKS, CRAFT_RECIPE, TRANSFER_ITEMS, PLACE_BLOCK, USE_BLOCK, DROP_ITEMS, SMELT_ITEMS, COLLECT_SMELTED_ITEMS, BREAK_BLOCKS -> true;
 			case NAVIGATE_TO_POSITION, NAVIGATE_TO_BLOCK_KIND, OPEN_CONTAINER, ATTACK_ENTITY, USE_ENTITY, ASK_USER, FINISH -> false;
 		};
 	}
@@ -2703,7 +3142,7 @@ public final class EmbodiedAgentRuntime {
 			return false;
 		}
 		return switch (type) {
-			case MINE, CRAFT_RECIPE, DROP_ITEMS, SMELT_ITEMS, COLLECT_SMELTED_ITEMS, RETURN_TO_SURFACE -> true;
+			case MINE, CRAFT_RECIPE, DROP_ITEMS, SMELT_ITEMS, COLLECT_SMELTED_ITEMS, RETURN_TO_SURFACE, PLACE_BLOCK, USE_BLOCK, BREAK_BLOCKS -> true;
 			case FOLLOW, NAVIGATE, ATTACK_ENTITY, USE_ENTITY -> false;
 		};
 	}
@@ -2727,12 +3166,39 @@ public final class EmbodiedAgentRuntime {
 		);
 	}
 
+	private void expirePendingBlockModificationToolResultIfTimedOut() {
+		PendingBlockModificationToolResult pending = pendingBlockModificationToolResult;
+		if (pending == null || pending.future().isDone()) {
+			pendingBlockModificationToolResult = null;
+			return;
+		}
+		long waitedTicks = tickCount - pending.startTick();
+		if (waitedTicks < BLOCK_MODIFICATION_TOOL_RESULT_TIMEOUT_TICKS) {
+			return;
+		}
+		completePendingBlockModificationToolResult(
+			"Tool result for " + pending.toolName() + ": pending_timeout "
+				+ pending.details()
+				+ " waitedTicks=" + waitedTicks
+				+ ". The action is still running; wait for TASK UPDATE before saying the action completed."
+		);
+	}
+
 	private void completePendingCraftToolResult(String result) {
 		PendingCraftToolResult pending = pendingCraftToolResult;
 		if (pending == null) {
 			return;
 		}
 		pendingCraftToolResult = null;
+		pending.future().complete(result);
+	}
+
+	private void completePendingBlockModificationToolResult(String result) {
+		PendingBlockModificationToolResult pending = pendingBlockModificationToolResult;
+		if (pending == null) {
+			return;
+		}
+		pendingBlockModificationToolResult = null;
 		pending.future().complete(result);
 	}
 
@@ -2753,6 +3219,26 @@ public final class EmbodiedAgentRuntime {
 		return "Tool result for craft_recipe: " + status
 			+ " recipeId=" + craftRecipe.recipeId()
 			+ " times=" + craftRecipe.times()
+			+ " state=" + snapshot.state().name()
+			+ failure;
+	}
+
+	private static String formatBlockModificationTerminalToolResult(PendingBlockModificationToolResult pending, TaskTerminalEvent event) {
+		String status = event.terminalState() == TaskExecutionState.FAILED
+			? "failed"
+			: event.terminalState() == TaskExecutionState.CANCELLED ? "cancelled" : "completed";
+		String message = event.message() == null || event.message().isBlank() ? "" : " message=" + event.message();
+		return "Tool result for " + pending.toolName() + ": " + status
+			+ " " + pending.details()
+			+ " state=" + event.terminalState().name()
+			+ message;
+	}
+
+	private static String formatBlockModificationSnapshotToolResult(PendingBlockModificationToolResult pending, TaskSnapshot snapshot) {
+		String status = snapshot.state() == TaskState.FAILED ? "failed" : snapshot.state() == TaskState.CANCELLED ? "cancelled" : "completed";
+		String failure = snapshot.lastFailure() == null || snapshot.lastFailure().isBlank() ? "" : " failure=" + snapshot.lastFailure();
+		return "Tool result for " + pending.toolName() + ": " + status
+			+ " " + pending.details()
 			+ " state=" + snapshot.state().name()
 			+ failure;
 	}
@@ -2993,6 +3479,17 @@ public final class EmbodiedAgentRuntime {
 	private record PendingCraftToolResult(
 		String taskId,
 		CraftRecipeStepArgs craftRecipe,
+		long startTick,
+		CompletableFuture<String> future
+	) {
+	}
+
+	private record PendingBlockModificationToolResult(
+		String taskId,
+		String toolName,
+		WorldTaskType taskType,
+		LedgerStepKind stepKind,
+		String details,
 		long startTick,
 		CompletableFuture<String> future
 	) {

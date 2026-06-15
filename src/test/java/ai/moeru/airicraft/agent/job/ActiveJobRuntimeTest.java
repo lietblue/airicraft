@@ -6,14 +6,23 @@ import ai.moeru.airicraft.agent.dialogue.DialogueResponse;
 import ai.moeru.airicraft.agent.goals.GoalMineSpec;
 import ai.moeru.airicraft.agent.goals.GoalPosition;
 import ai.moeru.airicraft.agent.goals.GoalType;
+import ai.moeru.airicraft.agent.tasks.BlockBreakStepArgs;
+import ai.moeru.airicraft.agent.tasks.BlockPlacementStepArgs;
+import ai.moeru.airicraft.agent.tasks.BlockUseStepArgs;
 import ai.moeru.airicraft.agent.tasks.CraftRecipeStepArgs;
 import ai.moeru.airicraft.agent.tasks.CollectSmeltedItemsStepArgs;
 import ai.moeru.airicraft.agent.tasks.DropItemsStepArgs;
 import ai.moeru.airicraft.agent.tasks.EntityInteractionStepArgs;
 import ai.moeru.airicraft.agent.tasks.EntitySelector;
+import ai.moeru.airicraft.agent.tasks.LedgerStep;
+import ai.moeru.airicraft.agent.tasks.LedgerStepKind;
+import ai.moeru.airicraft.agent.tasks.LedgerStepPayload;
+import ai.moeru.airicraft.agent.tasks.LedgerStepStatus;
+import ai.moeru.airicraft.agent.tasks.MissionType;
 import ai.moeru.airicraft.agent.tasks.ReturnToSurfaceStepArgs;
 import ai.moeru.airicraft.agent.tasks.SmeltItemsStepArgs;
 import ai.moeru.airicraft.agent.tasks.SmeltingFuelMode;
+import ai.moeru.airicraft.agent.tasks.TaskLedger;
 import ai.moeru.airicraft.agent.tasks.WorldTaskRequest;
 import ai.moeru.airicraft.agent.tasks.WorldTaskType;
 import ai.moeru.airicraft.agent.tasks.TaskExecutionSnapshot;
@@ -475,6 +484,186 @@ class ActiveJobRuntimeTest {
 		assertNull(request.goal());
 		assertEquals(ActiveJobType.RETURN_TO_SURFACE, runtime.current().type());
 		assertEquals(returnToSurface, runtime.current().returnToSurface());
+	}
+
+	@Test
+	void blockInteractionActiveJobsProjectWorldTaskRequests() {
+		ActiveJobRuntime placeRuntime = new ActiveJobRuntime();
+		BlockPlacementStepArgs place = new BlockPlacementStepArgs(
+			"minecraft:dirt",
+			new GoalPosition(1, 64, 2, true),
+			"down",
+			"air_or_replaceable"
+		);
+
+		placeRuntime.applyPlannerResponse(
+			new DialogueResponse(
+				"Placing dirt.",
+				new DialogueIntent(DialogueIntentType.JOB_UPDATE, ActiveJobProposal.placeBlock(place)),
+				1L
+			),
+			0,
+			"test",
+			1L
+		);
+
+		WorldTaskRequest placeRequest = placeRuntime.activeTaskRequest().orElseThrow();
+		assertEquals(WorldTaskType.PLACE_BLOCK, placeRequest.type());
+		assertEquals(place, placeRequest.blockPlacement());
+		assertEquals(ActiveJobType.PLACE_BLOCK, placeRuntime.current().type());
+
+		ActiveJobRuntime useRuntime = new ActiveJobRuntime();
+		BlockUseStepArgs use = new BlockUseStepArgs(
+			"minecraft:wheat_seeds",
+			new GoalPosition(1, 65, 2, true),
+			"down",
+			List.of("minecraft:farmland"),
+			"air"
+		);
+
+		useRuntime.applyPlannerResponse(
+			new DialogueResponse(
+				"Planting seeds.",
+				new DialogueIntent(DialogueIntentType.JOB_UPDATE, ActiveJobProposal.useBlock(use)),
+				2L
+			),
+			0,
+			"test",
+			2L
+		);
+
+		WorldTaskRequest useRequest = useRuntime.activeTaskRequest().orElseThrow();
+		assertEquals(WorldTaskType.USE_BLOCK, useRequest.type());
+		assertEquals(use, useRequest.blockUse());
+		assertEquals(ActiveJobType.USE_BLOCK, useRuntime.current().type());
+	}
+
+	@Test
+	void useBlockLedgerStepProjectsWorldTaskRequest() {
+		ActiveJobRuntime runtime = new ActiveJobRuntime();
+		BlockUseStepArgs use = new BlockUseStepArgs(
+			"minecraft:water_bucket",
+			new GoalPosition(-15, 63, -40, true),
+			"up",
+			List.of(),
+			"air"
+		);
+		TaskLedger ledger = new TaskLedger(
+			"water-hole",
+			MissionType.CRAFT_ITEM,
+			"Place water in the irrigation hole.",
+			List.of(new LedgerStep(
+				"place-water",
+				LedgerStepKind.USE_BLOCK,
+				new LedgerStepPayload(null, null, null, null, null, null, null, null, use, null, null, null, null, null),
+				List.of(),
+				LedgerStepStatus.PENDING,
+				List.of(),
+				0,
+				null
+			)),
+			"place-water",
+			List.of(),
+			null,
+			null
+		);
+
+		runtime.submitMissionLedger(ledger, 0, "test", 1L);
+
+		WorldTaskRequest request = runtime.activeTaskRequest().orElseThrow();
+		assertEquals(WorldTaskType.USE_BLOCK, request.type());
+		assertEquals(use, request.blockUse());
+		assertEquals(ActiveJobType.USE_BLOCK, runtime.current().type());
+	}
+
+	@Test
+	void batchedBlockInteractionActiveJobsProjectWorldTaskRequests() {
+		ActiveJobRuntime placeRuntime = new ActiveJobRuntime();
+		BlockPlacementStepArgs place = new BlockPlacementStepArgs(
+			"minecraft:dirt",
+			List.of(
+				new BlockPlacementStepArgs.Target(new GoalPosition(1, 64, 2, true), "down", "air_or_replaceable"),
+				new BlockPlacementStepArgs.Target(new GoalPosition(2, 64, 2, true), "north", "air")
+			)
+		);
+
+		placeRuntime.applyPlannerResponse(
+			new DialogueResponse(
+				"Placing dirt.",
+				new DialogueIntent(DialogueIntentType.JOB_UPDATE, ActiveJobProposal.placeBlock(place)),
+				1L
+			),
+			0,
+			"test",
+			1L
+		);
+
+		WorldTaskRequest placeRequest = placeRuntime.activeTaskRequest().orElseThrow();
+		assertEquals(WorldTaskType.PLACE_BLOCK, placeRequest.type());
+		assertEquals(place, placeRequest.blockPlacement());
+		assertEquals(2, placeRequest.blockPlacement().targets().size());
+		assertEquals(ActiveJobType.PLACE_BLOCK, placeRuntime.current().type());
+
+		ActiveJobRuntime useRuntime = new ActiveJobRuntime();
+		BlockUseStepArgs use = new BlockUseStepArgs(
+			"minecraft:wheat_seeds",
+			List.of(
+				new BlockUseStepArgs.Target(new GoalPosition(1, 65, 2, true), "down", List.of("minecraft:farmland"), "air"),
+				new BlockUseStepArgs.Target(new GoalPosition(2, 65, 2, true), "down", List.of("minecraft:farmland"), "air")
+			)
+		);
+
+		useRuntime.applyPlannerResponse(
+			new DialogueResponse(
+				"Planting seeds.",
+				new DialogueIntent(DialogueIntentType.JOB_UPDATE, ActiveJobProposal.useBlock(use)),
+				2L
+			),
+			0,
+			"test",
+			2L
+		);
+
+		WorldTaskRequest useRequest = useRuntime.activeTaskRequest().orElseThrow();
+		assertEquals(WorldTaskType.USE_BLOCK, useRequest.type());
+		assertEquals(use, useRequest.blockUse());
+		assertEquals(2, useRequest.blockUse().targets().size());
+		assertEquals(ActiveJobType.USE_BLOCK, useRuntime.current().type());
+	}
+
+	@Test
+	void breakBlocksLedgerStepProjectsWorldTaskRequest() {
+		ActiveJobRuntime runtime = new ActiveJobRuntime();
+		BlockBreakStepArgs blockBreak = new BlockBreakStepArgs(List.of(new BlockBreakStepArgs.Target(
+			new GoalPosition(-15, 63, -40, true),
+			List.of("minecraft:grass_block")
+		)));
+		TaskLedger ledger = new TaskLedger(
+			"break-center",
+			MissionType.CRAFT_ITEM,
+			"Break the irrigation hole.",
+			List.of(new LedgerStep(
+				"break-hole",
+				LedgerStepKind.BREAK_BLOCKS,
+				new LedgerStepPayload(null, null, null, null, null, null, null, null, null, null, blockBreak, null, null, null),
+				List.of(),
+				LedgerStepStatus.PENDING,
+				List.of(),
+				0,
+				null
+			)),
+			"break-hole",
+			List.of(),
+			null,
+			null
+		);
+
+		runtime.submitMissionLedger(ledger, 0, "test", 1L);
+
+		WorldTaskRequest request = runtime.activeTaskRequest().orElseThrow();
+		assertEquals(WorldTaskType.BREAK_BLOCKS, request.type());
+		assertEquals(blockBreak, request.blockBreak());
+		assertEquals(ActiveJobType.BREAK_BLOCKS, runtime.current().type());
 	}
 
 	@Test

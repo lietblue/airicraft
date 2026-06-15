@@ -27,6 +27,7 @@ import java.util.concurrent.CompletionException;
 
 public final class PlannerOrchestrator {
 	private static final String VISUAL_TOOL_NAME = "take_a_look";
+	private static final String WORLD_TOOL_NAME = "inspect_world";
 	private static final String INVENTORY_TOOL_NAME = "inspect_inventory";
 	private static final String CRAFTABLES_TOOL_NAME = "check_craftables";
 	private static final String NEARBY_ENTITIES_TOOL_NAME = "inspect_nearby_entities";
@@ -35,7 +36,7 @@ public final class PlannerOrchestrator {
 	private static final String NATIVE_TOOL_RESULT_TEXT = "Tool result for take_a_look: current first-person view attached.";
 	private static final String TOOL_CALL_REPAIR_PREFIX = "TOOL CALL FORMAT REMINDER:";
 	private static final int MAX_TOOL_CALLS_PER_TOOL_PLAN = 20;
-	private static final int SESSION_MAX_ATTEMPTS = 2;
+	private static final int SESSION_MAX_CONSECUTIVE_REPAIRABLE_FAILURES = 2;
 	private static final long SESSION_RETRY_BACKOFF_MS = 250L;
 	private static final int SESSION_COALESCE_STEP_MS = 10;
 	private static final int SESSION_COALESCE_MIN_MS = 10;
@@ -61,6 +62,7 @@ public final class PlannerOrchestrator {
 	private final PlannerActionToolExecutor actionToolExecutor;
 	private final PlannerToolNarrationSink narrationSink;
 	private final PlannerToolRegistry toolRegistry;
+	private final PlannerToolExecutionObserver toolExecutionObserver;
 	private final PlannerTurnJournal turnJournal;
 	private final PlannerConversationProjector conversationProjector;
 
@@ -499,7 +501,8 @@ public final class PlannerOrchestrator {
 			debugRecorder,
 			actionToolExecutor,
 			narrationSink,
-			PlannerToolRegistry.empty()
+			PlannerToolRegistry.empty(),
+			PlannerToolExecutionObserver.NO_OP
 		);
 	}
 
@@ -522,7 +525,51 @@ public final class PlannerOrchestrator {
 			PlannerActionToolExecutor actionToolExecutor,
 			PlannerToolNarrationSink narrationSink,
 			PlannerToolRegistry toolRegistry
-		) {
+	) {
+		this(
+			plannerExecutor,
+			compactionService,
+			contextAggregator,
+			visionTool,
+			inventoryTool,
+			visionMode,
+			imageDetail,
+			plannerSessionMaxConcurrentAttempts,
+			plannerSessionCoalesceStepMillis,
+			plannerSessionCoalesceMinMillis,
+			plannerSessionCoalesceMaxMillis,
+			clock,
+			observability,
+			lifecycleListener,
+			debugRecorder,
+			actionToolExecutor,
+			narrationSink,
+			toolRegistry,
+			PlannerToolExecutionObserver.NO_OP
+		);
+	}
+
+	public PlannerOrchestrator(
+		PlannerExecutor plannerExecutor,
+		PlannerCompactionService compactionService,
+		PlannerContextAggregator contextAggregator,
+		CurrentViewVisionTool visionTool,
+		CurrentInventoryTool inventoryTool,
+		PlannerVisionMode visionMode,
+		String imageDetail,
+		int plannerSessionMaxConcurrentAttempts,
+		int plannerSessionCoalesceStepMillis,
+		int plannerSessionCoalesceMinMillis,
+		int plannerSessionCoalesceMaxMillis,
+			Clock clock,
+			AgentObservability observability,
+			PlannerLifecycleListener lifecycleListener,
+			AgentDebugRecorder debugRecorder,
+			PlannerActionToolExecutor actionToolExecutor,
+			PlannerToolNarrationSink narrationSink,
+			PlannerToolRegistry toolRegistry,
+			PlannerToolExecutionObserver toolExecutionObserver
+	) {
 		this.plannerExecutor = Objects.requireNonNull(plannerExecutor, "plannerExecutor");
 		this.compactionService = Objects.requireNonNull(compactionService, "compactionService");
 		this.contextAggregator = Objects.requireNonNull(contextAggregator, "contextAggregator");
@@ -531,7 +578,7 @@ public final class PlannerOrchestrator {
 			plannerExecutor,
 			this.clock,
 			plannerSessionMaxConcurrentAttempts,
-			SESSION_MAX_ATTEMPTS,
+			SESSION_MAX_CONSECUTIVE_REPAIRABLE_FAILURES,
 			SESSION_RETRY_BACKOFF_MS,
 			this::recordSubmittedConversation
 		);
@@ -548,6 +595,7 @@ public final class PlannerOrchestrator {
 		this.actionToolExecutor = Objects.requireNonNull(actionToolExecutor, "actionToolExecutor");
 		this.narrationSink = Objects.requireNonNull(narrationSink, "narrationSink");
 		this.toolRegistry = Objects.requireNonNull(toolRegistry, "toolRegistry");
+		this.toolExecutionObserver = Objects.requireNonNull(toolExecutionObserver, "toolExecutionObserver");
 		this.turnJournal = new PlannerTurnJournal(this.clock, CONVERSATION_HISTORY_CARD_LIMIT * 4);
 		this.conversationProjector = new PlannerConversationProjector(CONVERSATION_HISTORY_CARD_LIMIT);
 	}
@@ -819,8 +867,8 @@ public final class PlannerOrchestrator {
 			+ " Previous response was rejected: "
 			+ (failureMessage == null || failureMessage.isBlank() ? "parse error" : failureMessage)
 			+ "\nCall exactly one tool in this response unless every tool call is a read-only text tool."
-			+ "\nDo not batch action tools such as navigate_to, mine_blocks, collect_resource, craft_recipe, smelt_items, drop_items, give_player, attack_entity, use_entity, cancel_task, clear_goal, or update_event_policy."
-			+ "\nIf multiple actions are needed, call only the next single action tool now and wait for the tool result or TASK UPDATE before another action."
+			+ "\nDo not batch multiple action tool calls such as navigate_to, mine_blocks, collect_resource, craft_recipe, smelt_items, drop_items, give_player, attack_entity, use_entity, place_block, use_block, cancel_task, clear_goal, or update_event_policy."
+			+ "\nIf multiple actions are needed, call only the next single action tool now and wait for the tool result or TASK UPDATE before another action. A single place_block, use_block, or break_blocks call may use ordered targets[] when all targets were inspected and the schema supports them."
 			+ "\nWhen calling a tool, leave assistant content empty and put visible pre-action text in the tool narration argument.";
 	}
 
@@ -1194,6 +1242,7 @@ public final class PlannerOrchestrator {
 	}
 
 	private CompletableFuture<ToolExecutionOutcome> requestPlannerTool(PlannerToolCall toolCall) {
+		toolExecutionObserver.beforePlannerToolExecution(toolCall);
 		return switch (normalizedToolName(toolCall)) {
 			case VISUAL_TOOL_NAME -> requestVisionTool(toolCall);
 			case INVENTORY_TOOL_NAME -> inventoryTool.inspectInventory(toolPrompt(toolCall)).thenApply(TextToolExecutionOutcome::new);
@@ -1502,7 +1551,7 @@ public final class PlannerOrchestrator {
 	private static boolean isBatchableTextReadTool(PlannerToolCall toolCall) {
 		String name = normalizedToolName(toolCall);
 		return switch (name) {
-			case INVENTORY_TOOL_NAME, CRAFTABLES_TOOL_NAME, NEARBY_ENTITIES_TOOL_NAME -> true;
+			case WORLD_TOOL_NAME, INVENTORY_TOOL_NAME, CRAFTABLES_TOOL_NAME, NEARBY_ENTITIES_TOOL_NAME -> true;
 			default -> false;
 		};
 	}

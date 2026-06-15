@@ -20,6 +20,7 @@ import java.util.function.Consumer;
 
 public final class PlannerToolCatalog {
 	public static final String TAKE_A_LOOK = "take_a_look";
+	public static final String INSPECT_WORLD = "inspect_world";
 	public static final String INSPECT_INVENTORY = "inspect_inventory";
 	public static final String CHECK_CRAFTABLES = "check_craftables";
 	public static final String CHECK_SMELTABLES = "check_smeltables";
@@ -39,6 +40,9 @@ public final class PlannerToolCatalog {
 	public static final String GIVE_PLAYER = "give_player";
 	public static final String ATTACK_ENTITY = "attack_entity";
 	public static final String USE_ENTITY = "use_entity";
+	public static final String PLACE_BLOCK = "place_block";
+	public static final String USE_BLOCK = "use_block";
+	public static final String BREAK_BLOCKS = "break_blocks";
 	public static final String CANCEL_TASK = "cancel_task";
 	public static final String CLEAR_GOAL = "clear_goal";
 	public static final String UPDATE_EVENT_POLICY = "update_event_policy";
@@ -64,6 +68,35 @@ public final class PlannerToolCatalog {
 				prop("z", integer("Optional target block z coordinate. Provide x, y, and z together.")),
 				prop("targetPlayer", optionalString("Optional loaded player name to look at before capture."))
 			), List.of()), PlannerToolCatalog::validateTakeALookArguments),
+		builtInTool(INSPECT_WORLD, true, tool(INSPECT_WORLD, "Inspect exact loaded world block state with fixed query modes.", properties(
+				prop("narration", optionalString("Optional visible narration before using the tool. Omit this field when no narration is needed.")),
+				prop("mode", enumString("World query mode.", List.of("inspect_area", "find_blocks", "find_placement_sites"))),
+				prop("scope", enumString("Query scope.", List.of("self", "center", "box"))),
+				prop("x", integer("Center block x coordinate for scope=center.")),
+				prop("y", integer("Center block y coordinate for scope=center.")),
+				prop("z", integer("Center block z coordinate for scope=center.")),
+				prop("x1", integer("First box corner x coordinate for scope=box.")),
+				prop("y1", integer("First box corner y coordinate for scope=box.")),
+				prop("z1", integer("First box corner z coordinate for scope=box.")),
+				prop("x2", integer("Second box corner x coordinate for scope=box.")),
+				prop("y2", integer("Second box corner y coordinate for scope=box.")),
+				prop("z2", integer("Second box corner z coordinate for scope=box.")),
+				prop("horizontalRadius", integer("Horizontal radius for scope=self or scope=center. Default 8, maximum 16.")),
+				prop("verticalRadius", integer("Vertical radius for scope=self or scope=center. Default 4, maximum 8.")),
+				prop("maxResults", integer("Maximum search results. Default 32, maximum 64.")),
+				prop("blockIds", stringArray("Block ids for find_blocks.")),
+				prop("stateFilters", stringArray("Exact block-state filters for find_blocks, using key=value syntax.")),
+				prop("targetMaterial", enumString("Allowed target block material for find_placement_sites.", List.of("air", "replaceable", "air_or_replaceable"))),
+				prop("supportBlockIds", stringArray("Optional block ids required directly below each placement target.")),
+				prop("supportStateFilters", stringArray("Exact support block-state filters using key=value syntax.")),
+				prop("requireSolidTopSupport", bool("Whether the support block top face must be solid.")),
+				prop("requireAirAbove", bool("Whether the block above the target must be air or replaceable.")),
+				prop("requireStandableAdjacent", bool("Whether at least one adjacent standable player position is required. Default true.")),
+				prop("requireWithinInteractionRange", bool("Whether the target must be within current interaction range.")),
+				prop("nearbyRequiredBlockIds", stringArray("Optional nearby block ids required around each placement target.")),
+				prop("nearbyRequiredHorizontalRadius", integer("Horizontal radius for nearbyRequiredBlockIds. Default 4, maximum 16.")),
+				prop("nearbyRequiredVerticalRadius", integer("Vertical radius for nearbyRequiredBlockIds. Default 1, maximum 8."))
+			), List.of("mode", "scope")), PlannerToolCatalog::validateInspectWorldArguments),
 		builtInTool(INSPECT_INVENTORY, true, tool(INSPECT_INVENTORY, "Inspect current inventory counts.", properties(
 				prop("narration", optionalString("Optional visible narration before using the tool. Omit this field when no narration is needed.")),
 				prop("prompt", string("Optional inventory question."))
@@ -97,7 +130,7 @@ public final class PlannerToolCatalog {
 			), List.of("x", "y", "z", "exactY")), PlannerToolCatalog::validateNavigateToArguments),
 		builtInTool(RETURN_TO_SURFACE, false, tool(RETURN_TO_SURFACE, "Return to the remembered surface or last safe ground after mining. Optionally tower upward with filler blocks if trapped in a shaft.", properties(
 				prop("narration", optionalString("Optional visible narration before using the tool. Omit this field when no narration is needed.")),
-				prop("useTowering", bool("Whether the executor may build a pillar underfoot while jumping if path navigation cannot return to the surface.")),
+				prop("useTowering", bool("Whether the executor may build a pillar underfoot while jumping if path navigation cannot return to the surface. Defaults to true when omitted.")),
 				prop("fillerBlockIds", stringArray("Optional namespaced block/item ids to use for towering. Omit to use defaults: " + String.join(", ", ReturnToSurfaceStepArgs.DEFAULT_FILLER_BLOCK_IDS) + "."))
 			), List.of()), PlannerToolCatalog::validateReturnToSurfaceArguments),
 		builtInTool(MINE_BLOCKS, false, tool(MINE_BLOCKS, "Mine matching blocks by block id. Do not pass item ids from inventory itemCounts.", properties(
@@ -163,6 +196,31 @@ public final class PlannerToolCatalog {
 				prop("entityTypeId", optionalString("Exact namespaced entity type id, for example minecraft:sheep.")),
 				prop("itemId", optionalString("Optional exact namespaced item id to equip first, for example minecraft:shears."))
 			), List.of("uuid")), PlannerToolCatalog::validateUseEntityArguments),
+		builtInTool(PLACE_BLOCK, false, tool(PLACE_BLOCK, "Place a block item at one or more intended modified target positions. Target positions must have been observed by a world read tool such as inspect_world or find_world_features within the last 10 planner tool calls.", properties(
+				prop("narration", optionalString("Optional visible narration before using the tool. Omit this field when no narration is needed.")),
+				prop("itemId", string("Exact namespaced item id from inspect_inventory itemCounts.")),
+				prop("x", integer("Intended modified target block x coordinate.")),
+				prop("y", integer("Intended modified target block y coordinate.")),
+				prop("z", integer("Intended modified target block z coordinate.")),
+				prop("facePreference", enumString("Optional adjacent support preference. auto derives best support.", List.of("auto", "down", "north", "south", "east", "west", "up"))),
+				prop("requireCurrentTargetMaterial", enumString("Required current target material before placement. Default air_or_replaceable.", List.of("air", "replaceable", "air_or_replaceable"))),
+				prop("targets", array("Ordered target blocks to place into. Maximum 16. Root facePreference and requireCurrentTargetMaterial apply as defaults.", placeBlockTargetSchema()))
+			), List.of("itemId")), PlannerToolCatalog::validatePlaceBlockArguments),
+		builtInTool(USE_BLOCK, false, tool(USE_BLOCK, "Use current hand or an optional item on one or more intended modified target positions. If target is air/replaceable, runtime clicks adjacent support such as farmland below seeds. Target positions must have been observed by a world read tool such as inspect_world or find_world_features within the last 10 planner tool calls.", properties(
+				prop("narration", optionalString("Optional visible narration before using the tool. Omit this field when no narration is needed.")),
+				prop("itemId", optionalString("Optional exact namespaced item id to equip first, for example minecraft:wheat_seeds.")),
+				prop("x", integer("Intended modified target block x coordinate.")),
+				prop("y", integer("Intended modified target block y coordinate.")),
+				prop("z", integer("Intended modified target block z coordinate.")),
+				prop("facePreference", enumString("Optional adjacent support preference. auto derives best support.", List.of("auto", "down", "north", "south", "east", "west", "up"))),
+				prop("expectedSupportBlockIds", stringArray("Optional exact block ids expected on the clicked support block.")),
+				prop("expectedTargetMaterial", enumString("Optional current target material check before use.", List.of("air", "replaceable", "air_or_replaceable"))),
+				prop("targets", array("Ordered target blocks to use. Maximum 16. Root facePreference, expectedSupportBlockIds, and expectedTargetMaterial apply as defaults.", useBlockTargetSchema()))
+			), List.of()), PlannerToolCatalog::validateUseBlockArguments),
+		builtInTool(BREAK_BLOCKS, false, tool(BREAK_BLOCKS, "Break exact target blocks in order. Use this for precise terrain editing, not resource mining. Every target position must have been observed by a world read tool such as inspect_world or find_world_features within the last 10 planner tool calls.", properties(
+				prop("narration", optionalString("Optional visible narration before using the tool. Omit this field when no narration is needed.")),
+				prop("targets", array("Ordered target blocks to break. Maximum 16.", breakBlockTargetSchema()))
+			), List.of("targets")), PlannerToolCatalog::validateBreakBlocksArguments),
 		builtInTool(CANCEL_TASK, false, tool(CANCEL_TASK, "Cancel the current task or job.", properties(
 				prop("narration", optionalString("Optional visible narration before using the tool. Omit this field when no narration is needed.")),
 				prop("reason", string("Optional cancellation reason."))
@@ -416,6 +474,111 @@ public final class PlannerToolCatalog {
 		}
 	}
 
+	private static void validatePlaceBlockArguments(JsonObject arguments) {
+		requireString(arguments, "itemId");
+		validateFacePreference(arguments, "facePreference");
+		validateTargetMaterial(arguments, "requireCurrentTargetMaterial");
+		validateBlockTargetShape(arguments, target -> {
+			validateFacePreference(target, "facePreference");
+			validateTargetMaterial(target, "requireCurrentTargetMaterial");
+		});
+	}
+
+	private static void validateUseBlockArguments(JsonObject arguments) {
+		if (arguments.has("itemId") && !arguments.get("itemId").isJsonNull()) {
+			requireString(arguments, "itemId");
+		}
+		validateFacePreference(arguments, "facePreference");
+		if (arguments.has("expectedSupportBlockIds") && !arguments.get("expectedSupportBlockIds").isJsonNull()) {
+			requireStringArray(arguments, "expectedSupportBlockIds");
+		}
+		validateTargetMaterial(arguments, "expectedTargetMaterial");
+		validateBlockTargetShape(arguments, target -> {
+			validateFacePreference(target, "facePreference");
+			if (target.has("expectedSupportBlockIds") && !target.get("expectedSupportBlockIds").isJsonNull()) {
+				requireStringArray(target, "expectedSupportBlockIds");
+			}
+			validateTargetMaterial(target, "expectedTargetMaterial");
+		});
+	}
+
+	private static void validateBreakBlocksArguments(JsonObject arguments) {
+		if (!arguments.has("targets") || !arguments.get("targets").isJsonArray()) {
+			throw new JsonParseException("targets must be an array");
+		}
+		JsonArray targets = arguments.getAsJsonArray("targets");
+		if (targets.isEmpty()) {
+			throw new JsonParseException("targets must not be empty");
+		}
+		if (targets.size() > ai.moeru.airicraft.agent.tasks.BlockBreakStepArgs.MAX_TARGETS) {
+			throw new JsonParseException("targets must contain at most " + ai.moeru.airicraft.agent.tasks.BlockBreakStepArgs.MAX_TARGETS + " entries");
+		}
+		for (JsonElement element : targets) {
+			if (!element.isJsonObject()) {
+				throw new JsonParseException("targets entries must be objects");
+			}
+			JsonObject target = element.getAsJsonObject();
+			requireInt(target, "x");
+			requireInt(target, "y");
+			requireInt(target, "z");
+			requireStringArray(target, "expectedBlockIds");
+		}
+	}
+
+	private static void validateBlockTargetShape(JsonObject arguments, Consumer<JsonObject> targetValidator) {
+		boolean hasTargets = arguments.has("targets") && !arguments.get("targets").isJsonNull();
+		boolean hasAnyRootCoordinate = arguments.has("x") || arguments.has("y") || arguments.has("z");
+		if (hasTargets && hasAnyRootCoordinate) {
+			throw new JsonParseException("targets cannot be combined with root x/y/z");
+		}
+		if (!hasTargets) {
+			requireInt(arguments, "x");
+			requireInt(arguments, "y");
+			requireInt(arguments, "z");
+			return;
+		}
+		if (!arguments.get("targets").isJsonArray()) {
+			throw new JsonParseException("targets must be an array");
+		}
+		JsonArray targets = arguments.getAsJsonArray("targets");
+		if (targets.isEmpty()) {
+			throw new JsonParseException("targets must not be empty");
+		}
+		if (targets.size() > ai.moeru.airicraft.agent.tasks.BlockBreakStepArgs.MAX_TARGETS) {
+			throw new JsonParseException("targets must contain at most " + ai.moeru.airicraft.agent.tasks.BlockBreakStepArgs.MAX_TARGETS + " entries");
+		}
+		for (JsonElement element : targets) {
+			if (!element.isJsonObject()) {
+				throw new JsonParseException("targets entries must be objects");
+			}
+			JsonObject target = element.getAsJsonObject();
+			requireInt(target, "x");
+			requireInt(target, "y");
+			requireInt(target, "z");
+			targetValidator.accept(target);
+		}
+	}
+
+	private static void validateFacePreference(JsonObject arguments, String key) {
+		if (!arguments.has(key) || arguments.get(key).isJsonNull()) {
+			return;
+		}
+		String value = requireString(arguments, key);
+		if (!List.of("auto", "down", "north", "south", "east", "west", "up").contains(value)) {
+			throw new JsonParseException("Unsupported " + key + ": " + value);
+		}
+	}
+
+	private static void validateTargetMaterial(JsonObject arguments, String key) {
+		if (!arguments.has(key) || arguments.get(key).isJsonNull()) {
+			return;
+		}
+		String value = requireString(arguments, key);
+		if (!List.of("air", "replaceable", "air_or_replaceable").contains(value)) {
+			throw new JsonParseException("Unsupported " + key + ": " + value);
+		}
+	}
+
 	private static void requireEntitySelector(JsonObject arguments) {
 		boolean hasUuid = getString(arguments, "uuid").isPresent();
 		boolean hasName = getString(arguments, "name").isPresent();
@@ -444,6 +607,120 @@ public final class PlannerToolCatalog {
 			requireInt(arguments, "x");
 			requireInt(arguments, "y");
 			requireInt(arguments, "z");
+		}
+	}
+
+	private static void validateInspectWorldArguments(JsonObject arguments) {
+		String mode = requireString(arguments, "mode");
+		String scope = requireString(arguments, "scope");
+		if (!List.of("inspect_area", "find_blocks", "find_placement_sites").contains(mode)) {
+			throw new JsonParseException("Unsupported inspect_world mode: " + mode);
+		}
+		validateInspectWorldScope(arguments, scope);
+		validateOptionalIntRange(arguments, "maxResults", 1, 64);
+		validateOptionalIntRange(arguments, "nearbyRequiredHorizontalRadius", 0, 16);
+		validateOptionalIntRange(arguments, "nearbyRequiredVerticalRadius", 0, 8);
+
+		if ("inspect_area".equals(mode)) {
+			rejectAny(arguments, "blockIds", "stateFilters", "targetMaterial", "supportBlockIds", "supportStateFilters",
+				"requireSolidTopSupport", "requireAirAbove", "requireStandableAdjacent", "requireWithinInteractionRange",
+				"nearbyRequiredBlockIds", "nearbyRequiredHorizontalRadius", "nearbyRequiredVerticalRadius", "maxResults");
+			return;
+		}
+		if ("find_blocks".equals(mode)) {
+			requireStringArray(arguments, "blockIds");
+			validateStateFilters(arguments, "stateFilters");
+			rejectAny(arguments, "targetMaterial", "supportBlockIds", "supportStateFilters",
+				"requireSolidTopSupport", "requireAirAbove", "requireStandableAdjacent", "requireWithinInteractionRange",
+				"nearbyRequiredBlockIds", "nearbyRequiredHorizontalRadius", "nearbyRequiredVerticalRadius");
+			return;
+		}
+
+		rejectAny(arguments, "blockIds", "stateFilters");
+		if (arguments.has("targetMaterial") && !arguments.get("targetMaterial").isJsonNull()) {
+			String targetMaterial = requireString(arguments, "targetMaterial");
+			if (!List.of("air", "replaceable", "air_or_replaceable").contains(targetMaterial)) {
+				throw new JsonParseException("Unsupported targetMaterial: " + targetMaterial);
+			}
+		}
+		if (arguments.has("supportBlockIds") && !arguments.get("supportBlockIds").isJsonNull()) {
+			requireStringArray(arguments, "supportBlockIds");
+		}
+		validateStateFilters(arguments, "supportStateFilters");
+		if (arguments.has("requireSolidTopSupport") && !arguments.get("requireSolidTopSupport").isJsonNull()) {
+			requireBoolean(arguments, "requireSolidTopSupport");
+		}
+		if (arguments.has("requireAirAbove") && !arguments.get("requireAirAbove").isJsonNull()) {
+			requireBoolean(arguments, "requireAirAbove");
+		}
+		if (arguments.has("requireStandableAdjacent") && !arguments.get("requireStandableAdjacent").isJsonNull()) {
+			requireBoolean(arguments, "requireStandableAdjacent");
+		}
+		if (arguments.has("requireWithinInteractionRange") && !arguments.get("requireWithinInteractionRange").isJsonNull()) {
+			requireBoolean(arguments, "requireWithinInteractionRange");
+		}
+		if (arguments.has("nearbyRequiredBlockIds") && !arguments.get("nearbyRequiredBlockIds").isJsonNull()) {
+			requireStringArray(arguments, "nearbyRequiredBlockIds");
+		}
+	}
+
+	private static void validateInspectWorldScope(JsonObject arguments, String scope) {
+		switch (scope) {
+			case "self" -> {
+				rejectAny(arguments, "x", "y", "z", "x1", "y1", "z1", "x2", "y2", "z2");
+				validateOptionalIntRange(arguments, "horizontalRadius", 0, 16);
+				validateOptionalIntRange(arguments, "verticalRadius", 0, 8);
+			}
+			case "center" -> {
+				requireInt(arguments, "x");
+				requireInt(arguments, "y");
+				requireInt(arguments, "z");
+				rejectAny(arguments, "x1", "y1", "z1", "x2", "y2", "z2");
+				validateOptionalIntRange(arguments, "horizontalRadius", 0, 16);
+				validateOptionalIntRange(arguments, "verticalRadius", 0, 8);
+			}
+			case "box" -> {
+				requireInt(arguments, "x1");
+				requireInt(arguments, "y1");
+				requireInt(arguments, "z1");
+				requireInt(arguments, "x2");
+				requireInt(arguments, "y2");
+				requireInt(arguments, "z2");
+				rejectAny(arguments, "x", "y", "z", "horizontalRadius", "verticalRadius");
+			}
+			default -> throw new JsonParseException("Unsupported inspect_world scope: " + scope);
+		}
+	}
+
+	private static void validateStateFilters(JsonObject arguments, String key) {
+		if (!arguments.has(key) || arguments.get(key).isJsonNull()) {
+			return;
+		}
+		requireStringArray(arguments, key);
+		for (JsonElement element : arguments.getAsJsonArray(key)) {
+			String filter = element.getAsString();
+			int separator = filter.indexOf('=');
+			if (separator <= 0 || separator != filter.lastIndexOf('=') || separator == filter.length() - 1) {
+				throw new JsonParseException(key + " values must use exact key=value syntax");
+			}
+		}
+	}
+
+	private static void validateOptionalIntRange(JsonObject arguments, String key, int min, int max) {
+		if (!arguments.has(key) || arguments.get(key).isJsonNull()) {
+			return;
+		}
+		int value = requireInt(arguments, key);
+		if (value < min || value > max) {
+			throw new JsonParseException(key + " must be between " + min + " and " + max);
+		}
+	}
+
+	private static void rejectAny(JsonObject arguments, String... keys) {
+		for (String key : keys) {
+			if (arguments.has(key) && !arguments.get(key).isJsonNull()) {
+				throw new JsonParseException("inspect_world field not allowed for this mode/scope: " + key);
+			}
 		}
 	}
 
@@ -647,6 +924,51 @@ public final class PlannerToolCatalog {
 		schema.put("description", description);
 		schema.put("items", items);
 		return schema;
+	}
+
+	private static Map<String, Object> breakBlockTargetSchema() {
+		return Map.of(
+			"type", "object",
+			"properties", properties(
+				prop("x", integer("Target block x coordinate.")),
+				prop("y", integer("Target block y coordinate.")),
+				prop("z", integer("Target block z coordinate.")),
+				prop("expectedBlockIds", stringArray("Exact block ids allowed at this target, copied from inspect_world."))
+			),
+			"required", List.of("x", "y", "z", "expectedBlockIds"),
+			"additionalProperties", false
+		);
+	}
+
+	private static Map<String, Object> placeBlockTargetSchema() {
+		return Map.of(
+			"type", "object",
+			"properties", properties(
+				prop("x", integer("Intended modified target block x coordinate.")),
+				prop("y", integer("Intended modified target block y coordinate.")),
+				prop("z", integer("Intended modified target block z coordinate.")),
+				prop("facePreference", enumString("Optional adjacent support preference. Overrides root default.", List.of("auto", "down", "north", "south", "east", "west", "up"))),
+				prop("requireCurrentTargetMaterial", enumString("Required current target material before placement. Overrides root default.", List.of("air", "replaceable", "air_or_replaceable")))
+			),
+			"required", List.of("x", "y", "z"),
+			"additionalProperties", false
+		);
+	}
+
+	private static Map<String, Object> useBlockTargetSchema() {
+		return Map.of(
+			"type", "object",
+			"properties", properties(
+				prop("x", integer("Intended modified target block x coordinate.")),
+				prop("y", integer("Intended modified target block y coordinate.")),
+				prop("z", integer("Intended modified target block z coordinate.")),
+				prop("facePreference", enumString("Optional adjacent support preference. Overrides root default.", List.of("auto", "down", "north", "south", "east", "west", "up"))),
+				prop("expectedSupportBlockIds", stringArray("Optional exact block ids expected on the clicked support block. Overrides root default.")),
+				prop("expectedTargetMaterial", enumString("Optional current target material check before use. Overrides root default.", List.of("air", "replaceable", "air_or_replaceable")))
+			),
+			"required", List.of("x", "y", "z"),
+			"additionalProperties", false
+		);
 	}
 
 	private static Map<String, Object> policyUpsertSchema() {
