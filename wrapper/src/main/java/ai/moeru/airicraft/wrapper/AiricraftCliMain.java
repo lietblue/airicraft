@@ -64,6 +64,9 @@ public final class AiricraftCliMain {
 		agent.addSubcommand(new AgentLedgerCommand(context));
 		agent.addSubcommand(new AgentEvidenceCommand(context));
 		agent.addSubcommand(new AgentStepExecutionCommand(context));
+		agent.addSubcommand("actions", new UsageCommand(out, "airicraft agent actions", "Composable action graph debug commands"));
+		CommandLine agentActions = agent.getSubcommands().get("actions");
+		agentActions.addSubcommand(new AgentActionsInspectCommand(context));
 		agent.addSubcommand("mission", new UsageCommand(out, "airicraft agent mission", "Mission-level agent commands"));
 		CommandLine agentMission = agent.getSubcommands().get("mission");
 		agentMission.addSubcommand(new AgentMissionSubmitCommand(context));
@@ -341,6 +344,18 @@ public final class AiricraftCliMain {
 		@Override
 		Map<String, Object> runCommand() {
 			return PayloadViews.agentStepExecution(transport().getAgentStepExecution(), verbose());
+		}
+	}
+
+	@Command(name = "inspect", mixinStandardHelpOptions = true, description = "Inspect the composable action graph surface.")
+	private static final class AgentActionsInspectCommand extends BaseCommand {
+		private AgentActionsInspectCommand(CliContext context) {
+			super(context, "agent actions inspect");
+		}
+
+		@Override
+		Map<String, Object> runCommand() {
+			return PayloadViews.agentActionInspect(transport().inspectAgentActionGraph(), verbose());
 		}
 	}
 
@@ -1536,6 +1551,34 @@ public final class AiricraftCliMain {
 				LinkedHashMap<String, Object> compactStep = new LinkedHashMap<>();
 				copy(compactStep, stepExecution, "stepId", "status", "failureReason", "updatedTick");
 				view.put("stepExecution", compactStep);
+			}
+			return view;
+		}
+
+		private static Map<String, Object> agentActionInspect(Map<String, Object> payload, boolean verbose) {
+			LinkedHashMap<String, Object> view = new LinkedHashMap<>();
+			copy(view, payload, "available", "actionsetValid", "actionsetRoot", "worldLoaded", "sessionState", "primitiveCount", "actionsetCount", "domainProviderCount", "diagnosticCount");
+			view.put("primitives", filterItems(
+				maps(payload.get("primitives")),
+				verbose,
+				List.of("id", "version", "summary", "foregroundActuation", "executorBinding"),
+				List.of("cost", "cancellable", "defaultTimeoutTicks", "capabilityTags", "failureCodes", "guardFactTypes", "needFactTypes", "producedFactTypes", "consumedFactTypes", "params")
+			));
+			view.put("actionsets", filterItems(
+				maps(payload.get("actionsets")),
+				verbose,
+				List.of("actionId", "namespace", "sourceName", "summary", "alternativeCount"),
+				List.of("paramCount", "produces", "alternatives")
+			));
+			view.put("domainProviders", filterItems(
+				maps(payload.get("domainProviders")),
+				verbose,
+				List.of("id", "summary", "producedGoal"),
+				List.of("inputFacts")
+			));
+			List<Map<String, Object>> diagnostics = maps(payload.get("actionsetDiagnostics"));
+			if (verbose || !diagnostics.isEmpty()) {
+				view.put("actionsetDiagnostics", diagnostics);
 			}
 			return view;
 		}

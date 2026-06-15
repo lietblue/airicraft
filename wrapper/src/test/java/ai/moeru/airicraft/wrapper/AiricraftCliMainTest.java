@@ -582,6 +582,52 @@ class AiricraftCliMainTest {
 	}
 
 	@Test
+	void agentActionsInspectRendersActionGraphSummary() {
+		TestTransport transport = new TestTransport();
+		transport.agentActionGraphInspectPayload = linkedMap(
+			"available", true,
+			"actionsetValid", true,
+			"actionsetRoot", "actionsets",
+			"worldLoaded", false,
+			"sessionState", "title_screen",
+			"primitiveCount", 2,
+			"actionsetCount", 1,
+			"domainProviderCount", 1,
+			"diagnosticCount", 0,
+			"primitives", List.of(linkedMap(
+				"id", "craft_item",
+				"version", 1,
+				"summary", "Craft an item",
+				"foregroundActuation", true,
+				"executorBinding", "WorldTaskRequest.CRAFT_RECIPE"
+			)),
+			"actionsets", List.of(linkedMap(
+				"actionId", "make_bread",
+				"namespace", "BUILTIN",
+				"sourceName", "make_bread.yml",
+				"summary", "Produce bread",
+				"alternativeCount", 3
+			)),
+			"domainProviders", List.of(linkedMap(
+				"id", "recipe_provider",
+				"summary", "Plans craft routes",
+				"producedGoal", "inventory.item"
+			)),
+			"actionsetDiagnostics", List.of()
+		);
+
+		CliResult result = execute(transport, "agent", "actions", "inspect");
+
+		assertEquals(0, result.exitCode());
+		assertTrue(result.output().contains("command: agent actions inspect\n"));
+		assertTrue(result.output().contains("primitiveCount: 2\n"));
+		assertTrue(result.output().contains("actionsetCount: 1\n"));
+		assertTrue(result.output().contains("id: craft_item\n"));
+		assertTrue(result.output().contains("actionId: make_bread\n"));
+		assertTrue(result.output().contains("id: recipe_provider\n"));
+	}
+
+	@Test
 	void agentMissionSubmitPassesNormalizedMissionPayload() {
 		TestTransport transport = new TestTransport();
 		transport.agentMissionSubmitPayload = linkedMap(
@@ -1146,6 +1192,7 @@ class AiricraftCliMainTest {
 		private Map<String, Object> agentLedgerPayload = Map.of();
 		private Map<String, Object> agentEvidencePayload = Map.of();
 		private Map<String, Object> agentStepExecutionPayload = Map.of();
+		private Map<String, Object> agentActionGraphInspectPayload = Map.of();
 		private Map<String, Object> agentTaskSubmitPayload = Map.of();
 		private Map<String, Object> agentMissionSubmitPayload = Map.of();
 		private Map<String, Object> agentEventsPayload = Map.of("events", List.of());
@@ -1433,6 +1480,11 @@ class AiricraftCliMainTest {
 		@Override
 		public Map<String, Object> getAgentStepExecution() {
 			return agentStepExecutionPayload;
+		}
+
+		@Override
+		public Map<String, Object> inspectAgentActionGraph() {
+			return agentActionGraphInspectPayload;
 		}
 
 		@Override

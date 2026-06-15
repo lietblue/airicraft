@@ -1,6 +1,7 @@
 package ai.moeru.airicraft;
 
 import ai.moeru.airicraft.agent.EmbodiedAgentRuntime;
+import ai.moeru.airicraft.agent.actions.ActionGraphDebugService;
 import ai.moeru.airicraft.agent.control.CameraController;
 import ai.moeru.airicraft.bridge.BridgeExtensionRegistry;
 import ai.moeru.airicraft.bridge.BridgeRoute;
@@ -150,6 +151,7 @@ public final class ModBridgeServer {
 			httpServer.createContext("/v1/agent/ledger", exchange -> handleJson(exchange, this::createAgentLedgerResponse));
 			httpServer.createContext("/v1/agent/evidence", exchange -> handleJson(exchange, this::createAgentEvidenceResponse));
 			httpServer.createContext("/v1/agent/step-execution", exchange -> handleJson(exchange, this::createAgentStepExecutionResponse));
+			httpServer.createContext("/v1/agent/action-graph/inspect", exchange -> handleJson(exchange, this::createAgentActionGraphInspectResponse));
 			httpServer.createContext("/v1/agent/debug/chat", this::handleAgentDebugChat);
 			httpServer.createContext("/v1/agent/debug/idle-trigger", this::handleAgentDebugIdleTrigger);
 			httpServer.createContext("/v1/agent/debug/compact", this::handleAgentDebugCompact);
@@ -1196,6 +1198,16 @@ public final class ModBridgeServer {
 			response.put("activeJob", agentRuntime().activeJob());
 			response.put("stepExecution", agentRuntime().missionExecutionSnapshot().lastStepResult());
 			response.put("taskExecution", agentRuntime().taskExecutionSnapshot());
+			return response;
+		});
+	}
+
+	private Object createAgentActionGraphInspectResponse() {
+		return onClientThread(() -> {
+			Map<String, Object> response = new LinkedHashMap<>(new ActionGraphDebugService().inspectActionGraph());
+			MinecraftClient client = getClient();
+			response.put("worldLoaded", client.world != null);
+			response.put("sessionState", sessionState(client));
 			return response;
 		});
 	}

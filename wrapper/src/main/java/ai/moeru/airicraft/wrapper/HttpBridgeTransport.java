@@ -304,6 +304,11 @@ final class HttpBridgeTransport implements MinecraftTransport {
 	}
 
 	@Override
+	public Map<String, Object> inspectAgentActionGraph() {
+		return get("/v1/agent/action-graph/inspect");
+	}
+
+	@Override
 	public Map<String, Object> submitAgentTask(Map<String, Object> taskPayload) {
 		return send("POST", "/v1/agent/tasks", taskPayload);
 	}
