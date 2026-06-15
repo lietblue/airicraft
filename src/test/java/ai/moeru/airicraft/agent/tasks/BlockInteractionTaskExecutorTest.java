@@ -51,6 +51,38 @@ class BlockInteractionTaskExecutorTest {
 	}
 
 	@Test
+	void blockInteractionNavigationOutcomeWaitsWhilePathing() {
+		assertEquals(
+			BlockInteractionTaskExecutor.BlockInteractionNavigationOutcome.WAIT,
+			BlockInteractionTaskExecutor.blockInteractionNavigationOutcome(Optional.empty(), 12)
+		);
+	}
+
+	@Test
+	void blockInteractionNavigationOutcomeFailsOnPathFailureOrTimeout() {
+		assertEquals(
+			BlockInteractionTaskExecutor.BlockInteractionNavigationOutcome.FAILED,
+			BlockInteractionTaskExecutor.blockInteractionNavigationOutcome(Optional.of("CALC_FAILED"), 12)
+		);
+		assertEquals(
+			BlockInteractionTaskExecutor.BlockInteractionNavigationOutcome.FAILED,
+			BlockInteractionTaskExecutor.blockInteractionNavigationOutcome(Optional.of("cancelled"), 12)
+		);
+		assertEquals(
+			BlockInteractionTaskExecutor.BlockInteractionNavigationOutcome.FAILED,
+			BlockInteractionTaskExecutor.blockInteractionNavigationOutcome(Optional.empty(), 161)
+		);
+	}
+
+	@Test
+	void blockInteractionNavigationOutcomeDistinguishesReachedButStillOutOfRange() {
+		assertEquals(
+			BlockInteractionTaskExecutor.BlockInteractionNavigationOutcome.AT_GOAL_BUT_STILL_OUT_OF_RANGE,
+			BlockInteractionTaskExecutor.blockInteractionNavigationOutcome(Optional.of("AT_GOAL"), 12)
+		);
+	}
+
+	@Test
 	void batchedRequestPausesWhenSessionGateBlocksActuation() {
 		BlockInteractionTaskExecutor executor = new BlockInteractionTaskExecutor(() -> null);
 

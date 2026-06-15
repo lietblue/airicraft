@@ -1,5 +1,6 @@
 package ai.moeru.airicraft.agent.tasks;
 
+import ai.moeru.airicraft.agent.baritone.BaritoneFacade;
 import ai.moeru.airicraft.agent.control.CameraController;
 import ai.moeru.airicraft.agent.goals.GoalPosition;
 import ai.moeru.airicraft.agent.session.SessionSnapshot;
@@ -29,6 +30,7 @@ import net.minecraft.world.RaycastContext;
 import net.minecraft.world.World;
 
 import java.util.List;
+import java.util.Locale;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.function.Supplier;
@@ -36,6 +38,8 @@ import java.util.function.Supplier;
 public final class BlockInteractionTaskExecutor implements WorldTaskExecutor {
 	private static final double INTERACTION_RANGE_SQUARED = 20.25D;
 	private static final int MIN_DIRECT_WATER_HORIZONTAL_SUPPORTS = 3;
+	private static final int INTERACTION_NAVIGATION_RADIUS_BLOCKS = 3;
+	private static final long INTERACTION_NAVIGATION_TIMEOUT_TICKS = 160L;
 	private static final List<Direction> DEFAULT_SUPPORT_ORDER = List.of(
 		Direction.DOWN,
 		Direction.NORTH,
@@ -48,6 +52,7 @@ public final class BlockInteractionTaskExecutor implements WorldTaskExecutor {
 	private final Supplier<MinecraftClient> clientSupplier;
 	private final CameraController cameraController;
 	private final int targetDelayTicks;
+	private final BaritoneFacade baritoneFacade;
 
 	private WorldTaskRequest appliedTask;
 	private boolean terminalEventEmitted;
@@ -55,31 +60,48 @@ public final class BlockInteractionTaskExecutor implements WorldTaskExecutor {
 	private int targetIndex;
 	private int completedTargets;
 	private long nextInteractionTick;
+	private boolean navigationStarted;
+	private int navigationTargetIndex = -1;
+	private BlockPos navigationTarget;
+	private long navigationStartTick;
 
 	public BlockInteractionTaskExecutor() {
 		this(0);
 	}
 
 	public BlockInteractionTaskExecutor(int targetDelayTicks) {
-		this(MinecraftClient::getInstance, new CameraController(), targetDelayTicks);
+		this(MinecraftClient::getInstance, new CameraController(), targetDelayTicks, null);
+	}
+
+	public BlockInteractionTaskExecutor(int targetDelayTicks, BaritoneFacade baritoneFacade) {
+		this(MinecraftClient::getInstance, new CameraController(), targetDelayTicks, baritoneFacade);
 	}
 
 	public BlockInteractionTaskExecutor(int targetDelayTicks, CameraController cameraController) {
-		this(MinecraftClient::getInstance, cameraController, targetDelayTicks);
+		this(MinecraftClient::getInstance, cameraController, targetDelayTicks, null);
+	}
+
+	public BlockInteractionTaskExecutor(int targetDelayTicks, CameraController cameraController, BaritoneFacade baritoneFacade) {
+		this(MinecraftClient::getInstance, cameraController, targetDelayTicks, baritoneFacade);
 	}
 
 	BlockInteractionTaskExecutor(Supplier<MinecraftClient> clientSupplier) {
-		this(clientSupplier, new CameraController(), 0);
+		this(clientSupplier, new CameraController(), 0, null);
 	}
 
 	BlockInteractionTaskExecutor(Supplier<MinecraftClient> clientSupplier, CameraController cameraController) {
-		this(clientSupplier, cameraController, 0);
+		this(clientSupplier, cameraController, 0, null);
 	}
 
 	BlockInteractionTaskExecutor(Supplier<MinecraftClient> clientSupplier, CameraController cameraController, int targetDelayTicks) {
+		this(clientSupplier, cameraController, targetDelayTicks, null);
+	}
+
+	BlockInteractionTaskExecutor(Supplier<MinecraftClient> clientSupplier, CameraController cameraController, int targetDelayTicks, BaritoneFacade baritoneFacade) {
 		this.clientSupplier = Objects.requireNonNull(clientSupplier, "clientSupplier");
 		this.cameraController = Objects.requireNonNull(cameraController, "cameraController");
 		this.targetDelayTicks = Math.max(0, targetDelayTicks);
+		this.baritoneFacade = baritoneFacade;
 	}
 
 	@Override
@@ -195,8 +217,9 @@ public final class BlockInteractionTaskExecutor implements WorldTaskExecutor {
 		HitTarget hitTarget
 	) {
 		if (!withinInteractionRange(player, hitTarget.hitVec())) {
-			return fail(request, targetFailure(target, "target_out_of_range supportPos=" + compactPos(hitTarget.supportPos())));
+			return navigateTowardInteractionRange(tick, request, target, "target_out_of_range supportPos=" + compactPos(hitTarget.supportPos()));
 		}
+		clearNavigation();
 		cameraController.lookAtNow(client, hitTarget.hitVec());
 		ActionResult blockResult = client.interactionManager.interactBlock(player, hand, hitTarget.hitResult());
 		ActionResult itemResult = null;
@@ -242,8 +265,9 @@ public final class BlockInteractionTaskExecutor implements WorldTaskExecutor {
 		BlockState before
 	) {
 		if (!withinInteractionRange(player, Vec3d.ofCenter(target))) {
-			return fail(request, targetFailure(target, "target_out_of_range"));
+			return navigateTowardInteractionRange(tick, request, target, "target_out_of_range");
 		}
+		clearNavigation();
 		Vec3d hitVec = Vec3d.ofCenter(target);
 		cameraController.lookAtNow(client, hitVec);
 		String beforeItemId = itemId(hand == Hand.OFF_HAND ? player.getOffHandStack() : player.getMainHandStack());
@@ -291,8 +315,9 @@ public final class BlockInteractionTaskExecutor implements WorldTaskExecutor {
 		BlockState before
 	) {
 		if (!withinInteractionRange(player, Vec3d.ofCenter(target))) {
-			return fail(request, targetFailure(target, "target_out_of_range"));
+			return navigateTowardInteractionRange(tick, request, target, "target_out_of_range");
 		}
+		clearNavigation();
 		if (!before.isAir() && !before.isReplaceable()) {
 			return fail(request, targetFailure(target, "fluid_target_not_replaceable beforeBlockId=" + blockId(before)));
 		}
@@ -321,6 +346,51 @@ public final class BlockInteractionTaskExecutor implements WorldTaskExecutor {
 				+ " message=" + directPlacement.get());
 		}
 		return fail(request, targetFailure(target, "direct_fluid_placement_unavailable"));
+	}
+
+	private Optional<TaskTerminalEvent> navigateTowardInteractionRange(long tick, WorldTaskRequest request, BlockPos target, String outOfRangeReason) {
+		if (baritoneFacade == null || !baritoneFacade.isLoaded()) {
+			return fail(request, targetFailure(target, outOfRangeReason));
+		}
+		if (!navigationStarted || navigationTargetIndex != targetIndex || !target.equals(navigationTarget)) {
+			baritoneFacade.startNavigateNear(
+				new GoalPosition(target.getX(), target.getY(), target.getZ(), false),
+				INTERACTION_NAVIGATION_RADIUS_BLOCKS
+			);
+			navigationStarted = true;
+			navigationTargetIndex = targetIndex;
+			navigationTarget = target;
+			navigationStartTick = tick;
+			snapshot = snapshot(TaskExecutionState.RUNNING, request, "interaction_navigation_started targetIndex=" + targetIndex + " targetPos=" + compactPos(target));
+			return Optional.empty();
+		}
+		Optional<String> pathEvent = baritoneFacade.pollPathEvent();
+		BlockInteractionNavigationOutcome outcome = blockInteractionNavigationOutcome(pathEvent, tick - navigationStartTick);
+		if (outcome == BlockInteractionNavigationOutcome.FAILED) {
+			String suffix = pathEvent.map(event -> " navigationEvent=" + event).orElse(" navigationTimeoutTicks=" + (tick - navigationStartTick));
+			return fail(request, targetFailure(target, outOfRangeReason + suffix));
+		}
+		if (outcome == BlockInteractionNavigationOutcome.AT_GOAL_BUT_STILL_OUT_OF_RANGE) {
+			return fail(request, targetFailure(target, outOfRangeReason + " navigationEvent=" + pathEvent.orElse("AT_GOAL")));
+		}
+		snapshot = snapshot(TaskExecutionState.RUNNING, request, "interaction_navigating targetIndex=" + targetIndex + " targetPos=" + compactPos(target));
+		return Optional.empty();
+	}
+
+	static BlockInteractionNavigationOutcome blockInteractionNavigationOutcome(Optional<String> pathEvent, long elapsedTicks) {
+		if (pathEvent.isPresent()) {
+			String normalized = pathEvent.get().trim().toUpperCase(Locale.ROOT);
+			if ("AT_GOAL".equals(normalized)) {
+				return BlockInteractionNavigationOutcome.AT_GOAL_BUT_STILL_OUT_OF_RANGE;
+			}
+			if ("CALC_FAILED".equals(normalized) || "CANCELED".equals(normalized) || "CANCELLED".equals(normalized)) {
+				return BlockInteractionNavigationOutcome.FAILED;
+			}
+		}
+		if (elapsedTicks > INTERACTION_NAVIGATION_TIMEOUT_TICKS) {
+			return BlockInteractionNavigationOutcome.FAILED;
+		}
+		return BlockInteractionNavigationOutcome.WAIT;
 	}
 
 	private Optional<HitTarget> resolvePlacementHit(MinecraftClient client, ClientPlayerEntity player, BlockPos target, String facePreference) {
@@ -567,6 +637,7 @@ public final class BlockInteractionTaskExecutor implements WorldTaskExecutor {
 	}
 
 	private Optional<TaskTerminalEvent> fail(WorldTaskRequest request, String reason) {
+		clearNavigation();
 		snapshot = snapshot(TaskExecutionState.FAILED, request, reason);
 		if (terminalEventEmitted) {
 			return Optional.empty();
@@ -673,12 +744,23 @@ public final class BlockInteractionTaskExecutor implements WorldTaskExecutor {
 	}
 
 	private void reset() {
+		clearNavigation();
 		appliedTask = null;
 		terminalEventEmitted = false;
 		snapshot = TaskExecutionSnapshot.idle();
 		targetIndex = 0;
 		completedTargets = 0;
 		nextInteractionTick = 0L;
+	}
+
+	private void clearNavigation() {
+		if (navigationStarted && baritoneFacade != null && baritoneFacade.isLoaded()) {
+			baritoneFacade.cancel();
+		}
+		navigationStarted = false;
+		navigationTargetIndex = -1;
+		navigationTarget = null;
+		navigationStartTick = 0L;
 	}
 
 	private enum TargetMaterial {
@@ -699,6 +781,12 @@ public final class BlockInteractionTaskExecutor implements WorldTaskExecutor {
 		FLUID_ITEM_USE,
 		SUPPORT_INTERACTION,
 		BLOCK_INTERACTION
+	}
+
+	enum BlockInteractionNavigationOutcome {
+		WAIT,
+		AT_GOAL_BUT_STILL_OUT_OF_RANGE,
+		FAILED
 	}
 
 	private record HitTarget(
