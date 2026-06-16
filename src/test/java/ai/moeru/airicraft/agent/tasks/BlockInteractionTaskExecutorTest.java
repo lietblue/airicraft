@@ -84,6 +84,18 @@ class BlockInteractionTaskExecutorTest {
 	}
 
 	@Test
+	void directInteractionApproachHandlesNearbyOutOfReachTargets() {
+		assertTrue(BlockInteractionTaskExecutor.shouldUseDirectInteractionApproach(81.0D, false));
+		assertTrue(BlockInteractionTaskExecutor.shouldUseDirectInteractionApproach(100.0D, false));
+	}
+
+	@Test
+	void directInteractionApproachDefersWhenFarOrStuck() {
+		assertFalse(BlockInteractionTaskExecutor.shouldUseDirectInteractionApproach(100.1D, false));
+		assertFalse(BlockInteractionTaskExecutor.shouldUseDirectInteractionApproach(16.0D, true));
+	}
+
+	@Test
 	void interactionStandCandidatesPreferPositionsBesideTargetAndSupport() {
 		assertEquals(
 			List.of(

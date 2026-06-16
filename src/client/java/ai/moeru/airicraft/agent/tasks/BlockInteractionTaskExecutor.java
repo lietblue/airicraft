@@ -2,6 +2,7 @@ package ai.moeru.airicraft.agent.tasks;
 
 import ai.moeru.airicraft.agent.baritone.BaritoneFacade;
 import ai.moeru.airicraft.agent.control.CameraController;
+import ai.moeru.airicraft.agent.control.MovementController;
 import ai.moeru.airicraft.agent.goals.GoalPosition;
 import ai.moeru.airicraft.agent.session.SessionSnapshot;
 import net.minecraft.block.BlockState;
@@ -40,6 +41,7 @@ public final class BlockInteractionTaskExecutor implements WorldTaskExecutor {
 	private static final int MIN_DIRECT_WATER_HORIZONTAL_SUPPORTS = 3;
 	private static final int INTERACTION_NAVIGATION_RADIUS_BLOCKS = 3;
 	private static final long INTERACTION_NAVIGATION_TIMEOUT_TICKS = 160L;
+	private static final double DIRECT_INTERACTION_APPROACH_RANGE_SQUARED = 100.0D;
 	private static final long PLACEMENT_CONFIRMATION_TIMEOUT_TICKS = 20L;
 	private static final List<Direction> DEFAULT_SUPPORT_ORDER = List.of(
 		Direction.DOWN,
@@ -52,6 +54,7 @@ public final class BlockInteractionTaskExecutor implements WorldTaskExecutor {
 
 	private final Supplier<MinecraftClient> clientSupplier;
 	private final CameraController cameraController;
+	private final MovementController movementController = new MovementController();
 	private final int targetDelayTicks;
 	private final BaritoneFacade baritoneFacade;
 
@@ -234,6 +237,7 @@ public final class BlockInteractionTaskExecutor implements WorldTaskExecutor {
 		if (!withinInteractionRange(player, hitTarget.hitVec())) {
 			return navigateTowardInteractionRange(tick, client, player, request, target, hitTarget, "target_out_of_range supportPos=" + compactPos(hitTarget.supportPos()));
 		}
+		movementController.stop(client);
 		cameraController.lookAtNow(client, hitTarget.hitVec());
 		boolean raycastMatchesHitTarget = raycastMatchesHitTarget(client, player, hitTarget);
 		boolean shouldNavigateForMissingRaycast = shouldNavigateForMissingRaycast(request, player, hand, before, target, hitTarget, raycastMatchesHitTarget);
@@ -331,8 +335,9 @@ public final class BlockInteractionTaskExecutor implements WorldTaskExecutor {
 		BlockState before
 	) {
 		if (!withinInteractionRange(player, Vec3d.ofCenter(target))) {
-			return navigateTowardTargetRange(tick, request, target, "target_out_of_range");
+			return navigateTowardTargetRange(tick, client, player, request, target, "target_out_of_range");
 		}
+		movementController.stop(client);
 		clearNavigation();
 		Vec3d hitVec = Vec3d.ofCenter(target);
 		cameraController.lookAtNow(client, hitVec);
@@ -381,8 +386,9 @@ public final class BlockInteractionTaskExecutor implements WorldTaskExecutor {
 		BlockState before
 	) {
 		if (!withinInteractionRange(player, Vec3d.ofCenter(target))) {
-			return navigateTowardTargetRange(tick, request, target, "target_out_of_range");
+			return navigateTowardTargetRange(tick, client, player, request, target, "target_out_of_range");
 		}
+		movementController.stop(client);
 		clearNavigation();
 		if (!before.isAir() && !before.isReplaceable()) {
 			return fail(request, targetFailure(target, "fluid_target_not_replaceable beforeBlockId=" + blockId(before)));
@@ -423,6 +429,9 @@ public final class BlockInteractionTaskExecutor implements WorldTaskExecutor {
 		HitTarget hitTarget,
 		String outOfRangeReason
 	) {
+		if (startOrContinueDirectApproach(tick, client, player, request, target, hitTarget.hitVec(), outOfRangeReason)) {
+			return Optional.empty();
+		}
 		if (baritoneFacade == null || !baritoneFacade.isLoaded()) {
 			return fail(request, targetFailure(target, outOfRangeReason));
 		}
@@ -467,7 +476,17 @@ public final class BlockInteractionTaskExecutor implements WorldTaskExecutor {
 		return Optional.empty();
 	}
 
-	private Optional<TaskTerminalEvent> navigateTowardTargetRange(long tick, WorldTaskRequest request, BlockPos target, String outOfRangeReason) {
+	private Optional<TaskTerminalEvent> navigateTowardTargetRange(
+		long tick,
+		MinecraftClient client,
+		ClientPlayerEntity player,
+		WorldTaskRequest request,
+		BlockPos target,
+		String outOfRangeReason
+	) {
+		if (startOrContinueDirectApproach(tick, client, player, request, target, Vec3d.ofCenter(target), outOfRangeReason)) {
+			return Optional.empty();
+		}
 		if (baritoneFacade == null || !baritoneFacade.isLoaded()) {
 			return fail(request, targetFailure(target, outOfRangeReason));
 		}
@@ -504,6 +523,42 @@ public final class BlockInteractionTaskExecutor implements WorldTaskExecutor {
 			+ " targetPos=" + compactPos(target)
 			+ " navigationGoal=" + compactGoal(navigationGoal));
 		return Optional.empty();
+	}
+
+	private boolean startOrContinueDirectApproach(
+		long tick,
+		MinecraftClient client,
+		ClientPlayerEntity player,
+		WorldTaskRequest request,
+		BlockPos target,
+		Vec3d aimPoint,
+		String outOfRangeReason
+	) {
+		double squaredDistance = player == null || aimPoint == null ? Double.MAX_VALUE : player.squaredDistanceTo(aimPoint);
+		if (!shouldUseDirectInteractionApproach(squaredDistance, movementController.snapshot().stuck())) {
+			if (movementController.snapshot().stuck()) {
+				movementController.stop(client);
+			}
+			return false;
+		}
+		if (navigationStarted && baritoneFacade != null && baritoneFacade.isLoaded()) {
+			baritoneFacade.cancel();
+		}
+		navigationStarted = false;
+		navigationTargetIndex = -1;
+		navigationTarget = null;
+		navigationGoal = null;
+		navigationStartTick = 0L;
+		cameraController.lookAtNow(client, aimPoint);
+		movementController.moveForward(client, true, false, tick);
+		snapshot = snapshot(TaskExecutionState.RUNNING, request, "interaction_direct_approach targetIndex=" + targetIndex
+			+ " targetPos=" + compactPos(target)
+			+ " reason=" + outOfRangeReason);
+		return true;
+	}
+
+	static boolean shouldUseDirectInteractionApproach(double squaredDistance, boolean movementStuck) {
+		return !movementStuck && squaredDistance <= DIRECT_INTERACTION_APPROACH_RANGE_SQUARED;
 	}
 
 	private boolean navigationGoalReached(Optional<String> pathEvent) {
@@ -879,6 +934,7 @@ public final class BlockInteractionTaskExecutor implements WorldTaskExecutor {
 
 	private Optional<TaskTerminalEvent> fail(WorldTaskRequest request, String reason) {
 		clearNavigation();
+		movementController.stop(clientSupplier.get());
 		snapshot = snapshot(TaskExecutionState.FAILED, request, reason);
 		if (terminalEventEmitted) {
 			return Optional.empty();
@@ -1006,6 +1062,7 @@ public final class BlockInteractionTaskExecutor implements WorldTaskExecutor {
 
 	private void reset() {
 		clearNavigation();
+		movementController.stop(clientSupplier.get());
 		appliedTask = null;
 		terminalEventEmitted = false;
 		snapshot = TaskExecutionSnapshot.idle();
