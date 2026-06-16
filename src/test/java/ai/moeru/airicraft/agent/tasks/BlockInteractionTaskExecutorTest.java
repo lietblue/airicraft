@@ -96,6 +96,20 @@ class BlockInteractionTaskExecutorTest {
 	}
 
 	@Test
+	void cancelledNearbyNavigationFallsBackToDirectApproach() {
+		assertTrue(BlockInteractionTaskExecutor.shouldFallbackToDirectApproachAfterNavigationFailure(Optional.of("CANCELED"), 81.0D, false));
+		assertTrue(BlockInteractionTaskExecutor.shouldFallbackToDirectApproachAfterNavigationFailure(Optional.of("cancelled"), 100.0D, false));
+	}
+
+	@Test
+	void directApproachFallbackDefersForFarStuckOrNonCancelNavigationFailures() {
+		assertFalse(BlockInteractionTaskExecutor.shouldFallbackToDirectApproachAfterNavigationFailure(Optional.of("CANCELED"), 100.1D, false));
+		assertFalse(BlockInteractionTaskExecutor.shouldFallbackToDirectApproachAfterNavigationFailure(Optional.of("CANCELED"), 16.0D, true));
+		assertFalse(BlockInteractionTaskExecutor.shouldFallbackToDirectApproachAfterNavigationFailure(Optional.of("CALC_FAILED"), 16.0D, false));
+		assertFalse(BlockInteractionTaskExecutor.shouldFallbackToDirectApproachAfterNavigationFailure(Optional.empty(), 16.0D, false));
+	}
+
+	@Test
 	void interactionStandCandidatesPreferPositionsBesideTargetAndSupport() {
 		assertEquals(
 			List.of(

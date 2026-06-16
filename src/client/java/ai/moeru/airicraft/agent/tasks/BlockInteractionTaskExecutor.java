@@ -463,6 +463,10 @@ public final class BlockInteractionTaskExecutor implements WorldTaskExecutor {
 			return Optional.empty();
 		}
 		BlockInteractionNavigationOutcome outcome = blockInteractionNavigationOutcome(pathEvent, tick - navigationStartTick);
+		if (shouldFallbackToDirectApproachAfterNavigationFailure(pathEvent, player.squaredDistanceTo(hitTarget.hitVec()), movementController.snapshot().stuck())
+			&& startOrContinueDirectApproach(tick, client, player, request, target, hitTarget.hitVec(), outOfRangeReason + " navigationEvent=" + pathEvent.orElse(""))) {
+			return Optional.empty();
+		}
 		if (outcome == BlockInteractionNavigationOutcome.FAILED) {
 			String suffix = pathEvent.map(event -> " navigationEvent=" + event).orElse(" navigationTimeoutTicks=" + (tick - navigationStartTick));
 			return fail(request, targetFailure(target, outOfRangeReason + suffix + " navigationGoal=" + compactGoal(navigationGoal)));
@@ -512,6 +516,10 @@ public final class BlockInteractionTaskExecutor implements WorldTaskExecutor {
 			return Optional.empty();
 		}
 		BlockInteractionNavigationOutcome outcome = blockInteractionNavigationOutcome(pathEvent, tick - navigationStartTick);
+		if (shouldFallbackToDirectApproachAfterNavigationFailure(pathEvent, player.squaredDistanceTo(Vec3d.ofCenter(target)), movementController.snapshot().stuck())
+			&& startOrContinueDirectApproach(tick, client, player, request, target, Vec3d.ofCenter(target), outOfRangeReason + " navigationEvent=" + pathEvent.orElse(""))) {
+			return Optional.empty();
+		}
 		if (outcome == BlockInteractionNavigationOutcome.FAILED) {
 			String suffix = pathEvent.map(event -> " navigationEvent=" + event).orElse(" navigationTimeoutTicks=" + (tick - navigationStartTick));
 			return fail(request, targetFailure(target, outOfRangeReason + suffix + " navigationGoal=" + compactGoal(navigationGoal)));
@@ -559,6 +567,16 @@ public final class BlockInteractionTaskExecutor implements WorldTaskExecutor {
 
 	static boolean shouldUseDirectInteractionApproach(double squaredDistance, boolean movementStuck) {
 		return !movementStuck && squaredDistance <= DIRECT_INTERACTION_APPROACH_RANGE_SQUARED;
+	}
+
+	static boolean shouldFallbackToDirectApproachAfterNavigationFailure(Optional<String> pathEvent, double squaredDistance, boolean movementStuck) {
+		return pathEvent
+			.map(event -> {
+				String normalized = event.trim().toUpperCase(Locale.ROOT);
+				return "CANCELED".equals(normalized) || "CANCELLED".equals(normalized);
+			})
+			.orElse(false)
+			&& shouldUseDirectInteractionApproach(squaredDistance, movementStuck);
 	}
 
 	private boolean navigationGoalReached(Optional<String> pathEvent) {
