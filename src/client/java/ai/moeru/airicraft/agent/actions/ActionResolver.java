@@ -99,15 +99,15 @@ public final class ActionResolver {
 				resolving.remove(goal.normalizedKey());
 				return resourceRoute;
 			}
-			Optional<ActionRoute> providerRoute = resolveRecipeProviderGoal(goal, depth, resolving, trace);
-			if (providerRoute.isPresent()) {
-				resolving.remove(goal.normalizedKey());
-				return providerRoute;
-			}
 			Optional<ActionRoute> smeltingRoute = resolveSmeltingProviderGoal(goal, depth, resolving, trace);
 			if (smeltingRoute.isPresent()) {
 				resolving.remove(goal.normalizedKey());
 				return smeltingRoute;
+			}
+			Optional<ActionRoute> providerRoute = resolveRecipeProviderGoal(goal, depth, resolving, trace);
+			if (providerRoute.isPresent()) {
+				resolving.remove(goal.normalizedKey());
+				return providerRoute;
 			}
 			Optional<ActionRoute> miningRoute = resolveMiningProviderGoal(goal, depth, resolving, trace);
 			if (miningRoute.isPresent()) {
@@ -128,15 +128,15 @@ public final class ActionResolver {
 				resolving.remove(goal.normalizedKey());
 				return resourceRoute;
 			}
-			Optional<ActionRoute> providerRoute = resolveRecipeProviderGoal(goal, depth, resolving, trace);
-			if (providerRoute.isPresent()) {
-				resolving.remove(goal.normalizedKey());
-				return providerRoute;
-			}
 			Optional<ActionRoute> smeltingRoute = resolveSmeltingProviderGoal(goal, depth, resolving, trace);
 			if (smeltingRoute.isPresent()) {
 				resolving.remove(goal.normalizedKey());
 				return smeltingRoute;
+			}
+			Optional<ActionRoute> providerRoute = resolveRecipeProviderGoal(goal, depth, resolving, trace);
+			if (providerRoute.isPresent()) {
+				resolving.remove(goal.normalizedKey());
+				return providerRoute;
 			}
 			Optional<ActionRoute> miningRoute = resolveMiningProviderGoal(goal, depth, resolving, trace);
 			if (miningRoute.isPresent()) {

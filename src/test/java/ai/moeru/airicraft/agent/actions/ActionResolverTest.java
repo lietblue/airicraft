@@ -256,6 +256,61 @@ class ActionResolverTest {
 	}
 
 	@Test
+	void directSmeltingBeatsReversibleCraftingRecipes() {
+		ActionFactStore facts = new ActionFactStore();
+		facts.upsert(new ActionFact(
+			ActionFactIdentity.inventoryItem("world-a", "bot", "minecraft:raw_iron"),
+			Map.of("count", 3),
+			ActionFactProvenance.OBSERVED,
+			90,
+			ActionFact.NEVER_STALE
+		));
+		facts.upsert(new ActionFact(
+			ActionFactIdentity.smeltRecipe("world-a", "bot", "smelt:minecraft_raw_iron_to_minecraft_iron_ingot:nearby-1"),
+			Map.of(
+				"inputItemId", "minecraft:raw_iron",
+				"outputItemId", "minecraft:iron_ingot",
+				"outputCount", 1,
+				"maxInputQuantity", 3
+			),
+			ActionFactProvenance.OBSERVED,
+			90,
+			ActionFact.NEVER_STALE
+		));
+		facts.upsert(new ActionFact(
+			ActionFactIdentity.craftRecipe("world-a", "bot", "iron_ingot_x9_to_iron_block"),
+			Map.of(
+				"outputItemId", "minecraft:iron_block",
+				"outputCount", 1,
+				"inputCounts", Map.of("minecraft:iron_ingot", 9)
+			),
+			ActionFactProvenance.OBSERVED,
+			90,
+			ActionFact.NEVER_STALE
+		));
+		facts.upsert(new ActionFact(
+			ActionFactIdentity.craftRecipe("world-a", "bot", "iron_block_to_iron_ingot"),
+			Map.of(
+				"outputItemId", "minecraft:iron_ingot",
+				"outputCount", 9,
+				"inputCounts", Map.of("minecraft:iron_block", 1)
+			),
+			ActionFactProvenance.OBSERVED,
+			90,
+			ActionFact.NEVER_STALE
+		));
+
+		ActionResolveResult result = new ActionResolver(ActionsetIndex.empty(), facts, CONTEXT)
+			.resolve(ActionGoal.inventoryItem("minecraft:iron_ingot", 3));
+
+		assertTrue(result.resolved(), () -> result.trace().toString());
+		assertEquals(List.of("smelt_item", "collect_smelted_item"), result.route().steps().stream().map(ActionPlanStep::targetId).toList());
+		ActionPlanStep smelt = result.route().steps().getFirst();
+		assertEquals(3, smelt.args().get("inputQuantity"));
+		assertFalse(result.route().steps().stream().anyMatch(step -> "iron_block_to_iron_ingot".equals(step.args().get("recipeId"))));
+	}
+
+	@Test
 	void resolvesMinedDropInventoryItemThroughMiningProvider() {
 		ActionFactStore facts = new ActionFactStore();
 		facts.upsert(new ActionFact(
