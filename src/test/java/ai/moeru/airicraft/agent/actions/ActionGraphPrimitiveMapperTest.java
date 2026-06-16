@@ -113,6 +113,25 @@ class ActionGraphPrimitiveMapperTest {
 	}
 
 	@Test
+	void mapsSmeltItemFuelPlanToManualFuelSelection() {
+		ActionGraphPrimitiveDispatch dispatch = ActionGraphPrimitiveMapper.map(primitive("smelt_item", Map.of(
+			"itemId", "minecraft:iron_ingot",
+			"optionId", "smelt:minecraft_raw_iron_to_minecraft_iron_ingot:nearby-1",
+			"inputQuantity", 3,
+			"fuelItemId", "minecraft:birch_planks",
+			"fuelQuantity", 2
+		)), List.of(), List.of(smeltingOption()));
+
+		assertTrue(dispatch.dispatchable());
+		assertEquals(ActiveJobType.SMELT_ITEMS, dispatch.proposal().type());
+		assertEquals("minecraft:birch_planks", dispatch.proposal().smeltItems().fuelItemId());
+		assertEquals(2, dispatch.proposal().smeltItems().fuelQuantity());
+		assertEquals("MANUAL", dispatch.proposal().smeltItems().fuelMode().name());
+		assertEquals("minecraft:birch_planks", dispatch.payload().get("fuelItemId"));
+		assertEquals(2, dispatch.payload().get("fuelQuantity"));
+	}
+
+	@Test
 	void inferredSmeltStepBindsCurrentConcreteOption() {
 		ActionGraphPrimitiveDispatch dispatch = ActionGraphPrimitiveMapper.map(primitive("smelt_item", Map.of(
 			"itemId", "minecraft:iron_ingot",

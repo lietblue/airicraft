@@ -14,6 +14,11 @@ import java.util.Set;
 
 public final class ActionResolver {
 	private static final int DEFAULT_MAX_DEPTH = 8;
+	private static final int DEFAULT_SMELT_COOK_TICKS = 200;
+	private static final int FUEL_TICKS_PLANKS = 300;
+	private static final int FUEL_TICKS_LOGS = 300;
+	private static final int FUEL_TICKS_STICKS = 100;
+	private static final int FUEL_TICKS_COAL = 1600;
 	private static final Set<ActionFactProvenance> GUARD_USABLE_PROVENANCE = Set.of(
 		ActionFactProvenance.OBSERVED,
 		ActionFactProvenance.EXECUTOR_REPORTED,
@@ -99,6 +104,11 @@ public final class ActionResolver {
 				resolving.remove(goal.normalizedKey());
 				return resourceRoute;
 			}
+			Optional<ActionRoute> logItemRoute = resolveLogItemProviderGoal(goal, trace);
+			if (logItemRoute.isPresent()) {
+				resolving.remove(goal.normalizedKey());
+				return logItemRoute;
+			}
 			Optional<ActionRoute> smeltingRoute = resolveSmeltingProviderGoal(goal, depth, resolving, trace);
 			if (smeltingRoute.isPresent()) {
 				resolving.remove(goal.normalizedKey());
@@ -127,6 +137,11 @@ public final class ActionResolver {
 			if (resourceRoute.isPresent()) {
 				resolving.remove(goal.normalizedKey());
 				return resourceRoute;
+			}
+			Optional<ActionRoute> logItemRoute = resolveLogItemProviderGoal(goal, trace);
+			if (logItemRoute.isPresent()) {
+				resolving.remove(goal.normalizedKey());
+				return logItemRoute;
 			}
 			Optional<ActionRoute> smeltingRoute = resolveSmeltingProviderGoal(goal, depth, resolving, trace);
 			if (smeltingRoute.isPresent()) {
@@ -241,6 +256,49 @@ public final class ActionResolver {
 		return Optional.of(new ActionRoute(List.of(step), 20));
 	}
 
+	private Optional<ActionRoute> resolveLogItemProviderGoal(
+		ActionGoal goal,
+		List<ActionTraceEvent> trace
+	) {
+		if (goal.factType() != ActionFactType.INVENTORY_ITEM) {
+			return Optional.empty();
+		}
+		String itemId = goal.keys().getOrDefault("itemId", "");
+		if (!ActionGraphDomainKnowledge.logItemIds().contains(itemId)) {
+			return Optional.empty();
+		}
+		String alternativeKey = "resource_provider:" + itemId;
+		if (blockedAlternativeKeys.contains(alternativeKey)) {
+			trace.add(event(
+				"route_candidate_blocked",
+				"resource_provider",
+				itemId,
+				"",
+				Map.of("goal", goal.normalizedKey(), "reason", "previous_failure")
+			));
+			return Optional.empty();
+		}
+		int targetCount = goal.minimum("countAtLeast", 1);
+		int deficitCount = Math.max(0, targetCount - existingGoalCount(goal));
+		if (deficitCount <= 0) {
+			return Optional.of(ActionRoute.empty());
+		}
+		trace.add(event(
+			"route_candidate_built",
+			"resource_provider",
+			itemId,
+			"",
+			Map.of("goal", goal.normalizedKey(), "cost", 20, "resourceKind", "WOOD_LOGS")
+		));
+		LinkedHashMap<String, Object> args = new LinkedHashMap<>();
+		args.put("resourceKind", "WOOD_LOGS");
+		args.put("quantity", deficitCount);
+		ActionPlanStep step = new ActionPlanStep(ActionStepKind.PRIMITIVE, "resource_provider", itemId, "collect_resource", "collect_resource", args);
+		trace.add(event("primitive_planned", "resource_provider", itemId, "collect_resource", Map.of("primitive", "collect_resource", "resourceKind", "WOOD_LOGS")));
+		trace.add(event("route_selected", "resource_provider", itemId, "", Map.of("goal", goal.normalizedKey())));
+		return Optional.of(new ActionRoute(List.of(step), 20));
+	}
+
 	private Optional<ActionRoute> resolveRecipeProviderGoal(
 		ActionGoal goal,
 		int depth,
@@ -263,6 +321,8 @@ public final class ActionResolver {
 		Map<String, String> recipeQuery = new LinkedHashMap<>();
 		recipeQuery.put("worldId", context.worldId());
 		recipeQuery.put("actorId", context.actorId());
+		ActionRoute bestRoute = null;
+		String bestRecipeId = "";
 		for (ActionFact recipe : facts.query(ActionFactType.CRAFT_RECIPE, recipeQuery).stream()
 			.filter(this::usableFact)
 			.filter(fact -> outputItemId.equals(scalar(fact.payload().get("outputItemId"), "")))
@@ -325,11 +385,18 @@ public final class ActionResolver {
 			args.put("quantity", deficitCount);
 			steps.add(new ActionPlanStep(ActionStepKind.PRIMITIVE, "recipe_provider", recipeId, "craft_item", "craft_item", args));
 			trace.add(event("primitive_planned", "recipe_provider", recipeId, "craft_item", Map.of("primitive", "craft_item", "itemId", outputItemId)));
-			trace.add(event("route_selected", "recipe_provider", recipeId, "", Map.of("goal", goal.normalizedKey())));
-			return Optional.of(new ActionRoute(steps, routeCost));
+			ActionRoute candidateRoute = new ActionRoute(steps, routeCost);
+			if (bestRoute == null || candidateRoute.cost() < bestRoute.cost()) {
+				bestRoute = candidateRoute;
+				bestRecipeId = recipeId;
+			}
 		}
 
-		return Optional.empty();
+		if (bestRoute == null) {
+			return Optional.empty();
+		}
+		trace.add(event("route_selected", "recipe_provider", bestRecipeId, "", Map.of("goal", goal.normalizedKey())));
+		return Optional.of(bestRoute);
 	}
 
 	private Optional<ActionRoute> resolveMiningProviderGoal(
@@ -497,12 +564,40 @@ public final class ActionResolver {
 
 			steps.addAll(inputRoute.get().steps());
 			routeCost += inputRoute.get().cost();
+
+			int cookTimeTicks = intPayload(recipe, "cookTimeTicks", DEFAULT_SMELT_COOK_TICKS);
+			Optional<FuelPlan> fuelPlan = resolveSmeltingFuel(
+				inputQuantity,
+				cookTimeTicks,
+				depth,
+				resolving,
+				trace,
+				goal
+			);
+			if (fuelPlan.isPresent()) {
+				steps.addAll(fuelPlan.get().route().steps());
+				routeCost += fuelPlan.get().route().cost();
+			}
+			else {
+				trace.add(event(
+					"route_candidate_rejected",
+					"smelting_provider",
+					optionId,
+					"",
+					Map.of("goal", goal.normalizedKey(), "reason", "missing_fuel_subgoal")
+				));
+			}
+
 			LinkedHashMap<String, Object> smeltArgs = new LinkedHashMap<>();
 			smeltArgs.put("itemId", outputItemId);
 			smeltArgs.put("inputItemId", inputItemId);
 			smeltArgs.put("optionId", optionId);
 			smeltArgs.put("quantity", deficitCount);
 			smeltArgs.put("inputQuantity", inputQuantity);
+			fuelPlan.ifPresent(plan -> {
+				smeltArgs.put("fuelItemId", plan.itemId());
+				smeltArgs.put("fuelQuantity", plan.quantity());
+			});
 			steps.add(new ActionPlanStep(ActionStepKind.PRIMITIVE, "smelting_provider", optionId, "smelt_item", "smelt_item", smeltArgs));
 			trace.add(event("primitive_planned", "smelting_provider", optionId, "smelt_item", Map.of(
 				"primitive", "smelt_item",
@@ -523,6 +618,61 @@ public final class ActionResolver {
 		}
 
 		return Optional.empty();
+	}
+
+	private Optional<FuelPlan> resolveSmeltingFuel(
+		int inputQuantity,
+		int cookTimeTicks,
+		int depth,
+		LinkedHashSet<String> resolving,
+		List<ActionTraceEvent> trace,
+		ActionGoal smeltingGoal
+	) {
+		int requiredFuelTicks = inputQuantity * Math.max(1, cookTimeTicks);
+		if (requiredFuelTicks <= 0) {
+			return Optional.empty();
+		}
+		FuelPlan bestPlan = null;
+		for (FuelCandidate candidate : fuelCandidates()) {
+			int requiredQuantity = fuelItemsNeeded(requiredFuelTicks, candidate.fuelTicks());
+			if (requiredQuantity <= 0) {
+				continue;
+			}
+			ActionGoal fuelGoal = ActionGoal.inventoryItem(candidate.itemId(), requiredQuantity);
+			if (existingGoalCount(fuelGoal) >= requiredQuantity) {
+				bestPlan = chooseCheaperFuelPlan(bestPlan, new FuelPlan(candidate.itemId(), requiredQuantity, ActionRoute.empty()));
+				continue;
+			}
+			Optional<ActionRoute> fuelRoute = resolveGoal(fuelGoal, depth + 1, resolving, trace);
+			if (fuelRoute.isPresent()) {
+				bestPlan = chooseCheaperFuelPlan(bestPlan, new FuelPlan(candidate.itemId(), requiredQuantity, fuelRoute.get()));
+			}
+		}
+		if (bestPlan == null) {
+			return Optional.empty();
+		}
+		trace.add(event(
+			bestPlan.route().steps().isEmpty() ? "fuel_subgoal_satisfied" : "fuel_subgoal_planned",
+			"smelting_provider",
+			bestPlan.itemId(),
+			"",
+			Map.of("goal", smeltingGoal.normalizedKey(), "fuelItemId", bestPlan.itemId(), "fuelQuantity", bestPlan.quantity())
+		));
+		return Optional.of(bestPlan);
+	}
+
+	private static FuelPlan chooseCheaperFuelPlan(FuelPlan current, FuelPlan candidate) {
+		if (current == null) {
+			return candidate;
+		}
+		int costCompare = Integer.compare(candidate.route().cost(), current.route().cost());
+		if (costCompare < 0) {
+			return candidate;
+		}
+		if (costCompare == 0 && candidate.quantity() < current.quantity()) {
+			return candidate;
+		}
+		return current;
 	}
 
 	private Optional<ActionRoute> expandAlternative(
@@ -741,6 +891,30 @@ public final class ActionResolver {
 		};
 	}
 
+	private static int fuelItemsNeeded(int requiredFuelTicks, int fuelTicksPerItem) {
+		if (requiredFuelTicks <= 0) {
+			return 0;
+		}
+		if (fuelTicksPerItem <= 0) {
+			return Integer.MAX_VALUE;
+		}
+		return (requiredFuelTicks + fuelTicksPerItem - 1) / fuelTicksPerItem;
+	}
+
+	private static List<FuelCandidate> fuelCandidates() {
+		ArrayList<FuelCandidate> candidates = new ArrayList<>();
+		for (String itemId : ActionGraphDomainKnowledge.plankItemIds()) {
+			candidates.add(new FuelCandidate(itemId, FUEL_TICKS_PLANKS));
+		}
+		candidates.add(new FuelCandidate("minecraft:stick", FUEL_TICKS_STICKS));
+		for (String itemId : ActionGraphDomainKnowledge.logItemIds()) {
+			candidates.add(new FuelCandidate(itemId, FUEL_TICKS_LOGS));
+		}
+		candidates.add(new FuelCandidate("minecraft:coal", FUEL_TICKS_COAL));
+		candidates.add(new FuelCandidate("minecraft:charcoal", FUEL_TICKS_COAL));
+		return List.copyOf(candidates);
+	}
+
 	private ActionGoal goalFromFactSpec(Map<String, Object> factSpec, Map<String, Integer> params) {
 		ActionFactType factType = ActionFactType.fromId(scalar(factSpec.get("fact"), ""))
 			.orElseThrow(() -> new IllegalArgumentException("unknown fact type " + factSpec.get("fact")));
@@ -934,6 +1108,12 @@ public final class ActionResolver {
 			}
 			return true;
 		}
+	}
+
+	private record FuelCandidate(String itemId, int fuelTicks) {
+	}
+
+	private record FuelPlan(String itemId, int quantity, ActionRoute route) {
 	}
 
 	private static final class IntegerExpression {

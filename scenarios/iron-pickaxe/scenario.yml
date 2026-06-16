@@ -7,26 +7,22 @@ worldArchive: world.zip
 frozen: true
 prompt: >-
   Starting from only the resources available in this world, obtain one
-  minecraft:iron_pickaxe. Gather logs, craft planks and sticks, make the
-  required wooden and stone tools, mine stone and iron ore, smelt the raw iron
-  if needed, then craft the iron pickaxe. Work from current inventory counts and
-  mine only the shortfall for the next craft or smelt step. For inventory
-  targets from block drops, prefer the inventory-aware direct mining tool
-  ensure_blocks_in_inventory with the block id; for example, ensure
-  minecraft:stone only until enough cobblestone is in inventory, and ensure
-  minecraft:iron_ore only until enough raw iron or ingots are available.
-  Use mine_blocks only when you intentionally need that many additional broken
-  blocks after the tool starts. Do not repeat a mining, crafting, smelting, or
-  collection tool with the same arguments while the previous accepted job is
-  still queued, running, waiting, or missing a final TASK UPDATE. Do not use
-  take_a_look or vision to locate mineable blocks, resources, furnaces, or
-  crafting stations. Use check_craftables to craft a furnace when needed, then
-  check_smeltables and smelt_items with the exact listed optionId. After
-  smelt_items is accepted, raw iron leaving inventory means it is in the furnace;
-  do not mine more iron for that reason. Use inspect_smelting, wait for output
-  ready, then collect_smelted_items. Do not use commands, creative-mode
-  shortcuts, or preexisting items unless they were gathered or crafted during
-  this scenario. Stop after a task update or inventory check confirms the iron
+  minecraft:iron_pickaxe. Treat that final item as the high-level intent and
+  start one action graph inventory_item goal for minecraft:iron_pickaxe with
+  quantity 1. Let the action graph own the low-level sequence: gathering logs,
+  crafting planks, sticks, tables, tools, and furnace, mining stone and iron
+  ore, choosing smelting fuel, smelting raw iron, collecting output, and
+  crafting the iron pickaxe. Do not decompose this request into direct
+  craft_recipe, ensure_blocks_in_inventory, mine_blocks, smelt_items, or
+  collect_smelted_items calls unless the final iron-pickaxe graph goal returns a
+  terminal unsupported or no_route failure. Safe read tools such as
+  inspect_action_goal, inspect_action_trace, inspect_inventory,
+  check_craftables, check_smeltables, and inspect_smelting may be used only to
+  understand or debug graph state, not to sequence low-level recovery scripts.
+  Do not use take_a_look or vision to locate mineable blocks, resources,
+  furnaces, or crafting stations. Do not use commands, creative-mode shortcuts,
+  or preexisting items unless they were gathered or crafted during this
+  scenario. Stop after a task update or inventory check confirms the iron
   pickaxe is in your inventory.
 budget:
   maxPlannerTurns: 40

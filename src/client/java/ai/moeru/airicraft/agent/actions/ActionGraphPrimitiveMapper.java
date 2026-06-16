@@ -146,9 +146,19 @@ public final class ActionGraphPrimitiveMapper {
 		payload.put("outputItemId", option.outputItemId());
 		payload.put("outputCount", option.outputCount());
 		payload.put("inputQuantity", inputQuantity);
+		String fuelItemId = stringArg(step, "fuelItemId");
+		int fuelQuantity = intArg(step, "fuelQuantity", 0);
+		SmeltingFuelMode fuelMode = fuelItemId.isBlank() || fuelQuantity <= 0
+			? SmeltingFuelMode.AUTO
+			: SmeltingFuelMode.MANUAL;
+		if (fuelMode == SmeltingFuelMode.MANUAL) {
+			payload.put("fuelMode", fuelMode.name());
+			payload.put("fuelItemId", fuelItemId);
+			payload.put("fuelQuantity", fuelQuantity);
+		}
 		return ActionGraphPrimitiveDispatch.dispatchable(
 			step,
-			ActiveJobProposal.smeltItems(new SmeltItemsStepArgs(option.optionId(), inputQuantity, SmeltingFuelMode.AUTO, null, 0, null)),
+			ActiveJobProposal.smeltItems(new SmeltItemsStepArgs(option.optionId(), inputQuantity, fuelMode, fuelItemId, fuelQuantity, null)),
 			payload
 		);
 	}

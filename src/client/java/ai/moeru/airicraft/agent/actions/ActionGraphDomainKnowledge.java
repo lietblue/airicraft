@@ -57,6 +57,14 @@ final class ActionGraphDomainKnowledge {
 		return SURVIVAL_SMELTS;
 	}
 
+	static List<String> plankItemIds() {
+		return PLANK_ITEM_IDS;
+	}
+
+	static List<String> logItemIds() {
+		return LOG_ITEM_IDS;
+	}
+
 	private static List<CraftingOpportunity> buildSurvivalCrafts() {
 		ArrayList<CraftingOpportunity> crafts = new ArrayList<>();
 		for (int index = 0; index < Math.min(LOG_ITEM_IDS.size(), PLANK_ITEM_IDS.size()); index++) {
