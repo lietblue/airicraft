@@ -73,6 +73,21 @@ class ActionFactStoreTest {
 	}
 
 	@Test
+	void farmBootstrapFactsUseTypedWorldIdentities() {
+		ActionFactIdentity site = ActionFactIdentity.worldFarmSite("world-a", "minecraft:overworld", "farm-1");
+		ActionFactIdentity plot = ActionFactIdentity.worldFarmPlot("world-a", "minecraft:overworld", "farm-1", "plot-1");
+		ActionFactIdentity soil = ActionFactIdentity.worldSoilCandidate("world-a", "minecraft:overworld", "farm-1", "soil-1");
+		ActionFactIdentity hydration = ActionFactIdentity.worldHydrationSource("world-a", "minecraft:overworld", "farm-1", "water-1");
+		ActionFactIdentity seedSource = ActionFactIdentity.worldCropSeedSource("world-a", "minecraft:overworld", "farm-1", "grass-1");
+
+		assertEquals(ActionFactType.WORLD_FARM_SITE, site.type());
+		assertEquals("plot-1", plot.keys().get("plotId"));
+		assertEquals("soil-1", soil.keys().get("candidateId"));
+		assertEquals("water-1", hydration.keys().get("sourceId"));
+		assertEquals("grass-1", seedSource.keys().get("sourceId"));
+	}
+
+	@Test
 	void provenanceDistinguishesAuthoritativeFactsFromExpectedFacts() {
 		assertTrue(ActionFactProvenance.OBSERVED.authoritative());
 		assertTrue(ActionFactProvenance.EXECUTOR_REPORTED.authoritative());

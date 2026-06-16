@@ -702,7 +702,7 @@ public final class ActionResolver {
 		if (factType == ActionFactType.INVENTORY_ITEM || factType == ActionFactType.INVENTORY_RESOURCE || factType == ActionFactType.INVENTORY_TOOL || factType == ActionFactType.CRAFT_RECIPE || factType == ActionFactType.SMELT_RECIPE) {
 			queryKeys.put("actorId", context.actorId());
 		}
-		if (factType == ActionFactType.WORLD_BLOCK || factType == ActionFactType.WORLD_CROP || factType == ActionFactType.WORLD_CROP_GROUP || factType == ActionFactType.WORLD_SITE || factType == ActionFactType.WORLD_ENTITY) {
+		if (worldDimensionScopedFact(factType)) {
 			queryKeys.put("dimension", context.dimension());
 		}
 		for (String key : identityKeyNames()) {
@@ -814,7 +814,21 @@ public final class ActionResolver {
 	}
 
 	private static List<String> identityKeyNames() {
-		return List.of("itemId", "resourceKind", "toolTag", "dimension", "blockPos", "cropId", "siteId", "siteType", "entityTypeId", "entityId", "recipeId", "optionId", "watchId", "goalId");
+		return List.of("itemId", "resourceKind", "toolTag", "dimension", "blockPos", "cropId", "siteId", "siteType", "plotId", "candidateId", "sourceId", "sampleId", "entityTypeId", "entityId", "recipeId", "optionId", "watchId", "goalId");
+	}
+
+	private static boolean worldDimensionScopedFact(ActionFactType factType) {
+		return factType == ActionFactType.WORLD_BLOCK
+			|| factType == ActionFactType.WORLD_CROP
+			|| factType == ActionFactType.WORLD_CROP_GROUP
+			|| factType == ActionFactType.WORLD_SITE
+			|| factType == ActionFactType.WORLD_FARM_SITE
+			|| factType == ActionFactType.WORLD_FARM_PLOT
+			|| factType == ActionFactType.WORLD_SOIL_CANDIDATE
+			|| factType == ActionFactType.WORLD_HYDRATION_SOURCE
+			|| factType == ActionFactType.WORLD_LIGHT_LEVEL
+			|| factType == ActionFactType.WORLD_CROP_SEED_SOURCE
+			|| factType == ActionFactType.WORLD_ENTITY;
 	}
 
 	private static Map<String, Object> objectMap(Object value) {

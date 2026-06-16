@@ -71,6 +71,58 @@ public record ActionFactIdentity(
 		));
 	}
 
+	public static ActionFactIdentity worldFarmSite(String worldId, String dimension, String siteId) {
+		return new ActionFactIdentity(ActionFactType.WORLD_FARM_SITE, keys(
+			"worldId", worldId,
+			"dimension", dimension,
+			"siteId", siteId
+		));
+	}
+
+	public static ActionFactIdentity worldFarmPlot(String worldId, String dimension, String siteId, String plotId) {
+		return new ActionFactIdentity(ActionFactType.WORLD_FARM_PLOT, keys(
+			"worldId", worldId,
+			"dimension", dimension,
+			"siteId", siteId,
+			"plotId", plotId
+		));
+	}
+
+	public static ActionFactIdentity worldSoilCandidate(String worldId, String dimension, String siteId, String candidateId) {
+		return new ActionFactIdentity(ActionFactType.WORLD_SOIL_CANDIDATE, keys(
+			"worldId", worldId,
+			"dimension", dimension,
+			"siteId", siteId,
+			"candidateId", candidateId
+		));
+	}
+
+	public static ActionFactIdentity worldHydrationSource(String worldId, String dimension, String siteId, String sourceId) {
+		return new ActionFactIdentity(ActionFactType.WORLD_HYDRATION_SOURCE, keys(
+			"worldId", worldId,
+			"dimension", dimension,
+			"siteId", siteId,
+			"sourceId", sourceId
+		));
+	}
+
+	public static ActionFactIdentity worldLightLevel(String worldId, String dimension, String sampleId) {
+		return new ActionFactIdentity(ActionFactType.WORLD_LIGHT_LEVEL, keys(
+			"worldId", worldId,
+			"dimension", dimension,
+			"sampleId", sampleId
+		));
+	}
+
+	public static ActionFactIdentity worldCropSeedSource(String worldId, String dimension, String siteId, String sourceId) {
+		return new ActionFactIdentity(ActionFactType.WORLD_CROP_SEED_SOURCE, keys(
+			"worldId", worldId,
+			"dimension", dimension,
+			"siteId", siteId,
+			"sourceId", sourceId
+		));
+	}
+
 	public static ActionFactIdentity worldEntity(String worldId, String dimension, String entityId) {
 		return new ActionFactIdentity(ActionFactType.WORLD_ENTITY, keys(
 			"worldId", worldId,

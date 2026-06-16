@@ -36,6 +36,33 @@ class PersistentActionFactStoreTest {
 	}
 
 	@Test
+	void persistsDurableFarmFactsButNotFiniteFreshnessObservations() {
+		PersistentActionFactStore store = new PersistentActionFactStore(tempDir);
+		ActionFact durableSite = new ActionFact(
+			ActionFactIdentity.worldFarmSite("world-a", "minecraft:overworld", "farm-1"),
+			Map.of("siteKind", "farm"),
+			ActionFactProvenance.INFERRED,
+			100,
+			ActionFact.NEVER_STALE
+		);
+		ActionFact nearbySoil = new ActionFact(
+			ActionFactIdentity.worldSoilCandidate("world-a", "minecraft:overworld", "farm-1", "nearby-soil"),
+			Map.of("blockCounts", Map.of("minecraft:grass_block", 12)),
+			ActionFactProvenance.OBSERVED,
+			100,
+			180
+		);
+
+		assertEquals(1, store.save("world-a", List.of(durableSite, nearbySoil)));
+
+		List<ActionFact> worldA = store.list("world-a");
+		assertEquals(1, worldA.size());
+		assertEquals(ActionFactType.WORLD_FARM_SITE, worldA.getFirst().identity().type());
+		assertEquals(ActionFactDurability.PERSISTENT, ActionFactPersistencePolicy.durability(durableSite));
+		assertEquals(ActionFactDurability.VOLATILE, ActionFactPersistencePolicy.durability(nearbySoil));
+	}
+
+	@Test
 	void doesNotPersistVolatileInventoryOrCraftRecipeFactsByDefault() {
 		PersistentActionFactStore store = new PersistentActionFactStore(tempDir);
 		ActionFact inventory = new ActionFact(

@@ -709,7 +709,7 @@ public final class ActionGraphExecutionRuntime {
 			return false;
 		}
 		LinkedHashMap<String, String> keys = new LinkedHashMap<>();
-		for (String key : List.of("itemId", "toolTag", "cropId", "siteId", "entityId", "recipeId")) {
+		for (String key : List.of("itemId", "toolTag", "cropId", "siteId", "plotId", "candidateId", "sourceId", "sampleId", "entityId", "recipeId")) {
 			Object value = factSpec.get(key);
 			if (value != null && !String.valueOf(value).isBlank()) {
 				keys.put(key, String.valueOf(value));

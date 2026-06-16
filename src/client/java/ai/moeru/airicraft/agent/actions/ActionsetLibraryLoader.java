@@ -223,7 +223,7 @@ public final class ActionsetLibraryLoader {
 	private static String normalizedFactKey(Map<String, Object> fact) {
 		String factType = scalar(fact.get("fact"));
 		StringBuilder builder = new StringBuilder(factType == null ? "" : factType);
-		for (String key : List.of("actorId", "itemId", "toolTag", "dimension", "blockPos", "cropId", "siteId", "siteType", "entityTypeId", "recipeId")) {
+		for (String key : List.of("actorId", "itemId", "toolTag", "dimension", "blockPos", "cropId", "siteId", "siteType", "plotId", "candidateId", "sourceId", "sampleId", "entityTypeId", "recipeId")) {
 			String value = scalar(fact.get(key));
 			if (value != null && !value.isBlank()) {
 				builder.append('|').append(key).append('=').append(value);

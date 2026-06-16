@@ -32,6 +32,7 @@ import ai.moeru.airicraft.agent.actions.ActionGoal;
 import ai.moeru.airicraft.agent.actions.ActionPlanStep;
 import ai.moeru.airicraft.agent.actions.ActionResolverContext;
 import ai.moeru.airicraft.agent.actions.ActionsetLibraryPaths;
+import ai.moeru.airicraft.agent.actions.FarmBootstrapFactProvider;
 import ai.moeru.airicraft.agent.actions.PersistentActionFactStore;
 import ai.moeru.airicraft.agent.dialogue.DialogueIntent;
 import ai.moeru.airicraft.agent.dialogue.DialogueIntentType;
@@ -1185,8 +1186,9 @@ public final class EmbodiedAgentRuntime {
 		}
 		TaskTerminalEvent terminalEvent = pendingActionGraphTerminalEvent;
 		pendingActionGraphTerminalEvent = null;
+		ActionResolverContext context = actionResolverContext(worldEvidence);
 		actionGraphRuntime.tick(new ActionGraphExecutionInput(
-			actionResolverContext(worldEvidence),
+			context,
 			worldEvidence.itemCounts(),
 			resourceCountsForGraph(worldEvidence.inventoryCounts()),
 			sessionSnapshot.worldLoaded(),
@@ -1195,7 +1197,7 @@ public final class EmbodiedAgentRuntime {
 			worldEvidence.availableCrafts(),
 			worldEvidence.knownCrafts(),
 			worldEvidence.availableSmelts(),
-			List.of()
+			FarmBootstrapFactProvider.fromWorldEvidence(context, worldEvidence)
 		));
 	}
 
