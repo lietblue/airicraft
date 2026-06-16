@@ -184,6 +184,26 @@ class SmeltingProcessManagerTest {
 	}
 
 	@Test
+	void acceptedProcessKeepsOptionResolvableAfterOptionRefresh() {
+		SmeltingProcessManager manager = new SmeltingProcessManager();
+		SmeltingStationObservation empty = emptyStation();
+		SmeltingOption option = option("smelt:iron:nearby-1", empty);
+		manager.registerOptions(java.util.List.of(option));
+
+		SmeltingActionResult started = manager.startRegisteredProcess(
+			new SmeltItemsStepArgs(option.optionId(), 1, SmeltingFuelMode.AUTO, null, 0, null),
+			375L
+		);
+		manager.registerOptions(java.util.List.of());
+
+		assertTrue(started.accepted());
+		assertEquals(option, manager.registeredOption(option.optionId()));
+
+		assertTrue(manager.cancel(started.processId()));
+		assertEquals(null, manager.registeredOption(option.optionId()));
+	}
+
+	@Test
 	void preferredCollectionProcessChoosesTrackedReadyProcessFirst() {
 		SmeltingProcessManager manager = new SmeltingProcessManager();
 		SmeltingStationObservation empty = emptyStation();

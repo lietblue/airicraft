@@ -16,6 +16,7 @@ public final class SmeltingProcessManager {
 	private final Map<String, TrackedProcess> processesById = new HashMap<>();
 	private final Map<String, Confirmation> confirmations = new HashMap<>();
 	private final Map<String, SmeltingOption> optionsById = new HashMap<>();
+	private final Map<String, SmeltingOption> processOptionsById = new HashMap<>();
 	private final Map<String, SmeltingStationKey> confirmedCollectionStations = new HashMap<>();
 
 	public void registerOptions(List<SmeltingOption> options) {
@@ -38,7 +39,9 @@ public final class SmeltingProcessManager {
 		if (optionId == null || optionId.isBlank()) {
 			return null;
 		}
-		return optionsById.get(optionId.trim());
+		String normalizedOptionId = optionId.trim();
+		SmeltingOption option = optionsById.get(normalizedOptionId);
+		return option == null ? processOptionsById.get(normalizedOptionId) : option;
 	}
 
 	public SmeltingStationKey processStationKey(String processId) {
@@ -131,7 +134,7 @@ public final class SmeltingProcessManager {
 			false,
 			distance
 		);
-		optionsById.put(option.optionId(), new SmeltingOption(
+		SmeltingOption relocatedOption = new SmeltingOption(
 			option.optionId(),
 			option.inputItemId(),
 			option.outputItemId(),
@@ -140,7 +143,9 @@ public final class SmeltingProcessManager {
 			option.cookTimeTicks(),
 			candidate,
 			observation
-		));
+		);
+		optionsById.put(option.optionId(), relocatedOption);
+		processOptionsById.put(option.optionId(), relocatedOption);
 		TrackedProcess process = processesByStation.remove(oldKey);
 		if (process != null && Objects.equals(process.optionId(), option.optionId())) {
 			TrackedProcess relocated = new TrackedProcess(
@@ -215,6 +220,9 @@ public final class SmeltingProcessManager {
 		String processId = "smelt-process-" + UUID.randomUUID();
 		SmeltingOption option = registeredOption(request.optionId());
 		int expectedOutputCount = option == null ? request.inputQuantity() : Math.max(1, option.outputCount()) * request.inputQuantity();
+		if (option != null) {
+			processOptionsById.put(option.optionId(), option);
+		}
 		TrackedProcess process = new TrackedProcess(
 			processId,
 			observation.key(),
@@ -230,6 +238,7 @@ public final class SmeltingProcessManager {
 		TrackedProcess replaced = processesByStation.put(observation.key(), process);
 		if (replaced != null && !Objects.equals(replaced.processId(), process.processId())) {
 			processesById.remove(replaced.processId());
+			removeProcessOptionIfUnused(replaced.optionId());
 		}
 		processesById.put(processId, process);
 		return SmeltingActionResult.accepted(
@@ -349,6 +358,7 @@ public final class SmeltingProcessManager {
 		if (Objects.equals(processesByStation.get(process.stationKey()), process)) {
 			processesByStation.remove(process.stationKey());
 		}
+		removeProcessOptionIfUnused(process.optionId());
 		return true;
 	}
 
@@ -415,6 +425,18 @@ public final class SmeltingProcessManager {
 			process.inputQuantity(),
 			false
 		);
+	}
+
+	private void removeProcessOptionIfUnused(String optionId) {
+		if (optionId == null || optionId.isBlank()) {
+			return;
+		}
+		for (TrackedProcess process : processesById.values()) {
+			if (Objects.equals(process.optionId(), optionId)) {
+				return;
+			}
+		}
+		processOptionsById.remove(optionId);
 	}
 
 	private SmeltingOutputReadyEvent markEstimatedReadyOutput(TrackedProcess process, long tick) {
