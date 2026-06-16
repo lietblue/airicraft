@@ -49,6 +49,7 @@ public final class ActionGraphExecutionRuntime {
 	private Map<String, Object> taskExecutionPayload = Map.of();
 	private int observedInventoryFactCount;
 	private int assumedInventoryFactCount;
+	private long observeNotBeforeTick = -1L;
 
 	public ActionGraphExecutionRuntime(Path actionsetRoot, ActionGraphPrimitiveDispatcher primitiveDispatcher) {
 		this(() -> ActionsetLibraryLoader.defaults().load(actionsetRoot == null ? ActionsetLibraryPaths.defaultRoot() : actionsetRoot), primitiveDispatcher, false);
@@ -102,6 +103,7 @@ public final class ActionGraphExecutionRuntime {
 		this.taskExecutionPayload = Map.of();
 		this.observedInventoryFactCount = 0;
 		this.assumedInventoryFactCount = 0;
+		this.observeNotBeforeTick = -1L;
 		addInventoryFacts(assumedInventory, ActionFactProvenance.EXECUTOR_REPORTED, context, false);
 		trace("execution_started", "", "", "", Map.of("goal", goal.normalizedKey(), "executionId", executionId));
 		return snapshot();
@@ -135,6 +137,11 @@ public final class ActionGraphExecutionRuntime {
 
 		for (int transitions = 0; transitions < MAX_TICK_TRANSITIONS; transitions++) {
 			if (terminal()) {
+				return snapshot();
+			}
+			if (state == ActionGraphExecutionState.OBSERVING
+				&& observeNotBeforeTick > input.context().currentTick()
+				&& !goalSatisfied(input.context())) {
 				return snapshot();
 			}
 			switch (state) {
@@ -200,6 +207,7 @@ public final class ActionGraphExecutionRuntime {
 		taskExecutionPayload = Map.of();
 		observedInventoryFactCount = 0;
 		assumedInventoryFactCount = 0;
+		observeNotBeforeTick = -1L;
 	}
 
 	public synchronized ActionGraphExecutionSnapshot snapshot() {
@@ -267,6 +275,12 @@ public final class ActionGraphExecutionRuntime {
 			trace("step_skipped", "", "", "", Map.of("reason", "goal_already_satisfied", "cursor", cursor));
 			succeed("goal_satisfied");
 			return;
+		}
+		if (state == ActionGraphExecutionState.OBSERVING && observeNotBeforeTick > input.context().currentTick()) {
+			return;
+		}
+		if (state == ActionGraphExecutionState.OBSERVING) {
+			observeNotBeforeTick = -1L;
 		}
 		if (cursor >= route.steps().size()) {
 			if (replanCount < MAX_REPLANS) {
@@ -337,6 +351,7 @@ public final class ActionGraphExecutionRuntime {
 			cursor++;
 			activeTaskId = "";
 			stepAttempt = 0;
+			observeNotBeforeTick = lastContext == null ? -1L : lastContext.currentTick() + 20L;
 			state = ActionGraphExecutionState.OBSERVING;
 			return;
 		}

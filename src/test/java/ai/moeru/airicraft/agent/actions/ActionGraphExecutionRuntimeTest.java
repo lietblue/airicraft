@@ -241,12 +241,23 @@ class ActionGraphExecutionRuntimeTest {
 		assertEquals("harvest_loaded_mature_wheat", harvest.alternativeId());
 		assertEquals("mine_block", harvest.targetId());
 
-		ActionGraphExecutionSnapshot craftDispatched = runtime.tick(input(
+		ActionGraphExecutionSnapshot observing = runtime.tick(input(
 			Map.of("minecraft:wheat", 3),
 			new TaskTerminalEvent("task-1", null, TaskExecutionState.COMPLETED, "harvested", null),
 			102,
 			List.of(),
 			List.of(wheatCropGroup(3, 3, 102))
+		));
+
+		assertEquals(ActionGraphExecutionState.OBSERVING, observing.state());
+		assertEquals(1, dispatcher.dispatchedSteps.size());
+
+		ActionGraphExecutionSnapshot craftDispatched = runtime.tick(input(
+			Map.of("minecraft:wheat", 3),
+			null,
+			122,
+			List.of(),
+			List.of(wheatCropGroup(3, 3, 122))
 		));
 
 		assertEquals(ActionGraphExecutionState.WAITING_PRIMITIVE, craftDispatched.state());
@@ -259,9 +270,9 @@ class ActionGraphExecutionRuntimeTest {
 		ActionGraphExecutionSnapshot completed = runtime.tick(input(
 			Map.of("minecraft:wheat", 3, "minecraft:bread", 1),
 			new TaskTerminalEvent("task-2", null, TaskExecutionState.COMPLETED, "crafted", null),
-			103,
+			123,
 			List.of(),
-			List.of(wheatCropGroup(3, 3, 103))
+			List.of(wheatCropGroup(3, 3, 123))
 		));
 
 		assertEquals(ActionGraphExecutionState.SUCCEEDED, completed.state());
@@ -299,12 +310,23 @@ class ActionGraphExecutionRuntimeTest {
 		assertEquals("harvest_wheat", dispatcher.dispatchedSteps.getFirst().stepId());
 		assertTrace(harvestDispatched.trace(), "watch_fulfilled");
 
-		ActionGraphExecutionSnapshot craftDispatched = runtime.tick(input(
+		ActionGraphExecutionSnapshot observing = runtime.tick(input(
 			Map.of("minecraft:wheat", 3),
 			new TaskTerminalEvent("task-1", null, TaskExecutionState.COMPLETED, "harvested", null),
 			103,
 			List.of(),
 			List.of(wheatCropGroup(3, 3, 103))
+		));
+
+		assertEquals(ActionGraphExecutionState.OBSERVING, observing.state());
+		assertEquals(1, dispatcher.dispatchedSteps.size());
+
+		ActionGraphExecutionSnapshot craftDispatched = runtime.tick(input(
+			Map.of("minecraft:wheat", 3),
+			null,
+			123,
+			List.of(),
+			List.of(wheatCropGroup(3, 3, 123))
 		));
 
 		assertEquals(ActionGraphExecutionState.WAITING_PRIMITIVE, craftDispatched.state());
@@ -314,9 +336,9 @@ class ActionGraphExecutionRuntimeTest {
 		ActionGraphExecutionSnapshot completed = runtime.tick(input(
 			Map.of("minecraft:wheat", 3, "minecraft:bread", 1),
 			new TaskTerminalEvent("task-2", null, TaskExecutionState.COMPLETED, "crafted", null),
-			104,
+			124,
 			List.of(),
-			List.of(wheatCropGroup(3, 3, 104))
+			List.of(wheatCropGroup(3, 3, 124))
 		));
 
 		assertEquals(ActionGraphExecutionState.SUCCEEDED, completed.state());
