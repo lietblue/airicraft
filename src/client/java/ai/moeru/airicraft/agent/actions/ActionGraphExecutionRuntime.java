@@ -378,6 +378,18 @@ public final class ActionGraphExecutionRuntime {
 			));
 			return;
 		}
+		if (fromTerminalEvent && "transient".equals(classified) && replanCount < MAX_REPLANS) {
+			activeTaskId = "";
+			stepAttempt = 0;
+			replanCount++;
+			state = ActionGraphExecutionState.REPLANNING;
+			trace("recovery_selected", actionId(currentStep), alternativeId(currentStep), stepId(currentStep), Map.of(
+				"decision", "replan_after_transient",
+				"replanCount", replanCount
+			));
+			trace("route_replanned", actionId(currentStep), alternativeId(currentStep), stepId(currentStep), Map.of("failureCode", classified));
+			return;
+		}
 		if (canReplan(classified)) {
 			blockCurrentAlternative();
 			activeTaskId = "";

@@ -409,7 +409,7 @@ class ActionGraphExecutionRuntimeTest {
 	}
 
 	@Test
-	void transientPrimitiveFailureRetriesThenFailsWithoutDispatchChurn() {
+	void transientPrimitiveFailureRetriesThenReplansWithoutDispatchChurn() {
 		RecordingDispatcher dispatcher = new RecordingDispatcher();
 		ActionGraphExecutionRuntime runtime = new ActionGraphExecutionRuntime(defaultIndex(), dispatcher);
 		runtime.submit(ActionGoal.inventoryItem("minecraft:bread", 1), Map.of("minecraft:wheat", 3), CONTEXT, 100);
@@ -419,16 +419,15 @@ class ActionGraphExecutionRuntimeTest {
 		runtime.tick(input(Map.of("minecraft:wheat", 3), null, 103));
 		runtime.tick(input(Map.of("minecraft:wheat", 3), failed("task-2", "path_timeout"), 104));
 		runtime.tick(input(Map.of("minecraft:wheat", 3), null, 105));
-		ActionGraphExecutionSnapshot failed = runtime.tick(input(Map.of("minecraft:wheat", 3), failed("task-3", "path_timeout"), 106));
+		ActionGraphExecutionSnapshot replanned = runtime.tick(input(Map.of("minecraft:wheat", 3), failed("task-3", "path_timeout"), 106));
 		ActionGraphExecutionSnapshot stable = runtime.tick(input(Map.of("minecraft:wheat", 3), null, 107));
 
-		assertEquals(ActionGraphExecutionState.FAILED, failed.state());
-		assertEquals("budget_exceeded", failed.failureCode());
-		assertEquals(3, dispatcher.dispatchedSteps.size());
+		assertEquals(ActionGraphExecutionState.WAITING_PRIMITIVE, replanned.state());
+		assertEquals(4, dispatcher.dispatchedSteps.size());
 		assertEquals(3, stable.recoveryHistory().size());
-		assertEquals(3, dispatcher.dispatchedSteps.size());
-		assertTrace(failed.trace(), "recovery_selected");
-		assertTrace(failed.trace(), "execution_failed");
+		assertEquals(4, dispatcher.dispatchedSteps.size());
+		assertTrace(replanned.trace(), "recovery_selected");
+		assertTrace(replanned.trace(), "route_replanned");
 	}
 
 	@Test
