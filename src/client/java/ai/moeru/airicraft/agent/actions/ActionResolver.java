@@ -1,5 +1,7 @@
 package ai.moeru.airicraft.agent.actions;
 
+import ai.moeru.airicraft.agent.tasks.MinedBlockDropMapper;
+
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
@@ -107,6 +109,11 @@ public final class ActionResolver {
 				resolving.remove(goal.normalizedKey());
 				return smeltingRoute;
 			}
+			Optional<ActionRoute> miningRoute = resolveMiningProviderGoal(goal, trace);
+			if (miningRoute.isPresent()) {
+				resolving.remove(goal.normalizedKey());
+				return miningRoute;
+			}
 		}
 
 		Optional<ActionRoute> actionsetRoute = resolveActionsetGoal(goal, depth, resolving, trace);
@@ -130,6 +137,11 @@ public final class ActionResolver {
 			if (smeltingRoute.isPresent()) {
 				resolving.remove(goal.normalizedKey());
 				return smeltingRoute;
+			}
+			Optional<ActionRoute> miningRoute = resolveMiningProviderGoal(goal, trace);
+			if (miningRoute.isPresent()) {
+				resolving.remove(goal.normalizedKey());
+				return miningRoute;
 			}
 		}
 
@@ -318,6 +330,55 @@ public final class ActionResolver {
 		}
 
 		return Optional.empty();
+	}
+
+	private Optional<ActionRoute> resolveMiningProviderGoal(ActionGoal goal, List<ActionTraceEvent> trace) {
+		if (goal.factType() != ActionFactType.INVENTORY_ITEM) {
+			return Optional.empty();
+		}
+		String itemId = goal.keys().getOrDefault("itemId", "");
+		if (itemId.isBlank()) {
+			return Optional.empty();
+		}
+		int targetCount = goal.minimum("countAtLeast", 1);
+		int deficitCount = Math.max(0, targetCount - existingGoalCount(goal));
+		if (deficitCount <= 0) {
+			return Optional.of(ActionRoute.empty());
+		}
+		List<String> blockIds = MinedBlockDropMapper.sourceBlockIdsForInventoryItem(itemId);
+		if (blockIds.isEmpty()) {
+			return Optional.empty();
+		}
+		String alternativeKey = "mining_provider:" + itemId;
+		if (blockedAlternativeKeys.contains(alternativeKey)) {
+			trace.add(event(
+				"route_candidate_blocked",
+				"mining_provider",
+				itemId,
+				"",
+				Map.of("goal", goal.normalizedKey(), "reason", "previous_failure")
+			));
+			return Optional.empty();
+		}
+		trace.add(event(
+			"route_candidate_built",
+			"mining_provider",
+			itemId,
+			"",
+			Map.of("goal", goal.normalizedKey(), "cost", 35, "itemId", itemId)
+		));
+		LinkedHashMap<String, Object> args = new LinkedHashMap<>();
+		args.put("itemId", itemId);
+		args.put("blockIds", blockIds);
+		args.put("quantity", deficitCount);
+		ActionPlanStep step = new ActionPlanStep(ActionStepKind.PRIMITIVE, "mining_provider", itemId, "mine_block", "mine_block", args);
+		trace.add(event("primitive_planned", "mining_provider", itemId, "mine_block", Map.of(
+			"primitive", "mine_block",
+			"itemId", itemId,
+			"blockIds", blockIds
+		)));
+		trace.add(event("route_selected", "mining_provider", itemId, "", Map.of("goal", goal.normalizedKey())));
+		return Optional.of(new ActionRoute(List.of(step), 35));
 	}
 
 	private Optional<ActionRoute> resolveSmeltingProviderGoal(

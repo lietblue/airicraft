@@ -49,6 +49,20 @@ public final class MinedBlockDropMapper {
 		return Collections.unmodifiableSet(itemIds);
 	}
 
+	public static List<String> sourceBlockIdsForInventoryItem(String itemId) {
+		if (itemId == null || itemId.isBlank()) {
+			return List.of();
+		}
+		String normalized = itemId.trim();
+		LinkedHashSet<String> blockIds = new LinkedHashSet<>();
+		COMMON_DROPS.entrySet().stream()
+			.sorted(Map.Entry.comparingByKey())
+			.filter(entry -> entry.getValue().contains(normalized))
+			.map(Map.Entry::getKey)
+			.forEach(blockIds::add);
+		return List.copyOf(blockIds);
+	}
+
 	public static int matchingInventoryItemCount(Map<String, Integer> itemCounts, List<String> blockIds) {
 		if (itemCounts == null || itemCounts.isEmpty()) {
 			return 0;

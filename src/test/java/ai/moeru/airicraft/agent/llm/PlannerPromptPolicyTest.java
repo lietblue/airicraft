@@ -58,7 +58,9 @@ class PlannerPromptPolicyTest {
 		assertTrue(prompt.contains("additional matching blocks must be mined"));
 		assertTrue(prompt.contains("Existing inventory and picked-up ground items do not count"));
 		assertTrue(prompt.contains("ensure_blocks_in_inventory"));
-		assertTrue(prompt.contains("inventory should contain at least"));
+		assertTrue(prompt.contains("kind=inventory_item"));
+		assertTrue(prompt.contains("minecraft:cobblestone"));
+		assertTrue(prompt.contains("Use legacy ensure_blocks_in_inventory only after the graph inventory_item goal"));
 		assertTrue(prompt.contains("Existing inventory and picked-up ground items count"));
 		assertTrue(prompt.contains("report brokenBlocks"));
 		assertTrue(prompt.contains("mine_blocks broken_block_count_mismatch"));
