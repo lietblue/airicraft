@@ -335,6 +335,50 @@ class ActionResolverTest {
 	}
 
 	@Test
+	void directMiningBeatsReversibleRawBlockCraftingRecipes() {
+		ActionFactStore facts = new ActionFactStore();
+		facts.upsert(new ActionFact(
+			ActionFactIdentity.inventoryItem("world-a", "bot", "minecraft:stone_pickaxe"),
+			Map.of("count", 1),
+			ActionFactProvenance.OBSERVED,
+			90,
+			ActionFact.NEVER_STALE
+		));
+		facts.upsert(new ActionFact(
+			ActionFactIdentity.craftRecipe("world-a", "bot", "raw_iron_x9_to_raw_iron_block"),
+			Map.of(
+				"outputItemId", "minecraft:raw_iron_block",
+				"outputCount", 1,
+				"inputCounts", Map.of("minecraft:raw_iron", 9)
+			),
+			ActionFactProvenance.OBSERVED,
+			90,
+			ActionFact.NEVER_STALE
+		));
+		facts.upsert(new ActionFact(
+			ActionFactIdentity.craftRecipe("world-a", "bot", "raw_iron_block_to_raw_iron"),
+			Map.of(
+				"outputItemId", "minecraft:raw_iron",
+				"outputCount", 9,
+				"inputCounts", Map.of("minecraft:raw_iron_block", 1)
+			),
+			ActionFactProvenance.OBSERVED,
+			90,
+			ActionFact.NEVER_STALE
+		));
+
+		ActionResolveResult result = new ActionResolver(ActionsetIndex.empty(), facts, CONTEXT)
+			.resolve(ActionGoal.inventoryItem("minecraft:raw_iron", 3));
+
+		assertTrue(result.resolved(), () -> result.trace().toString());
+		assertEquals(List.of("mine_block"), result.route().steps().stream().map(ActionPlanStep::targetId).toList());
+		ActionPlanStep mine = result.route().steps().getFirst();
+		assertEquals("minecraft:raw_iron", mine.args().get("itemId"));
+		assertEquals(3, mine.args().get("quantity"));
+		assertFalse(result.route().steps().stream().anyMatch(step -> "raw_iron_block_to_raw_iron".equals(step.args().get("recipeId"))));
+	}
+
+	@Test
 	void miningProviderPrependsPickaxePrerequisites() {
 		ActionFactStore facts = new ActionFactStore();
 		addSurvivalCraftFacts(facts);
