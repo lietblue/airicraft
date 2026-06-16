@@ -180,6 +180,7 @@ public final class ActionGraphPrimitiveMapper {
 	private static ActionGraphPrimitiveDispatch mineBlock(ActionPlanStep step) {
 		List<String> blockIds = stringListArg(step, "blockIds");
 		int quantity = intArg(step, "quantity", 1);
+		int targetCount = Math.max(quantity, intArg(step, "targetCount", quantity));
 		if (blockIds.isEmpty()) {
 			return ActionGraphPrimitiveDispatch.failed("invalid_step_args", "mine_block requires blockIds", step);
 		}
@@ -187,12 +188,13 @@ public final class ActionGraphPrimitiveMapper {
 			return ActionGraphPrimitiveDispatch.failed("invalid_step_args", "mine_block quantity must be positive", step);
 		}
 		LinkedHashMap<String, Object> payload = new LinkedHashMap<>();
-		payload.put("jobType", "MINE_BLOCKS");
+		payload.put("jobType", "ENSURE_BLOCKS_IN_INVENTORY");
 		payload.put("blockIds", blockIds);
 		payload.put("quantity", quantity);
+		payload.put("targetCount", targetCount);
 		return ActionGraphPrimitiveDispatch.dispatchable(
 			step,
-			ActiveJobProposal.mineBlocks(new GoalMineSpec(blockIds, quantity)),
+			ActiveJobProposal.ensureBlocksInInventory(new GoalMineSpec(blockIds, targetCount)),
 			payload
 		);
 	}

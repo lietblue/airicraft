@@ -466,6 +466,7 @@ public final class ActionResolver {
 		args.put("itemId", itemId);
 		args.put("blockIds", blockIds);
 		args.put("quantity", deficitCount);
+		args.put("targetCount", targetCount);
 		ActionPlanStep step = new ActionPlanStep(ActionStepKind.PRIMITIVE, "mining_provider", itemId, "mine_block", "mine_block", args);
 		steps.add(step);
 		trace.add(event("primitive_planned", "mining_provider", itemId, "mine_block", Map.of(

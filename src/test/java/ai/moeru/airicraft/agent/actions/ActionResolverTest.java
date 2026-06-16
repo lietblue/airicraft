@@ -575,6 +575,35 @@ class ActionResolverTest {
 	}
 
 	@Test
+	void miningProviderPreservesAbsoluteInventoryTargetForPartialCobblestoneDeficit() {
+		ActionFactStore facts = new ActionFactStore();
+		facts.upsert(new ActionFact(
+			ActionFactIdentity.inventoryItem("world-a", "bot", "minecraft:wooden_pickaxe"),
+			Map.of("count", 1),
+			ActionFactProvenance.OBSERVED,
+			90,
+			ActionFact.NEVER_STALE
+		));
+		facts.upsert(new ActionFact(
+			ActionFactIdentity.inventoryItem("world-a", "bot", "minecraft:cobblestone"),
+			Map.of("count", 7),
+			ActionFactProvenance.OBSERVED,
+			90,
+			ActionFact.NEVER_STALE
+		));
+
+		ActionResolveResult result = new ActionResolver(ActionsetIndex.empty(), facts, CONTEXT)
+			.resolve(ActionGoal.inventoryItem("minecraft:cobblestone", 8));
+
+		assertTrue(result.resolved(), () -> result.trace().toString());
+		assertEquals(List.of("mine_block"), result.route().steps().stream().map(ActionPlanStep::targetId).toList());
+		ActionPlanStep step = result.route().steps().getFirst();
+		assertEquals("minecraft:cobblestone", step.args().get("itemId"));
+		assertEquals(1, step.args().get("quantity"));
+		assertEquals(8, step.args().get("targetCount"));
+	}
+
+	@Test
 	void recursivelyExpandsNeedsBeforeCurrentPrimitiveSteps() {
 		ActionFactStore facts = new ActionFactStore();
 		facts.upsert(new ActionFact(

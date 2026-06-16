@@ -102,12 +102,19 @@ class BlockInteractionTaskExecutorTest {
 	void directInteractionApproachHandlesNearbyOutOfReachTargets() {
 		assertTrue(BlockInteractionTaskExecutor.shouldUseDirectInteractionApproach(81.0D, false));
 		assertTrue(BlockInteractionTaskExecutor.shouldUseDirectInteractionApproach(100.0D, false));
+		assertTrue(BlockInteractionTaskExecutor.allowsDirectInteractionApproach("target_out_of_range supportPos=1,64,1"));
 	}
 
 	@Test
 	void directInteractionApproachDefersWhenFarOrStuck() {
 		assertFalse(BlockInteractionTaskExecutor.shouldUseDirectInteractionApproach(100.1D, false));
 		assertFalse(BlockInteractionTaskExecutor.shouldUseDirectInteractionApproach(16.0D, true));
+	}
+
+	@Test
+	void directInteractionApproachDefersWhenTargetIsNotVisible() {
+		assertFalse(BlockInteractionTaskExecutor.allowsDirectInteractionApproach("target_not_visible supportPos=1,64,1"));
+		assertFalse(BlockInteractionTaskExecutor.allowsDirectInteractionApproach("target_not_visible supportPos=1,64,1 navigationEvent=CANCELED"));
 	}
 
 	@Test

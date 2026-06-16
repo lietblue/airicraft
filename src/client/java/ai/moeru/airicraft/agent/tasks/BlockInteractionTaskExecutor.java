@@ -545,7 +545,7 @@ public final class BlockInteractionTaskExecutor implements WorldTaskExecutor {
 		String outOfRangeReason
 	) {
 		double squaredDistance = player == null || aimPoint == null ? Double.MAX_VALUE : player.squaredDistanceTo(aimPoint);
-		if (!shouldUseDirectInteractionApproach(squaredDistance, movementController.snapshot().stuck())) {
+		if (!allowsDirectInteractionApproach(outOfRangeReason) || !shouldUseDirectInteractionApproach(squaredDistance, movementController.snapshot().stuck())) {
 			if (movementController.snapshot().stuck()) {
 				movementController.stop(client);
 			}
@@ -569,6 +569,10 @@ public final class BlockInteractionTaskExecutor implements WorldTaskExecutor {
 
 	static boolean shouldUseDirectInteractionApproach(double squaredDistance, boolean movementStuck) {
 		return !movementStuck && squaredDistance <= DIRECT_INTERACTION_APPROACH_RANGE_SQUARED;
+	}
+
+	static boolean allowsDirectInteractionApproach(String reason) {
+		return reason == null || !reason.contains("target_not_visible");
 	}
 
 	static boolean shouldFallbackToDirectApproachAfterNavigationFailure(Optional<String> pathEvent, double squaredDistance, boolean movementStuck) {

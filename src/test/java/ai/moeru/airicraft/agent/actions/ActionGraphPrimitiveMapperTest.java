@@ -86,16 +86,20 @@ class ActionGraphPrimitiveMapperTest {
 	}
 
 	@Test
-	void mapsMineBlockToMineGoal() {
+	void mapsMineBlockToInventoryAwareMineGoal() {
 		ActionGraphPrimitiveDispatch dispatch = ActionGraphPrimitiveMapper.map(primitive("mine_block", Map.of(
 			"blockIds", List.of("minecraft:wheat"),
-			"quantity", 3
+			"quantity", 1,
+			"targetCount", 3
 		)), List.of());
 
 		assertTrue(dispatch.dispatchable());
-		assertEquals(ActiveJobType.MINE_BLOCKS, dispatch.proposal().type());
+		assertEquals(ActiveJobType.ENSURE_BLOCKS_IN_INVENTORY, dispatch.proposal().type());
 		assertEquals(List.of("minecraft:wheat"), dispatch.proposal().mineSpec().blockIds());
 		assertEquals(3, dispatch.proposal().mineSpec().quantity());
+		assertEquals("ENSURE_BLOCKS_IN_INVENTORY", dispatch.payload().get("jobType"));
+		assertEquals(1, dispatch.payload().get("quantity"));
+		assertEquals(3, dispatch.payload().get("targetCount"));
 	}
 
 	@Test

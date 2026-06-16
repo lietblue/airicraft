@@ -121,6 +121,7 @@ import ai.moeru.airicraft.agent.tasks.TaskState;
 import ai.moeru.airicraft.agent.tasks.TaskSpec;
 import ai.moeru.airicraft.agent.tasks.TaskLedger;
 import ai.moeru.airicraft.agent.tasks.TaskTerminalEvent;
+import ai.moeru.airicraft.agent.tasks.TaskTerminationCause;
 import ai.moeru.airicraft.agent.tasks.TaskType;
 import ai.moeru.airicraft.agent.tasks.WorldEvidence;
 import ai.moeru.airicraft.agent.tasks.WorldTaskExecutor;
@@ -3221,6 +3222,7 @@ public final class EmbodiedAgentRuntime {
 			eventBuffer.append(tickCount, eventType, payload);
 		}
 
+		semanticTaskTerminalEvent(current).ifPresent(this::captureActionGraphTerminalEvent);
 		if (
 			current.state() == TaskState.PAUSED_BY_SESSION_GATE
 				|| current.state() == TaskState.COMPLETED
@@ -3248,6 +3250,48 @@ public final class EmbodiedAgentRuntime {
 				eventBuffer
 			);
 		}
+	}
+
+	private Optional<TaskTerminalEvent> semanticTaskTerminalEvent(TaskSnapshot current) {
+		if (current == null || current.source() == null || !"action_graph".equals(current.source())) {
+			return Optional.empty();
+		}
+		TaskExecutionState terminalState = switch (current.state()) {
+			case COMPLETED -> TaskExecutionState.COMPLETED;
+			case FAILED -> TaskExecutionState.FAILED;
+			case CANCELLED -> TaskExecutionState.CANCELLED;
+			default -> null;
+		};
+		if (terminalState == null || current.mission() == null || current.mission().missionId() == null || current.mission().missionId().isBlank()) {
+			return Optional.empty();
+		}
+		String message = current.lastFailure() == null || current.lastFailure().isBlank()
+			? current.state().name().toLowerCase(Locale.ROOT)
+			: current.lastFailure();
+		TaskTerminationCause terminationCause = terminalState == TaskExecutionState.COMPLETED ? TaskTerminationCause.GOAL_REACHED : null;
+		String taskId = actionGraphActiveTaskIdFor(current).orElse(current.mission().missionId());
+		return Optional.of(new TaskTerminalEvent(
+			taskId,
+			null,
+			terminalState,
+			message,
+			terminationCause
+		));
+	}
+
+	private Optional<String> actionGraphActiveTaskIdFor(TaskSnapshot current) {
+		ActionGraphExecutionSnapshot snapshot = actionGraphRuntime.snapshot();
+		if (snapshot.activeTaskId().isBlank() || current == null || current.mission() == null) {
+			return Optional.empty();
+		}
+		ActiveJob activeJob = activeJobRuntime.current();
+		if (activeJob == null
+			|| activeJob.isIdle()
+			|| !"action_graph".equals(activeJob.source())
+			|| !Objects.equals(activeJob.jobId(), current.mission().missionId())) {
+			return Optional.empty();
+		}
+		return Optional.of(snapshot.activeTaskId());
 	}
 
 	private static boolean hasSemanticTaskContext(TaskSnapshot previous, TaskSnapshot current) {
