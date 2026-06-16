@@ -51,6 +51,20 @@ public final class CraftingOpportunityResolver {
 		return List.copyOf(opportunities.values());
 	}
 
+	public static List<CraftingOpportunity> knownCrafts(ClientPlayerEntity player) {
+		if (player == null) {
+			return List.of();
+		}
+		Map<String, CraftingOpportunity> opportunities = new LinkedHashMap<>();
+		for (CraftingOpportunity opportunity : knownCrafts(player.getRecipeBook().getOrderedResults())) {
+			opportunities.putIfAbsent(opportunity.recipeId(), opportunity);
+		}
+		for (CraftingOpportunity opportunity : knownCrafts(integratedServerRecipeCollections())) {
+			opportunities.putIfAbsent(opportunity.recipeId(), opportunity);
+		}
+		return List.copyOf(opportunities.values());
+	}
+
 	static List<CraftingOpportunity> availableCrafts(List<RecipeResultCollection> collections, RecipeFinder finder) {
 		return availableCrafts(collections, finder, Map.of());
 	}
@@ -62,6 +76,17 @@ public final class CraftingOpportunityResolver {
 		Map<String, CraftingOpportunity> opportunities = new LinkedHashMap<>();
 		for (ResolvedCraftingOption option : resolvedOptions(collections, finder, availableItems)) {
 			opportunities.putIfAbsent(option.opportunity().recipeId(), option.opportunity());
+		}
+		return List.copyOf(opportunities.values());
+	}
+
+	static List<CraftingOpportunity> knownCrafts(List<RecipeResultCollection> collections) {
+		if (collections == null) {
+			return List.of();
+		}
+		Map<String, CraftingOpportunity> opportunities = new LinkedHashMap<>();
+		for (CraftingOpportunity opportunity : knownOptions(collections)) {
+			opportunities.putIfAbsent(opportunity.recipeId(), opportunity);
 		}
 		return List.copyOf(opportunities.values());
 	}
@@ -277,6 +302,39 @@ public final class CraftingOpportunityResolver {
 		return List.copyOf(options);
 	}
 
+	private static List<CraftingOpportunity> knownOptions(List<RecipeResultCollection> collections) {
+		if (collections == null) {
+			return List.of();
+		}
+		List<CraftingOpportunity> opportunities = new ArrayList<>();
+		for (RecipeResultCollection collection : collections) {
+			for (RecipeDisplayEntry entry : collection.getAllRecipes()) {
+				ItemStack result = resultStack(entry.display());
+				CraftingGridKind gridKind = gridKind(entry.display());
+				if (result.isEmpty() || gridKind == null) {
+					continue;
+				}
+				for (List<CraftingIngredientPlacement> placements : knowledgePlacements(ingredientPlacements(entry, gridKind))) {
+					if (placements.isEmpty()) {
+						continue;
+					}
+					String outputItemId = Registries.ITEM.getId(result.getItem()).toString();
+					List<String> inputItemIds = placements.stream()
+						.map(CraftingIngredientPlacement::itemId)
+						.toList();
+					opportunities.add(new CraftingOpportunity(
+						recipeId(inputItemIds, outputItemId),
+						outputItemId,
+						result.getCount(),
+						inputItemIds,
+						gridKind
+					));
+				}
+			}
+		}
+		return List.copyOf(opportunities);
+	}
+
 	private static List<IngredientPlacement> ingredientPlacements(RecipeDisplayEntry entry, CraftingGridKind gridKind) {
 		if (entry.craftingRequirements().isEmpty()) {
 			return List.of();
@@ -347,6 +405,39 @@ public final class CraftingOpportunityResolver {
 			choicesByPlacement.add(matchingItems);
 		}
 		List<List<Item>> itemVariants = boundedCombinations(choicesByPlacement, safeAvailableItems, MAX_PLACEMENT_VARIANTS_PER_RECIPE);
+		List<List<CraftingIngredientPlacement>> variants = new ArrayList<>();
+		for (List<Item> itemVariant : itemVariants) {
+			List<CraftingIngredientPlacement> variant = new ArrayList<>();
+			for (int index = 0; index < itemVariant.size(); index++) {
+				Item item = itemVariant.get(index);
+				variant.add(new CraftingIngredientPlacement(placements.get(index).gridIndex(), item, itemId(item)));
+			}
+			variants.add(List.copyOf(variant));
+		}
+		return List.copyOf(variants);
+	}
+
+	private static List<List<CraftingIngredientPlacement>> knowledgePlacements(List<IngredientPlacement> placements) {
+		if (placements.isEmpty()) {
+			return List.of();
+		}
+		List<List<Item>> choicesByPlacement = new ArrayList<>();
+		Map<Item, Integer> availableItems = new HashMap<>();
+		for (IngredientPlacement placement : placements) {
+			List<Item> matchingItems = placement.ingredient().getMatchingItems()
+				.map(entry -> entry.value())
+				.distinct()
+				.sorted(Comparator.comparing(CraftingOpportunityResolver::itemId))
+				.toList();
+			if (matchingItems.isEmpty()) {
+				return List.of();
+			}
+			for (Item item : matchingItems) {
+				availableItems.merge(item, placements.size(), Math::max);
+			}
+			choicesByPlacement.add(matchingItems);
+		}
+		List<List<Item>> itemVariants = boundedCombinations(choicesByPlacement, availableItems, MAX_PLACEMENT_VARIANTS_PER_RECIPE);
 		List<List<CraftingIngredientPlacement>> variants = new ArrayList<>();
 		for (List<Item> itemVariant : itemVariants) {
 			List<CraftingIngredientPlacement> variant = new ArrayList<>();

@@ -97,6 +97,34 @@ class ActionGraphExecutionRuntimeTest {
 	}
 
 	@Test
+	void knownCraftFactsEnablePlanningBeforeRecipeIsExecutable() {
+		RecordingDispatcher dispatcher = new RecordingDispatcher();
+		ActionGraphExecutionRuntime runtime = new ActionGraphExecutionRuntime(ActionsetIndex.empty(), dispatcher);
+		runtime.submit(ActionGoal.inventoryItem("minecraft:stick", 4), Map.of("minecraft:oak_planks", 2), CONTEXT, 100);
+
+		ActionGraphExecutionSnapshot dispatched = runtime.tick(inputWithKnownCrafts(
+			Map.of("minecraft:oak_planks", 2),
+			null,
+			101,
+			List.of(new CraftingOpportunity(
+				"oak_planks_x2_to_stick",
+				"minecraft:stick",
+				4,
+				List.of("minecraft:oak_planks", "minecraft:oak_planks")
+			))
+		));
+
+		assertEquals(ActionGraphExecutionState.WAITING_PRIMITIVE, dispatched.state());
+		assertEquals(1, dispatcher.dispatchedSteps.size());
+		ActionPlanStep craft = dispatcher.dispatchedSteps.getFirst();
+		assertEquals("recipe_provider", craft.actionId());
+		assertEquals("craft_item", craft.targetId());
+		assertEquals("oak_planks_x2_to_stick", craft.args().get("recipeId"));
+		assertEquals(4, craft.args().get("quantity"));
+		assertTrace(dispatched.trace(), "fact_observed");
+	}
+
+	@Test
 	void breadRouteHarvestsMatureWheatThenCraftsAfterWheatObserved() {
 		RecordingDispatcher dispatcher = new RecordingDispatcher();
 		ActionGraphExecutionRuntime runtime = new ActionGraphExecutionRuntime(defaultIndex(), dispatcher);
@@ -349,6 +377,25 @@ class ActionGraphExecutionRuntimeTest {
 			terminalEvent,
 			availableCrafts,
 			observedFacts
+		);
+	}
+
+	private static ActionGraphExecutionInput inputWithKnownCrafts(
+		Map<String, Integer> observedInventory,
+		TaskTerminalEvent terminalEvent,
+		long tick,
+		List<CraftingOpportunity> knownCrafts
+	) {
+		return new ActionGraphExecutionInput(
+			new ActionResolverContext(CONTEXT.worldId(), CONTEXT.actorId(), CONTEXT.dimension(), tick),
+			observedInventory,
+			true,
+			true,
+			terminalEvent,
+			List.of(),
+			knownCrafts,
+			List.of(),
+			List.of()
 		);
 	}
 

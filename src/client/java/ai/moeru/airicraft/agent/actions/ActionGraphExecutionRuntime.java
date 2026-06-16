@@ -471,7 +471,8 @@ public final class ActionGraphExecutionRuntime {
 
 	private void ingestObservedFacts(ActionGraphExecutionInput input) {
 		addInventoryFacts(input.observedInventory(), ActionFactProvenance.OBSERVED, input.context(), true);
-		addCraftRecipeFacts(input.availableCrafts(), input.context());
+		addCraftRecipeFacts(input.knownCrafts(), ActionFactProvenance.INFERRED, input.context());
+		addCraftRecipeFacts(input.availableCrafts(), ActionFactProvenance.OBSERVED, input.context());
 		addSmeltRecipeFacts(input.availableSmelts(), input.context());
 		addObservedFacts(input.observedFacts());
 	}
@@ -493,7 +494,11 @@ public final class ActionGraphExecutionRuntime {
 		}
 	}
 
-	private void addCraftRecipeFacts(List<CraftingOpportunity> availableCrafts, ActionResolverContext context) {
+	private void addCraftRecipeFacts(
+		List<CraftingOpportunity> availableCrafts,
+		ActionFactProvenance provenance,
+		ActionResolverContext context
+	) {
 		if (availableCrafts == null || availableCrafts.isEmpty()) {
 			return;
 		}
@@ -511,7 +516,7 @@ public final class ActionGraphExecutionRuntime {
 					"inputCounts", inputCounts,
 					"gridKind", opportunity.gridKind().name()
 				),
-				ActionFactProvenance.OBSERVED,
+				provenance,
 				context.currentTick(),
 				context.currentTick() + 1
 			);
@@ -520,7 +525,7 @@ public final class ActionGraphExecutionRuntime {
 				"fact", ActionFactType.CRAFT_RECIPE.id(),
 				"recipeId", opportunity.recipeId(),
 				"outputItemId", opportunity.outputItemId(),
-				"provenance", ActionFactProvenance.OBSERVED.name()
+				"provenance", provenance.name()
 			));
 		}
 	}

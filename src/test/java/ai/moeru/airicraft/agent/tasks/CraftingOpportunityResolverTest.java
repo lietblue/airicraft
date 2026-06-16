@@ -28,6 +28,14 @@ class CraftingOpportunityResolverTest {
 	}
 
 	@Test
+	void emptyRecipeBookHasNoKnownCrafts() {
+		assertEquals(
+			List.of(),
+			CraftingOpportunityResolver.knownCrafts(List.of(RecipeResultCollection.EMPTY))
+		);
+	}
+
+	@Test
 	void recipeIdMapsConcreteInputOutputPair() {
 		assertEquals(
 			List.of("birch_log_to_birch_planks", "birch_wood_to_birch_planks"),

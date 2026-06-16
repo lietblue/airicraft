@@ -265,7 +265,7 @@ class ActionResolverTest {
 				"outputCount", 1,
 				"inputCounts", Map.of("minecraft:iron_ingot", 3, "minecraft:stick", 2)
 			),
-			ActionFactProvenance.OBSERVED,
+			ActionFactProvenance.INFERRED,
 			90,
 			ActionFact.NEVER_STALE
 		));

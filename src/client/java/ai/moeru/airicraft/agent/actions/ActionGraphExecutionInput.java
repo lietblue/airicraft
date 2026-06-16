@@ -17,6 +17,7 @@ public record ActionGraphExecutionInput(
 	boolean actuationAllowed,
 	TaskTerminalEvent terminalTaskEvent,
 	List<CraftingOpportunity> availableCrafts,
+	List<CraftingOpportunity> knownCrafts,
 	List<SmeltingOption> availableSmelts,
 	List<ActionFact> observedFacts
 ) {
@@ -27,7 +28,7 @@ public record ActionGraphExecutionInput(
 		boolean actuationAllowed,
 		TaskTerminalEvent terminalTaskEvent
 	) {
-		this(context, observedInventory, worldLoaded, actuationAllowed, terminalTaskEvent, List.of(), List.of(), List.of());
+		this(context, observedInventory, worldLoaded, actuationAllowed, terminalTaskEvent, List.of(), List.of(), List.of(), List.of());
 	}
 
 	public ActionGraphExecutionInput(
@@ -38,7 +39,7 @@ public record ActionGraphExecutionInput(
 		TaskTerminalEvent terminalTaskEvent,
 		List<CraftingOpportunity> availableCrafts
 	) {
-		this(context, observedInventory, worldLoaded, actuationAllowed, terminalTaskEvent, availableCrafts, List.of(), List.of());
+		this(context, observedInventory, worldLoaded, actuationAllowed, terminalTaskEvent, availableCrafts, List.of(), List.of(), List.of());
 	}
 
 	public ActionGraphExecutionInput(
@@ -50,13 +51,27 @@ public record ActionGraphExecutionInput(
 		List<CraftingOpportunity> availableCrafts,
 		List<ActionFact> observedFacts
 	) {
-		this(context, observedInventory, worldLoaded, actuationAllowed, terminalTaskEvent, availableCrafts, List.of(), observedFacts);
+		this(context, observedInventory, worldLoaded, actuationAllowed, terminalTaskEvent, availableCrafts, List.of(), List.of(), observedFacts);
+	}
+
+	public ActionGraphExecutionInput(
+		ActionResolverContext context,
+		Map<String, Integer> observedInventory,
+		boolean worldLoaded,
+		boolean actuationAllowed,
+		TaskTerminalEvent terminalTaskEvent,
+		List<CraftingOpportunity> availableCrafts,
+		List<SmeltingOption> availableSmelts,
+		List<ActionFact> observedFacts
+	) {
+		this(context, observedInventory, worldLoaded, actuationAllowed, terminalTaskEvent, availableCrafts, List.of(), availableSmelts, observedFacts);
 	}
 
 	public ActionGraphExecutionInput {
 		context = Objects.requireNonNull(context, "context");
 		observedInventory = copyInventory(observedInventory);
 		availableCrafts = availableCrafts == null ? List.of() : List.copyOf(availableCrafts);
+		knownCrafts = knownCrafts == null ? List.of() : List.copyOf(knownCrafts);
 		availableSmelts = availableSmelts == null ? List.of() : List.copyOf(availableSmelts);
 		observedFacts = observedFacts == null ? List.of() : List.copyOf(observedFacts);
 	}

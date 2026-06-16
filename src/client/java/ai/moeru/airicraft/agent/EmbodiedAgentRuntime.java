@@ -1192,6 +1192,7 @@ public final class EmbodiedAgentRuntime {
 			sessionSnapshot.companionActuationAllowed(),
 			terminalEvent,
 			worldEvidence.availableCrafts(),
+			worldEvidence.knownCrafts(),
 			worldEvidence.availableSmelts(),
 			List.of()
 		));
@@ -2431,11 +2432,12 @@ public final class EmbodiedAgentRuntime {
 		Map<String, Integer> itemCounts = inventoryItemCounter.count(client.player.getInventory());
 		return new WorldEvidence(
 			resourceCounts,
-				itemCounts,
-				collectNearbyBlocks(client, origin),
-				CraftingOpportunityResolver.availableCrafts(client.player),
-				smeltingPlannerService.availableSmeltingOptions(client, smeltingProcessManager, tickCount),
-				client.world == null ? null : client.world.getRegistryKey().getValue().toString(),
+			itemCounts,
+			collectNearbyBlocks(client, origin),
+			CraftingOpportunityResolver.availableCrafts(client.player),
+			CraftingOpportunityResolver.knownCrafts(client.player),
+			smeltingPlannerService.availableSmeltingOptions(client, smeltingProcessManager, tickCount),
+			client.world == null ? null : client.world.getRegistryKey().getValue().toString(),
 			origin.getX(),
 			origin.getY(),
 			origin.getZ(),
