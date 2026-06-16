@@ -109,7 +109,7 @@ public final class ActionResolver {
 				resolving.remove(goal.normalizedKey());
 				return smeltingRoute;
 			}
-			Optional<ActionRoute> miningRoute = resolveMiningProviderGoal(goal, trace);
+			Optional<ActionRoute> miningRoute = resolveMiningProviderGoal(goal, depth, resolving, trace);
 			if (miningRoute.isPresent()) {
 				resolving.remove(goal.normalizedKey());
 				return miningRoute;
@@ -138,7 +138,7 @@ public final class ActionResolver {
 				resolving.remove(goal.normalizedKey());
 				return smeltingRoute;
 			}
-			Optional<ActionRoute> miningRoute = resolveMiningProviderGoal(goal, trace);
+			Optional<ActionRoute> miningRoute = resolveMiningProviderGoal(goal, depth, resolving, trace);
 			if (miningRoute.isPresent()) {
 				resolving.remove(goal.normalizedKey());
 				return miningRoute;
@@ -332,7 +332,12 @@ public final class ActionResolver {
 		return Optional.empty();
 	}
 
-	private Optional<ActionRoute> resolveMiningProviderGoal(ActionGoal goal, List<ActionTraceEvent> trace) {
+	private Optional<ActionRoute> resolveMiningProviderGoal(
+		ActionGoal goal,
+		int depth,
+		LinkedHashSet<String> resolving,
+		List<ActionTraceEvent> trace
+	) {
 		if (goal.factType() != ActionFactType.INVENTORY_ITEM) {
 			return Optional.empty();
 		}
@@ -360,25 +365,49 @@ public final class ActionResolver {
 			));
 			return Optional.empty();
 		}
+		ArrayList<ActionPlanStep> steps = new ArrayList<>();
+		int routeCost = 35;
+		Optional<String> toolGoal = requiredMiningToolGoal(itemId);
+		if (toolGoal.isPresent()) {
+			Optional<ActionRoute> toolRoute = resolveGoal(
+				ActionGoal.inventoryItem(toolGoal.get(), 1),
+				depth + 1,
+				resolving,
+				trace
+			);
+			if (toolRoute.isEmpty()) {
+				trace.add(event(
+					"route_candidate_rejected",
+					"mining_provider",
+					itemId,
+					"",
+					Map.of("goal", goal.normalizedKey(), "reason", "missing_tool_prerequisite", "toolItemId", toolGoal.get())
+				));
+				return Optional.empty();
+			}
+			steps.addAll(toolRoute.get().steps());
+			routeCost += toolRoute.get().cost();
+		}
 		trace.add(event(
 			"route_candidate_built",
 			"mining_provider",
 			itemId,
 			"",
-			Map.of("goal", goal.normalizedKey(), "cost", 35, "itemId", itemId)
+			Map.of("goal", goal.normalizedKey(), "cost", routeCost, "itemId", itemId)
 		));
 		LinkedHashMap<String, Object> args = new LinkedHashMap<>();
 		args.put("itemId", itemId);
 		args.put("blockIds", blockIds);
 		args.put("quantity", deficitCount);
 		ActionPlanStep step = new ActionPlanStep(ActionStepKind.PRIMITIVE, "mining_provider", itemId, "mine_block", "mine_block", args);
+		steps.add(step);
 		trace.add(event("primitive_planned", "mining_provider", itemId, "mine_block", Map.of(
 			"primitive", "mine_block",
 			"itemId", itemId,
 			"blockIds", blockIds
 		)));
 		trace.add(event("route_selected", "mining_provider", itemId, "", Map.of("goal", goal.normalizedKey())));
-		return Optional.of(new ActionRoute(List.of(step), 35));
+		return Optional.of(new ActionRoute(List.copyOf(steps), routeCost));
 	}
 
 	private Optional<ActionRoute> resolveSmeltingProviderGoal(
@@ -672,6 +701,44 @@ public final class ActionResolver {
 			.mapToInt(Number::intValue)
 			.max()
 			.orElse(0);
+	}
+
+	private Optional<String> requiredMiningToolGoal(String itemId) {
+		List<String> acceptableTools = acceptableMiningTools(itemId);
+		if (acceptableTools.isEmpty()) {
+			return Optional.empty();
+		}
+		for (String toolItemId : acceptableTools) {
+			if (existingGoalCount(ActionGoal.inventoryItem(toolItemId, 1)) >= 1) {
+				return Optional.empty();
+			}
+		}
+		return Optional.of(acceptableTools.getFirst());
+	}
+
+	private static List<String> acceptableMiningTools(String itemId) {
+		return switch (itemId) {
+			case "minecraft:cobblestone", "minecraft:coal" -> List.of(
+				"minecraft:wooden_pickaxe",
+				"minecraft:stone_pickaxe",
+				"minecraft:iron_pickaxe",
+				"minecraft:diamond_pickaxe",
+				"minecraft:netherite_pickaxe",
+				"minecraft:golden_pickaxe"
+			);
+			case "minecraft:raw_iron", "minecraft:raw_copper" -> List.of(
+				"minecraft:stone_pickaxe",
+				"minecraft:iron_pickaxe",
+				"minecraft:diamond_pickaxe",
+				"minecraft:netherite_pickaxe"
+			);
+			case "minecraft:raw_gold", "minecraft:diamond", "minecraft:emerald", "minecraft:redstone", "minecraft:lapis_lazuli" -> List.of(
+				"minecraft:iron_pickaxe",
+				"minecraft:diamond_pickaxe",
+				"minecraft:netherite_pickaxe"
+			);
+			default -> List.of();
+		};
 	}
 
 	private ActionGoal goalFromFactSpec(Map<String, Object> factSpec, Map<String, Integer> params) {

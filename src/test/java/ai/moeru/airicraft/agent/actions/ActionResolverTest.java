@@ -2,7 +2,10 @@ package ai.moeru.airicraft.agent.actions;
 
 import org.junit.jupiter.api.Test;
 
+import ai.moeru.airicraft.agent.tasks.CraftingOpportunity;
+
 import java.nio.file.Path;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -255,6 +258,13 @@ class ActionResolverTest {
 	@Test
 	void resolvesMinedDropInventoryItemThroughMiningProvider() {
 		ActionFactStore facts = new ActionFactStore();
+		facts.upsert(new ActionFact(
+			ActionFactIdentity.inventoryItem("world-a", "bot", "minecraft:stone_pickaxe"),
+			Map.of("count", 1),
+			ActionFactProvenance.OBSERVED,
+			90,
+			ActionFact.NEVER_STALE
+		));
 
 		ActionResolveResult result = new ActionResolver(ActionsetIndex.empty(), facts, CONTEXT)
 			.resolve(ActionGoal.inventoryItem("minecraft:raw_iron", 3));
@@ -267,6 +277,36 @@ class ActionResolverTest {
 		assertEquals(3, mine.args().get("quantity"));
 		assertEquals(List.of("minecraft:deepslate_iron_ore", "minecraft:iron_ore"), mine.args().get("blockIds"));
 		assertTrace(result.trace(), "route_selected", "mining_provider", "minecraft:raw_iron");
+	}
+
+	@Test
+	void miningProviderPrependsPickaxePrerequisites() {
+		ActionFactStore facts = new ActionFactStore();
+		addSurvivalCraftFacts(facts);
+		facts.upsert(new ActionFact(
+			ActionFactIdentity.inventoryItem("world-a", "bot", "minecraft:birch_planks"),
+			Map.of("count", 6),
+			ActionFactProvenance.OBSERVED,
+			90,
+			ActionFact.NEVER_STALE
+		));
+		facts.upsert(new ActionFact(
+			ActionFactIdentity.inventoryItem("world-a", "bot", "minecraft:stick"),
+			Map.of("count", 4),
+			ActionFactProvenance.OBSERVED,
+			90,
+			ActionFact.NEVER_STALE
+		));
+
+		ActionResolveResult result = new ActionResolver(ActionsetIndex.empty(), facts, CONTEXT)
+			.resolve(ActionGoal.inventoryItem("minecraft:raw_iron", 3));
+
+		assertTrue(result.resolved(), () -> result.trace().toString());
+		assertEquals(List.of("craft_item", "mine_block", "craft_item", "mine_block"), result.route().steps().stream().map(ActionPlanStep::targetId).toList());
+		assertEquals("minecraft:wooden_pickaxe", result.route().steps().get(0).args().get("itemId"));
+		assertEquals("minecraft:cobblestone", result.route().steps().get(1).args().get("itemId"));
+		assertEquals("minecraft:stone_pickaxe", result.route().steps().get(2).args().get("itemId"));
+		assertEquals("minecraft:raw_iron", result.route().steps().get(3).args().get("itemId"));
 	}
 
 	@Test
@@ -321,6 +361,13 @@ class ActionResolverTest {
 	@Test
 	void recipeProviderCanUseMiningAndSmeltingProvidersForCraftInputs() {
 		ActionFactStore facts = new ActionFactStore();
+		facts.upsert(new ActionFact(
+			ActionFactIdentity.inventoryItem("world-a", "bot", "minecraft:stone_pickaxe"),
+			Map.of("count", 1),
+			ActionFactProvenance.OBSERVED,
+			90,
+			ActionFact.NEVER_STALE
+		));
 		facts.upsert(new ActionFact(
 			ActionFactIdentity.inventoryItem("world-a", "bot", "minecraft:stick"),
 			Map.of("count", 2),
@@ -435,6 +482,31 @@ class ActionResolverTest {
 		ActionsetLoadResult load = ActionsetLibraryLoader.defaults().load(Path.of("actionsets"));
 		assertTrue(load.valid(), () -> load.diagnostics().toString());
 		return new ActionResolver(load.index(), facts, CONTEXT);
+	}
+
+	private static void addSurvivalCraftFacts(ActionFactStore facts) {
+		for (CraftingOpportunity craft : ActionGraphDomainKnowledge.survivalCrafts()) {
+			facts.upsert(new ActionFact(
+				ActionFactIdentity.craftRecipe("world-a", "bot", craft.recipeId()),
+				Map.of(
+					"outputItemId", craft.outputItemId(),
+					"outputCount", craft.outputCount(),
+					"inputItemIds", craft.inputItemIds(),
+					"inputCounts", inputCounts(craft.inputItemIds())
+				),
+				ActionFactProvenance.INFERRED,
+				90,
+				ActionFact.NEVER_STALE
+			));
+		}
+	}
+
+	private static Map<String, Integer> inputCounts(List<String> itemIds) {
+		LinkedHashMap<String, Integer> counts = new LinkedHashMap<>();
+		for (String itemId : itemIds) {
+			counts.merge(itemId, 1, Integer::sum);
+		}
+		return Map.copyOf(counts);
 	}
 
 	private static void assertTrace(List<ActionTraceEvent> trace, String eventType, String actionId, String alternativeId) {
