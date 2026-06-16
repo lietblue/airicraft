@@ -69,6 +69,19 @@ class PlannerPromptPolicyTest {
 	}
 
 	@Test
+	void systemPromptPreservesFinalItemGraphGoal() {
+		String prompt = PlannerPromptPolicy.systemPrompt(PlannerVisionMode.EXTERNAL_SUMMARY);
+
+		assertTrue(prompt.contains("preserve that final item as the high-level graph goal"));
+		assertTrue(prompt.contains("minecraft:iron_pickaxe"));
+		assertTrue(prompt.contains("Do not decompose the request into procedural"));
+		assertTrue(prompt.contains("intermediate graph goal returns no_route"));
+		assertTrue(prompt.contains("Start or resume a broader inventory_item goal"));
+		assertTrue(prompt.contains("search_recipes is recipe-viewer knowledge only"));
+		assertTrue(prompt.contains("never authorizes craft_recipe"));
+	}
+
+	@Test
 	void systemPromptExplainsEntityInteractionToolSelectors() {
 		String prompt = PlannerPromptPolicy.systemPrompt(PlannerVisionMode.EXTERNAL_SUMMARY);
 
