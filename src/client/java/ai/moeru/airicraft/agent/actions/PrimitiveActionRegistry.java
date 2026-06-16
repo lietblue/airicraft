@@ -111,6 +111,70 @@ public final class PrimitiveActionRegistry {
 			"pending"
 		));
 		register(actions, metadata(
+			"till_soil",
+			"Till a soil block into farmland with an inventory hoe.",
+			Map.of(
+				"itemId", param("string", true, "Namespaced hoe item id."),
+				"x", param("integer", true, "Ground block x coordinate."),
+				"y", param("integer", true, "Ground block y coordinate."),
+				"z", param("integer", true, "Ground block z coordinate.")
+			),
+			List.of("world.block", "inventory.tool"),
+			List.of("world.block", "world.farm_plot"),
+			List.of("block_interaction", "farming"),
+			true,
+			true,
+			"WorldTaskRequest.USE_BLOCK"
+		));
+		register(actions, metadata(
+			"plant_crop",
+			"Plant a crop item above farmland.",
+			Map.of(
+				"itemId", param("string", true, "Namespaced seed or crop item id."),
+				"x", param("integer", true, "Crop target x coordinate."),
+				"y", param("integer", true, "Crop target y coordinate."),
+				"z", param("integer", true, "Crop target z coordinate.")
+			),
+			List.of("world.block", "inventory.item"),
+			List.of("world.crop", "world.crop_group"),
+			List.of("block_interaction", "farming"),
+			true,
+			true,
+			"WorldTaskRequest.USE_BLOCK"
+		));
+		register(actions, metadata(
+			"hydrate_farmland",
+			"Place water for a farm hydration source.",
+			Map.of(
+				"itemId", param("string", false, "Namespaced water item id; defaults to minecraft:water_bucket."),
+				"x", param("integer", true, "Water target x coordinate."),
+				"y", param("integer", true, "Water target y coordinate."),
+				"z", param("integer", true, "Water target z coordinate.")
+			),
+			List.of("world.block", "inventory.item"),
+			List.of("world.block", "world.hydration_source"),
+			List.of("block_interaction", "farming"),
+			true,
+			true,
+			"WorldTaskRequest.USE_BLOCK"
+		));
+		register(actions, metadata(
+			"clear_farm_site",
+			"Clear one obstructing block from a farm site.",
+			Map.of(
+				"x", param("integer", true, "Block x coordinate."),
+				"y", param("integer", true, "Block y coordinate."),
+				"z", param("integer", true, "Block z coordinate."),
+				"expectedBlockIds", param("string[]", true, "Expected block ids that may be cleared.")
+			),
+			List.of("world.block"),
+			List.of("world.block", "world.farm_plot"),
+			List.of("block_interaction", "farming", "destructive"),
+			true,
+			true,
+			"WorldTaskRequest.BREAK_BLOCKS"
+		));
+		register(actions, metadata(
 			"place_block",
 			"Place an inventory block item at a position.",
 			Map.of(

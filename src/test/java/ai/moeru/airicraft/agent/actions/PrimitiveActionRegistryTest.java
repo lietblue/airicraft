@@ -33,6 +33,10 @@ class PrimitiveActionRegistryTest {
 		assertTrue(registry.contains("mine_block"));
 		assertTrue(registry.contains("interact_block"));
 		assertTrue(registry.contains("place_block"));
+		assertTrue(registry.contains("till_soil"));
+		assertTrue(registry.contains("plant_crop"));
+		assertTrue(registry.contains("hydrate_farmland"));
+		assertTrue(registry.contains("clear_farm_site"));
 		assertTrue(registry.contains("craft_item"));
 		assertTrue(registry.contains("wait_for_fact"));
 	}

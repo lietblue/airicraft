@@ -155,6 +155,70 @@ class ActionGraphPrimitiveMapperTest {
 	}
 
 	@Test
+	void mapsTillSoilToUseBlockWithHoe() {
+		ActionGraphPrimitiveDispatch dispatch = ActionGraphPrimitiveMapper.map(primitive("till_soil", Map.of(
+			"itemId", "minecraft:stone_hoe",
+			"x", -16,
+			"y", 63,
+			"z", -41
+		)), List.of());
+
+		assertTrue(dispatch.dispatchable());
+		assertEquals(ActiveJobType.USE_BLOCK, dispatch.proposal().type());
+		assertEquals("minecraft:stone_hoe", dispatch.proposal().blockUse().itemId());
+		assertEquals(-16, dispatch.proposal().blockUse().targetPosition().x());
+		assertEquals(63, dispatch.proposal().blockUse().targetPosition().y());
+		assertEquals(-41, dispatch.proposal().blockUse().targetPosition().z());
+		assertEquals("up", dispatch.proposal().blockUse().facePreference());
+	}
+
+	@Test
+	void mapsPlantCropToUseBlockWithFarmlandGuard() {
+		ActionGraphPrimitiveDispatch dispatch = ActionGraphPrimitiveMapper.map(primitive("plant_crop", Map.of(
+			"itemId", "minecraft:wheat_seeds",
+			"x", -16,
+			"y", 64,
+			"z", -41
+		)), List.of());
+
+		assertTrue(dispatch.dispatchable());
+		assertEquals(ActiveJobType.USE_BLOCK, dispatch.proposal().type());
+		assertEquals("minecraft:wheat_seeds", dispatch.proposal().blockUse().itemId());
+		assertEquals(List.of("minecraft:farmland"), dispatch.proposal().blockUse().expectedSupportBlockIds());
+		assertEquals("air", dispatch.proposal().blockUse().expectedTargetMaterial());
+		assertEquals("down", dispatch.proposal().blockUse().facePreference());
+	}
+
+	@Test
+	void mapsHydrateFarmlandToWaterBucketUseBlock() {
+		ActionGraphPrimitiveDispatch dispatch = ActionGraphPrimitiveMapper.map(primitive("hydrate_farmland", Map.of(
+			"x", -15,
+			"y", 63,
+			"z", -40
+		)), List.of());
+
+		assertTrue(dispatch.dispatchable());
+		assertEquals(ActiveJobType.USE_BLOCK, dispatch.proposal().type());
+		assertEquals("minecraft:water_bucket", dispatch.proposal().blockUse().itemId());
+		assertEquals("air_or_replaceable", dispatch.proposal().blockUse().expectedTargetMaterial());
+	}
+
+	@Test
+	void mapsClearFarmSiteToBreakBlocksWithExpectedIds() {
+		ActionGraphPrimitiveDispatch dispatch = ActionGraphPrimitiveMapper.map(primitive("clear_farm_site", Map.of(
+			"x", -15,
+			"y", 63,
+			"z", -40,
+			"expectedBlockIds", List.of("minecraft:grass_block", "minecraft:dirt")
+		)), List.of());
+
+		assertTrue(dispatch.dispatchable());
+		assertEquals(ActiveJobType.BREAK_BLOCKS, dispatch.proposal().type());
+		assertEquals(-15, dispatch.proposal().blockBreak().targets().getFirst().position().x());
+		assertEquals(List.of("minecraft:grass_block", "minecraft:dirt"), dispatch.proposal().blockBreak().targets().getFirst().expectedBlockIds());
+	}
+
+	@Test
 	void rejectsCraftItemWhenNoMatchingRecipeIsAvailable() {
 		ActionGraphPrimitiveDispatch dispatch = ActionGraphPrimitiveMapper.map(primitive("craft_item", Map.of(
 			"itemId", "minecraft:bread",

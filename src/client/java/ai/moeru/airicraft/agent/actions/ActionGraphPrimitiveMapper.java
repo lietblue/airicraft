@@ -3,6 +3,8 @@ package ai.moeru.airicraft.agent.actions;
 import ai.moeru.airicraft.agent.goals.GoalMineSpec;
 import ai.moeru.airicraft.agent.goals.GoalPosition;
 import ai.moeru.airicraft.agent.job.ActiveJobProposal;
+import ai.moeru.airicraft.agent.tasks.BlockBreakStepArgs;
+import ai.moeru.airicraft.agent.tasks.BlockUseStepArgs;
 import ai.moeru.airicraft.agent.tasks.CraftRecipeStepArgs;
 import ai.moeru.airicraft.agent.tasks.CraftingOpportunity;
 import ai.moeru.airicraft.agent.tasks.CollectSmeltedItemsStepArgs;
@@ -44,6 +46,10 @@ public final class ActionGraphPrimitiveMapper {
 			case "collect_smelted_item" -> collectSmeltedItem(step);
 			case "mine_block" -> mineBlock(step);
 			case "pathfind_to" -> pathfindTo(step);
+			case "till_soil" -> tillSoil(step);
+			case "plant_crop" -> plantCrop(step);
+			case "hydrate_farmland" -> hydrateFarmland(step);
+			case "clear_farm_site" -> clearFarmSite(step);
 			default -> ActionGraphPrimitiveDispatch.failed(
 				"unsupported_primitive",
 				"Primitive \"" + step.targetId() + "\" is not executable by the action graph debug dispatcher",
@@ -202,6 +208,91 @@ public final class ActionGraphPrimitiveMapper {
 		);
 	}
 
+	private static ActionGraphPrimitiveDispatch tillSoil(ActionPlanStep step) {
+		String itemId = stringArg(step, "itemId");
+		GoalPosition position = goalPositionArg(step);
+		if (itemId.isBlank()) {
+			return ActionGraphPrimitiveDispatch.failed("invalid_step_args", "till_soil requires itemId", step);
+		}
+		if (position == null) {
+			return ActionGraphPrimitiveDispatch.failed("invalid_step_args", "till_soil requires x, y, and z", step);
+		}
+		BlockUseStepArgs args = new BlockUseStepArgs(itemId, position, "up", List.of(), null);
+		LinkedHashMap<String, Object> payload = blockUsePayload("TILL_SOIL", itemId, position);
+		return ActionGraphPrimitiveDispatch.dispatchable(step, ActiveJobProposal.useBlock(args), payload);
+	}
+
+	private static ActionGraphPrimitiveDispatch plantCrop(ActionPlanStep step) {
+		String itemId = stringArg(step, "itemId");
+		GoalPosition position = goalPositionArg(step);
+		if (itemId.isBlank()) {
+			return ActionGraphPrimitiveDispatch.failed("invalid_step_args", "plant_crop requires itemId", step);
+		}
+		if (position == null) {
+			return ActionGraphPrimitiveDispatch.failed("invalid_step_args", "plant_crop requires x, y, and z", step);
+		}
+		List<String> expectedSupportBlockIds = stringListArg(step, "expectedSupportBlockIds");
+		if (expectedSupportBlockIds.isEmpty()) {
+			expectedSupportBlockIds = List.of("minecraft:farmland");
+		}
+		BlockUseStepArgs args = new BlockUseStepArgs(
+			itemId,
+			position,
+			stringArgOrDefault(step, "facePreference", "down"),
+			expectedSupportBlockIds,
+			stringArgOrDefault(step, "expectedTargetMaterial", "air")
+		);
+		LinkedHashMap<String, Object> payload = blockUsePayload("PLANT_CROP", itemId, position);
+		payload.put("expectedSupportBlockIds", expectedSupportBlockIds);
+		return ActionGraphPrimitiveDispatch.dispatchable(step, ActiveJobProposal.useBlock(args), payload);
+	}
+
+	private static ActionGraphPrimitiveDispatch hydrateFarmland(ActionPlanStep step) {
+		String itemId = stringArgOrDefault(step, "itemId", "minecraft:water_bucket");
+		GoalPosition position = goalPositionArg(step);
+		if (position == null) {
+			return ActionGraphPrimitiveDispatch.failed("invalid_step_args", "hydrate_farmland requires x, y, and z", step);
+		}
+		BlockUseStepArgs args = new BlockUseStepArgs(
+			itemId,
+			position,
+			stringArgOrDefault(step, "facePreference", "auto"),
+			List.of(),
+			stringArgOrDefault(step, "expectedTargetMaterial", "air_or_replaceable")
+		);
+		LinkedHashMap<String, Object> payload = blockUsePayload("HYDRATE_FARMLAND", itemId, position);
+		return ActionGraphPrimitiveDispatch.dispatchable(step, ActiveJobProposal.useBlock(args), payload);
+	}
+
+	private static ActionGraphPrimitiveDispatch clearFarmSite(ActionPlanStep step) {
+		GoalPosition position = goalPositionArg(step);
+		if (position == null) {
+			return ActionGraphPrimitiveDispatch.failed("invalid_step_args", "clear_farm_site requires x, y, and z", step);
+		}
+		List<String> expectedBlockIds = stringListArg(step, "expectedBlockIds");
+		if (expectedBlockIds.isEmpty()) {
+			return ActionGraphPrimitiveDispatch.failed("invalid_step_args", "clear_farm_site requires expectedBlockIds", step);
+		}
+		BlockBreakStepArgs args = new BlockBreakStepArgs(List.of(new BlockBreakStepArgs.Target(position, expectedBlockIds)));
+		LinkedHashMap<String, Object> payload = new LinkedHashMap<>();
+		payload.put("jobType", "CLEAR_FARM_SITE");
+		payload.put("x", position.x());
+		payload.put("y", position.y());
+		payload.put("z", position.z());
+		payload.put("expectedBlockIds", expectedBlockIds);
+		return ActionGraphPrimitiveDispatch.dispatchable(step, ActiveJobProposal.breakBlocks(args), payload);
+	}
+
+	private static LinkedHashMap<String, Object> blockUsePayload(String jobType, String itemId, GoalPosition position) {
+		LinkedHashMap<String, Object> payload = new LinkedHashMap<>();
+		payload.put("jobType", jobType);
+		payload.put("itemId", itemId);
+		payload.put("x", position.x());
+		payload.put("y", position.y());
+		payload.put("z", position.z());
+		return payload;
+	}
+
 	private static List<CraftingOpportunity> safeCraftingOpportunities(List<CraftingOpportunity> opportunities) {
 		return opportunities == null ? List.of() : opportunities;
 	}
@@ -213,6 +304,21 @@ public final class ActionGraphPrimitiveMapper {
 	private static String stringArg(ActionPlanStep step, String key) {
 		Object value = step.args().get(key);
 		return value == null ? "" : String.valueOf(value);
+	}
+
+	private static String stringArgOrDefault(ActionPlanStep step, String key, String defaultValue) {
+		String value = stringArg(step, key);
+		return value.isBlank() ? defaultValue : value;
+	}
+
+	private static GoalPosition goalPositionArg(ActionPlanStep step) {
+		int x = intArg(step, "x", Integer.MIN_VALUE);
+		int y = intArg(step, "y", Integer.MIN_VALUE);
+		int z = intArg(step, "z", Integer.MIN_VALUE);
+		if (x == Integer.MIN_VALUE || y == Integer.MIN_VALUE || z == Integer.MIN_VALUE) {
+			return null;
+		}
+		return new GoalPosition(x, y, z, true);
 	}
 
 	private static int intArg(ActionPlanStep step, String key, int defaultValue) {
