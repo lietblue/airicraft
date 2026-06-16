@@ -24,6 +24,49 @@ class ActionGraphExecutionRuntimeTest {
 	);
 
 	@Test
+	void verbosePayloadCapsTraceAndRecoveryHistory() {
+		List<ActionTraceEvent> trace = new ArrayList<>();
+		for (int index = 0; index < 45; index++) {
+			trace.add(new ActionTraceEvent("event_" + index, "action", "alternative", "step", Map.of()));
+		}
+		List<Map<String, Object>> recovery = new ArrayList<>();
+		for (int index = 0; index < 12; index++) {
+			recovery.add(Map.of("index", index));
+		}
+		ActionGraphExecutionSnapshot snapshot = new ActionGraphExecutionSnapshot(
+			true,
+			"action-graph-test",
+			ActionGraphExecutionState.FAILED,
+			ActionGoal.inventoryItem("minecraft:iron_pickaxe", 1),
+			ActionRoute.empty(),
+			0,
+			null,
+			0,
+			0,
+			0,
+			"",
+			"",
+			"no_route",
+			"no route",
+			Map.of(),
+			trace,
+			recovery,
+			Map.of(),
+			Map.of(),
+			Map.of()
+		);
+
+		Map<String, Object> payload = snapshot.toPayload(true);
+
+		assertEquals(45, payload.get("traceEventCount"));
+		assertEquals(5, payload.get("traceOmitted"));
+		assertEquals(40, list(payload.get("trace")).size());
+		assertEquals("event_5", map(list(payload.get("trace")).getFirst()).get("eventType"));
+		assertEquals(2, payload.get("recoveryHistoryOmitted"));
+		assertEquals(10, list(payload.get("recoveryHistory")).size());
+	}
+
+	@Test
 	void resourceGoalDispatchesProviderAndCompletesAfterObservedResourceFact() {
 		RecordingDispatcher dispatcher = new RecordingDispatcher();
 		ActionGraphExecutionRuntime runtime = new ActionGraphExecutionRuntime(ActionsetIndex.empty(), dispatcher);
@@ -496,6 +539,16 @@ class ActionGraphExecutionRuntimeTest {
 
 	private static long countTrace(List<ActionTraceEvent> trace, String eventType) {
 		return trace.stream().filter(event -> eventType.equals(event.eventType())).count();
+	}
+
+	@SuppressWarnings("unchecked")
+	private static Map<String, Object> map(Object value) {
+		return (Map<String, Object>) value;
+	}
+
+	@SuppressWarnings("unchecked")
+	private static List<Object> list(Object value) {
+		return (List<Object>) value;
 	}
 
 	private static final class RecordingDispatcher implements ActionGraphPrimitiveDispatcher {

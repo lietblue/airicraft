@@ -27,6 +27,9 @@ public record ActionGraphExecutionSnapshot(
 	Map<String, Object> task,
 	Map<String, Object> taskExecution
 ) {
+	private static final int VERBOSE_TRACE_LIMIT = 40;
+	private static final int VERBOSE_RECOVERY_LIMIT = 10;
+
 	public ActionGraphExecutionSnapshot {
 		executionId = executionId == null ? "" : executionId;
 		state = state == null ? ActionGraphExecutionState.IDLE : state;
@@ -109,8 +112,15 @@ public record ActionGraphExecutionSnapshot(
 		}
 		if (verbose) {
 			payload.put("factSourceCounts", factSourceCounts);
-			payload.put("trace", trace.stream().map(ActionGraphExecutionSnapshot::tracePayload).toList());
-			payload.put("recoveryHistory", recoveryHistory);
+			payload.put("traceOmitted", Math.max(0, trace.size() - VERBOSE_TRACE_LIMIT));
+			payload.put("trace", trace.stream()
+				.skip(Math.max(0, trace.size() - VERBOSE_TRACE_LIMIT))
+				.map(ActionGraphExecutionSnapshot::tracePayload)
+				.toList());
+			payload.put("recoveryHistoryOmitted", Math.max(0, recoveryHistory.size() - VERBOSE_RECOVERY_LIMIT));
+			payload.put("recoveryHistory", recoveryHistory.stream()
+				.skip(Math.max(0, recoveryHistory.size() - VERBOSE_RECOVERY_LIMIT))
+				.toList());
 		}
 		else {
 			payload.put("trace", List.of());
