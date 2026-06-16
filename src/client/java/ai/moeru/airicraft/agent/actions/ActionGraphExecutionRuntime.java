@@ -472,8 +472,15 @@ public final class ActionGraphExecutionRuntime {
 	private void ingestObservedFacts(ActionGraphExecutionInput input) {
 		addInventoryFacts(input.observedInventory(), ActionFactProvenance.OBSERVED, input.context(), true);
 		addResourceFacts(input.observedResources(), ActionFactProvenance.OBSERVED, input.context());
+		addCraftRecipeFacts(
+			ActionGraphDomainKnowledge.survivalCrafts(),
+			ActionFactProvenance.INFERRED,
+			input.context(),
+			ActionFact.NEVER_STALE
+		);
 		addCraftRecipeFacts(input.knownCrafts(), ActionFactProvenance.INFERRED, input.context());
 		addCraftRecipeFacts(input.availableCrafts(), ActionFactProvenance.OBSERVED, input.context());
+		addInferredSmeltRecipeFacts(ActionGraphDomainKnowledge.survivalSmelts(), input.context());
 		addSmeltRecipeFacts(input.availableSmelts(), input.context());
 		addObservedFacts(input.observedFacts());
 	}
@@ -486,7 +493,10 @@ public final class ActionGraphExecutionRuntime {
 			if (fact == null) {
 				continue;
 			}
-			facts.upsert(fact);
+			ActionFact stored = facts.upsert(fact);
+			if (stored != fact) {
+				continue;
+			}
 			LinkedHashMap<String, Object> payload = new LinkedHashMap<>();
 			payload.put("fact", fact.identity().type().id());
 			payload.putAll(fact.identity().keys());
@@ -499,6 +509,15 @@ public final class ActionGraphExecutionRuntime {
 		List<CraftingOpportunity> availableCrafts,
 		ActionFactProvenance provenance,
 		ActionResolverContext context
+	) {
+		addCraftRecipeFacts(availableCrafts, provenance, context, context.currentTick() + 1);
+	}
+
+	private void addCraftRecipeFacts(
+		List<CraftingOpportunity> availableCrafts,
+		ActionFactProvenance provenance,
+		ActionResolverContext context,
+		long staleAtTick
 	) {
 		if (availableCrafts == null || availableCrafts.isEmpty()) {
 			return;
@@ -519,9 +538,12 @@ public final class ActionGraphExecutionRuntime {
 				),
 				provenance,
 				context.currentTick(),
-				context.currentTick() + 1
+				staleAtTick
 			);
-			facts.upsert(fact);
+			ActionFact stored = facts.upsert(fact);
+			if (stored != fact) {
+				continue;
+			}
 			traceFactObservedIfChanged(fact, Map.of(
 				"fact", ActionFactType.CRAFT_RECIPE.id(),
 				"recipeId", opportunity.recipeId(),
@@ -549,13 +571,52 @@ public final class ActionGraphExecutionRuntime {
 				context.currentTick(),
 				context.currentTick() + 1
 			);
-			facts.upsert(fact);
+			ActionFact stored = facts.upsert(fact);
+			if (stored != fact) {
+				continue;
+			}
 			traceFactObservedIfChanged(fact, Map.of(
 				"fact", ActionFactType.SMELT_RECIPE.id(),
 				"optionId", option.optionId(),
 				"inputItemId", option.inputItemId(),
 				"outputItemId", option.outputItemId(),
 				"provenance", ActionFactProvenance.OBSERVED.name()
+			));
+		}
+	}
+
+	private void addInferredSmeltRecipeFacts(
+		List<ActionGraphDomainKnowledge.SmeltingRecipe> inferredSmelts,
+		ActionResolverContext context
+	) {
+		if (inferredSmelts == null || inferredSmelts.isEmpty()) {
+			return;
+		}
+		for (ActionGraphDomainKnowledge.SmeltingRecipe recipe : inferredSmelts) {
+			ActionFact fact = new ActionFact(
+				ActionFactIdentity.smeltRecipe(context.worldId(), context.actorId(), recipe.optionId()),
+				Map.of(
+					"inputItemId", recipe.inputItemId(),
+					"outputItemId", recipe.outputItemId(),
+					"outputCount", recipe.outputCount(),
+					"maxInputQuantity", recipe.maxInputQuantity(),
+					"stationItemId", recipe.stationItemId(),
+					"stationItemCount", recipe.stationItemCount()
+				),
+				ActionFactProvenance.INFERRED,
+				context.currentTick(),
+				ActionFact.NEVER_STALE
+			);
+			ActionFact stored = facts.upsert(fact);
+			if (stored != fact) {
+				continue;
+			}
+			traceFactObservedIfChanged(fact, Map.of(
+				"fact", ActionFactType.SMELT_RECIPE.id(),
+				"optionId", recipe.optionId(),
+				"inputItemId", recipe.inputItemId(),
+				"outputItemId", recipe.outputItemId(),
+				"provenance", ActionFactProvenance.INFERRED.name()
 			));
 		}
 	}
@@ -582,7 +643,10 @@ public final class ActionGraphExecutionRuntime {
 				context.currentTick(),
 				ActionFact.NEVER_STALE
 			);
-			facts.upsert(fact);
+			ActionFact stored = facts.upsert(fact);
+			if (stored != fact) {
+				continue;
+			}
 			count++;
 			traceFactObservedIfChanged(fact, Map.of(
 				"fact", ActionFactType.INVENTORY_ITEM.id(),
@@ -619,7 +683,10 @@ public final class ActionGraphExecutionRuntime {
 				context.currentTick(),
 				ActionFact.NEVER_STALE
 			);
-			facts.upsert(fact);
+			ActionFact stored = facts.upsert(fact);
+			if (stored != fact) {
+				continue;
+			}
 			traceFactObservedIfChanged(fact, Map.of(
 				"fact", ActionFactType.INVENTORY_RESOURCE.id(),
 				"resourceKind", entry.getKey(),

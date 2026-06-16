@@ -438,6 +438,24 @@ public final class ActionResolver {
 				Map.of("goal", goal.normalizedKey(), "cost", 25, "outputItemId", outputItemId)
 			));
 
+			ArrayList<ActionPlanStep> steps = new ArrayList<>();
+			int routeCost = 25;
+			String stationItemId = scalar(recipe.payload().get("stationItemId"), "");
+			int stationItemCount = intPayload(recipe, "stationItemCount", 0);
+			if (!stationItemId.isBlank() && stationItemCount > 0) {
+				Optional<ActionRoute> stationRoute = resolveGoal(
+					ActionGoal.inventoryItem(stationItemId, stationItemCount),
+					depth + 1,
+					resolving,
+					trace
+				);
+				if (stationRoute.isEmpty()) {
+					continue;
+				}
+				steps.addAll(stationRoute.get().steps());
+				routeCost += stationRoute.get().cost();
+			}
+
 			Optional<ActionRoute> inputRoute = resolveGoal(
 				ActionGoal.inventoryItem(inputItemId, inputQuantity),
 				depth + 1,
@@ -448,8 +466,8 @@ public final class ActionResolver {
 				continue;
 			}
 
-			ArrayList<ActionPlanStep> steps = new ArrayList<>(inputRoute.get().steps());
-			int routeCost = 25 + inputRoute.get().cost();
+			steps.addAll(inputRoute.get().steps());
+			routeCost += inputRoute.get().cost();
 			LinkedHashMap<String, Object> smeltArgs = new LinkedHashMap<>();
 			smeltArgs.put("itemId", outputItemId);
 			smeltArgs.put("inputItemId", inputItemId);

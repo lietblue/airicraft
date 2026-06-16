@@ -194,6 +194,33 @@ class ActionGraphExecutionRuntimeTest {
 	}
 
 	@Test
+	void broadIronPickaxeGoalStartsThroughInferredSurvivalKnowledge() {
+		RecordingDispatcher dispatcher = new RecordingDispatcher();
+		ActionGraphExecutionRuntime runtime = new ActionGraphExecutionRuntime(ActionsetIndex.empty(), dispatcher);
+		runtime.submit(ActionGoal.inventoryItem("minecraft:iron_pickaxe", 1), Map.of("minecraft:birch_planks", 3), CONTEXT, 100);
+
+		ActionGraphExecutionSnapshot dispatched = runtime.tick(input(Map.of("minecraft:birch_planks", 3), null, 101));
+
+		assertEquals(ActionGraphExecutionState.WAITING_PRIMITIVE, dispatched.state());
+		assertEquals(1, dispatcher.dispatchedSteps.size());
+		ActionPlanStep first = dispatcher.dispatchedSteps.getFirst();
+		assertEquals(ActionStepKind.PRIMITIVE, first.kind());
+		assertTrue(dispatched.route().steps().stream().anyMatch(step ->
+			"smelt_item".equals(step.targetId())
+				&& "inferred:minecraft_raw_iron_to_minecraft_iron_ingot".equals(step.args().get("optionId"))
+		), () -> dispatched.route().toString());
+		assertTrue(dispatched.route().steps().stream().anyMatch(step ->
+			"craft_item".equals(step.targetId())
+				&& "minecraft:iron_pickaxe".equals(step.args().get("itemId"))
+		), () -> dispatched.route().toString());
+		assertTrue(dispatched.trace().stream().anyMatch(event ->
+			"route_selected".equals(event.eventType())
+				&& "smelting_provider".equals(event.actionId())
+				&& event.alternativeId().startsWith("inferred:")
+		), () -> dispatched.trace().toString());
+	}
+
+	@Test
 	void breadRouteHarvestsMatureWheatThenCraftsAfterWheatObserved() {
 		RecordingDispatcher dispatcher = new RecordingDispatcher();
 		ActionGraphExecutionRuntime runtime = new ActionGraphExecutionRuntime(defaultIndex(), dispatcher);

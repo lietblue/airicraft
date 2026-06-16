@@ -113,6 +113,20 @@ class ActionGraphPrimitiveMapperTest {
 	}
 
 	@Test
+	void inferredSmeltStepBindsCurrentConcreteOption() {
+		ActionGraphPrimitiveDispatch dispatch = ActionGraphPrimitiveMapper.map(primitive("smelt_item", Map.of(
+			"itemId", "minecraft:iron_ingot",
+			"inputItemId", "minecraft:raw_iron",
+			"optionId", "inferred:minecraft_raw_iron_to_minecraft_iron_ingot",
+			"inputQuantity", 3
+		)), List.of(), List.of(smeltingOption()));
+
+		assertTrue(dispatch.dispatchable());
+		assertEquals(ActiveJobType.SMELT_ITEMS, dispatch.proposal().type());
+		assertEquals("smelt:minecraft_raw_iron_to_minecraft_iron_ingot:nearby-1", dispatch.proposal().smeltItems().optionId());
+	}
+
+	@Test
 	void mapsCollectSmeltedItemToCollectionJob() {
 		ActionGraphPrimitiveDispatch dispatch = ActionGraphPrimitiveMapper.map(primitive("collect_smelted_item", Map.of(
 			"itemId", "minecraft:iron_ingot"

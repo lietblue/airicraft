@@ -112,6 +112,7 @@ public final class ActionGraphPrimitiveMapper {
 
 	private static ActionGraphPrimitiveDispatch smeltItem(ActionPlanStep step, List<SmeltingOption> smeltingOptions) {
 		String itemId = stringArg(step, "itemId");
+		String inputItemId = stringArg(step, "inputItemId");
 		String optionId = stringArg(step, "optionId");
 		int inputQuantity = intArg(step, "inputQuantity", 1);
 		if (itemId.isBlank()) {
@@ -120,9 +121,11 @@ public final class ActionGraphPrimitiveMapper {
 		if (inputQuantity < 1) {
 			return ActionGraphPrimitiveDispatch.failed("invalid_step_args", "smelt_item inputQuantity must be positive", step);
 		}
+		boolean inferredOption = optionId.startsWith("inferred:");
 		SmeltingOption option = safeSmeltingOptions(smeltingOptions).stream()
 			.filter(candidate -> itemId.equals(candidate.outputItemId()))
-			.filter(candidate -> optionId.isBlank() || optionId.equals(candidate.optionId()))
+			.filter(candidate -> inputItemId.isBlank() || inputItemId.equals(candidate.inputItemId()))
+			.filter(candidate -> inferredOption || optionId.isBlank() || optionId.equals(candidate.optionId()))
 			.filter(candidate -> inputQuantity <= candidate.maxInputQuantity())
 			.min(Comparator.comparing(SmeltingOption::optionId))
 			.orElse(null);
