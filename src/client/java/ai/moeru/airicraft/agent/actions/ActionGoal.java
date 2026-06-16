@@ -24,6 +24,14 @@ public record ActionGoal(
 		);
 	}
 
+	public static ActionGoal resourceCollection(String resourceKind, int countAtLeast) {
+		return new ActionGoal(
+			ActionFactType.INVENTORY_RESOURCE,
+			Map.of("resourceKind", resourceKind),
+			Map.of("countAtLeast", countAtLeast)
+		);
+	}
+
 	public int minimum(String key, int fallback) {
 		return minimums.getOrDefault(key, fallback);
 	}

@@ -9,6 +9,9 @@ import ai.moeru.airicraft.agent.tasks.CollectSmeltedItemsStepArgs;
 import ai.moeru.airicraft.agent.tasks.SmeltItemsStepArgs;
 import ai.moeru.airicraft.agent.tasks.SmeltingFuelMode;
 import ai.moeru.airicraft.agent.tasks.SmeltingOption;
+import ai.moeru.airicraft.agent.tasks.TaskResourceKind;
+import ai.moeru.airicraft.agent.tasks.TaskSpec;
+import ai.moeru.airicraft.agent.tasks.TaskType;
 
 import java.util.Comparator;
 import java.util.LinkedHashMap;
@@ -35,6 +38,7 @@ public final class ActionGraphPrimitiveMapper {
 			return ActionGraphPrimitiveDispatch.failed("unsupported_step_kind", "Only primitive steps can be dispatched", step);
 		}
 		return switch (step.targetId()) {
+			case "collect_resource" -> collectResource(step);
 			case "craft_item" -> craftItem(step, craftingOpportunities);
 			case "smelt_item" -> smeltItem(step, smeltingOptions);
 			case "collect_smelted_item" -> collectSmeltedItem(step);
@@ -46,6 +50,30 @@ public final class ActionGraphPrimitiveMapper {
 				step
 			);
 		};
+	}
+
+	private static ActionGraphPrimitiveDispatch collectResource(ActionPlanStep step) {
+		String resourceKindValue = stringArg(step, "resourceKind");
+		int quantity = intArg(step, "quantity", 1);
+		TaskResourceKind resourceKind;
+		try {
+			resourceKind = TaskResourceKind.valueOf(resourceKindValue);
+		}
+		catch (RuntimeException exception) {
+			return ActionGraphPrimitiveDispatch.failed("invalid_step_args", "collect_resource requires a supported resourceKind", step);
+		}
+		if (quantity < 1) {
+			return ActionGraphPrimitiveDispatch.failed("invalid_step_args", "collect_resource quantity must be positive", step);
+		}
+		LinkedHashMap<String, Object> payload = new LinkedHashMap<>();
+		payload.put("jobType", "COLLECT_RESOURCE");
+		payload.put("resourceKind", resourceKind.name());
+		payload.put("quantity", quantity);
+		return ActionGraphPrimitiveDispatch.dispatchable(
+			step,
+			ActiveJobProposal.collectResource(new TaskSpec(TaskType.COLLECT_RESOURCE, resourceKind, quantity)),
+			payload
+		);
 	}
 
 	private static ActionGraphPrimitiveDispatch craftItem(ActionPlanStep step, List<CraftingOpportunity> craftingOpportunities) {

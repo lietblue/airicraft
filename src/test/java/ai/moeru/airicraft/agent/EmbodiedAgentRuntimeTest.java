@@ -265,6 +265,25 @@ class EmbodiedAgentRuntimeTest {
 	}
 
 	@Test
+	void startActionGoalPlannerToolStartsResourceGraphGoal() {
+		EmbodiedAgentRuntime runtime = EmbodiedAgentRuntime.createForTests(new FakeWorldTaskExecutor());
+
+		String result = runtime.executePlannerToolCallForTests(new PlannerToolCall(
+			"call_goal",
+			PlannerToolCatalog.START_ACTION_GOAL,
+			JsonParser.parseString("""
+				{"kind":"resource_collection","resourceKind":"WOOD_LOGS","quantity":3}
+				""").getAsJsonObject(),
+			null,
+			null
+		));
+
+		assertTrue(result.contains("Tool result for start_action_goal: state=RESOLVING"));
+		assertTrue(result.contains("resourceKind=WOOD_LOGS"));
+		assertEquals(ActionGraphExecutionState.RESOLVING, runtime.actionGraphExecutionSnapshot().state());
+	}
+
+	@Test
 	void inspectAndCancelActionGoalPlannerToolsUseGraphPath() {
 		EmbodiedAgentRuntime runtime = EmbodiedAgentRuntime.createForTests(new FakeWorldTaskExecutor());
 		runtime.startActionGoal(ActionGoal.inventoryItem("minecraft:bread", 1), "test");

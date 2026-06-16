@@ -19,6 +19,29 @@ class ActionResolverTest {
 	);
 
 	@Test
+	void resolvesResourceCollectionThroughResourceProvider() {
+		ActionFactStore facts = new ActionFactStore();
+		facts.upsert(new ActionFact(
+			ActionFactIdentity.inventoryResource("world-a", "bot", "WOOD_LOGS"),
+			Map.of("count", 1),
+			ActionFactProvenance.OBSERVED,
+			90,
+			ActionFact.NEVER_STALE
+		));
+
+		ActionResolveResult result = new ActionResolver(ActionsetIndex.empty(), facts, CONTEXT)
+			.resolve(ActionGoal.resourceCollection("WOOD_LOGS", 3));
+
+		assertTrue(result.resolved(), () -> result.trace().toString());
+		assertEquals(List.of("collect_resource"), result.route().steps().stream().map(ActionPlanStep::targetId).toList());
+		ActionPlanStep step = result.route().steps().getFirst();
+		assertEquals("resource_provider", step.actionId());
+		assertEquals("WOOD_LOGS", step.args().get("resourceKind"));
+		assertEquals(2, step.args().get("quantity"));
+		assertTrace(result.trace(), "route_selected", "resource_provider", "WOOD_LOGS");
+	}
+
+	@Test
 	void resolvesBreadFromInventoryWheatWithoutActuating() {
 		ActionFactStore facts = new ActionFactStore();
 		facts.upsert(new ActionFact(

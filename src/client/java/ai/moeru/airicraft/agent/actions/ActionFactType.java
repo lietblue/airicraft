@@ -7,6 +7,7 @@ import java.util.stream.Collectors;
 
 public enum ActionFactType {
 	INVENTORY_ITEM("inventory.item"),
+	INVENTORY_RESOURCE("inventory.resource"),
 	INVENTORY_TOOL("inventory.tool"),
 	WORLD_BLOCK("world.block"),
 	WORLD_CROP("world.crop"),

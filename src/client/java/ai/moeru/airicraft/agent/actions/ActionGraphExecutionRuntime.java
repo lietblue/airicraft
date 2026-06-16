@@ -471,6 +471,7 @@ public final class ActionGraphExecutionRuntime {
 
 	private void ingestObservedFacts(ActionGraphExecutionInput input) {
 		addInventoryFacts(input.observedInventory(), ActionFactProvenance.OBSERVED, input.context(), true);
+		addResourceFacts(input.observedResources(), ActionFactProvenance.OBSERVED, input.context());
 		addCraftRecipeFacts(input.knownCrafts(), ActionFactProvenance.INFERRED, input.context());
 		addCraftRecipeFacts(input.availableCrafts(), ActionFactProvenance.OBSERVED, input.context());
 		addSmeltRecipeFacts(input.availableSmelts(), input.context());
@@ -595,6 +596,36 @@ public final class ActionGraphExecutionRuntime {
 		}
 		else {
 			assumedInventoryFactCount = count;
+		}
+	}
+
+	private void addResourceFacts(
+		Map<String, Integer> resources,
+		ActionFactProvenance provenance,
+		ActionResolverContext context
+	) {
+		if (resources == null || resources.isEmpty()) {
+			return;
+		}
+		for (Map.Entry<String, Integer> entry : resources.entrySet()) {
+			if (entry.getKey() == null || entry.getKey().isBlank()) {
+				continue;
+			}
+			int count = entry.getValue() == null ? 0 : Math.max(0, entry.getValue());
+			ActionFact fact = new ActionFact(
+				ActionFactIdentity.inventoryResource(context.worldId(), context.actorId(), entry.getKey()),
+				Map.of("count", count),
+				provenance,
+				context.currentTick(),
+				ActionFact.NEVER_STALE
+			);
+			facts.upsert(fact);
+			traceFactObservedIfChanged(fact, Map.of(
+				"fact", ActionFactType.INVENTORY_RESOURCE.id(),
+				"resourceKind", entry.getKey(),
+				"count", count,
+				"provenance", provenance.name()
+			));
 		}
 	}
 

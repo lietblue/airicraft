@@ -73,6 +73,19 @@ class ActionGraphPrimitiveMapperTest {
 	}
 
 	@Test
+	void mapsCollectResourceToResourceJob() {
+		ActionGraphPrimitiveDispatch dispatch = ActionGraphPrimitiveMapper.map(primitive("collect_resource", Map.of(
+			"resourceKind", "WOOD_LOGS",
+			"quantity", 3
+		)), List.of());
+
+		assertTrue(dispatch.dispatchable());
+		assertEquals(ActiveJobType.COLLECT_RESOURCE, dispatch.proposal().type());
+		assertEquals(3, dispatch.proposal().taskSpec().quantity());
+		assertEquals("WOOD_LOGS", dispatch.proposal().taskSpec().resourceKind().name());
+	}
+
+	@Test
 	void mapsMineBlockToMineGoal() {
 		ActionGraphPrimitiveDispatch dispatch = ActionGraphPrimitiveMapper.map(primitive("mine_block", Map.of(
 			"blockIds", List.of("minecraft:wheat"),

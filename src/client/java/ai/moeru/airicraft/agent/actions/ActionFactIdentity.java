@@ -22,6 +22,14 @@ public record ActionFactIdentity(
 		));
 	}
 
+	public static ActionFactIdentity inventoryResource(String worldId, String actorId, String resourceKind) {
+		return new ActionFactIdentity(ActionFactType.INVENTORY_RESOURCE, keys(
+			"worldId", worldId,
+			"actorId", actorId,
+			"resourceKind", resourceKind
+		));
+	}
+
 	public static ActionFactIdentity inventoryTool(String worldId, String actorId, String toolTag) {
 		return new ActionFactIdentity(ActionFactType.INVENTORY_TOOL, keys(
 			"worldId", worldId,

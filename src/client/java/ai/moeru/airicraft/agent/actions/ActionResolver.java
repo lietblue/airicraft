@@ -92,6 +92,11 @@ public final class ActionResolver {
 		}
 
 		if (!preferActionsetRoutes) {
+			Optional<ActionRoute> resourceRoute = resolveResourceProviderGoal(goal, trace);
+			if (resourceRoute.isPresent()) {
+				resolving.remove(goal.normalizedKey());
+				return resourceRoute;
+			}
 			Optional<ActionRoute> providerRoute = resolveRecipeProviderGoal(goal, depth, resolving, trace);
 			if (providerRoute.isPresent()) {
 				resolving.remove(goal.normalizedKey());
@@ -111,6 +116,11 @@ public final class ActionResolver {
 		}
 
 		if (preferActionsetRoutes) {
+			Optional<ActionRoute> resourceRoute = resolveResourceProviderGoal(goal, trace);
+			if (resourceRoute.isPresent()) {
+				resolving.remove(goal.normalizedKey());
+				return resourceRoute;
+			}
 			Optional<ActionRoute> providerRoute = resolveRecipeProviderGoal(goal, depth, resolving, trace);
 			if (providerRoute.isPresent()) {
 				resolving.remove(goal.normalizedKey());
@@ -167,6 +177,56 @@ public final class ActionResolver {
 			}
 		}
 		return Optional.empty();
+	}
+
+	private Optional<ActionRoute> resolveResourceProviderGoal(
+		ActionGoal goal,
+		List<ActionTraceEvent> trace
+	) {
+		if (goal.factType() != ActionFactType.INVENTORY_RESOURCE) {
+			return Optional.empty();
+		}
+		String resourceKind = goal.keys().getOrDefault("resourceKind", "");
+		if (!"WOOD_LOGS".equals(resourceKind)) {
+			trace.add(event(
+				"route_candidate_rejected",
+				"resource_provider",
+				resourceKind,
+				"",
+				Map.of("goal", goal.normalizedKey(), "reason", "unsupported_resource_kind")
+			));
+			return Optional.empty();
+		}
+		String alternativeKey = "resource_provider:" + resourceKind;
+		if (blockedAlternativeKeys.contains(alternativeKey)) {
+			trace.add(event(
+				"route_candidate_blocked",
+				"resource_provider",
+				resourceKind,
+				"",
+				Map.of("goal", goal.normalizedKey(), "reason", "previous_failure")
+			));
+			return Optional.empty();
+		}
+		int targetCount = goal.minimum("countAtLeast", 1);
+		int deficitCount = Math.max(0, targetCount - existingGoalCount(goal));
+		if (deficitCount <= 0) {
+			return Optional.of(ActionRoute.empty());
+		}
+		trace.add(event(
+			"route_candidate_built",
+			"resource_provider",
+			resourceKind,
+			"",
+			Map.of("goal", goal.normalizedKey(), "cost", 20, "resourceKind", resourceKind)
+		));
+		LinkedHashMap<String, Object> args = new LinkedHashMap<>();
+		args.put("resourceKind", resourceKind);
+		args.put("quantity", deficitCount);
+		ActionPlanStep step = new ActionPlanStep(ActionStepKind.PRIMITIVE, "resource_provider", resourceKind, "collect_resource", "collect_resource", args);
+		trace.add(event("primitive_planned", "resource_provider", resourceKind, "collect_resource", Map.of("primitive", "collect_resource", "resourceKind", resourceKind)));
+		trace.add(event("route_selected", "resource_provider", resourceKind, "", Map.of("goal", goal.normalizedKey())));
+		return Optional.of(new ActionRoute(List.of(step), 20));
 	}
 
 	private Optional<ActionRoute> resolveRecipeProviderGoal(
@@ -517,7 +577,7 @@ public final class ActionResolver {
 	}
 
 	private int existingGoalCount(ActionGoal goal) {
-		if (goal.factType() != ActionFactType.INVENTORY_ITEM) {
+		if (goal.factType() != ActionFactType.INVENTORY_ITEM && goal.factType() != ActionFactType.INVENTORY_RESOURCE) {
 			return 0;
 		}
 		LinkedHashMap<String, String> queryKeys = new LinkedHashMap<>();
@@ -560,7 +620,7 @@ public final class ActionResolver {
 			.orElseThrow(() -> new IllegalArgumentException("unknown fact type " + factSpec.get("fact")));
 		LinkedHashMap<String, String> queryKeys = new LinkedHashMap<>();
 		queryKeys.put("worldId", context.worldId());
-		if (factType == ActionFactType.INVENTORY_ITEM || factType == ActionFactType.INVENTORY_TOOL || factType == ActionFactType.CRAFT_RECIPE || factType == ActionFactType.SMELT_RECIPE) {
+		if (factType == ActionFactType.INVENTORY_ITEM || factType == ActionFactType.INVENTORY_RESOURCE || factType == ActionFactType.INVENTORY_TOOL || factType == ActionFactType.CRAFT_RECIPE || factType == ActionFactType.SMELT_RECIPE) {
 			queryKeys.put("actorId", context.actorId());
 		}
 		if (factType == ActionFactType.WORLD_BLOCK || factType == ActionFactType.WORLD_CROP || factType == ActionFactType.WORLD_CROP_GROUP || factType == ActionFactType.WORLD_SITE || factType == ActionFactType.WORLD_ENTITY) {
@@ -675,7 +735,7 @@ public final class ActionResolver {
 	}
 
 	private static List<String> identityKeyNames() {
-		return List.of("itemId", "toolTag", "dimension", "blockPos", "cropId", "siteId", "siteType", "entityTypeId", "entityId", "recipeId", "optionId", "watchId", "goalId");
+		return List.of("itemId", "resourceKind", "toolTag", "dimension", "blockPos", "cropId", "siteId", "siteType", "entityTypeId", "entityId", "recipeId", "optionId", "watchId", "goalId");
 	}
 
 	private static Map<String, Object> objectMap(Object value) {

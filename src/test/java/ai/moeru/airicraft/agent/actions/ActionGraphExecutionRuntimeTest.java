@@ -24,6 +24,32 @@ class ActionGraphExecutionRuntimeTest {
 	);
 
 	@Test
+	void resourceGoalDispatchesProviderAndCompletesAfterObservedResourceFact() {
+		RecordingDispatcher dispatcher = new RecordingDispatcher();
+		ActionGraphExecutionRuntime runtime = new ActionGraphExecutionRuntime(ActionsetIndex.empty(), dispatcher);
+		runtime.submit(ActionGoal.resourceCollection("WOOD_LOGS", 3), Map.of(), CONTEXT, 100);
+
+		ActionGraphExecutionSnapshot dispatched = runtime.tick(inputWithResources(Map.of("WOOD_LOGS", 1), null, 101));
+
+		assertEquals(ActionGraphExecutionState.WAITING_PRIMITIVE, dispatched.state());
+		assertEquals(1, dispatcher.dispatchedSteps.size());
+		ActionPlanStep step = dispatcher.dispatchedSteps.getFirst();
+		assertEquals("resource_provider", step.actionId());
+		assertEquals("collect_resource", step.targetId());
+		assertEquals("WOOD_LOGS", step.args().get("resourceKind"));
+		assertEquals(2, step.args().get("quantity"));
+
+		ActionGraphExecutionSnapshot completed = runtime.tick(inputWithResources(
+			Map.of("WOOD_LOGS", 3),
+			new TaskTerminalEvent("task-1", null, TaskExecutionState.COMPLETED, "collected", null),
+			102
+		));
+
+		assertEquals(ActionGraphExecutionState.SUCCEEDED, completed.state());
+		assertTrace(completed.trace(), "execution_succeeded");
+	}
+
+	@Test
 	void dispatchesFirstPrimitiveAndCompletesAfterObservedGoalFact() {
 		RecordingDispatcher dispatcher = new RecordingDispatcher();
 		ActionGraphExecutionRuntime runtime = new ActionGraphExecutionRuntime(defaultIndex(), dispatcher);
@@ -380,6 +406,24 @@ class ActionGraphExecutionRuntimeTest {
 		);
 	}
 
+	private static ActionGraphExecutionInput inputWithResources(
+		Map<String, Integer> observedResources,
+		TaskTerminalEvent terminalEvent,
+		long tick
+	) {
+		return new ActionGraphExecutionInput(
+			new ActionResolverContext(CONTEXT.worldId(), CONTEXT.actorId(), CONTEXT.dimension(), tick),
+			Map.of(),
+			observedResources,
+			true,
+			true,
+			terminalEvent,
+			List.of(),
+			List.of(),
+			List.of()
+		);
+	}
+
 	private static ActionGraphExecutionInput inputWithKnownCrafts(
 		Map<String, Integer> observedInventory,
 		TaskTerminalEvent terminalEvent,
@@ -389,6 +433,7 @@ class ActionGraphExecutionRuntimeTest {
 		return new ActionGraphExecutionInput(
 			new ActionResolverContext(CONTEXT.worldId(), CONTEXT.actorId(), CONTEXT.dimension(), tick),
 			observedInventory,
+			Map.of(),
 			true,
 			true,
 			terminalEvent,

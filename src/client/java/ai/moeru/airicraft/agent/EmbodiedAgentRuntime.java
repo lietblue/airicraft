@@ -1188,6 +1188,7 @@ public final class EmbodiedAgentRuntime {
 		actionGraphRuntime.tick(new ActionGraphExecutionInput(
 			actionResolverContext(worldEvidence),
 			worldEvidence.itemCounts(),
+			resourceCountsForGraph(worldEvidence.inventoryCounts()),
 			sessionSnapshot.worldLoaded(),
 			sessionSnapshot.companionActuationAllowed(),
 			terminalEvent,
@@ -1802,7 +1803,7 @@ public final class EmbodiedAgentRuntime {
 		Map<String, Object> graph = new ActionGraphDebugService().inspectActionGraph();
 		Map<String, Object> goalKinds = Map.of(
 			"inventory_item", Map.of("status", "supported", "fields", List.of("itemId", "quantity")),
-			"resource_collection", Map.of("status", "planned", "fields", List.of("resourceKind", "quantity")),
+			"resource_collection", Map.of("status", "supported", "fields", List.of("resourceKind", "quantity"), "supportedResourceKinds", List.of("WOOD_LOGS")),
 			"movement", Map.of("status", "planned", "fields", List.of("x", "y", "z", "operation")),
 			"block_modification", Map.of("status", "planned", "fields", List.of("x", "y", "z", "operation", "itemId")),
 			"entity_interaction", Map.of("status", "planned", "fields", List.of("entityTypeId", "operation")),
@@ -2124,7 +2125,17 @@ public final class EmbodiedAgentRuntime {
 				intArg(args, "quantity").orElseThrow(() -> new IllegalArgumentException("quantity is required"))
 			);
 		}
-		throw new IllegalArgumentException("unsupported_action_goal_kind " + kind + ". Supported executable goal kind: inventory_item");
+		if ("resource_collection".equals(kind)) {
+			TaskResourceKind resourceKind = resourceKindArg(args, "resourceKind");
+			if (resourceKind != TaskResourceKind.WOOD_LOGS) {
+				throw new IllegalArgumentException("unsupported_resource_kind " + resourceKind);
+			}
+			return ActionGoal.resourceCollection(
+				resourceKind.name(),
+				intArg(args, "quantity").orElseThrow(() -> new IllegalArgumentException("quantity is required"))
+			);
+		}
+		throw new IllegalArgumentException("unsupported_action_goal_kind " + kind + ". Supported executable goal kinds: inventory_item, resource_collection");
 	}
 
 	private static Optional<Integer> intArg(JsonObject object, String key) {
@@ -2463,6 +2474,19 @@ public final class EmbodiedAgentRuntime {
 			}
 		}
 		return java.util.List.copyOf(items);
+	}
+
+	private static Map<String, Integer> resourceCountsForGraph(Map<TaskResourceKind, Integer> counts) {
+		if (counts == null || counts.isEmpty()) {
+			return Map.of();
+		}
+		java.util.LinkedHashMap<String, Integer> copy = new java.util.LinkedHashMap<>();
+		for (Map.Entry<TaskResourceKind, Integer> entry : counts.entrySet()) {
+			if (entry.getKey() != null && entry.getValue() != null) {
+				copy.put(entry.getKey().name(), Math.max(0, entry.getValue()));
+			}
+		}
+		return Map.copyOf(copy);
 	}
 
 	private boolean hasNearbyTaskResourceTarget(MinecraftClient client, TaskSpec spec) {

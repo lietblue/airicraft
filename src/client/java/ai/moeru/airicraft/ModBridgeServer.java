@@ -66,6 +66,7 @@ import java.util.Base64;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
@@ -777,17 +778,27 @@ public final class ModBridgeServer {
 			throw new BridgeUnavailableException("invalid_request", "Missing action goal payload");
 		}
 		String kind = request.kind() == null || request.kind().isBlank() ? "inventory_item" : request.kind().trim();
-		if (!"inventory_item".equals(kind)) {
-			throw new BridgeUnavailableException("unsupported_action_goal", "Only inventory_item action goals are supported in this shell");
-		}
-		if (request.itemId() == null || request.itemId().isBlank()) {
-			throw new BridgeUnavailableException("invalid_request", "inventory_item goals require itemId");
-		}
 		int quantity = request.quantity() == null ? 1 : request.quantity().intValue();
 		if (quantity < 1) {
 			throw new BridgeUnavailableException("invalid_request", "quantity must be positive");
 		}
-		return ActionGoal.inventoryItem(request.itemId(), quantity);
+		if ("inventory_item".equals(kind)) {
+			if (request.itemId() == null || request.itemId().isBlank()) {
+				throw new BridgeUnavailableException("invalid_request", "inventory_item goals require itemId");
+			}
+			return ActionGoal.inventoryItem(request.itemId(), quantity);
+		}
+		if ("resource_collection".equals(kind)) {
+			if (request.resourceKind() == null || request.resourceKind().isBlank()) {
+				throw new BridgeUnavailableException("invalid_request", "resource_collection goals require resourceKind");
+			}
+			String resourceKind = request.resourceKind().trim().toUpperCase(Locale.ROOT);
+			if (!"WOOD_LOGS".equals(resourceKind)) {
+				throw new BridgeUnavailableException("unsupported_action_goal", "Unsupported resource_collection resourceKind: " + request.resourceKind());
+			}
+			return ActionGoal.resourceCollection(resourceKind, quantity);
+		}
+		throw new BridgeUnavailableException("unsupported_action_goal", "Unsupported action goal kind: " + kind);
 	}
 
 	private void handleAgentActionFacts(HttpExchange exchange) throws IOException {
@@ -1907,7 +1918,7 @@ public final class ModBridgeServer {
 	private record AgentTaskRequest(String type, String resourceKind, Integer quantity) {
 	}
 
-	private record ActionGoalRequest(String kind, String itemId, Integer quantity) {
+	private record ActionGoalRequest(String kind, String itemId, String resourceKind, Integer quantity) {
 	}
 
 	private record DebugChatRequest(String senderName, String message) {

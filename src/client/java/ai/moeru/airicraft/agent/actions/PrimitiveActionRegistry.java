@@ -67,6 +67,20 @@ public final class PrimitiveActionRegistry {
 			"WorldTaskRequest.NAVIGATE"
 		));
 		register(actions, metadata(
+			"collect_resource",
+			"Collect an inventory resource kind using the existing resource executor.",
+			Map.of(
+				"resourceKind", param("string", true, "Supported resource kind."),
+				"quantity", param("integer", true, "Desired resource count.")
+			),
+			List.of(),
+			List.of("inventory.resource"),
+			List.of("collection"),
+			true,
+			true,
+			"WorldTaskRequest.COLLECT_RESOURCE"
+		));
+		register(actions, metadata(
 			"mine_block",
 			"Mine matching blocks.",
 			Map.of(
