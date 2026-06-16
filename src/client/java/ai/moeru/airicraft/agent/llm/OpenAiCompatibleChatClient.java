@@ -202,8 +202,22 @@ public final class OpenAiCompatibleChatClient {
 	private Map<String, Object> toRequestMessage(LlmChatMessage message) {
 		LinkedHashMap<String, Object> payload = new LinkedHashMap<>();
 		payload.put("role", message.role());
-		if (message.rawContentOverride() != null) {
+		JsonObject replayMessage = OpenAiCompatibleMessageContent.replayMessageObject(message.rawContentOverride())
+			.orElse(null);
+		if (replayMessage != null) {
+			payload.put("content", replayMessage.has("content") ? replayMessage.get("content") : null);
+			if (replayMessage.has("reasoning_content")) {
+				payload.put("reasoning_content", replayMessage.get("reasoning_content"));
+			}
+			if (message.hasToolCalls()) {
+				payload.put("tool_calls", PlannerToolCatalog.toOpenAiToolCalls(message.toolCalls()));
+			}
+		}
+		else if (message.rawContentOverride() != null) {
 			payload.put("content", message.rawContentOverride());
+			if (message.hasToolCalls()) {
+				payload.put("tool_calls", PlannerToolCatalog.toOpenAiToolCalls(message.toolCalls()));
+			}
 		}
 		else if (message.hasToolCalls()) {
 			payload.put("content", message.content().isBlank() ? null : message.content());

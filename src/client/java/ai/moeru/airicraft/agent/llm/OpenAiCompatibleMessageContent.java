@@ -11,6 +11,7 @@ import java.util.regex.Pattern;
 
 public final class OpenAiCompatibleMessageContent {
 	private static final Pattern THOUGHT_BLOCK_PATTERN = Pattern.compile("(?is)<thought>.*?</thought>");
+	private static final String REPLAY_MESSAGE_MARKER = "__airicraft_openai_message_replay";
 
 	private OpenAiCompatibleMessageContent() {
 	}
@@ -26,9 +27,46 @@ public final class OpenAiCompatibleMessageContent {
 		return contentElement.deepCopy();
 	}
 
+	public static JsonElement rawMessageForReplay(JsonObject message) {
+		if (message == null) {
+			return null;
+		}
+		JsonElement content = message.get("content");
+		JsonElement reasoningContent = message.get("reasoning_content");
+		if (reasoningContent == null || reasoningContent.isJsonNull()) {
+			return rawContentForReplay(content);
+		}
+		JsonObject replay = new JsonObject();
+		replay.addProperty(REPLAY_MESSAGE_MARKER, true);
+		if (content != null) {
+			replay.add("content", content.deepCopy());
+		}
+		replay.add("reasoning_content", reasoningContent.deepCopy());
+		return replay;
+	}
+
+	public static Optional<JsonObject> replayMessageObject(JsonElement rawContentOverride) {
+		if (rawContentOverride == null || !rawContentOverride.isJsonObject()) {
+			return Optional.empty();
+		}
+		JsonObject object = rawContentOverride.getAsJsonObject();
+		if (
+			!object.has(REPLAY_MESSAGE_MARKER)
+				|| object.get(REPLAY_MESSAGE_MARKER).isJsonNull()
+				|| !object.get(REPLAY_MESSAGE_MARKER).getAsBoolean()
+		) {
+			return Optional.empty();
+		}
+		return Optional.of(object);
+	}
+
 	public static String extractVisibleText(JsonElement contentElement) {
 		if (contentElement == null || contentElement.isJsonNull()) {
 			return "";
+		}
+		Optional<JsonObject> replay = replayMessageObject(contentElement);
+		if (replay.isPresent()) {
+			return extractVisibleText(replay.get().get("content"));
 		}
 		if (contentElement.isJsonPrimitive()) {
 			return filterThoughtMarkup(contentElement.getAsString());

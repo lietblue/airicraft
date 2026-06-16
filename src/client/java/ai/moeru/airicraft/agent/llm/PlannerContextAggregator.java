@@ -456,7 +456,7 @@ public final class PlannerContextAggregator {
 			case ASSISTANT_TURN -> LlmChatMessage.assistant(entry.text(), entry.rawAssistantContent());
 				case TOOL_REQUEST -> entry.toolCalls().isEmpty()
 					? LlmChatMessage.assistant(entry.text(), entry.rawAssistantContent())
-					: LlmChatMessage.assistantToolCalls(entry.text(), entry.toolCalls());
+					: LlmChatMessage.assistantToolCalls(entry.text(), entry.toolCalls(), entry.rawAssistantContent());
 				case TOOL_RESULT -> entry.toolCall() == null
 					? LlmChatMessage.user(entry.text(), LlmMessageKind.TOOL_RESULT)
 					: LlmChatMessage.tool(entry.toolCall().id(), toolResultContent(entry.text()));

@@ -2,6 +2,7 @@ package ai.moeru.airicraft.agent.llm;
 
 import ai.moeru.airicraft.agent.AgentConfig;
 import com.google.gson.JsonArray;
+import com.google.gson.JsonNull;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.sun.net.httpserver.HttpExchange;
@@ -328,6 +329,62 @@ class OpenAiCompatibleLlmBackendTest {
 			assertTrue(assistant.has("tool_calls"));
 			assertEquals("tool", tool.get("role").getAsString());
 			assertEquals("call_inv", tool.get("tool_call_id").getAsString());
+		}
+	}
+
+	@Test
+	void chatClientReplaysReasoningContentOnAssistantMessages() throws Exception {
+		AtomicReference<String> bodyRef = new AtomicReference<>();
+		try (TestServer server = TestServer.start(bodyRef, plaintextResponse("Done."))) {
+			OpenAiCompatibleChatClient chatClient = new OpenAiCompatibleChatClient(config(server.port(), false));
+			JsonObject rawAssistant = new JsonObject();
+			rawAssistant.addProperty("content", "Visible reply.");
+			rawAssistant.addProperty("reasoning_content", "private chain");
+
+			chatClient.complete(
+				LlmConversation.of(List.of(
+					LlmChatMessage.assistant("Visible reply.", OpenAiCompatibleMessageContent.rawMessageForReplay(rawAssistant))
+				)),
+				LlmRequestOptions.planner()
+			);
+
+			JsonObject assistant = JsonParser.parseString(bodyRef.get()).getAsJsonObject()
+				.getAsJsonArray("messages")
+				.get(0)
+				.getAsJsonObject();
+			assertEquals("assistant", assistant.get("role").getAsString());
+			assertEquals("Visible reply.", assistant.get("content").getAsString());
+			assertEquals("private chain", assistant.get("reasoning_content").getAsString());
+		}
+	}
+
+	@Test
+	void chatClientReplaysReasoningContentOnAssistantToolCalls() throws Exception {
+		AtomicReference<String> bodyRef = new AtomicReference<>();
+		try (TestServer server = TestServer.start(bodyRef, plaintextResponse("Done."))) {
+			OpenAiCompatibleChatClient chatClient = new OpenAiCompatibleChatClient(config(server.port(), false));
+			JsonObject rawAssistant = new JsonObject();
+			rawAssistant.add("content", JsonNull.INSTANCE);
+			rawAssistant.addProperty("reasoning_content", "private chain");
+			JsonObject args = new JsonObject();
+			PlannerToolCall toolCall = new PlannerToolCall("call_inv", "inspect_inventory", args, "", null);
+
+			chatClient.complete(
+				LlmConversation.of(List.of(
+					LlmChatMessage.assistantToolCall("", toolCall, OpenAiCompatibleMessageContent.rawMessageForReplay(rawAssistant)),
+					LlmChatMessage.tool("call_inv", "Tool result for inspect_inventory: empty")
+				)),
+				LlmRequestOptions.planner()
+			);
+
+			JsonObject assistant = JsonParser.parseString(bodyRef.get()).getAsJsonObject()
+				.getAsJsonArray("messages")
+				.get(0)
+				.getAsJsonObject();
+			assertEquals("assistant", assistant.get("role").getAsString());
+			assertTrue(!assistant.has("content") || assistant.get("content").isJsonNull());
+			assertEquals("private chain", assistant.get("reasoning_content").getAsString());
+			assertTrue(assistant.has("tool_calls"));
 		}
 	}
 

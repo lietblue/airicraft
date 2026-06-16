@@ -95,7 +95,7 @@ public final class OpenAiCompatibleLlmBackend implements LlmBackend {
 				throw new JsonParseException("Missing message");
 			}
 
-			JsonElement rawAssistantContent = OpenAiCompatibleMessageContent.rawContentForReplay(message.get("content"));
+			JsonElement rawAssistantContent = OpenAiCompatibleMessageContent.rawMessageForReplay(message);
 			String visibleText = OpenAiCompatibleMessageContent.extractVisibleText(message.get("content"));
 			List<PlannerToolCall> toolCalls = parseToolCalls(message);
 			if (!toolCalls.isEmpty()) {

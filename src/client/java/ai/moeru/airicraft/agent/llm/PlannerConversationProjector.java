@@ -92,7 +92,7 @@ public final class PlannerConversationProjector {
 		for (PlannerTurnEvent exchange : exchanges == null ? List.<PlannerTurnEvent>of() : exchanges) {
 			if (exchange.toolCall() != null) {
 				updated = updated
-					.withAppended(LlmChatMessage.assistantToolCall("", exchange.toolCall()))
+					.withAppended(LlmChatMessage.assistantToolCall("", exchange.toolCall(), exchange.assistantRawContent()))
 					.withAppended(LlmChatMessage.tool(exchange.toolCall().id(), toolResultContent(exchange.toolResultText())));
 			}
 			else if (exchange.assistantRawContent() != null) {
