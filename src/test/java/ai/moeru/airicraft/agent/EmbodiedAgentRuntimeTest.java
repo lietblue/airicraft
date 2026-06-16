@@ -284,6 +284,38 @@ class EmbodiedAgentRuntimeTest {
 	}
 
 	@Test
+	void startActionGoalPlannerToolTreatsOutputKindsAsInventoryGraphGoals() {
+		EmbodiedAgentRuntime runtime = EmbodiedAgentRuntime.createForTests(new FakeWorldTaskExecutor());
+
+		String craftingResult = runtime.executePlannerToolCallForTests(new PlannerToolCall(
+			"call_craft_goal",
+			PlannerToolCatalog.START_ACTION_GOAL,
+			JsonParser.parseString("""
+				{"kind":"crafting_output","itemId":"minecraft:crafting_table","quantity":1}
+				""").getAsJsonObject(),
+			null,
+			null
+		));
+
+		assertTrue(craftingResult.contains("Tool result for start_action_goal: state=RESOLVING"));
+		assertTrue(craftingResult.contains("minecraft:crafting_table"));
+
+		String smeltingResult = runtime.executePlannerToolCallForTests(new PlannerToolCall(
+			"call_smelt_goal",
+			PlannerToolCatalog.START_ACTION_GOAL,
+			JsonParser.parseString("""
+				{"kind":"smelting_output","itemId":"minecraft:iron_ingot","quantity":3}
+				""").getAsJsonObject(),
+			null,
+			null
+		));
+
+		assertTrue(smeltingResult.contains("Tool result for start_action_goal: state=RESOLVING"));
+		assertTrue(smeltingResult.contains("minecraft:iron_ingot"));
+		assertEquals(ActionGraphExecutionState.RESOLVING, runtime.actionGraphExecutionSnapshot().state());
+	}
+
+	@Test
 	void inspectAndCancelActionGoalPlannerToolsUseGraphPath() {
 		EmbodiedAgentRuntime runtime = EmbodiedAgentRuntime.createForTests(new FakeWorldTaskExecutor());
 		runtime.startActionGoal(ActionGoal.inventoryItem("minecraft:bread", 1), "test");

@@ -62,7 +62,8 @@ class PlannerPromptPolicyTest {
 		assertTrue(prompt.contains("Existing inventory and picked-up ground items count"));
 		assertTrue(prompt.contains("report brokenBlocks"));
 		assertTrue(prompt.contains("mine_blocks broken_block_count_mismatch"));
-		assertTrue(prompt.contains("Use collect_resource for gathering tasks like wood logs"));
+		assertTrue(prompt.contains("kind=resource_collection"));
+		assertTrue(prompt.contains("Use legacy collect_resource only after graph resource_collection"));
 	}
 
 	@Test
@@ -124,6 +125,8 @@ class PlannerPromptPolicyTest {
 
 		assertTrue(prompt.contains("check_smeltables"));
 		assertTrue(prompt.contains("smelt_items"));
+		assertTrue(prompt.contains("kind=smelting_output"));
+		assertTrue(prompt.contains("Use check_smeltables before legacy smelt_items only when falling back from the graph"));
 		assertTrue(prompt.contains("inspect_smelting"));
 		assertTrue(prompt.contains("collect_smelted_items"));
 		assertTrue(prompt.contains("confirmationToken"));

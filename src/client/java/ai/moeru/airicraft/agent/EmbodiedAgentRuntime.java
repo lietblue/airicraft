@@ -1808,8 +1808,8 @@ public final class EmbodiedAgentRuntime {
 			"block_modification", Map.of("status", "planned", "fields", List.of("x", "y", "z", "operation", "itemId")),
 			"entity_interaction", Map.of("status", "planned", "fields", List.of("entityTypeId", "operation")),
 			"item_transfer", Map.of("status", "planned", "fields", List.of("targetPlayer", "itemId", "quantity")),
-			"smelting_output", Map.of("status", "planned", "fields", List.of("itemId", "quantity")),
-			"crafting_output", Map.of("status", "planned", "fields", List.of("itemId", "quantity"))
+			"smelting_output", Map.of("status", "supported", "fields", List.of("itemId", "quantity"), "aliasOf", "inventory_item"),
+			"crafting_output", Map.of("status", "supported", "fields", List.of("itemId", "quantity"), "aliasOf", "inventory_item")
 		);
 		return "Tool result for list_action_capabilities: supportedGoalKinds="
 			+ goalKinds
@@ -2119,7 +2119,7 @@ public final class EmbodiedAgentRuntime {
 
 	private static ActionGoal parseActionGoalArgs(JsonObject args) {
 		String kind = stringArg(args, "kind").orElseThrow(() -> new IllegalArgumentException("kind is required"));
-		if ("inventory_item".equals(kind)) {
+		if ("inventory_item".equals(kind) || "crafting_output".equals(kind) || "smelting_output".equals(kind)) {
 			return ActionGoal.inventoryItem(
 				stringArg(args, "itemId").orElseThrow(() -> new IllegalArgumentException("itemId is required")),
 				intArg(args, "quantity").orElseThrow(() -> new IllegalArgumentException("quantity is required"))
@@ -2135,7 +2135,7 @@ public final class EmbodiedAgentRuntime {
 				intArg(args, "quantity").orElseThrow(() -> new IllegalArgumentException("quantity is required"))
 			);
 		}
-		throw new IllegalArgumentException("unsupported_action_goal_kind " + kind + ". Supported executable goal kinds: inventory_item, resource_collection");
+		throw new IllegalArgumentException("unsupported_action_goal_kind " + kind + ". Supported executable goal kinds: inventory_item, crafting_output, smelting_output, resource_collection");
 	}
 
 	private static Optional<Integer> intArg(JsonObject object, String key) {

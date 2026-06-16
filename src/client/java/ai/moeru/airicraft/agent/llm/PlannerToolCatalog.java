@@ -124,7 +124,7 @@ public final class PlannerToolCatalog {
 			), List.of()), NO_ARGUMENT_VALIDATION),
 		builtInTool(START_ACTION_GOAL, false, tool(START_ACTION_GOAL, "Start one runtime-owned action graph goal from a high-level typed intent. Prefer this over low-level action tools for execution.", properties(
 				prop("narration", optionalString("Optional visible narration before using the tool. Omit this field when no narration is needed.")),
-				prop("kind", enumString("Typed action goal kind. inventory_item and WOOD_LOGS resource_collection are executable in v1; other kinds are reserved graph goal surfaces during migration.", List.of(
+				prop("kind", enumString("Typed action goal kind. inventory_item, crafting_output, smelting_output, and WOOD_LOGS resource_collection are executable in v1; other kinds are reserved graph goal surfaces during migration.", List.of(
 					"inventory_item",
 					"resource_collection",
 					"movement",

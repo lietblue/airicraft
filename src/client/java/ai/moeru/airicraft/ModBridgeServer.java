@@ -782,9 +782,9 @@ public final class ModBridgeServer {
 		if (quantity < 1) {
 			throw new BridgeUnavailableException("invalid_request", "quantity must be positive");
 		}
-		if ("inventory_item".equals(kind)) {
+		if ("inventory_item".equals(kind) || "crafting_output".equals(kind) || "smelting_output".equals(kind)) {
 			if (request.itemId() == null || request.itemId().isBlank()) {
-				throw new BridgeUnavailableException("invalid_request", "inventory_item goals require itemId");
+				throw new BridgeUnavailableException("invalid_request", kind + " goals require itemId");
 			}
 			return ActionGoal.inventoryItem(request.itemId(), quantity);
 		}
