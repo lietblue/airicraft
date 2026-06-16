@@ -209,7 +209,8 @@ public final class BlockInteractionTaskExecutor implements WorldTaskExecutor {
 		if (mode == UseBlockInteractionMode.FLUID_ITEM_USE) {
 			return useItemOnFluidTarget(tick, client, player, request, hand, target, before);
 		}
-		if (mode == UseBlockInteractionMode.SUPPORT_INTERACTION && isHeldItem(player, hand, Items.WATER_BUCKET)) {
+		if (isHeldItem(player, hand, Items.WATER_BUCKET)
+			&& isDirectWaterPlacementTarget(blockId(before), before.isAir() || before.isReplaceable())) {
 			return useWaterBucketDirectly(tick, client, player, request, hand, target, before);
 		}
 		Optional<HitTarget> hitTarget = mode == UseBlockInteractionMode.SUPPORT_INTERACTION
@@ -390,7 +391,8 @@ public final class BlockInteractionTaskExecutor implements WorldTaskExecutor {
 		}
 		movementController.stop(client);
 		clearNavigation();
-		if (!before.isAir() && !before.isReplaceable()) {
+		String beforeBlockId = blockId(before);
+		if (!isDirectWaterPlacementTarget(beforeBlockId, before.isAir() || before.isReplaceable())) {
 			return fail(request, targetFailure(target, "fluid_target_not_replaceable beforeBlockId=" + blockId(before)));
 		}
 		int horizontalSolidNeighbors = horizontalSolidNeighborCount(client.world, target);
@@ -413,7 +415,7 @@ public final class BlockInteractionTaskExecutor implements WorldTaskExecutor {
 				+ " directFluidPlacement=true"
 				+ " supportPos=direct"
 				+ " face=direct"
-				+ " beforeBlockId=" + blockId(before)
+				+ " beforeBlockId=" + beforeBlockId
 				+ " afterBlockId=" + blockId(after)
 				+ " message=" + directPlacement.get());
 		}
@@ -742,6 +744,16 @@ public final class BlockInteractionTaskExecutor implements WorldTaskExecutor {
 		return horizontalSolidNeighbors >= MIN_DIRECT_WATER_HORIZONTAL_SUPPORTS;
 	}
 
+	static boolean isDirectWaterPlacementTarget(String blockId, boolean airOrReplaceable) {
+		if (airOrReplaceable) {
+			return true;
+		}
+		return switch (blockId) {
+			case "minecraft:grass_block", "minecraft:dirt" -> true;
+			default -> false;
+		};
+	}
+
 	static UseBlockInteractionMode useBlockInteractionMode(boolean targetHasFluid, boolean targetAirOrReplaceable) {
 		if (targetHasFluid) {
 			return UseBlockInteractionMode.FLUID_ITEM_USE;
@@ -828,7 +840,7 @@ public final class BlockInteractionTaskExecutor implements WorldTaskExecutor {
 			return Optional.empty();
 		}
 		BlockState serverBefore = serverWorld.getBlockState(target);
-		if (!serverBefore.isAir() && !serverBefore.isReplaceable()) {
+		if (!isDirectWaterPlacementTarget(blockId(serverBefore), serverBefore.isAir() || serverBefore.isReplaceable())) {
 			return Optional.empty();
 		}
 		boolean placed = serverWorld.setBlockState(target, Blocks.WATER.getDefaultState());

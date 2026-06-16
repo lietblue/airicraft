@@ -24,6 +24,21 @@ class BlockInteractionTaskExecutorTest {
 	}
 
 	@Test
+	void directWaterPlacementCanReplaceSimpleFarmTerrainTargets() {
+		assertTrue(BlockInteractionTaskExecutor.isDirectWaterPlacementTarget("minecraft:air", true));
+		assertTrue(BlockInteractionTaskExecutor.isDirectWaterPlacementTarget("minecraft:short_grass", true));
+		assertTrue(BlockInteractionTaskExecutor.isDirectWaterPlacementTarget("minecraft:grass_block", false));
+		assertTrue(BlockInteractionTaskExecutor.isDirectWaterPlacementTarget("minecraft:dirt", false));
+	}
+
+	@Test
+	void directWaterPlacementDoesNotReplaceArbitrarySolidTargets() {
+		assertFalse(BlockInteractionTaskExecutor.isDirectWaterPlacementTarget("minecraft:stone", false));
+		assertFalse(BlockInteractionTaskExecutor.isDirectWaterPlacementTarget("minecraft:oak_log", false));
+		assertFalse(BlockInteractionTaskExecutor.isDirectWaterPlacementTarget("minecraft:chest", false));
+	}
+
+	@Test
 	void useBlockInteractionModeChoosesFluidItemUseForFluidTargets() {
 		assertEquals(
 			BlockInteractionTaskExecutor.UseBlockInteractionMode.FLUID_ITEM_USE,
