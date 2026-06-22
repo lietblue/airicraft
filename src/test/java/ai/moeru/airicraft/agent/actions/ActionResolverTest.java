@@ -292,6 +292,36 @@ class ActionResolverTest {
 	}
 
 	@Test
+	void recipeProviderDoesNotBindUnobservedPlankVariantWhenPartialPlanksNeedMoreWood() {
+		ActionFactStore facts = new ActionFactStore();
+		addSurvivalCraftFacts(facts);
+		facts.upsert(new ActionFact(
+			ActionFactIdentity.inventoryItem("world-a", "bot", "minecraft:birch_planks"),
+			Map.of("count", 2),
+			ActionFactProvenance.OBSERVED,
+			90,
+			ActionFact.NEVER_STALE
+		));
+		facts.upsert(new ActionFact(
+			ActionFactIdentity.inventoryItem("world-a", "bot", "minecraft:stick"),
+			Map.of("count", 4),
+			ActionFactProvenance.OBSERVED,
+			90,
+			ActionFact.NEVER_STALE
+		));
+
+		ActionResolveResult result = new ActionResolver(ActionsetIndex.empty(), facts, CONTEXT)
+			.resolve(ActionGoal.inventoryItem("minecraft:wooden_pickaxe", 1));
+
+		assertTrue(result.resolved(), () -> result.trace().toString());
+		assertEquals("collect_resource", result.route().steps().getFirst().targetId());
+		assertEquals("WOOD_LOGS", result.route().steps().getFirst().args().get("resourceKind"));
+		assertFalse(result.route().steps().stream()
+			.anyMatch(step -> "acacia_planks_x3_and_stick_x2_to_wooden_pickaxe".equals(step.args().get("recipeId"))));
+		assertEquals("birch_planks_x3_and_stick_x2_to_wooden_pickaxe", result.route().steps().getLast().args().get("recipeId"));
+	}
+
+	@Test
 	void recipeProviderCollectsGenericWoodBeforeChoosingConcreteWoodVariant() {
 		ActionFactStore facts = new ActionFactStore();
 		addSurvivalCraftFacts(facts);
@@ -587,12 +617,12 @@ class ActionResolverTest {
 			.resolve(ActionGoal.inventoryItem("minecraft:raw_iron", 3));
 
 		assertTrue(result.resolved(), () -> result.trace().toString());
-		assertEquals(List.of("collect_resource", "craft_item", "craft_item", "mine_block", "craft_item", "mine_block"), result.route().steps().stream().map(ActionPlanStep::targetId).toList());
+		assertEquals(List.of("collect_resource", "craft_item", "mine_block", "craft_item", "mine_block"), result.route().steps().stream().map(ActionPlanStep::targetId).toList());
 		assertEquals("WOOD_LOGS", result.route().steps().getFirst().args().get("resourceKind"));
-		assertEquals("minecraft:wooden_pickaxe", result.route().steps().get(2).args().get("itemId"));
-		assertEquals("minecraft:cobblestone", result.route().steps().get(3).args().get("itemId"));
-		assertEquals("minecraft:stone_pickaxe", result.route().steps().get(4).args().get("itemId"));
-		assertEquals("minecraft:raw_iron", result.route().steps().get(5).args().get("itemId"));
+		assertEquals("minecraft:wooden_pickaxe", result.route().steps().get(1).args().get("itemId"));
+		assertEquals("minecraft:cobblestone", result.route().steps().get(2).args().get("itemId"));
+		assertEquals("minecraft:stone_pickaxe", result.route().steps().get(3).args().get("itemId"));
+		assertEquals("minecraft:raw_iron", result.route().steps().get(4).args().get("itemId"));
 	}
 
 	@Test

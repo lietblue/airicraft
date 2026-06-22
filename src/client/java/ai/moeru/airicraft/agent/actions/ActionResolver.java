@@ -465,6 +465,9 @@ public final class ActionResolver {
 		LinkedHashSet<String> resolving,
 		List<ActionTraceEvent> trace
 	) {
+		if (ActionGraphDomainKnowledge.plankItemIds().contains(itemId)) {
+			return resolveRecipePlankInputGoal(itemId, requiredCount, depth, resolving, trace);
+		}
 		if (!ActionGraphDomainKnowledge.logItemIds().contains(itemId)) {
 			return resolveGoal(
 				ActionGoal.inventoryItem(itemId, requiredCount),
@@ -495,6 +498,72 @@ public final class ActionResolver {
 			resolving,
 			trace
 		);
+	}
+
+	private Optional<ActionRoute> resolveRecipePlankInputGoal(
+		String itemId,
+		int requiredCount,
+		int depth,
+		LinkedHashSet<String> resolving,
+		List<ActionTraceEvent> trace
+	) {
+		int exactCount = existingGoalCount(ActionGoal.inventoryItem(itemId, requiredCount));
+		if (exactCount >= requiredCount) {
+			return Optional.of(ActionRoute.empty());
+		}
+		String logItemId = logItemForPlank(itemId);
+		int logCount = logItemId.isBlank() ? 0 : existingGoalCount(ActionGoal.inventoryItem(logItemId, 1));
+		if (logCount > 0) {
+			return resolveGoal(
+				ActionGoal.inventoryItem(itemId, requiredCount),
+				depth + 1,
+				resolving,
+				trace
+			);
+		}
+		int missingLogs = Math.max(1, (int) Math.ceil((requiredCount - exactCount) / 4.0));
+		if (exactCount > 0 || !observedAnyWoodMaterial()) {
+			int totalWoodLogs = existingGoalCount(ActionGoal.resourceCollection("WOOD_LOGS", 1));
+			return resolveGoal(
+				ActionGoal.resourceCollection("WOOD_LOGS", totalWoodLogs + missingLogs),
+				depth + 1,
+				resolving,
+				trace
+			);
+		}
+		trace.add(event(
+			"route_candidate_blocked",
+			"recipe_provider",
+			itemId,
+			"",
+			Map.of("goal", ActionGoal.inventoryItem(itemId, requiredCount).normalizedKey(), "reason", "missing_observed_plank_variant")
+		));
+		return Optional.empty();
+	}
+
+	private static String logItemForPlank(String plankItemId) {
+		int index = ActionGraphDomainKnowledge.plankItemIds().indexOf(plankItemId);
+		if (index < 0 || index >= ActionGraphDomainKnowledge.logItemIds().size()) {
+			return "";
+		}
+		return ActionGraphDomainKnowledge.logItemIds().get(index);
+	}
+
+	private boolean observedAnyWoodMaterial() {
+		if (existingGoalCount(ActionGoal.resourceCollection("WOOD_LOGS", 1)) > 0) {
+			return true;
+		}
+		for (String logItemId : ActionGraphDomainKnowledge.logItemIds()) {
+			if (existingGoalCount(ActionGoal.inventoryItem(logItemId, 1)) > 0) {
+				return true;
+			}
+		}
+		for (String plankItemId : ActionGraphDomainKnowledge.plankItemIds()) {
+			if (existingGoalCount(ActionGoal.inventoryItem(plankItemId, 1)) > 0) {
+				return true;
+			}
+		}
+		return false;
 	}
 
 	private Optional<ActionRoute> resolveMiningProviderGoal(
