@@ -424,6 +424,25 @@ public final class ActionResolver {
 				return plankItemId;
 			}
 		}
+		for (String plankItemId : ActionGraphDomainKnowledge.plankItemIds()) {
+			int count = existingGoalCount(ActionGoal.inventoryItem(plankItemId, 1));
+			if (count >= 4) {
+				return plankItemId;
+			}
+		}
+		String bestObservedLogPlank = "";
+		int bestObservedLogCount = 0;
+		for (int index = 0; index < ActionGraphDomainKnowledge.logItemIds().size(); index++) {
+			String logItemId = ActionGraphDomainKnowledge.logItemIds().get(index);
+			int count = existingGoalCount(ActionGoal.inventoryItem(logItemId, 1));
+			if (count > bestObservedLogCount && index < ActionGraphDomainKnowledge.plankItemIds().size()) {
+				bestObservedLogPlank = ActionGraphDomainKnowledge.plankItemIds().get(index);
+				bestObservedLogCount = count;
+			}
+		}
+		if (!bestObservedLogPlank.isBlank()) {
+			return bestObservedLogPlank;
+		}
 		String bestObservedPlank = "";
 		int bestObservedPlankCount = 0;
 		for (String plankItemId : ActionGraphDomainKnowledge.plankItemIds()) {
@@ -435,12 +454,6 @@ public final class ActionResolver {
 		}
 		if (!bestObservedPlank.isBlank()) {
 			return bestObservedPlank;
-		}
-		for (int index = 0; index < ActionGraphDomainKnowledge.logItemIds().size(); index++) {
-			String logItemId = ActionGraphDomainKnowledge.logItemIds().get(index);
-			if (existingGoalCount(ActionGoal.inventoryItem(logItemId, 1)) > 0 && index < ActionGraphDomainKnowledge.plankItemIds().size()) {
-				return ActionGraphDomainKnowledge.plankItemIds().get(index);
-			}
 		}
 		return "minecraft:oak_planks";
 	}

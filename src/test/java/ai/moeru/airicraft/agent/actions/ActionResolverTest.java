@@ -643,6 +643,40 @@ class ActionResolverTest {
 	}
 
 	@Test
+	void workbenchSetupPrefersObservedLogSpeciesWhenCarriedPlanksAreInsufficient() {
+		ActionFactStore facts = new ActionFactStore();
+		addSurvivalCraftFacts(facts);
+		facts.upsert(new ActionFact(
+			ActionFactIdentity.inventoryItem("world-a", "bot", "minecraft:cobblestone"),
+			Map.of("count", 8),
+			ActionFactProvenance.OBSERVED,
+			90,
+			ActionFact.NEVER_STALE
+		));
+		facts.upsert(new ActionFact(
+			ActionFactIdentity.inventoryItem("world-a", "bot", "minecraft:birch_planks"),
+			Map.of("count", 3),
+			ActionFactProvenance.OBSERVED,
+			90,
+			ActionFact.NEVER_STALE
+		));
+		facts.upsert(new ActionFact(
+			ActionFactIdentity.inventoryItem("world-a", "bot", "minecraft:spruce_log"),
+			Map.of("count", 4),
+			ActionFactProvenance.OBSERVED,
+			90,
+			ActionFact.NEVER_STALE
+		));
+
+		ActionResolveResult result = new ActionResolver(ActionsetIndex.empty(), facts, CONTEXT)
+			.resolve(ActionGoal.inventoryItem("minecraft:furnace", 1));
+
+		assertTrue(result.resolved(), () -> result.trace().toString());
+		assertEquals("spruce_log_to_spruce_planks", result.route().steps().getFirst().args().get("recipeId"));
+		assertEquals("cobblestone_x8_to_furnace", result.route().steps().getLast().args().get("recipeId"));
+	}
+
+	@Test
 	void recipeProviderCanUseSmeltingProviderForCraftInputs() {
 		ActionFactStore facts = new ActionFactStore();
 		facts.upsert(new ActionFact(
