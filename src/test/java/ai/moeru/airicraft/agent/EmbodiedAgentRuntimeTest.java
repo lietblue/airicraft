@@ -342,6 +342,32 @@ class EmbodiedAgentRuntimeTest {
 	}
 
 	@Test
+	void plannerLegacyToolsCannotPreemptActiveActionGraph() {
+		EmbodiedAgentRuntime runtime = EmbodiedAgentRuntime.createForTests(new FakeWorldTaskExecutor());
+		ActionGraphExecutionSnapshot started = runtime.startActionGoal(ActionGoal.inventoryItem("minecraft:iron_pickaxe", 1), "test");
+
+		String clear = runtime.executePlannerToolCallForTests(new PlannerToolCall(
+			"call_clear",
+			PlannerToolCatalog.CLEAR_GOAL,
+			new com.google.gson.JsonObject(),
+			null,
+			null
+		));
+		String collectSmelted = runtime.executePlannerToolCallForTests(new PlannerToolCall(
+			"call_collect_smelted",
+			PlannerToolCatalog.COLLECT_SMELTED_ITEMS,
+			new com.google.gson.JsonObject(),
+			null,
+			null
+		));
+
+		assertTrue(clear.contains("TOOL_ERROR: clear_goal denied reason=active_action_graph_in_progress"));
+		assertTrue(collectSmelted.contains("TOOL_ERROR: collect_smelted_items denied reason=active_action_graph_in_progress"));
+		assertEquals(started.executionId(), runtime.actionGraphExecutionSnapshot().executionId());
+		assertEquals(ActionGraphExecutionState.RESOLVING, runtime.actionGraphExecutionSnapshot().state());
+	}
+
+	@Test
 	void inspectAndCancelActionGoalPlannerToolsUseGraphPath() {
 		EmbodiedAgentRuntime runtime = EmbodiedAgentRuntime.createForTests(new FakeWorldTaskExecutor());
 		runtime.startActionGoal(ActionGoal.inventoryItem("minecraft:bread", 1), "test");

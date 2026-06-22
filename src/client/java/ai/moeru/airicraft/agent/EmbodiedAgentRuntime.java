@@ -1443,10 +1443,14 @@ public final class EmbodiedAgentRuntime {
 			return "TOOL_ERROR: missing_tool_call";
 		}
 		JsonObject args = toolCall.arguments();
+		String normalizedToolName = PlannerToolCatalog.normalizeName(toolCall.name());
+		if (plannerToolWouldPreemptActiveGraph(normalizedToolName)) {
+			return plannerActiveGraphPreemptionError(normalizedToolName);
+		}
 		if (plannerToolWouldPreemptActiveTask(toolCall)) {
 			return plannerActiveTaskPreemptionError(toolCall);
 		}
-		return switch (PlannerToolCatalog.normalizeName(toolCall.name())) {
+		return switch (normalizedToolName) {
 			case PlannerToolCatalog.START_ACTION_GOAL -> {
 				ActionGraphExecutionSnapshot snapshot = startActionGoal(parseActionGoalArgs(args), "planner_tool");
 				yield actionGraphToolResult("start_action_goal", snapshot, false);
@@ -1747,13 +1751,40 @@ public final class EmbodiedAgentRuntime {
 			return activeJob == null || activeJob.type() != ActiveJobType.SMELT_ITEMS;
 		}
 		return PlannerToolCatalog.FOLLOW_PLAYER.equals(normalizedToolName)
-			|| PlannerToolCatalog.START_ACTION_GOAL.equals(normalizedToolName)
 			|| PlannerToolCatalog.NAVIGATE_TO.equals(normalizedToolName)
 			|| PlannerToolCatalog.RETURN_TO_SURFACE.equals(normalizedToolName)
 			|| PlannerToolCatalog.MINE_BLOCKS.equals(normalizedToolName)
 			|| PlannerToolCatalog.ENSURE_BLOCKS_IN_INVENTORY.equals(normalizedToolName)
 			|| PlannerToolCatalog.COLLECT_RESOURCE.equals(normalizedToolName)
 			|| PlannerToolCatalog.SMELT_ITEMS.equals(normalizedToolName)
+			|| PlannerToolCatalog.DROP_ITEMS.equals(normalizedToolName)
+			|| PlannerToolCatalog.GIVE_PLAYER.equals(normalizedToolName)
+			|| PlannerToolCatalog.ATTACK_ENTITY.equals(normalizedToolName)
+			|| PlannerToolCatalog.USE_ENTITY.equals(normalizedToolName)
+			|| PlannerToolCatalog.PLACE_BLOCK.equals(normalizedToolName)
+			|| PlannerToolCatalog.USE_BLOCK.equals(normalizedToolName)
+			|| PlannerToolCatalog.BREAK_BLOCKS.equals(normalizedToolName);
+	}
+
+	private boolean plannerToolWouldPreemptActiveGraph(String normalizedToolName) {
+		if (!actionGraphRuntime.active()) {
+			return false;
+		}
+		return legacyActionToolWouldPreemptGraph(normalizedToolName)
+			|| PlannerToolCatalog.CANCEL_TASK.equals(normalizedToolName)
+			|| PlannerToolCatalog.CLEAR_GOAL.equals(normalizedToolName);
+	}
+
+	private static boolean legacyActionToolWouldPreemptGraph(String normalizedToolName) {
+		return PlannerToolCatalog.FOLLOW_PLAYER.equals(normalizedToolName)
+			|| PlannerToolCatalog.NAVIGATE_TO.equals(normalizedToolName)
+			|| PlannerToolCatalog.RETURN_TO_SURFACE.equals(normalizedToolName)
+			|| PlannerToolCatalog.MINE_BLOCKS.equals(normalizedToolName)
+			|| PlannerToolCatalog.ENSURE_BLOCKS_IN_INVENTORY.equals(normalizedToolName)
+			|| PlannerToolCatalog.COLLECT_RESOURCE.equals(normalizedToolName)
+			|| PlannerToolCatalog.CRAFT_RECIPE.equals(normalizedToolName)
+			|| PlannerToolCatalog.SMELT_ITEMS.equals(normalizedToolName)
+			|| PlannerToolCatalog.COLLECT_SMELTED_ITEMS.equals(normalizedToolName)
 			|| PlannerToolCatalog.DROP_ITEMS.equals(normalizedToolName)
 			|| PlannerToolCatalog.GIVE_PLAYER.equals(normalizedToolName)
 			|| PlannerToolCatalog.ATTACK_ENTITY.equals(normalizedToolName)
@@ -1793,6 +1824,15 @@ public final class EmbodiedAgentRuntime {
 			+ " taskExecutionState=" + (taskExecutionSnapshot == null || taskExecutionSnapshot.state() == null ? "UNKNOWN" : taskExecutionSnapshot.state().name())
 			+ " taskExecutionProcess=" + (taskExecutionSnapshot == null || taskExecutionSnapshot.processName() == null ? "UNKNOWN" : taskExecutionSnapshot.processName())
 			+ ". Task-changing tools would preempt the active job. Use cancel_task first only if the user explicitly changed tasks; otherwise wait for TASK UPDATE or ask the user.";
+	}
+
+	private String plannerActiveGraphPreemptionError(String toolName) {
+		ActionGraphExecutionSnapshot snapshot = actionGraphRuntime.snapshot();
+		return "TOOL_ERROR: " + toolName + " denied reason=active_action_graph_in_progress"
+			+ " graphState=" + snapshot.state().name()
+			+ " executionId=" + snapshot.executionId()
+			+ " activeTaskId=" + snapshot.activeTaskId()
+			+ ". The action graph owns execution. Use inspect_action_goal or inspect_action_trace to observe progress, start_action_goal to reuse the active graph, or cancel_action_goal only if the user explicitly changes tasks.";
 	}
 
 	private static String queuedActionToolResult(String toolName, String details) {
