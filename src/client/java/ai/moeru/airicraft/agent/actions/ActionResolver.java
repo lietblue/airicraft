@@ -19,6 +19,7 @@ public final class ActionResolver {
 	private static final int FUEL_TICKS_LOGS = 300;
 	private static final int FUEL_TICKS_STICKS = 100;
 	private static final int FUEL_TICKS_COAL = 1600;
+	private static final int RECIPE_INPUT_DEFICIT_COST = 25;
 	private static final Set<ActionFactProvenance> GUARD_USABLE_PROVENANCE = Set.of(
 		ActionFactProvenance.OBSERVED,
 		ActionFactProvenance.EXECUTOR_REPORTED,
@@ -346,16 +347,22 @@ public final class ActionResolver {
 			}
 			int outputCount = Math.max(1, intPayload(recipe, "outputCount", 1));
 			int craftTimes = Math.max(1, (int) Math.ceil(deficitCount / (double) outputCount));
+			int inputDeficitCost = recipeInputDeficit(inputCounts, craftTimes) * RECIPE_INPUT_DEFICIT_COST;
 			trace.add(event(
 				"route_candidate_built",
 				"recipe_provider",
 				recipeId,
 				"",
-				Map.of("goal", goal.normalizedKey(), "cost", 15, "outputItemId", outputItemId)
+				Map.of(
+					"goal", goal.normalizedKey(),
+					"cost", 15 + inputDeficitCost,
+					"outputItemId", outputItemId,
+					"inputDeficitCost", inputDeficitCost
+				)
 			));
 
 			ArrayList<ActionPlanStep> steps = new ArrayList<>();
-			int routeCost = 15;
+			int routeCost = 15 + inputDeficitCost;
 			boolean inputsResolved = true;
 			String gridKind = scalar(recipe.payload().get("gridKind"), "");
 			if ("WORKBENCH_3X3".equals(gridKind) && !"minecraft:crafting_table".equals(outputItemId)) {
@@ -899,6 +906,18 @@ public final class ActionResolver {
 			.mapToInt(Number::intValue)
 			.max()
 			.orElse(0);
+	}
+
+	private int recipeInputDeficit(Map<String, Integer> inputCounts, int craftTimes) {
+		int deficit = 0;
+		for (Map.Entry<String, Integer> input : inputCounts.entrySet()) {
+			int requiredCount = input.getValue() * craftTimes;
+			if (requiredCount <= 0) {
+				continue;
+			}
+			deficit += Math.max(0, requiredCount - existingGoalCount(ActionGoal.inventoryItem(input.getKey(), requiredCount)));
+		}
+		return deficit;
 	}
 
 	private Optional<String> requiredMiningToolGoal(String itemId) {

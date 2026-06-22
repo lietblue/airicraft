@@ -235,6 +235,27 @@ class ActionResolverTest {
 	}
 
 	@Test
+	void recipeProviderPrefersObservedWoodVariantAfterGenericCollection() {
+		ActionFactStore facts = new ActionFactStore();
+		addSurvivalCraftFacts(facts);
+		facts.upsert(new ActionFact(
+			ActionFactIdentity.inventoryItem("world-a", "bot", "minecraft:birch_log"),
+			Map.of("count", 1),
+			ActionFactProvenance.OBSERVED,
+			90,
+			ActionFact.NEVER_STALE
+		));
+
+		ActionResolveResult result = new ActionResolver(ActionsetIndex.empty(), facts, CONTEXT)
+			.resolve(ActionGoal.inventoryItem("minecraft:crafting_table", 1));
+
+		assertTrue(result.resolved(), () -> result.trace().toString());
+		assertEquals(List.of("craft_item", "craft_item"), result.route().steps().stream().map(ActionPlanStep::targetId).toList());
+		assertEquals("birch_log_to_birch_planks", result.route().steps().get(0).args().get("recipeId"));
+		assertEquals("birch_planks_x4_to_crafting_table", result.route().steps().get(1).args().get("recipeId"));
+	}
+
+	@Test
 	void resolvesInventoryItemThroughSmeltingRecipeFact() {
 		ActionFactStore facts = new ActionFactStore();
 		facts.upsert(new ActionFact(

@@ -427,6 +427,38 @@ class ActionGraphExecutionRuntimeTest {
 	}
 
 	@Test
+	void genericWoodCollectionReplansToObservedLogVariantRecipe() {
+		RecordingDispatcher dispatcher = new RecordingDispatcher();
+		ActionGraphExecutionRuntime runtime = new ActionGraphExecutionRuntime(ActionsetIndex.empty(), dispatcher);
+		List<CraftingOpportunity> survivalCrafts = ActionGraphDomainKnowledge.survivalCrafts();
+		runtime.submit(ActionGoal.inventoryItem("minecraft:crafting_table", 1), Map.of(), CONTEXT, 100);
+
+		ActionGraphExecutionSnapshot collecting = runtime.tick(input(Map.of(), null, 101, survivalCrafts));
+
+		assertEquals(ActionGraphExecutionState.WAITING_PRIMITIVE, collecting.state());
+		assertEquals(1, dispatcher.dispatchedSteps.size());
+		assertEquals("collect_resource", dispatcher.dispatchedSteps.getFirst().targetId());
+
+		ActionGraphExecutionSnapshot observing = runtime.tick(input(
+			Map.of("minecraft:birch_log", 1),
+			new TaskTerminalEvent("task-1", null, TaskExecutionState.COMPLETED, "collected", null),
+			102,
+			survivalCrafts
+		));
+
+		assertEquals(ActionGraphExecutionState.OBSERVING, observing.state());
+
+		ActionGraphExecutionSnapshot replanned = runtime.tick(input(Map.of("minecraft:birch_log", 1), null, 123, survivalCrafts));
+
+		assertEquals(ActionGraphExecutionState.WAITING_PRIMITIVE, replanned.state());
+		assertEquals(2, dispatcher.dispatchedSteps.size());
+		ActionPlanStep craftPlanks = dispatcher.dispatchedSteps.get(1);
+		assertEquals("craft_item", craftPlanks.targetId());
+		assertEquals("minecraft:birch_planks", craftPlanks.args().get("itemId"));
+		assertEquals("birch_log_to_birch_planks", craftPlanks.args().get("recipeId"));
+	}
+
+	@Test
 	void repeatedObservedFactsDoNotSpamTrace() {
 		RecordingDispatcher dispatcher = new RecordingDispatcher();
 		ActionGraphExecutionRuntime runtime = new ActionGraphExecutionRuntime(ActionsetIndex.empty(), dispatcher);
