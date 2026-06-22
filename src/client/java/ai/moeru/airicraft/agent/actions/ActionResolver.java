@@ -347,7 +347,9 @@ public final class ActionResolver {
 			}
 			int outputCount = Math.max(1, intPayload(recipe, "outputCount", 1));
 			int craftTimes = Math.max(1, (int) Math.ceil(deficitCount / (double) outputCount));
-			int inputDeficitCost = recipeInputDeficit(inputCounts, craftTimes) * RECIPE_INPUT_DEFICIT_COST;
+			String gridKind = scalar(recipe.payload().get("gridKind"), "");
+			Map<String, Integer> effectiveInputCounts = effectiveRecipeInputCounts(outputItemId, inputCounts, gridKind);
+			int inputDeficitCost = recipeInputDeficit(effectiveInputCounts, craftTimes) * RECIPE_INPUT_DEFICIT_COST;
 			trace.add(event(
 				"route_candidate_built",
 				"recipe_provider",
@@ -364,8 +366,7 @@ public final class ActionResolver {
 			ArrayList<ActionPlanStep> steps = new ArrayList<>();
 			int routeCost = 15 + inputDeficitCost;
 			boolean inputsResolved = true;
-			String gridKind = scalar(recipe.payload().get("gridKind"), "");
-			for (Map.Entry<String, Integer> input : inputCounts.entrySet()) {
+			for (Map.Entry<String, Integer> input : effectiveInputCounts.entrySet()) {
 				int requiredCount = input.getValue() * craftTimes;
 				if (requiredCount <= 0) {
 					continue;
@@ -380,22 +381,6 @@ public final class ActionResolver {
 			}
 			if (!inputsResolved) {
 				continue;
-			}
-			if ("WORKBENCH_3X3".equals(gridKind)
-				&& !"minecraft:crafting_table".equals(outputItemId)
-				&& existingGoalCount(ActionGoal.inventoryItem("minecraft:crafting_table", 1)) < 1
-				&& !stepsProvideCraftingTable(steps)) {
-				Optional<ActionRoute> stationRoute = resolveGoal(
-					ActionGoal.inventoryItem("minecraft:crafting_table", 1),
-					depth + 1,
-					resolving,
-					trace
-				);
-				if (stationRoute.isEmpty()) {
-					continue;
-				}
-				steps.addAll(stationRoute.get().steps());
-				routeCost += stationRoute.get().cost();
 			}
 
 			LinkedHashMap<String, Object> args = new LinkedHashMap<>();
@@ -416,6 +401,48 @@ public final class ActionResolver {
 		}
 		trace.add(event("route_selected", "recipe_provider", bestRecipeId, "", Map.of("goal", goal.normalizedKey())));
 		return Optional.of(bestRoute);
+	}
+
+	private Map<String, Integer> effectiveRecipeInputCounts(
+		String outputItemId,
+		Map<String, Integer> inputCounts,
+		String gridKind
+	) {
+		if (!"WORKBENCH_3X3".equals(gridKind)
+			|| "minecraft:crafting_table".equals(outputItemId)
+			|| existingGoalCount(ActionGoal.inventoryItem("minecraft:crafting_table", 1)) >= 1) {
+			return inputCounts;
+		}
+		LinkedHashMap<String, Integer> effective = new LinkedHashMap<>(inputCounts);
+		effective.merge(workbenchSetupPlankItemId(inputCounts), 4, Integer::sum);
+		return effective;
+	}
+
+	private String workbenchSetupPlankItemId(Map<String, Integer> inputCounts) {
+		for (String plankItemId : ActionGraphDomainKnowledge.plankItemIds()) {
+			if (inputCounts.containsKey(plankItemId)) {
+				return plankItemId;
+			}
+		}
+		String bestObservedPlank = "";
+		int bestObservedPlankCount = 0;
+		for (String plankItemId : ActionGraphDomainKnowledge.plankItemIds()) {
+			int count = existingGoalCount(ActionGoal.inventoryItem(plankItemId, 1));
+			if (count > bestObservedPlankCount) {
+				bestObservedPlank = plankItemId;
+				bestObservedPlankCount = count;
+			}
+		}
+		if (!bestObservedPlank.isBlank()) {
+			return bestObservedPlank;
+		}
+		for (int index = 0; index < ActionGraphDomainKnowledge.logItemIds().size(); index++) {
+			String logItemId = ActionGraphDomainKnowledge.logItemIds().get(index);
+			if (existingGoalCount(ActionGoal.inventoryItem(logItemId, 1)) > 0 && index < ActionGraphDomainKnowledge.plankItemIds().size()) {
+				return ActionGraphDomainKnowledge.plankItemIds().get(index);
+			}
+		}
+		return "minecraft:oak_planks";
 	}
 
 	private Optional<ActionRoute> resolveRecipeInputGoal(
@@ -955,18 +982,6 @@ public final class ActionResolver {
 			deficit += Math.max(0, requiredCount - existingGoalCount(ActionGoal.inventoryItem(input.getKey(), requiredCount)));
 		}
 		return deficit;
-	}
-
-	private static boolean stepsProvideCraftingTable(List<ActionPlanStep> steps) {
-		for (ActionPlanStep step : steps) {
-			if (!"craft_item".equals(step.targetId())) {
-				continue;
-			}
-			if ("minecraft:crafting_table".equals(String.valueOf(step.args().get("itemId")))) {
-				return true;
-			}
-		}
-		return false;
 	}
 
 	private Optional<String> requiredMiningToolGoal(String itemId) {

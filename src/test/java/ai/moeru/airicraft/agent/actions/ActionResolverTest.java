@@ -256,6 +256,42 @@ class ActionResolverTest {
 	}
 
 	@Test
+	void recipeProviderUsesObservedLogWhenPlankDeficitRemainsAfterReplan() {
+		ActionFactStore facts = new ActionFactStore();
+		addSurvivalCraftFacts(facts);
+		facts.upsert(new ActionFact(
+			ActionFactIdentity.inventoryItem("world-a", "bot", "minecraft:birch_log"),
+			Map.of("count", 1),
+			ActionFactProvenance.OBSERVED,
+			90,
+			ActionFact.NEVER_STALE
+		));
+		facts.upsert(new ActionFact(
+			ActionFactIdentity.inventoryItem("world-a", "bot", "minecraft:birch_planks"),
+			Map.of("count", 2),
+			ActionFactProvenance.OBSERVED,
+			90,
+			ActionFact.NEVER_STALE
+		));
+		facts.upsert(new ActionFact(
+			ActionFactIdentity.inventoryItem("world-a", "bot", "minecraft:stick"),
+			Map.of("count", 4),
+			ActionFactProvenance.OBSERVED,
+			90,
+			ActionFact.NEVER_STALE
+		));
+
+		ActionResolveResult result = new ActionResolver(ActionsetIndex.empty(), facts, CONTEXT)
+			.resolve(ActionGoal.inventoryItem("minecraft:wooden_pickaxe", 1));
+
+		assertTrue(result.resolved(), () -> result.trace().toString());
+		assertEquals(List.of("collect_resource", "craft_item", "craft_item"), result.route().steps().stream().map(ActionPlanStep::targetId).toList());
+		assertEquals("WOOD_LOGS", result.route().steps().getFirst().args().get("resourceKind"));
+		assertEquals("birch_log_to_birch_planks", result.route().steps().get(1).args().get("recipeId"));
+		assertEquals("birch_planks_x3_and_stick_x2_to_wooden_pickaxe", result.route().steps().get(2).args().get("recipeId"));
+	}
+
+	@Test
 	void recipeProviderCollectsGenericWoodBeforeChoosingConcreteWoodVariant() {
 		ActionFactStore facts = new ActionFactStore();
 		addSurvivalCraftFacts(facts);
@@ -551,11 +587,59 @@ class ActionResolverTest {
 			.resolve(ActionGoal.inventoryItem("minecraft:raw_iron", 3));
 
 		assertTrue(result.resolved(), () -> result.trace().toString());
-		assertEquals(List.of("craft_item", "mine_block", "craft_item", "mine_block"), result.route().steps().stream().map(ActionPlanStep::targetId).toList());
-		assertEquals("minecraft:wooden_pickaxe", result.route().steps().get(0).args().get("itemId"));
-		assertEquals("minecraft:cobblestone", result.route().steps().get(1).args().get("itemId"));
-		assertEquals("minecraft:stone_pickaxe", result.route().steps().get(2).args().get("itemId"));
-		assertEquals("minecraft:raw_iron", result.route().steps().get(3).args().get("itemId"));
+		assertEquals(List.of("collect_resource", "craft_item", "craft_item", "mine_block", "craft_item", "mine_block"), result.route().steps().stream().map(ActionPlanStep::targetId).toList());
+		assertEquals("WOOD_LOGS", result.route().steps().getFirst().args().get("resourceKind"));
+		assertEquals("minecraft:wooden_pickaxe", result.route().steps().get(2).args().get("itemId"));
+		assertEquals("minecraft:cobblestone", result.route().steps().get(3).args().get("itemId"));
+		assertEquals("minecraft:stone_pickaxe", result.route().steps().get(4).args().get("itemId"));
+		assertEquals("minecraft:raw_iron", result.route().steps().get(5).args().get("itemId"));
+	}
+
+	@Test
+	void ironPickaxeRouteSurvivesPartialBirchToolReplan() {
+		ActionFactStore facts = new ActionFactStore();
+		addSurvivalCraftFacts(facts);
+		facts.upsert(new ActionFact(
+			ActionFactIdentity.inventoryItem("world-a", "bot", "minecraft:birch_log"),
+			Map.of("count", 1),
+			ActionFactProvenance.OBSERVED,
+			90,
+			ActionFact.NEVER_STALE
+		));
+		facts.upsert(new ActionFact(
+			ActionFactIdentity.inventoryItem("world-a", "bot", "minecraft:birch_planks"),
+			Map.of("count", 2),
+			ActionFactProvenance.OBSERVED,
+			90,
+			ActionFact.NEVER_STALE
+		));
+		facts.upsert(new ActionFact(
+			ActionFactIdentity.inventoryItem("world-a", "bot", "minecraft:stick"),
+			Map.of("count", 4),
+			ActionFactProvenance.OBSERVED,
+			90,
+			ActionFact.NEVER_STALE
+		));
+		facts.upsert(new ActionFact(
+			ActionFactIdentity.smeltRecipe("world-a", "bot", "inferred:minecraft_raw_iron_to_minecraft_iron_ingot"),
+			Map.of(
+				"inputItemId", "minecraft:raw_iron",
+				"outputItemId", "minecraft:iron_ingot",
+				"outputCount", 1,
+				"maxInputQuantity", 3
+			),
+			ActionFactProvenance.INFERRED,
+			90,
+			ActionFact.NEVER_STALE
+		));
+
+		ActionResolveResult result = new ActionResolver(ActionsetIndex.empty(), facts, CONTEXT)
+			.resolve(ActionGoal.inventoryItem("minecraft:iron_pickaxe", 1));
+
+		assertTrue(result.resolved(), () -> result.trace().toString());
+		assertEquals("collect_resource", result.route().steps().getFirst().targetId());
+		assertEquals("WOOD_LOGS", result.route().steps().getFirst().args().get("resourceKind"));
+		assertEquals("iron_ingot_x3_and_stick_x2_to_iron_pickaxe", result.route().steps().getLast().args().get("recipeId"));
 	}
 
 	@Test
@@ -661,9 +745,8 @@ class ActionResolverTest {
 			.resolve(ActionGoal.inventoryItem("minecraft:iron_pickaxe", 1));
 
 		assertTrue(result.resolved(), () -> result.trace().toString());
-		assertEquals(List.of("craft_item", "craft_item"), result.route().steps().stream().map(ActionPlanStep::targetId).toList());
-		assertEquals("minecraft:crafting_table", result.route().steps().getFirst().args().get("itemId"));
-		assertEquals("minecraft:iron_pickaxe", result.route().steps().get(1).args().get("itemId"));
+		assertEquals(List.of("craft_item"), result.route().steps().stream().map(ActionPlanStep::targetId).toList());
+		assertEquals("minecraft:iron_pickaxe", result.route().steps().getFirst().args().get("itemId"));
 	}
 
 	@Test
@@ -804,7 +887,7 @@ class ActionResolverTest {
 			.resolve(ActionGoal.inventoryItem("minecraft:iron_pickaxe", 1));
 
 		assertTrue(result.resolved(), () -> result.trace().toString());
-		assertEquals(1, result.route().steps().stream()
+		assertEquals(0, result.route().steps().stream()
 			.filter(step -> "minecraft:crafting_table".equals(step.args().get("itemId")))
 			.count());
 		assertEquals("iron_ingot_x3_and_stick_x2_to_iron_pickaxe", result.route().steps().getLast().args().get("recipeId"));
@@ -975,7 +1058,8 @@ class ActionResolverTest {
 					"outputItemId", craft.outputItemId(),
 					"outputCount", craft.outputCount(),
 					"inputItemIds", craft.inputItemIds(),
-					"inputCounts", inputCounts(craft.inputItemIds())
+					"inputCounts", inputCounts(craft.inputItemIds()),
+					"gridKind", craft.gridKind().name()
 				),
 				ActionFactProvenance.INFERRED,
 				90,
