@@ -207,7 +207,7 @@ public final class SmeltingTaskExecutor implements WorldTaskExecutor {
 		if (player.currentScreenHandler instanceof AbstractFurnaceScreenHandler) {
 			if (!openedStationForTask) {
 				if (player.currentScreenHandler.getCursorStack().isEmpty()) {
-					player.closeHandledScreen();
+					ScreenCloseSafety.closeHandledScreen(player, "smelting_existing_station_close");
 				}
 				snapshot = snapshot(TaskExecutionState.RUNNING, request, "closing_existing_furnace_screen");
 				return false;
@@ -599,7 +599,7 @@ public final class SmeltingTaskExecutor implements WorldTaskExecutor {
 		if (player != null
 			&& player.currentScreenHandler instanceof AbstractFurnaceScreenHandler
 			&& player.currentScreenHandler.getCursorStack().isEmpty()) {
-			player.closeHandledScreen();
+			ScreenCloseSafety.closeHandledScreen(player, "smelting_station_close");
 		}
 		openedStationForTask = false;
 	}

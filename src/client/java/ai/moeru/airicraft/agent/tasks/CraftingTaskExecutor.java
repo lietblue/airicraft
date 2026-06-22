@@ -604,7 +604,7 @@ public final class CraftingTaskExecutor implements WorldTaskExecutor {
 		if (client.currentScreen instanceof InventoryScreen
 			&& player.currentScreenHandler == player.playerScreenHandler
 			&& player.currentScreenHandler.getCursorStack().isEmpty()) {
-			client.setScreen(null);
+			ScreenCloseSafety.clearScreen(client, "crafting_inventory_close");
 			return true;
 		}
 		return false;
@@ -765,7 +765,7 @@ public final class CraftingTaskExecutor implements WorldTaskExecutor {
 		if (player != null
 			&& player.currentScreenHandler instanceof CraftingScreenHandler
 			&& player.currentScreenHandler.getCursorStack().isEmpty()) {
-			player.closeHandledScreen();
+			ScreenCloseSafety.closeHandledScreen(player, "crafting_workbench_close");
 		}
 		openedWorkbenchForTask = false;
 	}

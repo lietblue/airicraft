@@ -403,7 +403,7 @@ public final class EntityInteractionTaskExecutor implements WorldTaskExecutor {
 		if (!player.currentScreenHandler.getCursorStack().isEmpty()) {
 			return false;
 		}
-		client.setScreen(null);
+		ScreenCloseSafety.clearScreen(client, "entity_interaction_screen_dismiss");
 		return true;
 	}
 

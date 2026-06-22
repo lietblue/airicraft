@@ -7,6 +7,24 @@ if [[ $# -gt 0 ]]; then
 	shift
 fi
 
+disable_journeymap_minimap_for_evaluator() {
+	local config_dir="$repo_root/run/journeymap/config/6.0"
+	local config_file
+	mkdir -p "$config_dir"
+	for config_file in "$config_dir"/journeymap.minimap.config "$config_dir"/journeymap.minimap2.config; do
+		cat >"$config_file" <<'EOF'
+// Airicraft evaluator disables the JourneyMap HUD minimap to keep headless smoke runs stable.
+{
+  "enabled": "false",
+  "moveEffectIcons": "false",
+  "hideEffectIcons": "true",
+  "active": false,
+  "configVersion": "6.0.0-beta.52"
+}
+EOF
+	done
+}
+
 case "$command" in
 	run)
 		cd "$repo_root"
@@ -14,6 +32,7 @@ case "$command" in
 			# shellcheck disable=SC1091
 			source .envrc
 		fi
+		disable_journeymap_minimap_for_evaluator
 		exec ./gradlew -Pairicraft.includeEvaluator=true -Pairicraft.includeCompat=true :runClientCompatEvaluator "$@"
 		;;
 	*)

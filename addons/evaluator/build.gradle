@@ -112,13 +112,16 @@ if (journeyMapCompatProject != null) {
 
 	tasks.register("runClientCompatEvaluator", net.fabricmc.loom.task.prod.ClientProductionRunTask) {
 		group = "airicraft evaluation"
-		description = "Runs a production-style Fabric client with Airicraft, the evaluator addon, and all compatibility smoke mods."
+		description = "Runs a production-style Fabric client with Airicraft, the evaluator addon, and evaluator-stable compatibility smoke mods."
 		dependsOn tasks.named("remapJar")
 		dependsOn journeyMapCompatProject.tasks.named("syncJourneyMapCompatMods")
 		dependsOn journeyMapCompatProject.tasks.named("syncJourneyMapCompatLibraries")
 		outputs.upToDateWhen { false }
 
-		mods.from(journeyMapCompatModsDir)
+		mods.from(rootProject.fileTree(dir: journeyMapCompatModsDir.asFile, exclude: [
+			"airicraft-journeymap-compat-*.jar",
+			"journeymap-*.jar"
+		]))
 		mods.from(tasks.named("remapJar").flatMap { it.archiveFile })
 		classpath.from(configurations.evaluatorRuntimeLibraries)
 		classpath.from(journeyMapCompatLibrariesDir)

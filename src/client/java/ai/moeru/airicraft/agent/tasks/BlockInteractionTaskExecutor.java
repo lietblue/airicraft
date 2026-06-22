@@ -135,7 +135,7 @@ public final class BlockInteractionTaskExecutor implements WorldTaskExecutor {
 			player.currentScreenHandler == null || player.currentScreenHandler.getCursorStack().isEmpty()
 		);
 		if (busyDisposition == InteractionBusyDisposition.CLOSE_OPEN_SCREEN) {
-			player.closeHandledScreen();
+			ScreenCloseSafety.closeHandledScreen(player, "block_interaction_open_screen_close");
 			snapshot = snapshot(TaskExecutionState.RUNNING, request, "closing_open_screen");
 			return Optional.empty();
 		}

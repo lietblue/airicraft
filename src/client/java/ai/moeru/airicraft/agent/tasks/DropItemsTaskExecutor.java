@@ -116,7 +116,7 @@ public final class DropItemsTaskExecutor implements WorldTaskExecutor {
 		if (!player.currentScreenHandler.getCursorStack().isEmpty()) {
 			return false;
 		}
-		client.setScreen(null);
+		ScreenCloseSafety.clearScreen(client, "drop_items_screen_dismiss");
 		return true;
 	}
 
