@@ -44,6 +44,7 @@ public final class ActionGraphExecutionRuntime {
 	private final Set<String> blockedAlternatives = new LinkedHashSet<>();
 	private final Map<String, PendingWatch> watches = new LinkedHashMap<>();
 	private final Map<ActionFactIdentity, FactTraceFingerprint> tracedFactObservations = new LinkedHashMap<>();
+	private final Set<String> observedInventoryItemIds = new LinkedHashSet<>();
 	private Map<String, Object> dispatchPayload = Map.of();
 	private Map<String, Object> taskPayload = Map.of();
 	private Map<String, Object> taskExecutionPayload = Map.of();
@@ -99,6 +100,7 @@ public final class ActionGraphExecutionRuntime {
 		this.blockedAlternatives.clear();
 		this.watches.clear();
 		this.tracedFactObservations.clear();
+		this.observedInventoryItemIds.clear();
 		this.dispatchPayload = Map.of();
 		this.taskPayload = Map.of();
 		this.taskExecutionPayload = Map.of();
@@ -204,6 +206,7 @@ public final class ActionGraphExecutionRuntime {
 		blockedAlternatives.clear();
 		watches.clear();
 		tracedFactObservations.clear();
+		observedInventoryItemIds.clear();
 		dispatchPayload = Map.of();
 		taskPayload = Map.of();
 		taskExecutionPayload = Map.of();
@@ -692,33 +695,30 @@ public final class ActionGraphExecutionRuntime {
 		ActionResolverContext context,
 		boolean observed
 	) {
-		if (inventory == null || inventory.isEmpty()) {
+		if ((inventory == null || inventory.isEmpty()) && !observed) {
 			return;
 		}
 		int count = 0;
-		for (Map.Entry<String, Integer> entry : inventory.entrySet()) {
+		Map<String, Integer> safeInventory = inventory == null ? Map.of() : inventory;
+		Set<String> presentItemIds = new LinkedHashSet<>();
+		for (Map.Entry<String, Integer> entry : safeInventory.entrySet()) {
 			if (entry.getKey() == null || entry.getKey().isBlank()) {
 				continue;
 			}
+			presentItemIds.add(entry.getKey());
 			int itemCount = entry.getValue() == null ? 0 : Math.max(0, entry.getValue());
-			ActionFact fact = new ActionFact(
-				ActionFactIdentity.inventoryItem(context.worldId(), context.actorId(), entry.getKey()),
-				Map.of("count", itemCount),
-				provenance,
-				context.currentTick(),
-				ActionFact.NEVER_STALE
-			);
-			ActionFact stored = facts.upsert(fact);
-			if (stored != fact) {
-				continue;
+			if (upsertInventoryFact(entry.getKey(), itemCount, provenance, context)) {
+				count++;
 			}
-			count++;
-			traceFactObservedIfChanged(fact, Map.of(
-				"fact", ActionFactType.INVENTORY_ITEM.id(),
-				"itemId", entry.getKey(),
-				"count", itemCount,
-				"provenance", provenance.name()
-			));
+		}
+		if (observed) {
+			for (String missingItemId : List.copyOf(observedInventoryItemIds)) {
+				if (!presentItemIds.contains(missingItemId) && upsertInventoryFact(missingItemId, 0, provenance, context)) {
+					count++;
+				}
+			}
+			observedInventoryItemIds.clear();
+			observedInventoryItemIds.addAll(presentItemIds);
 		}
 		if (observed) {
 			observedInventoryFactCount = count;
@@ -726,6 +726,32 @@ public final class ActionGraphExecutionRuntime {
 		else {
 			assumedInventoryFactCount = count;
 		}
+	}
+
+	private boolean upsertInventoryFact(
+		String itemId,
+		int itemCount,
+		ActionFactProvenance provenance,
+		ActionResolverContext context
+	) {
+		ActionFact fact = new ActionFact(
+			ActionFactIdentity.inventoryItem(context.worldId(), context.actorId(), itemId),
+			Map.of("count", Math.max(0, itemCount)),
+			provenance,
+			context.currentTick(),
+			ActionFact.NEVER_STALE
+		);
+		ActionFact stored = facts.upsert(fact);
+		if (stored != fact) {
+			return false;
+		}
+		traceFactObservedIfChanged(fact, Map.of(
+			"fact", ActionFactType.INVENTORY_ITEM.id(),
+			"itemId", itemId,
+			"count", Math.max(0, itemCount),
+			"provenance", provenance.name()
+		));
+		return true;
 	}
 
 	private void addResourceFacts(

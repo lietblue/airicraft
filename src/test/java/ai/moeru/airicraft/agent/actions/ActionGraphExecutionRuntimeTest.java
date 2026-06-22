@@ -504,6 +504,41 @@ class ActionGraphExecutionRuntimeTest {
 	}
 
 	@Test
+	void observedInventorySnapshotClearsConsumedItemsBeforeReplan() {
+		RecordingDispatcher dispatcher = new RecordingDispatcher();
+		ActionGraphExecutionRuntime runtime = new ActionGraphExecutionRuntime(ActionsetIndex.empty(), dispatcher);
+		runtime.submit(
+			ActionGoal.inventoryItem("minecraft:wooden_pickaxe", 1),
+			Map.of("minecraft:birch_planks", 4, "minecraft:stick", 2),
+			CONTEXT,
+			100
+		);
+
+		ActionGraphExecutionSnapshot tableDispatched = runtime.tick(input(
+			Map.of("minecraft:birch_planks", 4, "minecraft:stick", 2),
+			null,
+			101
+		));
+		ActionPlanStep tableStep = dispatcher.dispatchedSteps.getFirst();
+		assertEquals("minecraft:crafting_table", tableStep.args().get("itemId"));
+
+		runtime.tick(input(
+			Map.of("minecraft:crafting_table", 1, "minecraft:stick", 2),
+			new TaskTerminalEvent(tableDispatched.activeTaskId(), null, TaskExecutionState.COMPLETED, "crafted", null),
+			102
+		));
+		ActionGraphExecutionSnapshot replanned = runtime.tick(input(
+			Map.of("minecraft:crafting_table", 1, "minecraft:stick", 2),
+			null,
+			122
+		));
+
+		assertEquals(ActionGraphExecutionState.WAITING_PRIMITIVE, replanned.state(), () -> replanned.toString());
+		assertEquals(2, dispatcher.dispatchedSteps.size());
+		assertEquals("collect_resource", dispatcher.dispatchedSteps.get(1).targetId());
+	}
+
+	@Test
 	void busyTerminalFailureWaitsBeforeRetryingPrimitive() {
 		assertTerminalFailureWaitsBeforeRetry("crafting_busy");
 	}
