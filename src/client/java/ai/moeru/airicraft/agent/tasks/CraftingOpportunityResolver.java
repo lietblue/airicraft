@@ -59,9 +59,6 @@ public final class CraftingOpportunityResolver {
 		for (CraftingOpportunity opportunity : knownCrafts(player.getRecipeBook().getOrderedResults())) {
 			opportunities.putIfAbsent(opportunity.recipeId(), opportunity);
 		}
-		for (CraftingOpportunity opportunity : knownCrafts(integratedServerRecipeCollections())) {
-			opportunities.putIfAbsent(opportunity.recipeId(), opportunity);
-		}
 		return List.copyOf(opportunities.values());
 	}
 
