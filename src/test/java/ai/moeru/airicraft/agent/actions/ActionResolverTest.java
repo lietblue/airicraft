@@ -256,6 +256,20 @@ class ActionResolverTest {
 	}
 
 	@Test
+	void recipeProviderCollectsGenericWoodBeforeChoosingConcreteWoodVariant() {
+		ActionFactStore facts = new ActionFactStore();
+		addSurvivalCraftFacts(facts);
+
+		ActionResolveResult result = new ActionResolver(ActionsetIndex.empty(), facts, CONTEXT)
+			.resolve(ActionGoal.inventoryItem("minecraft:crafting_table", 1));
+
+		assertTrue(result.resolved(), () -> result.trace().toString());
+		assertEquals("collect_resource", result.route().steps().getFirst().targetId());
+		assertEquals("WOOD_LOGS", result.route().steps().getFirst().alternativeId());
+		assertEquals("WOOD_LOGS", result.route().steps().getFirst().args().get("resourceKind"));
+	}
+
+	@Test
 	void resolvesInventoryItemThroughSmeltingRecipeFact() {
 		ActionFactStore facts = new ActionFactStore();
 		facts.upsert(new ActionFact(
@@ -650,6 +664,51 @@ class ActionResolverTest {
 		assertEquals(List.of("craft_item", "craft_item"), result.route().steps().stream().map(ActionPlanStep::targetId).toList());
 		assertEquals("minecraft:crafting_table", result.route().steps().getFirst().args().get("itemId"));
 		assertEquals("minecraft:iron_pickaxe", result.route().steps().get(1).args().get("itemId"));
+	}
+
+	@Test
+	void workbenchRecipeProviderUsesCarriedCraftingTableAsStation() {
+		ActionFactStore facts = new ActionFactStore();
+		facts.upsert(new ActionFact(
+			ActionFactIdentity.inventoryItem("world-a", "bot", "minecraft:crafting_table"),
+			Map.of("count", 1),
+			ActionFactProvenance.OBSERVED,
+			90,
+			ActionFact.NEVER_STALE
+		));
+		facts.upsert(new ActionFact(
+			ActionFactIdentity.inventoryItem("world-a", "bot", "minecraft:iron_ingot"),
+			Map.of("count", 3),
+			ActionFactProvenance.OBSERVED,
+			90,
+			ActionFact.NEVER_STALE
+		));
+		facts.upsert(new ActionFact(
+			ActionFactIdentity.inventoryItem("world-a", "bot", "minecraft:stick"),
+			Map.of("count", 2),
+			ActionFactProvenance.OBSERVED,
+			90,
+			ActionFact.NEVER_STALE
+		));
+		facts.upsert(new ActionFact(
+			ActionFactIdentity.craftRecipe("world-a", "bot", "iron_ingot_x3_and_stick_x2_to_iron_pickaxe"),
+			Map.of(
+				"outputItemId", "minecraft:iron_pickaxe",
+				"outputCount", 1,
+				"inputCounts", Map.of("minecraft:iron_ingot", 3, "minecraft:stick", 2),
+				"gridKind", "WORKBENCH_3X3"
+			),
+			ActionFactProvenance.INFERRED,
+			90,
+			ActionFact.NEVER_STALE
+		));
+
+		ActionResolveResult result = new ActionResolver(ActionsetIndex.empty(), facts, CONTEXT)
+			.resolve(ActionGoal.inventoryItem("minecraft:iron_pickaxe", 1));
+
+		assertTrue(result.resolved(), () -> result.trace().toString());
+		assertEquals(List.of("craft_item"), result.route().steps().stream().map(ActionPlanStep::targetId).toList());
+		assertEquals("iron_ingot_x3_and_stick_x2_to_iron_pickaxe", result.route().steps().getFirst().args().get("recipeId"));
 	}
 
 	@Test

@@ -370,12 +370,7 @@ public final class ActionResolver {
 				if (requiredCount <= 0) {
 					continue;
 				}
-				Optional<ActionRoute> subRoute = resolveGoal(
-					ActionGoal.inventoryItem(input.getKey(), requiredCount),
-					depth + 1,
-					resolving,
-					trace
-				);
+				Optional<ActionRoute> subRoute = resolveRecipeInputGoal(input.getKey(), requiredCount, depth, resolving, trace);
 				if (subRoute.isEmpty()) {
 					inputsResolved = false;
 					break;
@@ -388,6 +383,7 @@ public final class ActionResolver {
 			}
 			if ("WORKBENCH_3X3".equals(gridKind)
 				&& !"minecraft:crafting_table".equals(outputItemId)
+				&& existingGoalCount(ActionGoal.inventoryItem("minecraft:crafting_table", 1)) < 1
 				&& !stepsProvideCraftingTable(steps)) {
 				Optional<ActionRoute> stationRoute = resolveGoal(
 					ActionGoal.inventoryItem("minecraft:crafting_table", 1),
@@ -420,6 +416,45 @@ public final class ActionResolver {
 		}
 		trace.add(event("route_selected", "recipe_provider", bestRecipeId, "", Map.of("goal", goal.normalizedKey())));
 		return Optional.of(bestRoute);
+	}
+
+	private Optional<ActionRoute> resolveRecipeInputGoal(
+		String itemId,
+		int requiredCount,
+		int depth,
+		LinkedHashSet<String> resolving,
+		List<ActionTraceEvent> trace
+	) {
+		if (!ActionGraphDomainKnowledge.logItemIds().contains(itemId)) {
+			return resolveGoal(
+				ActionGoal.inventoryItem(itemId, requiredCount),
+				depth + 1,
+				resolving,
+				trace
+			);
+		}
+		int exactCount = existingGoalCount(ActionGoal.inventoryItem(itemId, requiredCount));
+		if (exactCount >= requiredCount) {
+			return Optional.of(ActionRoute.empty());
+		}
+		int totalWoodLogs = existingGoalCount(ActionGoal.resourceCollection("WOOD_LOGS", 1));
+		if (exactCount <= 0 && totalWoodLogs > 0) {
+			trace.add(event(
+				"route_candidate_blocked",
+				"resource_provider",
+				itemId,
+				"",
+				Map.of("goal", ActionGoal.inventoryItem(itemId, requiredCount).normalizedKey(), "reason", "missing_observed_log_variant")
+			));
+			return Optional.empty();
+		}
+		int missingExactLogs = requiredCount - exactCount;
+		return resolveGoal(
+			ActionGoal.resourceCollection("WOOD_LOGS", totalWoodLogs + missingExactLogs),
+			depth + 1,
+			resolving,
+			trace
+		);
 	}
 
 	private Optional<ActionRoute> resolveMiningProviderGoal(
