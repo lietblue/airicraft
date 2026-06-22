@@ -423,7 +423,9 @@ public final class ActionGraphExecutionRuntime {
 			return;
 		}
 		if (canReplan(classified)) {
-			blockCurrentAlternative();
+			if (shouldBlockAlternativeForFailure(classified)) {
+				blockCurrentAlternative();
+			}
 			activeTaskId = "";
 			stepAttempt = 0;
 			replanCount++;
@@ -520,6 +522,10 @@ public final class ActionGraphExecutionRuntime {
 			return false;
 		}
 		return "missing_fact".equals(classifiedFailure) || "environment_changed".equals(classifiedFailure);
+	}
+
+	private static boolean shouldBlockAlternativeForFailure(String classifiedFailure) {
+		return "environment_changed".equals(classifiedFailure);
 	}
 
 	private void blockCurrentAlternative() {

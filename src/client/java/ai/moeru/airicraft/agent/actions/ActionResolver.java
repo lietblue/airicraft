@@ -357,6 +357,20 @@ public final class ActionResolver {
 			ArrayList<ActionPlanStep> steps = new ArrayList<>();
 			int routeCost = 15;
 			boolean inputsResolved = true;
+			String gridKind = scalar(recipe.payload().get("gridKind"), "");
+			if ("WORKBENCH_3X3".equals(gridKind) && !"minecraft:crafting_table".equals(outputItemId)) {
+				Optional<ActionRoute> stationRoute = resolveGoal(
+					ActionGoal.inventoryItem("minecraft:crafting_table", 1),
+					depth + 1,
+					resolving,
+					trace
+				);
+				if (stationRoute.isEmpty()) {
+					continue;
+				}
+				steps.addAll(stationRoute.get().steps());
+				routeCost += stationRoute.get().cost();
+			}
 			for (Map.Entry<String, Integer> input : inputCounts.entrySet()) {
 				int requiredCount = input.getValue() * craftTimes;
 				if (requiredCount <= 0) {

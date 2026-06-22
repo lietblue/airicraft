@@ -574,6 +574,64 @@ class ActionResolverTest {
 	}
 
 	@Test
+	void workbenchRecipeProviderEnsuresPortableCraftingTable() {
+		ActionFactStore facts = new ActionFactStore();
+		facts.upsert(new ActionFact(
+			ActionFactIdentity.inventoryItem("world-a", "bot", "minecraft:birch_planks"),
+			Map.of("count", 4),
+			ActionFactProvenance.OBSERVED,
+			90,
+			ActionFact.NEVER_STALE
+		));
+		facts.upsert(new ActionFact(
+			ActionFactIdentity.inventoryItem("world-a", "bot", "minecraft:iron_ingot"),
+			Map.of("count", 3),
+			ActionFactProvenance.OBSERVED,
+			90,
+			ActionFact.NEVER_STALE
+		));
+		facts.upsert(new ActionFact(
+			ActionFactIdentity.inventoryItem("world-a", "bot", "minecraft:stick"),
+			Map.of("count", 2),
+			ActionFactProvenance.OBSERVED,
+			90,
+			ActionFact.NEVER_STALE
+		));
+		facts.upsert(new ActionFact(
+			ActionFactIdentity.craftRecipe("world-a", "bot", "birch_planks_x4_to_crafting_table"),
+			Map.of(
+				"outputItemId", "minecraft:crafting_table",
+				"outputCount", 1,
+				"inputCounts", Map.of("minecraft:birch_planks", 4),
+				"gridKind", "PLAYER_2X2"
+			),
+			ActionFactProvenance.INFERRED,
+			90,
+			ActionFact.NEVER_STALE
+		));
+		facts.upsert(new ActionFact(
+			ActionFactIdentity.craftRecipe("world-a", "bot", "iron_ingot_x3_and_stick_x2_to_iron_pickaxe"),
+			Map.of(
+				"outputItemId", "minecraft:iron_pickaxe",
+				"outputCount", 1,
+				"inputCounts", Map.of("minecraft:iron_ingot", 3, "minecraft:stick", 2),
+				"gridKind", "WORKBENCH_3X3"
+			),
+			ActionFactProvenance.INFERRED,
+			90,
+			ActionFact.NEVER_STALE
+		));
+
+		ActionResolveResult result = new ActionResolver(ActionsetIndex.empty(), facts, CONTEXT)
+			.resolve(ActionGoal.inventoryItem("minecraft:iron_pickaxe", 1));
+
+		assertTrue(result.resolved(), () -> result.trace().toString());
+		assertEquals(List.of("craft_item", "craft_item"), result.route().steps().stream().map(ActionPlanStep::targetId).toList());
+		assertEquals("minecraft:crafting_table", result.route().steps().getFirst().args().get("itemId"));
+		assertEquals("minecraft:iron_pickaxe", result.route().steps().get(1).args().get("itemId"));
+	}
+
+	@Test
 	void recipeProviderCanUseMiningAndSmeltingProvidersForCraftInputs() {
 		ActionFactStore facts = new ActionFactStore();
 		facts.upsert(new ActionFact(

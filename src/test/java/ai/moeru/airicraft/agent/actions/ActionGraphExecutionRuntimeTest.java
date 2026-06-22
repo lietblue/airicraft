@@ -478,6 +478,32 @@ class ActionGraphExecutionRuntimeTest {
 	}
 
 	@Test
+	void missingCraftRecipeFailureReplansWithoutBlockingRecipeAlternative() {
+		RecordingDispatcher dispatcher = new RecordingDispatcher();
+		ActionGraphExecutionRuntime runtime = new ActionGraphExecutionRuntime(ActionsetIndex.empty(), dispatcher);
+		runtime.submit(ActionGoal.inventoryItem("minecraft:bread", 1), Map.of("minecraft:wheat", 3), CONTEXT, 100);
+		List<CraftingOpportunity> crafts = List.of(new CraftingOpportunity(
+			"wheat_x3_to_bread",
+			"minecraft:bread",
+			1,
+			List.of("minecraft:wheat", "minecraft:wheat", "minecraft:wheat")
+		));
+
+		ActionGraphExecutionSnapshot dispatched = runtime.tick(input(Map.of("minecraft:wheat", 3), null, 101, crafts));
+		ActionGraphExecutionSnapshot retried = runtime.tick(input(
+			Map.of("minecraft:wheat", 3),
+			failed(dispatched.activeTaskId(), "recipe_not_found"),
+			102,
+			crafts
+		));
+
+		assertEquals(ActionGraphExecutionState.WAITING_PRIMITIVE, retried.state());
+		assertEquals(2, dispatcher.dispatchedSteps.size());
+		assertEquals("wheat_x3_to_bread", dispatcher.dispatchedSteps.get(1).args().get("recipeId"));
+		assertTrue(retried.failureCode().isBlank(), () -> retried.toString());
+	}
+
+	@Test
 	void busyTerminalFailureWaitsBeforeRetryingPrimitive() {
 		assertTerminalFailureWaitsBeforeRetry("crafting_busy");
 	}
