@@ -92,7 +92,7 @@ public final class ActionGraphPrimitiveMapper {
 		if (quantity < 1) {
 			return ActionGraphPrimitiveDispatch.failed("invalid_step_args", "craft_item quantity must be positive", step);
 		}
-		CraftingOpportunity opportunity = safeCraftingOpportunities(craftingOpportunities).stream()
+		CraftingOpportunity opportunity = dispatchableCraftingOpportunities(craftingOpportunities).stream()
 			.filter(candidate -> itemId.equals(candidate.outputItemId()))
 			.filter(candidate -> recipeId.isBlank() || recipeId.equals(candidate.recipeId()))
 			.min(Comparator.comparing(CraftingOpportunity::recipeId))
@@ -307,6 +307,19 @@ public final class ActionGraphPrimitiveMapper {
 
 	private static List<CraftingOpportunity> safeCraftingOpportunities(List<CraftingOpportunity> opportunities) {
 		return opportunities == null ? List.of() : opportunities;
+	}
+
+	private static List<CraftingOpportunity> dispatchableCraftingOpportunities(List<CraftingOpportunity> opportunities) {
+		LinkedHashMap<String, CraftingOpportunity> merged = new LinkedHashMap<>();
+		for (CraftingOpportunity opportunity : safeCraftingOpportunities(opportunities)) {
+			if (opportunity != null) {
+				merged.putIfAbsent(opportunity.recipeId(), opportunity);
+			}
+		}
+		for (CraftingOpportunity opportunity : ActionGraphDomainKnowledge.survivalCrafts()) {
+			merged.putIfAbsent(opportunity.recipeId(), opportunity);
+		}
+		return List.copyOf(merged.values());
 	}
 
 	private static List<SmeltingOption> safeSmeltingOptions(List<SmeltingOption> options) {

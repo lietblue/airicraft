@@ -73,6 +73,23 @@ class ActionGraphPrimitiveMapperTest {
 	}
 
 	@Test
+	void mapsCraftItemUsingSurvivalRecipeWhenCurrentCraftSnapshotIsNarrow() {
+		ActionPlanStep step = primitive("craft_item", Map.of(
+			"itemId", "minecraft:iron_pickaxe",
+			"recipeId", "iron_ingot_x3_and_stick_x2_to_iron_pickaxe",
+			"quantity", 1
+		));
+
+		ActionGraphPrimitiveDispatch dispatch = ActionGraphPrimitiveMapper.map(step, List.of());
+
+		assertTrue(dispatch.dispatchable());
+		assertEquals(ActiveJobType.CRAFT_RECIPE, dispatch.proposal().type());
+		assertEquals("iron_ingot_x3_and_stick_x2_to_iron_pickaxe", dispatch.proposal().craftRecipe().recipeId());
+		assertEquals(1, dispatch.proposal().craftRecipe().times());
+		assertEquals("minecraft:iron_pickaxe", dispatch.payload().get("outputItemId"));
+	}
+
+	@Test
 	void mapsCollectResourceToResourceJob() {
 		ActionGraphPrimitiveDispatch dispatch = ActionGraphPrimitiveMapper.map(primitive("collect_resource", Map.of(
 			"resourceKind", "WOOD_LOGS",
