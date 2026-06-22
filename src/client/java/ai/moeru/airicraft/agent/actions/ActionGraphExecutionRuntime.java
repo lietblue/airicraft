@@ -820,12 +820,12 @@ public final class ActionGraphExecutionRuntime {
 
 	private static boolean isBusyFailure(String rawFailureCode, String failureMessage) {
 		String text = ((rawFailureCode == null ? "" : rawFailureCode) + " " + (failureMessage == null ? "" : failureMessage)).toLowerCase();
-		return text.contains("busy");
+		return text.contains("busy") || text.contains("occupied");
 	}
 
 	private static String classifyFailure(String raw) {
 		String text = raw == null ? "" : raw.toLowerCase();
-		if (text.contains("timeout") || text.contains("busy") || text.contains("temporary") || text.contains("path")) {
+		if (text.contains("timeout") || text.contains("busy") || text.contains("occupied") || text.contains("temporary") || text.contains("path")) {
 			return "transient";
 		}
 		if (text.contains("missing") || text.contains("not_found") || text.contains("not found") || text.contains("target")) {

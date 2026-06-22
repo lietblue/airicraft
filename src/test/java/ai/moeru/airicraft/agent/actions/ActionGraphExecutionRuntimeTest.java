@@ -479,6 +479,15 @@ class ActionGraphExecutionRuntimeTest {
 
 	@Test
 	void busyTerminalFailureWaitsBeforeRetryingPrimitive() {
+		assertTerminalFailureWaitsBeforeRetry("crafting_busy");
+	}
+
+	@Test
+	void occupiedGridTerminalFailureWaitsBeforeRetryingPrimitive() {
+		assertTerminalFailureWaitsBeforeRetry("crafting_grid_occupied");
+	}
+
+	private static void assertTerminalFailureWaitsBeforeRetry(String failureMessage) {
 		RecordingDispatcher dispatcher = new RecordingDispatcher();
 		ActionGraphExecutionRuntime runtime = new ActionGraphExecutionRuntime(defaultIndex(), dispatcher);
 		runtime.submit(ActionGoal.inventoryItem("minecraft:bread", 1), Map.of("minecraft:wheat", 3), CONTEXT, 100);
@@ -486,7 +495,7 @@ class ActionGraphExecutionRuntimeTest {
 		ActionGraphExecutionSnapshot dispatched = runtime.tick(input(Map.of("minecraft:wheat", 3), null, 101));
 		assertEquals(ActionGraphExecutionState.WAITING_PRIMITIVE, dispatched.state(), () -> dispatched.toString());
 		assertFalse(dispatched.activeTaskId().isBlank(), () -> dispatched.toString());
-		ActionGraphExecutionSnapshot waiting = runtime.tick(input(Map.of("minecraft:wheat", 3), failed(dispatched.activeTaskId(), "crafting_busy"), 102));
+		ActionGraphExecutionSnapshot waiting = runtime.tick(input(Map.of("minecraft:wheat", 3), failed(dispatched.activeTaskId(), failureMessage), 102));
 		ActionGraphExecutionSnapshot stillWaiting = runtime.tick(input(Map.of("minecraft:wheat", 3), null, 103));
 
 		assertEquals(ActionGraphExecutionState.OBSERVING, waiting.state());
