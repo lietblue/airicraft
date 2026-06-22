@@ -654,6 +654,16 @@ public final class EmbodiedAgentRuntime {
 
 	public ActionGraphExecutionSnapshot startActionGoal(ActionGoal goal, String source) {
 		Objects.requireNonNull(goal, "goal");
+		ActionGraphExecutionSnapshot activeSnapshot = actionGraphRuntime.snapshot();
+		if (actionGraphRuntime.active()) {
+			eventBuffer.append(tickCount, "action_graph.goal_reused", Map.of(
+				"executionId", activeSnapshot.executionId(),
+				"goal", activeSnapshot.goal() == null ? "" : activeSnapshot.goal().normalizedKey(),
+				"requestedGoal", goal.normalizedKey(),
+				"source", source == null || source.isBlank() ? "unknown" : source
+			));
+			return activeSnapshot;
+		}
 		WorldEvidence evidence = currentWorldEvidence(MinecraftClient.getInstance());
 		ActionGraphExecutionSnapshot snapshot = actionGraphRuntime.submit(
 			goal,

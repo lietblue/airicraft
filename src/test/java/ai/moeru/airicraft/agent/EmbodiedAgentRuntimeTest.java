@@ -285,9 +285,9 @@ class EmbodiedAgentRuntimeTest {
 
 	@Test
 	void startActionGoalPlannerToolTreatsOutputKindsAsInventoryGraphGoals() {
-		EmbodiedAgentRuntime runtime = EmbodiedAgentRuntime.createForTests(new FakeWorldTaskExecutor());
+		EmbodiedAgentRuntime craftingRuntime = EmbodiedAgentRuntime.createForTests(new FakeWorldTaskExecutor());
 
-		String craftingResult = runtime.executePlannerToolCallForTests(new PlannerToolCall(
+		String craftingResult = craftingRuntime.executePlannerToolCallForTests(new PlannerToolCall(
 			"call_craft_goal",
 			PlannerToolCatalog.START_ACTION_GOAL,
 			JsonParser.parseString("""
@@ -300,7 +300,8 @@ class EmbodiedAgentRuntimeTest {
 		assertTrue(craftingResult.contains("Tool result for start_action_goal: state=RESOLVING"));
 		assertTrue(craftingResult.contains("minecraft:crafting_table"));
 
-		String smeltingResult = runtime.executePlannerToolCallForTests(new PlannerToolCall(
+		EmbodiedAgentRuntime smeltingRuntime = EmbodiedAgentRuntime.createForTests(new FakeWorldTaskExecutor());
+		String smeltingResult = smeltingRuntime.executePlannerToolCallForTests(new PlannerToolCall(
 			"call_smelt_goal",
 			PlannerToolCatalog.START_ACTION_GOAL,
 			JsonParser.parseString("""
@@ -312,7 +313,32 @@ class EmbodiedAgentRuntimeTest {
 
 		assertTrue(smeltingResult.contains("Tool result for start_action_goal: state=RESOLVING"));
 		assertTrue(smeltingResult.contains("minecraft:iron_ingot"));
-		assertEquals(ActionGraphExecutionState.RESOLVING, runtime.actionGraphExecutionSnapshot().state());
+		assertEquals(ActionGraphExecutionState.RESOLVING, smeltingRuntime.actionGraphExecutionSnapshot().state());
+	}
+
+	@Test
+	void startActionGoalPlannerToolReusesActiveGraphGoal() {
+		EmbodiedAgentRuntime runtime = EmbodiedAgentRuntime.createForTests(new FakeWorldTaskExecutor());
+		ActionGraphExecutionSnapshot first = runtime.startActionGoal(ActionGoal.inventoryItem("minecraft:bread", 1), "test");
+
+		String result = runtime.executePlannerToolCallForTests(new PlannerToolCall(
+			"call_goal_again",
+			PlannerToolCatalog.START_ACTION_GOAL,
+			JsonParser.parseString("""
+				{"kind":"inventory_item","itemId":"minecraft:iron_pickaxe","quantity":1}
+				""").getAsJsonObject(),
+			null,
+			null
+		));
+
+		assertTrue(result.contains("Tool result for start_action_goal: state=RESOLVING"));
+		assertTrue(result.contains("executionId=" + first.executionId()));
+		assertTrue(result.contains("minecraft:bread"));
+		assertEquals(first.executionId(), runtime.actionGraphExecutionSnapshot().executionId());
+		assertTrue(runtime.recentEvents(null).events().stream().anyMatch(event ->
+			"action_graph.goal_reused".equals(event.type())
+				&& first.executionId().equals(event.payload().get("executionId"))
+		));
 	}
 
 	@Test
