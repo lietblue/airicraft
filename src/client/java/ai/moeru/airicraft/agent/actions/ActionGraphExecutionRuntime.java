@@ -18,7 +18,7 @@ import java.util.function.Supplier;
 
 public final class ActionGraphExecutionRuntime {
 	private static final int MAX_STEP_RETRIES = 2;
-	private static final int MAX_REPLANS = 2;
+	private static final int MAX_REPLANS = 8;
 	private static final int MAX_TICK_TRANSITIONS = 32;
 
 	private final Supplier<ActionsetLoadResult> actionsetLoader;
