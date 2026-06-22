@@ -640,13 +640,14 @@ public final class ActionResolver {
 				continue;
 			}
 			ActionGoal fuelGoal = ActionGoal.inventoryItem(candidate.itemId(), requiredQuantity);
+			int priority = fuelPriority(candidate.itemId());
 			if (existingGoalCount(fuelGoal) >= requiredQuantity) {
-				bestPlan = chooseCheaperFuelPlan(bestPlan, new FuelPlan(candidate.itemId(), requiredQuantity, ActionRoute.empty()));
+				bestPlan = chooseCheaperFuelPlan(bestPlan, new FuelPlan(candidate.itemId(), requiredQuantity, ActionRoute.empty(), priority));
 				continue;
 			}
 			Optional<ActionRoute> fuelRoute = resolveGoal(fuelGoal, depth + 1, resolving, trace);
 			if (fuelRoute.isPresent()) {
-				bestPlan = chooseCheaperFuelPlan(bestPlan, new FuelPlan(candidate.itemId(), requiredQuantity, fuelRoute.get()));
+				bestPlan = chooseCheaperFuelPlan(bestPlan, new FuelPlan(candidate.itemId(), requiredQuantity, fuelRoute.get(), priority));
 			}
 		}
 		if (bestPlan == null) {
@@ -662,9 +663,41 @@ public final class ActionResolver {
 		return Optional.of(bestPlan);
 	}
 
+	private int fuelPriority(String itemId) {
+		if ("minecraft:coal".equals(itemId) && hasExistingMiningToolFor("minecraft:coal")) {
+			return 0;
+		}
+		if ("minecraft:coal".equals(itemId) || "minecraft:charcoal".equals(itemId)) {
+			return 30;
+		}
+		if (ActionGraphDomainKnowledge.plankItemIds().contains(itemId) || "minecraft:stick".equals(itemId)) {
+			return 10;
+		}
+		if (ActionGraphDomainKnowledge.logItemIds().contains(itemId)) {
+			return 20;
+		}
+		return 5;
+	}
+
+	private boolean hasExistingMiningToolFor(String itemId) {
+		for (String toolItemId : acceptableMiningTools(itemId)) {
+			if (existingGoalCount(ActionGoal.inventoryItem(toolItemId, 1)) >= 1) {
+				return true;
+			}
+		}
+		return false;
+	}
+
 	private static FuelPlan chooseCheaperFuelPlan(FuelPlan current, FuelPlan candidate) {
 		if (current == null) {
 			return candidate;
+		}
+		int priorityCompare = Integer.compare(candidate.priority(), current.priority());
+		if (priorityCompare < 0) {
+			return candidate;
+		}
+		if (priorityCompare > 0) {
+			return current;
 		}
 		int costCompare = Integer.compare(candidate.route().cost(), current.route().cost());
 		if (costCompare < 0) {
@@ -1114,7 +1147,7 @@ public final class ActionResolver {
 	private record FuelCandidate(String itemId, int fuelTicks) {
 	}
 
-	private record FuelPlan(String itemId, int quantity, ActionRoute route) {
+	private record FuelPlan(String itemId, int quantity, ActionRoute route, int priority) {
 	}
 
 	private static final class IntegerExpression {

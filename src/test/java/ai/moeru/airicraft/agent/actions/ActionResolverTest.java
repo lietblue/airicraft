@@ -319,6 +319,57 @@ class ActionResolverTest {
 	}
 
 	@Test
+	void smeltingProviderPrefersMineableCoalOverWoodFuelWhenPickaxeAvailable() {
+		ActionFactStore facts = new ActionFactStore();
+		facts.upsert(new ActionFact(
+			ActionFactIdentity.inventoryItem("world-a", "bot", "minecraft:raw_iron"),
+			Map.of("count", 3),
+			ActionFactProvenance.OBSERVED,
+			90,
+			ActionFact.NEVER_STALE
+		));
+		facts.upsert(new ActionFact(
+			ActionFactIdentity.inventoryItem("world-a", "bot", "minecraft:birch_planks"),
+			Map.of("count", 3),
+			ActionFactProvenance.OBSERVED,
+			90,
+			ActionFact.NEVER_STALE
+		));
+		facts.upsert(new ActionFact(
+			ActionFactIdentity.inventoryItem("world-a", "bot", "minecraft:stone_pickaxe"),
+			Map.of("count", 1),
+			ActionFactProvenance.OBSERVED,
+			90,
+			ActionFact.NEVER_STALE
+		));
+		facts.upsert(new ActionFact(
+			ActionFactIdentity.smeltRecipe("world-a", "bot", "smelt:minecraft_raw_iron_to_minecraft_iron_ingot:nearby-1"),
+			Map.of(
+				"inputItemId", "minecraft:raw_iron",
+				"outputItemId", "minecraft:iron_ingot",
+				"outputCount", 1,
+				"maxInputQuantity", 3,
+				"cookTimeTicks", 200
+			),
+			ActionFactProvenance.OBSERVED,
+			90,
+			ActionFact.NEVER_STALE
+		));
+
+		ActionResolveResult result = new ActionResolver(ActionsetIndex.empty(), facts, CONTEXT)
+			.resolve(ActionGoal.inventoryItem("minecraft:iron_ingot", 3));
+
+		assertTrue(result.resolved(), () -> result.trace().toString());
+		assertEquals(List.of("mine_block", "smelt_item", "collect_smelted_item"), result.route().steps().stream().map(ActionPlanStep::targetId).toList());
+		ActionPlanStep fuel = result.route().steps().getFirst();
+		assertEquals("minecraft:coal", fuel.args().get("itemId"));
+		ActionPlanStep smelt = result.route().steps().get(1);
+		assertEquals("minecraft:coal", smelt.args().get("fuelItemId"));
+		assertEquals(1, smelt.args().get("fuelQuantity"));
+		assertTrace(result.trace(), "fuel_subgoal_planned", "smelting_provider", "minecraft:coal");
+	}
+
+	@Test
 	void directSmeltingBeatsReversibleCraftingRecipes() {
 		ActionFactStore facts = new ActionFactStore();
 		facts.upsert(new ActionFact(
@@ -567,10 +618,10 @@ class ActionResolverTest {
 			.resolve(ActionGoal.inventoryItem("minecraft:iron_pickaxe", 1));
 
 		assertTrue(result.resolved(), () -> result.trace().toString());
-		assertEquals(List.of("mine_block", "collect_resource", "smelt_item", "collect_smelted_item", "craft_item"), result.route().steps().stream().map(ActionPlanStep::targetId).toList());
+		assertEquals(List.of("mine_block", "mine_block", "smelt_item", "collect_smelted_item", "craft_item"), result.route().steps().stream().map(ActionPlanStep::targetId).toList());
 		assertEquals("minecraft:raw_iron", result.route().steps().getFirst().args().get("itemId"));
-		assertEquals("WOOD_LOGS", result.route().steps().get(1).args().get("resourceKind"));
-		assertEquals("minecraft:oak_log", result.route().steps().get(2).args().get("fuelItemId"));
+		assertEquals("minecraft:coal", result.route().steps().get(1).args().get("itemId"));
+		assertEquals("minecraft:coal", result.route().steps().get(2).args().get("fuelItemId"));
 		assertEquals("iron_ingot_x3_and_stick_x2_to_iron_pickaxe", result.route().steps().get(4).args().get("recipeId"));
 	}
 

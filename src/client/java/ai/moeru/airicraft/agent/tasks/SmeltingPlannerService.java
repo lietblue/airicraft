@@ -1,5 +1,6 @@
 package ai.moeru.airicraft.agent.tasks;
 
+import net.minecraft.block.ShapeContext;
 import net.minecraft.block.BlockState;
 import net.minecraft.block.Blocks;
 import net.minecraft.block.entity.BlockEntity;
@@ -418,13 +419,32 @@ public final class SmeltingPlannerService {
 			return Optional.empty();
 		}
 		BlockPos origin = player.getBlockPos();
-		for (Direction direction : Direction.Type.HORIZONTAL) {
-			BlockPos candidate = origin.offset(direction);
+		for (BlockPos candidate : furnacePlacementCandidatePositions(origin)) {
 			if (canPlaceAt(client, candidate)) {
 				return Optional.of(candidate.toImmutable());
 			}
 		}
 		return Optional.empty();
+	}
+
+	static List<BlockPos> furnacePlacementCandidatePositions(BlockPos origin) {
+		ArrayList<BlockPos> candidates = new ArrayList<>();
+		for (int yOffset : List.of(0, -1, 1)) {
+			for (Direction direction : Direction.Type.HORIZONTAL) {
+				candidates.add(origin.offset(direction).add(0, yOffset, 0));
+			}
+		}
+		for (int yOffset : List.of(0, -1, 1)) {
+			for (int dx = -2; dx <= 2; dx++) {
+				for (int dz = -2; dz <= 2; dz++) {
+					BlockPos candidate = origin.add(dx, yOffset, dz);
+					if (!candidate.equals(origin)) {
+						candidates.add(candidate);
+					}
+				}
+			}
+		}
+		return List.copyOf(candidates);
 	}
 
 	private static boolean hasFurnaceItem(ScreenHandler handler) {
@@ -447,7 +467,8 @@ public final class SmeltingPlannerService {
 		BlockState target = client.world.getBlockState(pos);
 		BlockState support = client.world.getBlockState(pos.down());
 		return (target.isAir() || target.isReplaceable())
-			&& support.isSideSolidFullSquare(client.world, pos.down(), Direction.UP);
+			&& support.isSideSolidFullSquare(client.world, pos.down(), Direction.UP)
+			&& client.world.canPlace(Blocks.FURNACE.getDefaultState(), pos, ShapeContext.ofPlacement(client.player));
 	}
 
 	private static Map<Item, Integer> inventoryCounts(ClientPlayerEntity player) {

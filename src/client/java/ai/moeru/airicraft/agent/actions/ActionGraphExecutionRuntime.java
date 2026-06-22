@@ -50,6 +50,7 @@ public final class ActionGraphExecutionRuntime {
 	private int observedInventoryFactCount;
 	private int assumedInventoryFactCount;
 	private long observeNotBeforeTick = -1L;
+	private boolean refreshRouteAfterObservation;
 
 	public ActionGraphExecutionRuntime(Path actionsetRoot, ActionGraphPrimitiveDispatcher primitiveDispatcher) {
 		this(() -> ActionsetLibraryLoader.defaults().load(actionsetRoot == null ? ActionsetLibraryPaths.defaultRoot() : actionsetRoot), primitiveDispatcher, false);
@@ -104,6 +105,7 @@ public final class ActionGraphExecutionRuntime {
 		this.observedInventoryFactCount = 0;
 		this.assumedInventoryFactCount = 0;
 		this.observeNotBeforeTick = -1L;
+		this.refreshRouteAfterObservation = false;
 		addInventoryFacts(assumedInventory, ActionFactProvenance.EXECUTOR_REPORTED, context, false);
 		trace("execution_started", "", "", "", Map.of("goal", goal.normalizedKey(), "executionId", executionId));
 		return snapshot();
@@ -208,6 +210,7 @@ public final class ActionGraphExecutionRuntime {
 		observedInventoryFactCount = 0;
 		assumedInventoryFactCount = 0;
 		observeNotBeforeTick = -1L;
+		refreshRouteAfterObservation = false;
 	}
 
 	public synchronized ActionGraphExecutionSnapshot snapshot() {
@@ -261,6 +264,7 @@ public final class ActionGraphExecutionRuntime {
 		stepAttempt = 0;
 		activeTaskId = "";
 		watches.clear();
+		refreshRouteAfterObservation = false;
 		state = ActionGraphExecutionState.READY;
 		trace("route_started", "", "", "", Map.of(
 			"executionId", executionId,
@@ -281,6 +285,12 @@ public final class ActionGraphExecutionRuntime {
 		}
 		if (state == ActionGraphExecutionState.OBSERVING) {
 			observeNotBeforeTick = -1L;
+			if (refreshRouteAfterObservation) {
+				refreshRouteAfterObservation = false;
+				state = ActionGraphExecutionState.REPLANNING;
+				trace("route_replanned", actionId(currentStep), alternativeId(currentStep), stepId(currentStep), Map.of("reason", "primitive_success_observed"));
+				return;
+			}
 		}
 		if (cursor >= route.steps().size()) {
 			if (replanCount < MAX_REPLANS) {
@@ -351,11 +361,22 @@ public final class ActionGraphExecutionRuntime {
 			cursor++;
 			activeTaskId = "";
 			stepAttempt = 0;
+			refreshRouteAfterObservation = refreshAfterSuccessfulStep(currentStep);
 			observeNotBeforeTick = lastContext == null ? -1L : lastContext.currentTick() + 20L;
 			state = ActionGraphExecutionState.OBSERVING;
 			return;
 		}
 		handleStepFailure(classifyFailure(nonEmpty(event.message(), event.terminalState().name())), event.message(), true);
+	}
+
+	private static boolean refreshAfterSuccessfulStep(ActionPlanStep step) {
+		if (step == null) {
+			return false;
+		}
+		return switch (step.targetId()) {
+			case "craft_item", "collect_resource", "mine_block", "collect_smelted_item" -> true;
+			default -> false;
+		};
 	}
 
 	private void handleStepFailure(String rawFailureCode, String failureMessage, boolean fromTerminalEvent) {

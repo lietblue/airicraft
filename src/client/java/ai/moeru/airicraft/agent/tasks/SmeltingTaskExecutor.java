@@ -535,18 +535,9 @@ public final class SmeltingTaskExecutor implements WorldTaskExecutor {
 
 	private static Optional<BlockPos> chooseFurnacePlacement(MinecraftClient client, ClientPlayerEntity player) {
 		BlockPos origin = player.getBlockPos();
-		for (Direction direction : Direction.Type.HORIZONTAL) {
-			BlockPos candidate = origin.offset(direction);
+		for (BlockPos candidate : SmeltingPlannerService.furnacePlacementCandidatePositions(origin)) {
 			if (canPlaceAt(client, candidate)) {
 				return Optional.of(candidate.toImmutable());
-			}
-		}
-		for (int dx = -2; dx <= 2; dx++) {
-			for (int dz = -2; dz <= 2; dz++) {
-				BlockPos candidate = origin.add(dx, 0, dz);
-				if (!candidate.equals(origin) && canPlaceAt(client, candidate)) {
-					return Optional.of(candidate.toImmutable());
-				}
 			}
 		}
 		return Optional.empty();

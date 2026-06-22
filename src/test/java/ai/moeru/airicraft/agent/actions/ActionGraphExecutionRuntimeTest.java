@@ -217,7 +217,54 @@ class ActionGraphExecutionRuntimeTest {
 			"route_selected".equals(event.eventType())
 				&& "smelting_provider".equals(event.actionId())
 				&& event.alternativeId().startsWith("inferred:")
-		), () -> dispatched.trace().toString());
+			), () -> dispatched.trace().toString());
+	}
+
+	@Test
+	void smeltStartCompletionContinuesToCollectStepWithoutRouteRefresh() {
+		RecordingDispatcher dispatcher = new RecordingDispatcher();
+		ActionGraphExecutionRuntime runtime = new ActionGraphExecutionRuntime(ActionsetIndex.empty(), dispatcher);
+		runtime.submit(
+			ActionGoal.inventoryItem("minecraft:iron_ingot", 3),
+			Map.of("minecraft:raw_iron", 3, "minecraft:furnace", 1, "minecraft:coal", 1, "minecraft:stone_pickaxe", 1),
+			CONTEXT,
+			100
+		);
+
+		ActionGraphExecutionSnapshot smeltDispatched = runtime.tick(input(
+			Map.of("minecraft:raw_iron", 3, "minecraft:furnace", 1, "minecraft:coal", 1, "minecraft:stone_pickaxe", 1),
+			null,
+			101,
+			List.of(),
+			List.of(ironIngotSmeltRecipe(101))
+		));
+
+		assertEquals(ActionGraphExecutionState.WAITING_PRIMITIVE, smeltDispatched.state());
+		assertEquals(1, dispatcher.dispatchedSteps.size());
+		assertEquals("smelt_item", dispatcher.dispatchedSteps.getFirst().targetId());
+
+		ActionGraphExecutionSnapshot observing = runtime.tick(input(
+			Map.of("minecraft:raw_iron", 3, "minecraft:furnace", 1, "minecraft:coal", 1, "minecraft:stone_pickaxe", 1),
+			new TaskTerminalEvent("task-1", null, TaskExecutionState.COMPLETED, "started", null),
+			102,
+			List.of(),
+			List.of(ironIngotSmeltRecipe(102))
+		));
+
+		assertEquals(ActionGraphExecutionState.OBSERVING, observing.state());
+
+		ActionGraphExecutionSnapshot collectDispatched = runtime.tick(input(
+			Map.of("minecraft:raw_iron", 3, "minecraft:furnace", 1, "minecraft:coal", 1, "minecraft:stone_pickaxe", 1),
+			null,
+			122,
+			List.of(),
+			List.of(ironIngotSmeltRecipe(122))
+		));
+
+		assertEquals(ActionGraphExecutionState.WAITING_PRIMITIVE, collectDispatched.state());
+		assertEquals(2, dispatcher.dispatchedSteps.size());
+		assertEquals("collect_smelted_item", dispatcher.dispatchedSteps.get(1).targetId());
+		assertEquals(1, countTrace(collectDispatched.trace(), "route_started"));
 	}
 
 	@Test
@@ -539,6 +586,22 @@ class ActionGraphExecutionRuntimeTest {
 		return new ActionFact(
 			ActionFactIdentity.worldCropGroup(CONTEXT.worldId(), CONTEXT.dimension(), "farm-1", "minecraft:wheat"),
 			Map.of("matureCount", matureCount, "totalCount", totalCount),
+			ActionFactProvenance.OBSERVED,
+			tick,
+			ActionFact.NEVER_STALE
+		);
+	}
+
+	private static ActionFact ironIngotSmeltRecipe(long tick) {
+		return new ActionFact(
+			ActionFactIdentity.smeltRecipe(CONTEXT.worldId(), CONTEXT.actorId(), "smelt:minecraft_raw_iron_to_minecraft_iron_ingot:test"),
+			Map.of(
+				"inputItemId", "minecraft:raw_iron",
+				"outputItemId", "minecraft:iron_ingot",
+				"outputCount", 1,
+				"maxInputQuantity", 3,
+				"cookTimeTicks", 200
+			),
 			ActionFactProvenance.OBSERVED,
 			tick,
 			ActionFact.NEVER_STALE
