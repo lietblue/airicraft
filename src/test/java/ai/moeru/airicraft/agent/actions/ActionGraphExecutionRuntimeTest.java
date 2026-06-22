@@ -546,25 +546,26 @@ class ActionGraphExecutionRuntimeTest {
 			100
 		);
 
-		ActionGraphExecutionSnapshot tableDispatched = runtime.tick(input(
+		ActionGraphExecutionSnapshot pickaxeDispatched = runtime.tick(input(
 			Map.of("minecraft:birch_planks", 4, "minecraft:stick", 2),
 			null,
 			101
 		));
-		ActionPlanStep tableStep = dispatcher.dispatchedSteps.getFirst();
-		assertEquals("minecraft:crafting_table", tableStep.args().get("itemId"));
+		ActionPlanStep pickaxeStep = dispatcher.dispatchedSteps.getFirst();
+		assertEquals("minecraft:wooden_pickaxe", pickaxeStep.args().get("itemId"));
 
-		runtime.tick(input(
-			Map.of("minecraft:crafting_table", 1, "minecraft:stick", 2),
-			new TaskTerminalEvent(tableDispatched.activeTaskId(), null, TaskExecutionState.COMPLETED, "crafted", null),
+		ActionGraphExecutionSnapshot failed = runtime.tick(input(
+			Map.of("minecraft:stick", 2),
+			new TaskTerminalEvent(pickaxeDispatched.activeTaskId(), null, TaskExecutionState.FAILED, "recipe_not_found", null),
 			102
 		));
 		ActionGraphExecutionSnapshot replanned = runtime.tick(input(
-			Map.of("minecraft:crafting_table", 1, "minecraft:stick", 2),
+			Map.of("minecraft:stick", 2),
 			null,
 			122
 		));
 
+		assertEquals(ActionGraphExecutionState.WAITING_PRIMITIVE, failed.state(), () -> failed.toString());
 		assertEquals(ActionGraphExecutionState.WAITING_PRIMITIVE, replanned.state(), () -> replanned.toString());
 		assertEquals(2, dispatcher.dispatchedSteps.size());
 		assertEquals("collect_resource", dispatcher.dispatchedSteps.get(1).targetId());

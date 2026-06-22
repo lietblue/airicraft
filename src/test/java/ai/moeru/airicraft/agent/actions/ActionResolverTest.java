@@ -595,7 +595,7 @@ class ActionResolverTest {
 	}
 
 	@Test
-	void workbenchRecipeProviderEnsuresPortableCraftingTable() {
+	void workbenchRecipeProviderLeavesStationSetupToCraftPrimitive() {
 		ActionFactStore facts = new ActionFactStore();
 		facts.upsert(new ActionFact(
 			ActionFactIdentity.inventoryItem("world-a", "bot", "minecraft:birch_planks"),
@@ -647,9 +647,8 @@ class ActionResolverTest {
 			.resolve(ActionGoal.inventoryItem("minecraft:iron_pickaxe", 1));
 
 		assertTrue(result.resolved(), () -> result.trace().toString());
-		assertEquals(List.of("craft_item", "craft_item"), result.route().steps().stream().map(ActionPlanStep::targetId).toList());
-		assertEquals("minecraft:crafting_table", result.route().steps().getFirst().args().get("itemId"));
-		assertEquals("minecraft:iron_pickaxe", result.route().steps().get(1).args().get("itemId"));
+		assertEquals(List.of("craft_item"), result.route().steps().stream().map(ActionPlanStep::targetId).toList());
+		assertEquals("minecraft:iron_pickaxe", result.route().steps().getFirst().args().get("itemId"));
 	}
 
 	@Test
