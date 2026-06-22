@@ -595,7 +595,7 @@ class ActionResolverTest {
 	}
 
 	@Test
-	void workbenchRecipeProviderLeavesStationSetupToCraftPrimitive() {
+	void workbenchRecipeProviderEnsuresPortableCraftingTableWhenRouteHasNoStation() {
 		ActionFactStore facts = new ActionFactStore();
 		facts.upsert(new ActionFact(
 			ActionFactIdentity.inventoryItem("world-a", "bot", "minecraft:birch_planks"),
@@ -647,8 +647,108 @@ class ActionResolverTest {
 			.resolve(ActionGoal.inventoryItem("minecraft:iron_pickaxe", 1));
 
 		assertTrue(result.resolved(), () -> result.trace().toString());
-		assertEquals(List.of("craft_item"), result.route().steps().stream().map(ActionPlanStep::targetId).toList());
-		assertEquals("minecraft:iron_pickaxe", result.route().steps().getFirst().args().get("itemId"));
+		assertEquals(List.of("craft_item", "craft_item"), result.route().steps().stream().map(ActionPlanStep::targetId).toList());
+		assertEquals("minecraft:crafting_table", result.route().steps().getFirst().args().get("itemId"));
+		assertEquals("minecraft:iron_pickaxe", result.route().steps().get(1).args().get("itemId"));
+	}
+
+	@Test
+	void workbenchRecipeProviderDoesNotRepeatStationAlreadyPlannedInRoute() {
+		ActionFactStore facts = new ActionFactStore();
+		facts.upsert(new ActionFact(
+			ActionFactIdentity.inventoryItem("world-a", "bot", "minecraft:birch_planks"),
+			Map.of("count", 4),
+			ActionFactProvenance.OBSERVED,
+			90,
+			ActionFact.NEVER_STALE
+		));
+		facts.upsert(new ActionFact(
+			ActionFactIdentity.inventoryItem("world-a", "bot", "minecraft:cobblestone"),
+			Map.of("count", 8),
+			ActionFactProvenance.OBSERVED,
+			90,
+			ActionFact.NEVER_STALE
+		));
+		facts.upsert(new ActionFact(
+			ActionFactIdentity.inventoryItem("world-a", "bot", "minecraft:raw_iron"),
+			Map.of("count", 3),
+			ActionFactProvenance.OBSERVED,
+			90,
+			ActionFact.NEVER_STALE
+		));
+		facts.upsert(new ActionFact(
+			ActionFactIdentity.inventoryItem("world-a", "bot", "minecraft:coal"),
+			Map.of("count", 1),
+			ActionFactProvenance.OBSERVED,
+			90,
+			ActionFact.NEVER_STALE
+		));
+		facts.upsert(new ActionFact(
+			ActionFactIdentity.inventoryItem("world-a", "bot", "minecraft:stick"),
+			Map.of("count", 2),
+			ActionFactProvenance.OBSERVED,
+			90,
+			ActionFact.NEVER_STALE
+		));
+		facts.upsert(new ActionFact(
+			ActionFactIdentity.craftRecipe("world-a", "bot", "birch_planks_x4_to_crafting_table"),
+			Map.of(
+				"outputItemId", "minecraft:crafting_table",
+				"outputCount", 1,
+				"inputCounts", Map.of("minecraft:birch_planks", 4),
+				"gridKind", "PLAYER_2X2"
+			),
+			ActionFactProvenance.INFERRED,
+			90,
+			ActionFact.NEVER_STALE
+		));
+		facts.upsert(new ActionFact(
+			ActionFactIdentity.craftRecipe("world-a", "bot", "cobblestone_x8_to_furnace"),
+			Map.of(
+				"outputItemId", "minecraft:furnace",
+				"outputCount", 1,
+				"inputCounts", Map.of("minecraft:cobblestone", 8),
+				"gridKind", "WORKBENCH_3X3"
+			),
+			ActionFactProvenance.INFERRED,
+			90,
+			ActionFact.NEVER_STALE
+		));
+		facts.upsert(new ActionFact(
+			ActionFactIdentity.smeltRecipe("world-a", "bot", "smelt:minecraft_raw_iron_to_minecraft_iron_ingot:carried_furnace-1"),
+			Map.of(
+				"inputItemId", "minecraft:raw_iron",
+				"outputItemId", "minecraft:iron_ingot",
+				"outputCount", 1,
+				"maxInputQuantity", 3,
+				"stationItemId", "minecraft:furnace",
+				"stationItemCount", 1
+			),
+			ActionFactProvenance.INFERRED,
+			90,
+			ActionFact.NEVER_STALE
+		));
+		facts.upsert(new ActionFact(
+			ActionFactIdentity.craftRecipe("world-a", "bot", "iron_ingot_x3_and_stick_x2_to_iron_pickaxe"),
+			Map.of(
+				"outputItemId", "minecraft:iron_pickaxe",
+				"outputCount", 1,
+				"inputCounts", Map.of("minecraft:iron_ingot", 3, "minecraft:stick", 2),
+				"gridKind", "WORKBENCH_3X3"
+			),
+			ActionFactProvenance.INFERRED,
+			90,
+			ActionFact.NEVER_STALE
+		));
+
+		ActionResolveResult result = new ActionResolver(ActionsetIndex.empty(), facts, CONTEXT)
+			.resolve(ActionGoal.inventoryItem("minecraft:iron_pickaxe", 1));
+
+		assertTrue(result.resolved(), () -> result.trace().toString());
+		assertEquals(1, result.route().steps().stream()
+			.filter(step -> "minecraft:crafting_table".equals(step.args().get("itemId")))
+			.count());
+		assertEquals("iron_ingot_x3_and_stick_x2_to_iron_pickaxe", result.route().steps().getLast().args().get("recipeId"));
 	}
 
 	@Test

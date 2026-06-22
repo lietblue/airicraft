@@ -364,6 +364,7 @@ public final class ActionResolver {
 			ArrayList<ActionPlanStep> steps = new ArrayList<>();
 			int routeCost = 15 + inputDeficitCost;
 			boolean inputsResolved = true;
+			String gridKind = scalar(recipe.payload().get("gridKind"), "");
 			for (Map.Entry<String, Integer> input : inputCounts.entrySet()) {
 				int requiredCount = input.getValue() * craftTimes;
 				if (requiredCount <= 0) {
@@ -384,6 +385,21 @@ public final class ActionResolver {
 			}
 			if (!inputsResolved) {
 				continue;
+			}
+			if ("WORKBENCH_3X3".equals(gridKind)
+				&& !"minecraft:crafting_table".equals(outputItemId)
+				&& !stepsProvideCraftingTable(steps)) {
+				Optional<ActionRoute> stationRoute = resolveGoal(
+					ActionGoal.inventoryItem("minecraft:crafting_table", 1),
+					depth + 1,
+					resolving,
+					trace
+				);
+				if (stationRoute.isEmpty()) {
+					continue;
+				}
+				steps.addAll(stationRoute.get().steps());
+				routeCost += stationRoute.get().cost();
 			}
 
 			LinkedHashMap<String, Object> args = new LinkedHashMap<>();
@@ -904,6 +920,18 @@ public final class ActionResolver {
 			deficit += Math.max(0, requiredCount - existingGoalCount(ActionGoal.inventoryItem(input.getKey(), requiredCount)));
 		}
 		return deficit;
+	}
+
+	private static boolean stepsProvideCraftingTable(List<ActionPlanStep> steps) {
+		for (ActionPlanStep step : steps) {
+			if (!"craft_item".equals(step.targetId())) {
+				continue;
+			}
+			if ("minecraft:crafting_table".equals(String.valueOf(step.args().get("itemId")))) {
+				return true;
+			}
+		}
+		return false;
 	}
 
 	private Optional<String> requiredMiningToolGoal(String itemId) {

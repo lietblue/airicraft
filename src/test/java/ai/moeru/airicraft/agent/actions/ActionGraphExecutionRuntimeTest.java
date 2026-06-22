@@ -546,17 +546,17 @@ class ActionGraphExecutionRuntimeTest {
 			100
 		);
 
-		ActionGraphExecutionSnapshot pickaxeDispatched = runtime.tick(input(
+		ActionGraphExecutionSnapshot tableDispatched = runtime.tick(input(
 			Map.of("minecraft:birch_planks", 4, "minecraft:stick", 2),
 			null,
 			101
 		));
-		ActionPlanStep pickaxeStep = dispatcher.dispatchedSteps.getFirst();
-		assertEquals("minecraft:wooden_pickaxe", pickaxeStep.args().get("itemId"));
+		ActionPlanStep tableStep = dispatcher.dispatchedSteps.getFirst();
+		assertEquals("minecraft:crafting_table", tableStep.args().get("itemId"));
 
 		ActionGraphExecutionSnapshot failed = runtime.tick(input(
 			Map.of("minecraft:stick", 2),
-			new TaskTerminalEvent(pickaxeDispatched.activeTaskId(), null, TaskExecutionState.FAILED, "recipe_not_found", null),
+			new TaskTerminalEvent(tableDispatched.activeTaskId(), null, TaskExecutionState.FAILED, "recipe_not_found", null),
 			102
 		));
 		ActionGraphExecutionSnapshot replanned = runtime.tick(input(
