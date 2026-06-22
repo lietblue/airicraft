@@ -390,6 +390,17 @@ public final class ActionGraphExecutionRuntime {
 		recoveryHistory.add(recovery);
 		trace("step_failed", actionId(currentStep), alternativeId(currentStep), stepId(currentStep), recovery);
 
+		if (fromTerminalEvent && "transient".equals(classified) && isBusyFailure(rawFailureCode, failureMessage)) {
+			activeTaskId = "";
+			observeNotBeforeTick = lastContext == null ? -1L : lastContext.currentTick() + 20L;
+			state = ActionGraphExecutionState.OBSERVING;
+			trace("recovery_selected", actionId(currentStep), alternativeId(currentStep), stepId(currentStep), Map.of(
+				"decision", "wait_before_retry",
+				"failureCode", classified,
+				"retryAfterTick", observeNotBeforeTick
+			));
+			return;
+		}
 		if ("transient".equals(classified) && stepAttempt <= MAX_STEP_RETRIES) {
 			activeTaskId = "";
 			state = ActionGraphExecutionState.DISPATCHING;
@@ -805,6 +816,11 @@ public final class ActionGraphExecutionRuntime {
 			return "missing_fact";
 		}
 		return code;
+	}
+
+	private static boolean isBusyFailure(String rawFailureCode, String failureMessage) {
+		String text = ((rawFailureCode == null ? "" : rawFailureCode) + " " + (failureMessage == null ? "" : failureMessage)).toLowerCase();
+		return text.contains("busy");
 	}
 
 	private static String classifyFailure(String raw) {

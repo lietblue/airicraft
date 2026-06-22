@@ -478,6 +478,27 @@ class ActionGraphExecutionRuntimeTest {
 	}
 
 	@Test
+	void busyTerminalFailureWaitsBeforeRetryingPrimitive() {
+		RecordingDispatcher dispatcher = new RecordingDispatcher();
+		ActionGraphExecutionRuntime runtime = new ActionGraphExecutionRuntime(defaultIndex(), dispatcher);
+		runtime.submit(ActionGoal.inventoryItem("minecraft:bread", 1), Map.of("minecraft:wheat", 3), CONTEXT, 100);
+
+		ActionGraphExecutionSnapshot dispatched = runtime.tick(input(Map.of("minecraft:wheat", 3), null, 101));
+		assertEquals(ActionGraphExecutionState.WAITING_PRIMITIVE, dispatched.state(), () -> dispatched.toString());
+		assertFalse(dispatched.activeTaskId().isBlank(), () -> dispatched.toString());
+		ActionGraphExecutionSnapshot waiting = runtime.tick(input(Map.of("minecraft:wheat", 3), failed(dispatched.activeTaskId(), "crafting_busy"), 102));
+		ActionGraphExecutionSnapshot stillWaiting = runtime.tick(input(Map.of("minecraft:wheat", 3), null, 103));
+
+		assertEquals(ActionGraphExecutionState.OBSERVING, waiting.state());
+		assertEquals(ActionGraphExecutionState.OBSERVING, stillWaiting.state());
+		assertEquals(1, dispatcher.dispatchedSteps.size());
+		ActionGraphExecutionSnapshot retried = runtime.tick(input(Map.of("minecraft:wheat", 3), null, 122));
+		assertEquals(ActionGraphExecutionState.WAITING_PRIMITIVE, retried.state());
+		assertEquals(2, dispatcher.dispatchedSteps.size());
+		assertTrace(waiting.trace(), "recovery_selected");
+	}
+
+	@Test
 	void watchStepSuspendsUntilObservedFactFulfillsGoal() {
 		RecordingDispatcher dispatcher = new RecordingDispatcher();
 		ActionGraphExecutionRuntime runtime = new ActionGraphExecutionRuntime(watchIndex(), dispatcher);
