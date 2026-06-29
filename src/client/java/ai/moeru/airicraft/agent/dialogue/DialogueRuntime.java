@@ -31,6 +31,7 @@ public final class DialogueRuntime {
 	private final int maxRecentTurns;
 	private final List<DialogueTurn> recentTurns = new ArrayList<>();
 	private final Deque<PendingInternalTaskUpdate> pendingInternalTaskUpdates = new ArrayDeque<>();
+	private final Deque<PendingVisibleReply> pendingVisibleReplies = new ArrayDeque<>();
 
 	private DialogueState state = DialogueCore.initialState();
 	private int queuedTimeoutInjections;
@@ -51,15 +52,29 @@ public final class DialogueRuntime {
 	}
 
 	public boolean hasPendingReply() {
-		return state.pendingReply();
+		return !pendingVisibleReplies.isEmpty();
 	}
 
 	public String pendingReplyReason() {
-		return state.pendingReplyReason();
+		return pendingVisibleReplies.isEmpty() ? state.pendingReplyReason() : pendingVisibleReplies.peekFirst().reason();
 	}
 
 	public void markReplyObserved() {
-		state = DialogueCore.markReplyObserved(state);
+		if (!pendingVisibleReplies.isEmpty()) {
+			pendingVisibleReplies.removeFirst();
+		}
+		state = state.withPendingReply(!pendingVisibleReplies.isEmpty(), pendingReplyReason());
+	}
+
+	public Optional<DialogueResponse> pendingReplyReady(long tick) {
+		if (pendingVisibleReplies.isEmpty()) {
+			return Optional.empty();
+		}
+		PendingVisibleReply pendingReply = pendingVisibleReplies.peekFirst();
+		if (tick < pendingReply.readyTick()) {
+			return Optional.empty();
+		}
+		return Optional.of(pendingReply.response());
 	}
 
 	public boolean isDegraded() {
@@ -114,8 +129,8 @@ public final class DialogueRuntime {
 		return new DialogueSnapshot(
 			List.copyOf(recentTurns),
 			state.lastResponse(),
-			state.pendingReply(),
-			state.pendingReplyReason(),
+			hasPendingReply(),
+			pendingReplyReason(),
 			state.degraded(),
 			state.consecutiveFailureCount(),
 			state.lastFailureType(),
@@ -343,6 +358,7 @@ public final class DialogueRuntime {
 		plannerOrchestrator.reset();
 		queuedTimeoutInjections = 0;
 		pendingTimeoutVisibleReply = false;
+		pendingVisibleReplies.clear();
 		if (state.degraded()) {
 			applyEffects(List.of(DialogueEffect.appendSemanticEvent("planner.degraded_cleared", java.util.Map.of())), tick, eventBuffer);
 		}
@@ -354,6 +370,7 @@ public final class DialogueRuntime {
 		queuedTimeoutInjections = 0;
 		pendingTimeoutVisibleReply = false;
 		pendingInternalTaskUpdates.clear();
+		pendingVisibleReplies.clear();
 		recentTurns.clear();
 		plannerOrchestrator.reset();
 	}
@@ -363,6 +380,7 @@ public final class DialogueRuntime {
 		queuedTimeoutInjections = 0;
 		pendingTimeoutVisibleReply = false;
 		pendingInternalTaskUpdates.clear();
+		pendingVisibleReplies.clear();
 		recentTurns.clear();
 		plannerOrchestrator.shutdown();
 	}
@@ -474,11 +492,16 @@ public final class DialogueRuntime {
 	private void applyTransition(DialogueTransition transition, long tick, SemanticEventBuffer eventBuffer) {
 		state = transition.state();
 		applyEffects(transition.effects(), tick, eventBuffer);
+		pendingVisibleReplies.clear();
+		long nextReadyTick = tick;
 		for (DialogueResponse response : transition.visibleResponses()) {
 			if (response != null && response.text() != null && !response.text().isBlank()) {
+				nextReadyTick += response.delayTicks();
+				pendingVisibleReplies.addLast(new PendingVisibleReply(response, state.pendingReplyReason(), nextReadyTick));
 				recordAgentTurn(response.text(), tick);
 			}
 		}
+		state = state.withPendingReply(!pendingVisibleReplies.isEmpty(), pendingReplyReason());
 	}
 
 	private static void applyEffects(List<DialogueEffect> effects, long tick, SemanticEventBuffer eventBuffer) {
@@ -525,6 +548,13 @@ public final class DialogueRuntime {
 				currentMissionExecution == null ? missionExecution : currentMissionExecution
 			);
 		}
+	}
+
+	private record PendingVisibleReply(
+		DialogueResponse response,
+		String reason,
+		long readyTick
+	) {
 	}
 
 }

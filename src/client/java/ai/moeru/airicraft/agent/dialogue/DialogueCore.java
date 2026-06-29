@@ -1,6 +1,7 @@
 package ai.moeru.airicraft.agent.dialogue;
 
 import ai.moeru.airicraft.agent.llm.LlmFailureType;
+import ai.moeru.airicraft.agent.llm.PlannerChatMessage;
 import ai.moeru.airicraft.agent.llm.PlannerResponse;
 
 import java.util.ArrayList;
@@ -45,9 +46,7 @@ public final class DialogueCore {
 			mappedIntentType = DialogueIntentType.NONE;
 		}
 
-		DialogueResponse response = new DialogueResponse(
-			plannerResponse.replyText() == null ? "" : plannerResponse.replyText(),
-			new DialogueIntent(
+		DialogueIntent intent = new DialogueIntent(
 				mappedIntentType,
 				plannerResponse.intent().goalType(),
 				plannerResponse.intent().targetPlayer(),
@@ -56,15 +55,16 @@ public final class DialogueCore {
 				plannerResponse.intent().taskSpec(),
 				plannerResponse.intent().taskLedger(),
 				plannerResponse.intent().activeJob()
-			),
-			tick,
-			plannerResponse.eventPolicyChanges()
-		);
+			);
+		List<DialogueResponse> visibleResponses = visibleResponses(plannerResponse, intent, tick);
+		DialogueResponse response = visibleResponses.isEmpty()
+			? new DialogueResponse("", intent, tick, plannerResponse.eventPolicyChanges())
+			: visibleResponses.get(visibleResponses.size() - 1);
 		DialogueState nextState = state
 			.withConsecutiveFailureCount(0)
 			.withLastResponse(response)
-			.withPendingReply(hasVisibleText(response), hasVisibleText(response) ? "planner_success" : null);
-		return new DialogueTransition(nextState, List.of(response), List.copyOf(effects));
+			.withPendingReply(visibleResponses.stream().anyMatch(DialogueCore::hasVisibleText), visibleResponses.isEmpty() ? null : "planner_success");
+		return new DialogueTransition(nextState, visibleResponses.isEmpty() ? List.of(response) : visibleResponses, List.copyOf(effects));
 	}
 
 	public static DialogueTransition onPlannerFailure(
@@ -188,6 +188,28 @@ public final class DialogueCore {
 
 	private static boolean hasVisibleText(DialogueResponse response) {
 		return response != null && response.text() != null && !response.text().isBlank();
+	}
+
+	private static List<DialogueResponse> visibleResponses(PlannerResponse plannerResponse, DialogueIntent intent, long tick) {
+		List<PlannerChatMessage> chatMessages = plannerResponse.chatMessages();
+		if (chatMessages == null || chatMessages.isEmpty()) {
+			String replyText = plannerResponse.replyText() == null ? "" : plannerResponse.replyText();
+			if (replyText.isBlank()) {
+				return List.of();
+			}
+			return List.of(new DialogueResponse(replyText, intent, tick, plannerResponse.eventPolicyChanges()));
+		}
+		ArrayList<DialogueResponse> responses = new ArrayList<>();
+		for (PlannerChatMessage chatMessage : chatMessages) {
+			responses.add(new DialogueResponse(
+				chatMessage.text(),
+				intent,
+				tick,
+				chatMessage.delayTicks(),
+				plannerResponse.eventPolicyChanges()
+			));
+		}
+		return List.copyOf(responses);
 	}
 
 	private static String failureEventType(LlmFailureType failureType) {

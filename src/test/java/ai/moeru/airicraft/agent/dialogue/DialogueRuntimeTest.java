@@ -15,6 +15,7 @@ import ai.moeru.airicraft.agent.llm.LlmConversation;
 import ai.moeru.airicraft.agent.llm.LlmFailureType;
 import ai.moeru.airicraft.agent.llm.OpenAiCompatibleLlmBackend;
 import ai.moeru.airicraft.agent.llm.OpenAiCompatibleChatClient;
+import ai.moeru.airicraft.agent.llm.PlannerChatMessage;
 import ai.moeru.airicraft.agent.llm.PlannerCompactionService;
 import ai.moeru.airicraft.agent.llm.PlannerConversationDebugKind;
 import ai.moeru.airicraft.agent.llm.PlannerContextAggregator;
@@ -89,6 +90,31 @@ class DialogueRuntimeTest {
 		assertEquals("Sure, I'll follow you!", response.text());
 		assertEquals(DialogueIntentType.SET_GOAL, response.intent().type());
 		assertFalse(runtime.isDegraded());
+		runtime.shutdown();
+	}
+
+	@Test
+	void plannerChatMessagesAreQueuedWithDelays() {
+		OpenAiCompatibleLlmBackend backend = new OpenAiCompatibleLlmBackend(AgentConfig.LlmConfig.defaults());
+		DialogueRuntime runtime = newDialogueRuntime(backend);
+		SemanticEventBuffer eventBuffer = new SemanticEventBuffer(32);
+		backend.injectMockResponse(new PlannerResponse(
+			List.of(
+				new PlannerChatMessage("I found the cave.", 0),
+				new PlannerChatMessage("I will head back now.", 30)
+			),
+			new PlannerIntent("reply_only", null, null),
+			null
+		));
+
+		runtime.onPlayerChat("Alice", "@agent report", 10L, SessionSnapshot.initial(), "Alice", Optional.empty(), eventBuffer);
+		DialogueResponse response = awaitResponse(runtime, eventBuffer, Duration.ofSeconds(1));
+
+		assertEquals("I will head back now.", response.text());
+		assertEquals("I found the cave.", runtime.pendingReplyReady(Long.MAX_VALUE).orElseThrow().text());
+		runtime.markReplyObserved();
+		assertTrue(runtime.pendingReplyReady(0L).isEmpty());
+		assertEquals("I will head back now.", runtime.pendingReplyReady(Long.MAX_VALUE).orElseThrow().text());
 		runtime.shutdown();
 	}
 

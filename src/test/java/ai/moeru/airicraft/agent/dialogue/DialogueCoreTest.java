@@ -2,15 +2,41 @@ package ai.moeru.airicraft.agent.dialogue;
 
 import ai.moeru.airicraft.agent.goals.GoalType;
 import ai.moeru.airicraft.agent.llm.LlmFailureType;
+import ai.moeru.airicraft.agent.llm.PlannerChatMessage;
 import ai.moeru.airicraft.agent.llm.PlannerIntent;
 import ai.moeru.airicraft.agent.llm.PlannerResponse;
 import org.junit.jupiter.api.Test;
+
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class DialogueCoreTest {
+	@Test
+	void plannerSuccessUsesStructuredChatMessagesAsVisibleResponses() {
+		DialogueTransition transition = DialogueCore.onPlannerSuccess(
+			DialogueState.initial(),
+			new PlannerResponse(
+				List.of(
+					new PlannerChatMessage("I found the cave.", 0),
+					new PlannerChatMessage("I will head back now.", 30)
+				),
+				new PlannerIntent("reply_only", null, null),
+				null
+			),
+			99L
+		);
+
+		assertEquals(2, transition.visibleResponses().size());
+		assertEquals("I found the cave.", transition.visibleResponses().get(0).text());
+		assertEquals(0, transition.visibleResponses().get(0).delayTicks());
+		assertEquals("I will head back now.", transition.visibleResponses().get(1).text());
+		assertEquals(30, transition.visibleResponses().get(1).delayTicks());
+		assertEquals("planner_success", transition.state().pendingReplyReason());
+	}
+
 	@Test
 	void plannerSuccessResetsFailureTrackingWithoutEffects() {
 		DialogueState state = DialogueState.initial()

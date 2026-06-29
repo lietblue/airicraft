@@ -107,6 +107,11 @@ public final class OpenAiCompatibleLlmBackend implements LlmBackend {
 				);
 				return PlannerResponse.toolCalls(toolCalls, rawAssistantContent);
 			}
+			List<PlannerChatMessage> chatMessages = parseChatMessages(message.get("content"));
+			if (!chatMessages.isEmpty()) {
+				Airicraft.LOGGER.info("Planner parsed chat message plan count={}", chatMessages.size());
+				return new PlannerResponse(chatMessages, new PlannerIntent("reply_only", null, null), rawAssistantContent);
+			}
 			String replyText = visibleText.strip();
 			Airicraft.LOGGER.info("Planner parsed plaintext reply={}", summarizeForLog(replyText));
 			return new PlannerResponse(replyText, List.of(), rawAssistantContent);
@@ -125,6 +130,45 @@ public final class OpenAiCompatibleLlmBackend implements LlmBackend {
 			observability.recordFailure(Context.current(), LlmFailureType.PARSE_ERROR.name(), failureMessage, exception);
 			throw new LlmBackendException(LlmFailureType.PARSE_ERROR, failureMessage, exception);
 		}
+	}
+
+	private List<PlannerChatMessage> parseChatMessages(JsonElement contentElement) {
+		return OpenAiCompatibleMessageContent.extractJsonObject(contentElement)
+			.filter(object -> object.has("chatMessages") && object.get("chatMessages").isJsonArray())
+			.map(object -> parseChatMessages(object.getAsJsonArray("chatMessages")))
+			.orElse(List.of());
+	}
+
+	private List<PlannerChatMessage> parseChatMessages(JsonArray array) {
+		if (array == null || array.isEmpty()) {
+			return List.of();
+		}
+		ArrayList<PlannerChatMessage> messages = new ArrayList<>();
+		for (JsonElement element : array) {
+			if (!element.isJsonObject()) {
+				throw new JsonParseException("chatMessages entries must be objects");
+			}
+			JsonObject object = element.getAsJsonObject();
+			String text = object.has("text") && !object.get("text").isJsonNull()
+				? object.get("text").getAsString()
+				: "";
+			int delayTicks = parseDelayTicks(object);
+			messages.add(new PlannerChatMessage(text, delayTicks));
+		}
+		return List.copyOf(messages);
+	}
+
+	private static int parseDelayTicks(JsonObject object) {
+		if (object == null) {
+			return 0;
+		}
+		if (object.has("delayTicks") && !object.get("delayTicks").isJsonNull()) {
+			return Math.max(0, object.get("delayTicks").getAsInt());
+		}
+		if (object.has("delaySeconds") && !object.get("delaySeconds").isJsonNull()) {
+			return Math.max(0, (int) Math.round(object.get("delaySeconds").getAsDouble() * 20.0D));
+		}
+		return 0;
 	}
 
 	private List<PlannerToolCall> parseToolCalls(JsonObject message) {

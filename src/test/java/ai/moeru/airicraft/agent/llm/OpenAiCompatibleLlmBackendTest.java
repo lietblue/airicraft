@@ -240,6 +240,25 @@ class OpenAiCompatibleLlmBackendTest {
 	}
 
 	@Test
+	void generateParsesStructuredChatMessages() throws Exception {
+		String content = "{\\\"chatMessages\\\":[{\\\"text\\\":\\\"I found the cave.\\\",\\\"delayTicks\\\":0},{\\\"text\\\":\\\"I will head back now.\\\",\\\"delaySeconds\\\":1.5}]}";
+		AtomicReference<String> bodyRef = new AtomicReference<>();
+		try (TestServer server = TestServer.start(bodyRef, plaintextResponse(content))) {
+			OpenAiCompatibleLlmBackend backend = new OpenAiCompatibleLlmBackend(config(server.port(), false));
+
+			LlmCallResult<PlannerResponse> result = backend.generate(LlmConversation.of(List.of(LlmChatMessage.system("system"))));
+
+			assertEquals(2, result.payload().chatMessages().size());
+			assertEquals("I found the cave.", result.payload().chatMessages().get(0).text());
+			assertEquals(0, result.payload().chatMessages().get(0).delayTicks());
+			assertEquals("I will head back now.", result.payload().chatMessages().get(1).text());
+			assertEquals(30, result.payload().chatMessages().get(1).delayTicks());
+			assertEquals("I found the cave. I will head back now.", result.payload().replyText());
+			assertNull(result.payload().toolCall());
+		}
+	}
+
+	@Test
 	void generateRejectsReadAndActionToolCallBatch() throws Exception {
 		String responseBody = """
 			{

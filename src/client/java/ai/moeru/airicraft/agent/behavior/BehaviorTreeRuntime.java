@@ -58,7 +58,7 @@ public final class BehaviorTreeRuntime {
 			movementController.stop(client);
 			String source = dialogueRuntime.pendingReplyReason();
 			boolean reusedPriorResponse = "failure_reused_last_response".equals(source);
-			dialogueRuntime.lastResponse()
+			dialogueRuntime.pendingReplyReady(tick)
 				.map(DialogueResponse::text)
 				.ifPresent(text -> {
 					String sanitizedText = ChatService.sanitizeForChat(text);

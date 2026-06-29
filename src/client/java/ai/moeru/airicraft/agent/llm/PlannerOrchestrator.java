@@ -35,6 +35,7 @@ public final class PlannerOrchestrator {
 	private static final String INVENTORY_BOOTSTRAP_PROMPT = "startup inventory context";
 	private static final String NATIVE_TOOL_RESULT_TEXT = "Tool result for take_a_look: current first-person view attached.";
 	private static final String TOOL_CALL_REPAIR_PREFIX = "TOOL CALL FORMAT REMINDER:";
+	private static final String CHAT_REPAIR_PREFIX = "CHAT MESSAGE FORMAT REMINDER:";
 	private static final int MAX_TOOL_CALLS_PER_TOOL_PLAN = 20;
 	private static final int SESSION_MAX_CONSECUTIVE_REPAIRABLE_FAILURES = 2;
 	private static final long SESSION_RETRY_BACKOFF_MS = 250L;
@@ -761,6 +762,11 @@ public final class PlannerOrchestrator {
 	}
 
 	private PlannerExecutionResult finishSuccessfulPlannerResult(PlannerExecutionResult plannerResult) {
+		PlannerExecutionResult visibleChatResult = validateOrRepairVisibleChat(plannerResult);
+		if (visibleChatResult == null) {
+			return null;
+		}
+		plannerResult = visibleChatResult;
 		contextAggregator.recordUsage(plannerResult.usage());
 		lifecycleListener.onPlannerExecutionSucceeded(plannerResult);
 		List<PlannerToolCall> toolCalls = effectiveToolCalls(plannerResult.response());
@@ -860,6 +866,127 @@ public final class PlannerOrchestrator {
 			Airicraft.LOGGER.info("Planner parse failure scheduled tool-call repair retry generation={} attempt={}", failure.generation(), failure.attempt());
 		}
 		return scheduled;
+	}
+
+	private PlannerExecutionResult validateOrRepairVisibleChat(PlannerExecutionResult result) {
+		if (result == null || result.response() == null) {
+			return result;
+		}
+		PlannerChatContract.ValidationResult chatValidation = PlannerChatContract.validateMessages(
+			result.response().chatMessages(),
+			"chatMessages"
+		);
+		PlannerChatContract.ValidationResult narrationValidation = validateToolNarration(result.response().toolCalls());
+		if (chatValidation.valid() && narrationValidation.valid()) {
+			return result;
+		}
+		String failureMessage = chatValidation.valid() ? narrationValidation.message() : chatValidation.message();
+		if (result.attempt() <= 1 && scheduleChatRepairRetry(result, failureMessage)) {
+			return null;
+		}
+		PlannerResponse contractedResponse = contractVisibleChat(result.response());
+		Airicraft.LOGGER.warn(
+			"Planner visible chat contract fallback generation={} attempt={} reason={} originalLength={} contractedLength={}",
+			result.generation(),
+			result.attempt(),
+			failureMessage,
+			visibleChatLength(result.response()),
+			visibleChatLength(contractedResponse)
+		);
+		return withResponse(result, contractedResponse);
+	}
+
+	private boolean scheduleChatRepairRetry(PlannerExecutionResult result, String failureMessage) {
+		boolean scheduled = sessionCoordinator.scheduleChatRepairRetry(
+			result.generation(),
+			LlmChatMessage.user(chatRepairMessage(failureMessage), LlmMessageKind.NOTICE)
+		);
+		if (scheduled) {
+			Airicraft.LOGGER.info("Planner visible chat repair retry scheduled generation={} attempt={}", result.generation(), result.attempt());
+		}
+		return scheduled;
+	}
+
+	private static String chatRepairMessage(String failureMessage) {
+		return CHAT_REPAIR_PREFIX
+			+ " Previous visible Minecraft chat was rejected: "
+			+ (failureMessage == null || failureMessage.isBlank() ? "invalid visible chat" : failureMessage)
+			+ "\nFor normal replies, use chatMessages with 1-4 entries. Each text must be one plaintext line under "
+			+ PlannerChatContract.MAX_MESSAGE_LENGTH
+			+ " characters. Use delayTicks or delaySeconds for pauses between messages."
+			+ "\nDo not use markdown, code fences, bullets, headings, links, decorative formatting, multiline text, or a leading slash."
+			+ "\nIf you still need a tool, keep the same tool intent and make narration one short plaintext line under "
+			+ PlannerChatContract.MAX_MESSAGE_LENGTH
+			+ " characters.";
+	}
+
+	private static PlannerChatContract.ValidationResult validateToolNarration(List<PlannerToolCall> toolCalls) {
+		for (int index = 0; index < (toolCalls == null ? 0 : toolCalls.size()); index++) {
+			PlannerToolCall toolCall = toolCalls.get(index);
+			if (toolCall == null || toolCall.narration() == null || toolCall.narration().isBlank()) {
+				continue;
+			}
+			PlannerChatContract.ValidationResult validation = PlannerChatContract.validateText(
+				toolCall.narration(),
+				"toolCalls[" + index + "].narration"
+			);
+			if (!validation.valid()) {
+				return validation;
+			}
+		}
+		return PlannerChatContract.ValidationResult.ok();
+	}
+
+	private static PlannerResponse contractVisibleChat(PlannerResponse response) {
+		List<PlannerToolCall> contractedToolCalls = response.toolCalls().stream()
+			.map(PlannerOrchestrator::contractToolNarration)
+			.toList();
+		return response
+			.withChatMessages(PlannerChatContract.contractMessages(response.chatMessages()))
+			.withToolCalls(contractedToolCalls);
+	}
+
+	private static PlannerToolCall contractToolNarration(PlannerToolCall toolCall) {
+		if (toolCall == null || toolCall.narration() == null || toolCall.narration().isBlank()) {
+			return toolCall;
+		}
+		String contractedNarration = PlannerChatContract.contractText(toolCall.narration());
+		JsonObject arguments = toolCall.arguments();
+		arguments.addProperty("narration", contractedNarration);
+		return new PlannerToolCall(
+			toolCall.id(),
+			toolCall.name(),
+			arguments,
+			contractedNarration,
+			null
+		);
+	}
+
+	private static PlannerExecutionResult withResponse(PlannerExecutionResult result, PlannerResponse response) {
+		return new PlannerExecutionResult(
+			result.request(),
+			response,
+			result.usage(),
+			null,
+			null,
+			result.generation(),
+			result.attempt(),
+			result.phase(),
+			result.stale()
+		);
+	}
+
+	private static int visibleChatLength(PlannerResponse response) {
+		if (response == null) {
+			return 0;
+		}
+		int length = response.chatMessages().stream()
+			.mapToInt(message -> message == null || message.text() == null ? 0 : message.text().length())
+			.sum();
+		length += response.toolCalls().stream()
+			.mapToInt(toolCall -> toolCall == null || toolCall.narration() == null ? 0 : toolCall.narration().length())
+			.sum();
+		return length;
 	}
 
 	private static String toolCallRepairMessage(String failureMessage) {

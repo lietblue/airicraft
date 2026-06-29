@@ -64,6 +64,65 @@ class PlannerOrchestratorTest {
 	}
 
 	@Test
+	void invalidChatMessagePlanRetriesOnceWithFormatReminder() {
+		RecordingBackend backend = new RecordingBackend();
+		PlannerOrchestrator orchestrator = newOrchestrator(backend, CurrentViewVisionTool.disabled(), PlannerVisionMode.EXTERNAL_SUMMARY);
+
+		orchestrator.submit(baseRequest(null));
+		backend.awaitCalls(1, Duration.ofSeconds(1));
+
+		backend.succeed(0, new PlannerResponse(
+			List.of(new PlannerChatMessage("x".repeat(PlannerChatContract.MAX_MESSAGE_LENGTH + 1), 0)),
+			new PlannerIntent("reply_only", null, null),
+			null
+		));
+		awaitBackendCallCount(orchestrator, backend, 2, Duration.ofSeconds(1));
+
+		assertTrue(conversationText(backend.conversation(1)).contains("CHAT MESSAGE FORMAT REMINDER"));
+
+		backend.succeed(1, new PlannerResponse(
+			List.of(new PlannerChatMessage("Short now.", 0)),
+			new PlannerIntent("reply_only", null, null),
+			null
+		));
+		PlannerExecutionResult result = awaitResult(orchestrator);
+
+		assertTrue(result.succeeded());
+		assertEquals("Short now.", result.response().replyText());
+		assertEquals(2, result.attempt());
+	}
+
+	@Test
+	void secondInvalidChatMessagePlanIsContractedAndAccepted() {
+		RecordingBackend backend = new RecordingBackend();
+		PlannerOrchestrator orchestrator = newOrchestrator(backend, CurrentViewVisionTool.disabled(), PlannerVisionMode.EXTERNAL_SUMMARY);
+		String invalid = "# " + "x".repeat(PlannerChatContract.MAX_MESSAGE_LENGTH + 40);
+
+		orchestrator.submit(baseRequest(null));
+		backend.awaitCalls(1, Duration.ofSeconds(1));
+
+		backend.succeed(0, new PlannerResponse(
+			List.of(new PlannerChatMessage(invalid, PlannerChatContract.MAX_DELAY_TICKS + 20)),
+			new PlannerIntent("reply_only", null, null),
+			null
+		));
+		awaitBackendCallCount(orchestrator, backend, 2, Duration.ofSeconds(1));
+
+		backend.succeed(1, new PlannerResponse(
+			List.of(new PlannerChatMessage(invalid, PlannerChatContract.MAX_DELAY_TICKS + 20)),
+			new PlannerIntent("reply_only", null, null),
+			null
+		));
+		PlannerExecutionResult result = awaitResult(orchestrator);
+
+		assertTrue(result.succeeded());
+		assertEquals(PlannerChatContract.MAX_MESSAGE_LENGTH, result.response().chatMessages().getFirst().text().length());
+		assertFalse(result.response().chatMessages().getFirst().text().startsWith("#"));
+		assertEquals(PlannerChatContract.MAX_DELAY_TICKS, result.response().chatMessages().getFirst().delayTicks());
+		assertEquals(2, result.attempt());
+	}
+
+	@Test
 	void singleToolCallFeedsVisionDescriptionBackIntoPlanner() {
 		OpenAiCompatibleLlmBackend backend = new OpenAiCompatibleLlmBackend(AgentConfig.LlmConfig.defaults());
 		backend.injectMockResponse(new PlannerResponse(
