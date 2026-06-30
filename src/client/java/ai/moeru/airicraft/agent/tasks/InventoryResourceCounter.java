@@ -18,19 +18,6 @@ public final class InventoryResourceCounter {
 	}
 
 	static boolean accepts(TaskResourceKind resourceKind, String itemId) {
-		if (resourceKind != TaskResourceKind.WOOD_LOGS) {
-			return false;
-		}
-		return switch (itemId) {
-			case "minecraft:oak_log",
-				"minecraft:birch_log",
-				"minecraft:spruce_log",
-				"minecraft:jungle_log",
-				"minecraft:acacia_log",
-				"minecraft:dark_oak_log",
-				"minecraft:mangrove_log",
-				"minecraft:cherry_log" -> true;
-			default -> false;
-		};
+		return ResourceGatheringCatalog.accepts(resourceKind, itemId);
 	}
 }

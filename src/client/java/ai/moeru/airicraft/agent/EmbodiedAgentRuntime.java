@@ -112,6 +112,7 @@ import ai.moeru.airicraft.agent.tasks.LedgerStepKind;
 import ai.moeru.airicraft.agent.tasks.MissionExecutionSnapshot;
 import ai.moeru.airicraft.agent.tasks.MinedBlockDropMapper;
 import ai.moeru.airicraft.agent.tasks.NearbyEntityService;
+import ai.moeru.airicraft.agent.tasks.ResourceGatheringCatalog;
 import ai.moeru.airicraft.agent.tasks.TaskResourceKind;
 import ai.moeru.airicraft.agent.tasks.TaskSnapshot;
 import ai.moeru.airicraft.agent.tasks.BlockBreakStepArgs;
@@ -1177,7 +1178,7 @@ public final class EmbodiedAgentRuntime {
 	private TaskSnapshot submitActiveJobProposal(ActiveJobProposal proposal, String source, Map<String, Object> submittedPayload) {
 		Objects.requireNonNull(proposal, "proposal");
 		WorldEvidence worldEvidence = currentWorldEvidence(MinecraftClient.getInstance());
-		int currentResourceCount = worldEvidence.inventoryCounts().getOrDefault(TaskResourceKind.WOOD_LOGS, 0);
+		int currentResourceCount = currentResourceCountForProposal(worldEvidence, proposal);
 		activeJobRuntime.applyPlannerResponse(
 			new DialogueResponse("", new DialogueIntent(DialogueIntentType.JOB_UPDATE, proposal), tickCount),
 			currentResourceCount,
@@ -1856,7 +1857,7 @@ public final class EmbodiedAgentRuntime {
 		Map<String, Object> graph = new ActionGraphDebugService().inspectActionGraph();
 		Map<String, Object> goalKinds = Map.of(
 			"inventory_item", Map.of("status", "supported", "fields", List.of("itemId", "quantity")),
-			"resource_collection", Map.of("status", "supported", "fields", List.of("resourceKind", "quantity"), "supportedResourceKinds", List.of("WOOD_LOGS")),
+			"resource_collection", Map.of("status", "supported", "fields", List.of("resourceKind", "quantity"), "supportedResourceKinds", ResourceGatheringCatalog.supportedKindNames()),
 			"movement", Map.of("status", "planned", "fields", List.of("x", "y", "z", "operation")),
 			"block_modification", Map.of("status", "planned", "fields", List.of("x", "y", "z", "operation", "itemId")),
 			"entity_interaction", Map.of("status", "planned", "fields", List.of("entityTypeId", "operation")),
@@ -2127,9 +2128,7 @@ public final class EmbodiedAgentRuntime {
 		if (response == null || response.intent() == null || response.intent().type() == null) {
 			return;
 		}
-		int currentResourceCount = worldEvidence == null
-			? currentTaskResourceCount(MinecraftClient.getInstance())
-			: worldEvidence.inventoryCounts().getOrDefault(TaskResourceKind.WOOD_LOGS, 0);
+		int currentResourceCount = currentResourceCountForIntent(worldEvidence, response.intent());
 		if (directPlannerIntentWouldPreemptActiveTask(response.intent())) {
 			return;
 		}
@@ -2157,6 +2156,29 @@ public final class EmbodiedAgentRuntime {
 		return inventoryResourceCounter.count(stacks, spec.resourceKind());
 	}
 
+	private int currentResourceCountForProposal(WorldEvidence worldEvidence, ActiveJobProposal proposal) {
+		if (worldEvidence == null || proposal == null || proposal.taskSpec() == null || proposal.taskSpec().type() != TaskType.COLLECT_RESOURCE) {
+			return 0;
+		}
+		return worldEvidence.inventoryCounts().getOrDefault(proposal.taskSpec().resourceKind(), 0);
+	}
+
+	private int currentResourceCountForIntent(WorldEvidence worldEvidence, DialogueIntent intent) {
+		if (worldEvidence == null) {
+			return currentTaskResourceCount(MinecraftClient.getInstance());
+		}
+		if (intent == null) {
+			return 0;
+		}
+		if (intent.activeJob() != null) {
+			return currentResourceCountForProposal(worldEvidence, intent.activeJob());
+		}
+		if (intent.taskSpec() != null && intent.taskSpec().type() == TaskType.COLLECT_RESOURCE) {
+			return worldEvidence.inventoryCounts().getOrDefault(intent.taskSpec().resourceKind(), 0);
+		}
+		return 0;
+	}
+
 	private static Optional<String> stringArg(JsonObject object, String key) {
 		if (object == null || !object.has(key) || object.get(key).isJsonNull() || !object.get(key).isJsonPrimitive()) {
 			return Optional.empty();
@@ -2180,9 +2202,8 @@ public final class EmbodiedAgentRuntime {
 		}
 		if ("resource_collection".equals(kind)) {
 			TaskResourceKind resourceKind = resourceKindArg(args, "resourceKind");
-			if (resourceKind != TaskResourceKind.WOOD_LOGS) {
-				throw new IllegalArgumentException("unsupported_resource_kind " + resourceKind);
-			}
+			ResourceGatheringCatalog.entry(resourceKind)
+				.orElseThrow(() -> new IllegalArgumentException("unsupported_resource_kind " + resourceKind));
 			return ActionGoal.resourceCollection(
 				resourceKind.name(),
 				intArg(args, "quantity").orElseThrow(() -> new IllegalArgumentException("quantity is required"))

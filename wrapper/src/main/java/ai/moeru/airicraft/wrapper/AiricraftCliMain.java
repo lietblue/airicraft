@@ -385,11 +385,14 @@ public final class AiricraftCliMain {
 
 	@Command(name = "start", mixinStandardHelpOptions = true, description = "Start an action graph goal.")
 	private static final class AgentActionsGoalStartCommand extends BaseCommand {
-		@Option(names = "--kind", description = "Goal kind. v1 supports inventory_item.")
+		@Option(names = "--kind", description = "Goal kind. v1 supports inventory_item and resource_collection.")
 		private String kind = "inventory_item";
 
-		@Option(names = "--item-id", required = true, description = "Inventory item id to obtain.")
+		@Option(names = "--item-id", description = "Inventory item id to obtain.")
 		private String itemId;
+
+		@Option(names = "--resource-kind", description = "Catalog resource kind to gather for resource_collection goals.")
+		private String resourceKind;
 
 		@Option(names = "--quantity", description = "Minimum item count.")
 		private int quantity = 1;
@@ -402,7 +405,12 @@ public final class AiricraftCliMain {
 		Map<String, Object> runCommand() {
 			Map<String, Object> payload = new LinkedHashMap<>();
 			payload.put("kind", kind);
-			payload.put("itemId", itemId);
+			if (itemId != null && !itemId.isBlank()) {
+				payload.put("itemId", itemId);
+			}
+			if (resourceKind != null && !resourceKind.isBlank()) {
+				payload.put("resourceKind", resourceKind);
+			}
 			payload.put("quantity", quantity);
 			return PayloadViews.agentActionGoal(transport().startAgentActionGoal(payload), verbose());
 		}

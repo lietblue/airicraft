@@ -19,6 +19,7 @@ import ai.moeru.airicraft.agent.llm.CurrentViewVisionService;
 import ai.moeru.airicraft.agent.llm.LlmBackendException;
 import ai.moeru.airicraft.agent.llm.PlannerTrigger;
 import ai.moeru.airicraft.agent.session.LanHostingService;
+import ai.moeru.airicraft.agent.tasks.ResourceGatheringCatalog;
 import ai.moeru.airicraft.agent.tasks.TaskResourceKind;
 import ai.moeru.airicraft.agent.tasks.TaskLedger;
 import ai.moeru.airicraft.agent.tasks.TaskSpec;
@@ -793,7 +794,7 @@ public final class ModBridgeServer {
 				throw new BridgeUnavailableException("invalid_request", "resource_collection goals require resourceKind");
 			}
 			String resourceKind = request.resourceKind().trim().toUpperCase(Locale.ROOT);
-			if (!"WOOD_LOGS".equals(resourceKind)) {
+			if (ResourceGatheringCatalog.entry(resourceKind).isEmpty()) {
 				throw new BridgeUnavailableException("unsupported_action_goal", "Unsupported resource_collection resourceKind: " + request.resourceKind());
 			}
 			return ActionGoal.resourceCollection(resourceKind, quantity);

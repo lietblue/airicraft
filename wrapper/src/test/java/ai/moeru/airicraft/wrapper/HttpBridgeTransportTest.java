@@ -411,6 +411,28 @@ class HttpBridgeTransportTest {
 	}
 
 	@Test
+	void startAgentActionGoalPostsResourceGoalPayload(@TempDir Path tempDir) throws Exception {
+		try (TestBridgeServer server = TestBridgeServer.start()) {
+			server.respondJson("/v1/agent/action-goals", 0, 200, """
+				{"available":true,"execution":{"executionId":"graph-raw-iron","state":"RESOLVING"}}
+				""");
+			writeBridgeState(tempDir, server.port());
+			System.setProperty("user.home", tempDir.toString());
+
+			HttpBridgeTransport transport = new HttpBridgeTransport();
+			Map<String, Object> payload = transport.startAgentActionGoal(Map.of(
+				"kind", "resource_collection",
+				"resourceKind", "RAW_IRON",
+				"quantity", 3
+			));
+
+			assertEquals(true, payload.get("available"));
+			assertEquals(1, server.requestCount("/v1/agent/action-goals"));
+			assertEquals("POST", server.lastMethod("/v1/agent/action-goals"));
+		}
+	}
+
+	@Test
 	void agentDebugCompactUsesLongerTimeout(@TempDir Path tempDir) throws Exception {
 		try (TestBridgeServer server = TestBridgeServer.start()) {
 			server.respondJson("/v1/agent/debug/compact", 2500, 200, """

@@ -1,6 +1,7 @@
 package ai.moeru.airicraft.agent.llm;
 
 import ai.moeru.airicraft.agent.tasks.EntityAttackMode;
+import ai.moeru.airicraft.agent.tasks.ResourceGatheringCatalog;
 import ai.moeru.airicraft.agent.tasks.ReturnToSurfaceStepArgs;
 import ai.moeru.airicraft.agent.tasks.SmeltingFuelMode;
 import com.google.gson.JsonArray;
@@ -124,7 +125,7 @@ public final class PlannerToolCatalog {
 			), List.of()), NO_ARGUMENT_VALIDATION),
 		builtInTool(START_ACTION_GOAL, false, tool(START_ACTION_GOAL, "Start one runtime-owned action graph goal from a high-level typed intent. Prefer this over low-level action tools for execution.", properties(
 				prop("narration", optionalString("Optional visible narration before using the tool. Omit this field when no narration is needed.")),
-				prop("kind", enumString("Typed action goal kind. inventory_item, crafting_output, smelting_output, and WOOD_LOGS resource_collection are executable in v1; other kinds are reserved graph goal surfaces during migration.", List.of(
+					prop("kind", enumString("Typed action goal kind. inventory_item, crafting_output, smelting_output, and catalog resource_collection are executable in v1; other kinds are reserved graph goal surfaces during migration.", List.of(
 					"inventory_item",
 					"resource_collection",
 					"movement",
@@ -136,7 +137,7 @@ public final class PlannerToolCatalog {
 				))),
 				prop("itemId", optionalString("Inventory/crafting/smelting output item id, for example minecraft:bread.")),
 				prop("quantity", integer("Desired minimum quantity.")),
-				prop("resourceKind", optionalString("Resource kind for resource_collection goals.")),
+					prop("resourceKind", optionalString("Resource kind for resource_collection goals. Supported values: " + String.join(", ", ResourceGatheringCatalog.supportedKindNames()) + ".")),
 				prop("x", integer("Target block x coordinate for movement or block goals.")),
 				prop("y", integer("Target block y coordinate for movement or block goals.")),
 				prop("z", integer("Target block z coordinate for movement or block goals.")),
@@ -185,7 +186,7 @@ public final class PlannerToolCatalog {
 			), List.of("blockIds", "quantity")), PlannerToolCatalog::validateMineBlocksArguments),
 		builtInTool(COLLECT_RESOURCE, false, tool(COLLECT_RESOURCE, "Collect a supported resource kind.", properties(
 				prop("narration", optionalString("Optional visible narration before using the tool. Omit this field when no narration is needed.")),
-				prop("resourceKind", enumString("Resource kind.", List.of("WOOD_LOGS"))),
+					prop("resourceKind", enumString("Resource kind.", ResourceGatheringCatalog.supportedKindNames())),
 				prop("quantity", integer("Quantity to collect."))
 			), List.of("resourceKind", "quantity")), PlannerToolCatalog::validateCollectResourceArguments),
 		builtInTool(CRAFT_RECIPE, false, tool(CRAFT_RECIPE, "Run a listed crafting recipe, including automatic crafting-table setup for 3x3 recipes.", properties(
@@ -465,7 +466,7 @@ public final class PlannerToolCatalog {
 
 	private static void validateCollectResourceArguments(JsonObject arguments) {
 		String kind = requireString(arguments, "resourceKind");
-		if (!"WOOD_LOGS".equals(kind)) {
+		if (ResourceGatheringCatalog.entry(kind).isEmpty()) {
 			throw new JsonParseException("Unsupported resourceKind: " + kind);
 		}
 		requirePositiveInt(arguments, "quantity");
@@ -490,7 +491,10 @@ public final class PlannerToolCatalog {
 			requirePositiveInt(arguments, "quantity");
 		}
 		if ("resource_collection".equals(kind)) {
-			requireString(arguments, "resourceKind");
+			String resourceKind = requireString(arguments, "resourceKind");
+			if (ResourceGatheringCatalog.entry(resourceKind).isEmpty()) {
+				throw new JsonParseException("Unsupported resourceKind: " + resourceKind);
+			}
 			requirePositiveInt(arguments, "quantity");
 		}
 		if ("movement".equals(kind) || "block_modification".equals(kind)) {

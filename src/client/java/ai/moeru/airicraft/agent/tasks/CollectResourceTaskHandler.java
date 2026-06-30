@@ -4,20 +4,7 @@ import ai.moeru.airicraft.agent.goals.GoalMineSpec;
 import ai.moeru.airicraft.agent.goals.GoalSnapshot;
 import ai.moeru.airicraft.agent.goals.GoalType;
 
-import java.util.List;
-
 public final class CollectResourceTaskHandler {
-	private static final List<String> WOOD_LOG_BLOCK_IDS = List.of(
-		"minecraft:oak_log",
-		"minecraft:birch_log",
-		"minecraft:spruce_log",
-		"minecraft:jungle_log",
-		"minecraft:acacia_log",
-		"minecraft:dark_oak_log",
-		"minecraft:mangrove_log",
-		"minecraft:cherry_log"
-	);
-
 	public GoalSnapshot start(TaskSpec spec, long tick) {
 		return start(spec, spec.quantity(), tick);
 	}
@@ -30,30 +17,32 @@ public final class CollectResourceTaskHandler {
 	}
 
 	public GoalSnapshot start(TaskResourceKind resourceKind, int remainingQuantity, long tick) {
-		if (resourceKind != TaskResourceKind.WOOD_LOGS) {
+		java.util.List<String> blockIds = ResourceGatheringCatalog.targetBlockIds(resourceKind);
+		if (blockIds.isEmpty()) {
 			throw new IllegalArgumentException("Unsupported resource kind: " + resourceKind);
 		}
 		return new GoalSnapshot(
 			GoalType.MINE_BLOCKS,
 			null,
 			null,
-			new GoalMineSpec(WOOD_LOG_BLOCK_IDS, remainingQuantity),
+			new GoalMineSpec(blockIds, remainingQuantity),
 			tick,
 			"task_runtime"
 		);
 	}
 
-	public static List<String> targetBlockIds(TaskSpec spec) {
-		if (spec == null || spec.type() != TaskType.COLLECT_RESOURCE || spec.resourceKind() != TaskResourceKind.WOOD_LOGS) {
-			return List.of();
+	public static java.util.List<String> targetBlockIds(TaskSpec spec) {
+		if (spec == null || spec.type() != TaskType.COLLECT_RESOURCE) {
+			return java.util.List.of();
 		}
-		return WOOD_LOG_BLOCK_IDS;
+		return ResourceGatheringCatalog.targetBlockIds(spec.resourceKind());
 	}
 
-	public static boolean matchesResourceKind(TaskResourceKind resourceKind, List<String> blockIds) {
-		if (resourceKind != TaskResourceKind.WOOD_LOGS || blockIds == null || blockIds.isEmpty()) {
+	public static boolean matchesResourceKind(TaskResourceKind resourceKind, java.util.List<String> blockIds) {
+		java.util.List<String> resourceBlocks = ResourceGatheringCatalog.targetBlockIds(resourceKind);
+		if (resourceBlocks.isEmpty() || blockIds == null || blockIds.isEmpty()) {
 			return false;
 		}
-		return blockIds.stream().allMatch(WOOD_LOG_BLOCK_IDS::contains);
+		return blockIds.stream().allMatch(resourceBlocks::contains);
 	}
 }

@@ -24,7 +24,18 @@ class CollectResourceTaskHandlerTest {
 			"minecraft:acacia_log",
 			"minecraft:dark_oak_log",
 			"minecraft:mangrove_log",
-			"minecraft:cherry_log"
+			"minecraft:cherry_log",
+			"minecraft:pale_oak_log"
 		), 4), goal.mineSpec());
+	}
+
+	@Test
+	void createsMineBlocksGoalForCatalogedOreResource() {
+		CollectResourceTaskHandler handler = new CollectResourceTaskHandler();
+
+		var goal = handler.start(new TaskSpec(TaskType.COLLECT_RESOURCE, TaskResourceKind.RAW_IRON, 3), 120L);
+
+		assertEquals(GoalType.MINE_BLOCKS, goal.type());
+		assertEquals(new GoalMineSpec(List.of("minecraft:deepslate_iron_ore", "minecraft:iron_ore"), 3), goal.mineSpec());
 	}
 }

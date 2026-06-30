@@ -29,4 +29,12 @@ class MinedBlockDropMapperTest {
 		));
 		assertTrue(MinedBlockDropMapper.matchingInventoryItemIds(List.of("minecraft:iron_ore")).contains("minecraft:raw_iron"));
 	}
+
+	@Test
+	void delegatesCatalogedSourceBlockLookups() {
+		assertEquals(List.of("minecraft:deepslate_iron_ore", "minecraft:iron_ore"),
+			MinedBlockDropMapper.sourceBlockIdsForInventoryItem("minecraft:raw_iron"));
+		assertEquals(List.of("minecraft:nether_quartz_ore"),
+			MinedBlockDropMapper.sourceBlockIdsForInventoryItem("minecraft:quartz"));
+	}
 }

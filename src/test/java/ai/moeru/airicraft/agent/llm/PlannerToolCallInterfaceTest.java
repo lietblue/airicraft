@@ -403,6 +403,7 @@ class PlannerToolCallInterfaceTest {
 	void exposesActionGraphPlannerTools() {
 		JsonArray tools = JsonParser.parseString(gson().toJson(PlannerToolCatalog.openAiTools())).getAsJsonArray();
 		JsonObject startParameters = toolSchema(tools, "start_action_goal");
+		JsonObject collectParameters = toolSchema(tools, "collect_resource");
 
 		assertTrue(toolNames(tools).contains("start_action_goal"));
 		assertTrue(toolNames(tools).contains("inspect_action_goal"));
@@ -422,10 +423,21 @@ class PlannerToolCallInterfaceTest {
 
 		assertEquals("start_action_goal", startCall.name());
 		assertEquals("minecraft:bread", startCall.arguments().get("itemId").getAsString());
-		assertEquals("cancel_action_goal", cancelCall.name());
-		assertThrows(com.google.gson.JsonParseException.class, () ->
-			PlannerToolCatalog.parseToolCall(toolCall("start_action_goal", """
-				{"kind":"inventory_item","itemId":"minecraft:bread"}
+			assertEquals("cancel_action_goal", cancelCall.name());
+			assertTrue(collectParameters
+				.getAsJsonObject("properties")
+				.getAsJsonObject("resourceKind")
+				.getAsJsonArray("enum")
+				.asList()
+				.stream()
+				.anyMatch(value -> "RAW_IRON".equals(value.getAsString())));
+			PlannerToolCall resourceCall = PlannerToolCatalog.parseToolCall(toolCall("start_action_goal", """
+				{"kind":"resource_collection","resourceKind":"RAW_IRON","quantity":3}
+				"""));
+			assertEquals("RAW_IRON", resourceCall.arguments().get("resourceKind").getAsString());
+			assertThrows(com.google.gson.JsonParseException.class, () ->
+				PlannerToolCatalog.parseToolCall(toolCall("start_action_goal", """
+					{"kind":"inventory_item","itemId":"minecraft:bread"}
 				"""))
 		);
 	}

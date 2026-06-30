@@ -649,6 +649,26 @@ class AiricraftCliMainTest {
 	}
 
 	@Test
+	void agentActionsGoalStartSubmitsResourceGoal() {
+		TestTransport transport = new TestTransport();
+		transport.agentActionGoalStartPayload = actionGoalPayload("action-graph-raw-iron", "RESOLVING");
+
+		CliResult result = execute(
+			transport,
+			"agent", "actions", "goal", "start",
+			"--kind", "resource_collection",
+			"--resource-kind", "RAW_IRON",
+			"--quantity", "3"
+		);
+
+		assertEquals(0, result.exitCode());
+		assertEquals("resource_collection", transport.lastActionGoalPayload.get("kind"));
+		assertEquals("RAW_IRON", transport.lastActionGoalPayload.get("resourceKind"));
+		assertEquals(3, transport.lastActionGoalPayload.get("quantity"));
+		assertTrue(result.output().contains("executionId: action-graph-raw-iron\n"));
+	}
+
+	@Test
 	void agentActionsGoalInspectAndCancelRenderSnapshot() {
 		TestTransport transport = new TestTransport();
 		transport.agentActionGoalPayload = actionGoalPayload("action-graph-2", "WAITING_PRIMITIVE");

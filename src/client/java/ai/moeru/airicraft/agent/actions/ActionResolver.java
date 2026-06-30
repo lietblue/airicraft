@@ -1,6 +1,7 @@
 package ai.moeru.airicraft.agent.actions;
 
 import ai.moeru.airicraft.agent.tasks.MinedBlockDropMapper;
+import ai.moeru.airicraft.agent.tasks.ResourceGatheringCatalog;
 
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -100,7 +101,7 @@ public final class ActionResolver {
 		}
 
 		if (!preferActionsetRoutes) {
-			Optional<ActionRoute> resourceRoute = resolveResourceProviderGoal(goal, trace);
+			Optional<ActionRoute> resourceRoute = resolveResourceProviderGoal(goal, depth, resolving, trace);
 			if (resourceRoute.isPresent()) {
 				resolving.remove(goal.normalizedKey());
 				return resourceRoute;
@@ -134,7 +135,7 @@ public final class ActionResolver {
 		}
 
 		if (preferActionsetRoutes) {
-			Optional<ActionRoute> resourceRoute = resolveResourceProviderGoal(goal, trace);
+			Optional<ActionRoute> resourceRoute = resolveResourceProviderGoal(goal, depth, resolving, trace);
 			if (resourceRoute.isPresent()) {
 				resolving.remove(goal.normalizedKey());
 				return resourceRoute;
@@ -209,13 +210,16 @@ public final class ActionResolver {
 
 	private Optional<ActionRoute> resolveResourceProviderGoal(
 		ActionGoal goal,
+		int depth,
+		LinkedHashSet<String> resolving,
 		List<ActionTraceEvent> trace
 	) {
 		if (goal.factType() != ActionFactType.INVENTORY_RESOURCE) {
 			return Optional.empty();
 		}
 		String resourceKind = goal.keys().getOrDefault("resourceKind", "");
-		if (!"WOOD_LOGS".equals(resourceKind)) {
+		Optional<ResourceGatheringCatalog.ResourceEntry> entry = ResourceGatheringCatalog.entry(resourceKind);
+		if (entry.isEmpty()) {
 			trace.add(event(
 				"route_candidate_rejected",
 				"resource_provider",
@@ -240,6 +244,32 @@ public final class ActionResolver {
 		int deficitCount = Math.max(0, targetCount - existingGoalCount(goal));
 		if (deficitCount <= 0) {
 			return Optional.of(ActionRoute.empty());
+		}
+		if (!entry.get().aggregate()) {
+			String itemId = entry.get().primaryItemId();
+			if (itemId.isBlank()) {
+				return Optional.empty();
+			}
+			trace.add(event(
+				"route_candidate_built",
+				"resource_provider",
+				resourceKind,
+				"",
+				Map.of("goal", goal.normalizedKey(), "cost", 35, "resourceKind", resourceKind, "itemId", itemId)
+			));
+			Optional<ActionRoute> itemRoute = resolveGoal(ActionGoal.inventoryItem(itemId, targetCount), depth + 1, resolving, trace);
+			if (itemRoute.isEmpty()) {
+				trace.add(event(
+					"route_candidate_rejected",
+					"resource_provider",
+					resourceKind,
+					"",
+					Map.of("goal", goal.normalizedKey(), "reason", "item_route_unavailable", "itemId", itemId)
+				));
+				return Optional.empty();
+			}
+			trace.add(event("route_selected", "resource_provider", resourceKind, "", Map.of("goal", goal.normalizedKey(), "itemId", itemId)));
+			return itemRoute;
 		}
 		trace.add(event(
 			"route_candidate_built",

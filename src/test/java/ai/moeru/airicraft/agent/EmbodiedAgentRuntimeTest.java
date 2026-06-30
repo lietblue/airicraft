@@ -272,14 +272,14 @@ class EmbodiedAgentRuntimeTest {
 			"call_goal",
 			PlannerToolCatalog.START_ACTION_GOAL,
 			JsonParser.parseString("""
-				{"kind":"resource_collection","resourceKind":"WOOD_LOGS","quantity":3}
+					{"kind":"resource_collection","resourceKind":"RAW_IRON","quantity":3}
 				""").getAsJsonObject(),
 			null,
 			null
 		));
 
 		assertTrue(result.contains("Tool result for start_action_goal: state=RESOLVING"));
-		assertTrue(result.contains("resourceKind=WOOD_LOGS"));
+		assertTrue(result.contains("resourceKind=RAW_IRON"));
 		assertEquals(ActionGraphExecutionState.RESOLVING, runtime.actionGraphExecutionSnapshot().state());
 	}
 
@@ -417,6 +417,7 @@ class EmbodiedAgentRuntimeTest {
 
 		assertTrue(result.contains("Tool result for list_action_capabilities"));
 		assertTrue(result.contains("inventory_item"));
+		assertTrue(result.contains("RAW_IRON"));
 		assertTrue(result.contains("supported"));
 		assertTrue(result.contains("primitiveCount="));
 	}

@@ -45,6 +45,38 @@ class ActionResolverTest {
 	}
 
 	@Test
+	void resolvesCatalogedResourceCollectionThroughInventoryMiningProvider() {
+		ActionFactStore facts = new ActionFactStore();
+		addSurvivalCraftFacts(facts);
+
+		ActionResolveResult result = new ActionResolver(ActionsetIndex.empty(), facts, CONTEXT)
+			.resolve(ActionGoal.resourceCollection("RAW_IRON", 3));
+
+		assertTrue(result.resolved(), () -> result.trace().toString());
+		assertTrue(result.route().steps().stream().anyMatch(step -> "collect_resource".equals(step.targetId())));
+		assertTrue(result.route().steps().stream().anyMatch(step -> "craft_item".equals(step.targetId())
+			&& "minecraft:wooden_pickaxe".equals(step.args().get("itemId"))));
+		assertTrue(result.route().steps().stream().anyMatch(step -> "craft_item".equals(step.targetId())
+			&& "minecraft:stone_pickaxe".equals(step.args().get("itemId"))));
+		assertTrue(result.route().steps().stream().anyMatch(step -> "mine_block".equals(step.targetId())
+			&& "minecraft:raw_iron".equals(step.args().get("itemId"))));
+		assertEquals("WOOD_LOGS", result.route().steps().getFirst().args().get("resourceKind"));
+		assertEquals("minecraft:raw_iron", result.route().steps().getLast().args().get("itemId"));
+		assertTrace(result.trace(), "route_selected", "resource_provider", "RAW_IRON");
+		assertTrace(result.trace(), "route_selected", "mining_provider", "minecraft:raw_iron");
+	}
+
+	@Test
+	void rejectsUnsupportedResourceCollectionWithTrace() {
+		ActionResolveResult result = new ActionResolver(ActionsetIndex.empty(), new ActionFactStore(), CONTEXT)
+			.resolve(ActionGoal.resourceCollection("OBSIDIAN", 1));
+
+		assertFalse(result.resolved());
+		assertEquals("no_route", result.failureCode());
+		assertTrace(result.trace(), "route_candidate_rejected", "resource_provider", "OBSIDIAN");
+	}
+
+	@Test
 	void resolvesInventoryLogThroughWoodResourceProvider() {
 		ActionResolveResult result = new ActionResolver(ActionsetIndex.empty(), new ActionFactStore(), CONTEXT)
 			.resolve(ActionGoal.inventoryItem("minecraft:birch_log", 2));
