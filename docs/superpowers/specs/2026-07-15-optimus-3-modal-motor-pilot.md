@@ -144,6 +144,38 @@ ignored by Git. The 434 ms first action is not evidence of 20 Hz operation; the
 warmed native multi-step latency measurement in Stage 2 is the next gate,
 before native episodes or any Minecraft actuator work.
 
+## Verified Stage 2 Result
+
+The corrected 2026-07-15 L40S run under `20260715T102957Z-bench` passed the
+synthetic GPU latency screen:
+
+- all eight released-path diagnostics, 32 warm-up steps, and 256 continuous
+  measured steps completed with the required reset sequence;
+- measured native-step latency was 6.737 ms p50, 6.780 ms p95, 6.812 ms p99,
+  and 7.294 ms maximum;
+- mean latency was 6.740 ms, or 148.36 sequential steps per second, with zero
+  samples above the 50 ms deadline;
+- all 296 policy outputs matched the exact 22-key schema, every applied action
+  matched the 24-key actuator schema, and no safety-mask violation occurred;
+- the measured policy attempted `use` on 145 steps and `hotbar.4` on one step;
+  all 146 forbidden attempts were retained as evidence and masked to zero; and
+- the pinned runtime, L40S device, checkpoints, task label, embedding and
+  projection shapes, recurrent stream, and uploaded-source hashes all matched.
+
+The eight released-path calls were not warm-state matched. Their 7.92x
+reference-to-cached mean-latency ratio is diagnostic only and is not used by
+the acceptance gate. The result establishes substantial compute-loop headroom
+under the 50 ms budget, but excludes frame capture, transport, tick scheduling,
+and Minecraft action application. It authorizes Stage 3 locked MineStudio
+episodes; it does not establish mining competence, naturalness, or live 1.21.8
+performance.
+
+An earlier attempt under `20260715T102647Z-bench` stopped fail-closed at its
+first reference action because the harness incorrectly required the
+actuator-only `pickItem` and `swapHands` controls from Optimus. No warm-up or
+measured samples ran in that attempt. Commit `05304ae` separated the pinned
+22-key policy schema from the 24-key actuator schema before the successful run.
+
 ## Later Live-Pilot Gate
 
 The eventual visible-iron A/B proceeds only if native reproduction succeeds.
