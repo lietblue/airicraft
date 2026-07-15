@@ -148,4 +148,6 @@ This pilot therefore loads the released full model and action head directly,
 matching the official `reset()` embedding path while omitting that unused task
 router. A small runtime namespace shim prevents importing the bundled Java
 MineStudio simulator merely to access its static action map. The action-head
-weights and policy code remain the released versions.
+weights and policy code remain the released versions. The released action
+agent's `.to()` helper targets a non-PyTorch wrapper and raises; the pilot uses
+its CUDA-aware constructor and verifies each owned module's device instead.

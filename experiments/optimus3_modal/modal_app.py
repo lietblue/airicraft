@@ -290,7 +290,48 @@ class Optimus3Smoke:
         self.model.to(self.device)
         self.processor = AutoProcessor.from_pretrained(str(_model_path("mllm")), local_files_only=True)
         self.action_head = Optimus3ActionAgent.from_pretrained(str(_model_path("action_head")))
-        self.action_head.to(self.device)
+        # The released .to() calls .to() on MineRLConditionalAgent, which is a
+        # wrapper rather than a torch module. Its constructor already selects
+        # CUDA and moves each owned module, so verify that placement directly.
+        action_modules = {
+            "mineclip": self.action_head.mineclip,
+            "prior": self.action_head.prior,
+            "policy": self.action_head.agent.policy,
+            "mllm_embed_linear": self.action_head.mllm_embed_linear,
+        }
+        misplaced: list[str] = []
+        for module_name, module in action_modules.items():
+            for tensor_kind, named_tensors in (
+                ("parameter", module.named_parameters()),
+                ("buffer", module.named_buffers()),
+            ):
+                misplaced.extend(
+                    f"{module_name}.{tensor_kind}.{name}"
+                    for name, tensor in named_tensors
+                    if tensor.device.type != self.device.type
+                )
+
+        def check_state(path: str, value: Any) -> None:
+            if self.torch.is_tensor(value):
+                if value.device.type != self.device.type:
+                    misplaced.append(path)
+            elif isinstance(value, dict):
+                for key, item in value.items():
+                    check_state(f"{path}.{key}", item)
+            elif isinstance(value, (list, tuple)):
+                for index, item in enumerate(value):
+                    check_state(f"{path}.{index}", item)
+
+        check_state("agent._dummy_first", self.action_head.agent._dummy_first)
+        check_state("agent.hidden_state", self.action_head.agent.hidden_state)
+        for owner_name, owner_device in (
+            ("action_head.device", self.action_head.device),
+            ("agent.device", self.action_head.agent.device),
+        ):
+            if self.torch.device(owner_device).type != self.device.type:
+                misplaced.append(owner_name)
+        if misplaced:
+            raise RuntimeError(f"action-head modules are not on CUDA: {misplaced}")
         self.load_seconds = time.perf_counter() - self.load_started
 
     def _task_embedding(self, task: str) -> tuple[Any, str]:
