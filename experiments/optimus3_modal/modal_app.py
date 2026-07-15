@@ -11,7 +11,6 @@ import shutil
 import sys
 import time
 import types
-import xml.etree.ElementTree as ElementTree
 from importlib.metadata import version as package_version
 from pathlib import Path
 from typing import Any, Callable, Mapping
@@ -40,11 +39,11 @@ from contract import (
     NATIVE_EXPECTED_IRON_BLOCKS,
     NATIVE_EXPECTED_LABEL,
     NATIVE_EXPECTED_PROJECTION_SHA256,
-    NATIVE_FIXTURE_DRAW_OFFSETS,
+    NATIVE_FIXTURE_BLOCK_OFFSETS,
     NATIVE_FIXTURE_METHOD,
-    NATIVE_FIXTURE_PROOF_MAX_ATTACK_STEPS,
-    NATIVE_FIXTURE_PROOF_TARGET_OFFSET,
+    NATIVE_FIXTURE_SETTLE_STEPS,
     NATIVE_FIXTURE_SPEC_SHA256,
+    NATIVE_FIXTURE_VOXEL_BOUNDS,
     NATIVE_GATE_NAME,
     NATIVE_MAX_STEPS,
     NATIVE_REQUIRED_SUCCESSES,
@@ -579,11 +578,8 @@ def _restore_native_mission(simulator: Any) -> None:
 def _configure_native_mission_fixture(
     simulator: Any,
     discovery_location: Mapping[str, float],
-    *,
-    placement_override: Mapping[str, float] | None = None,
 ) -> dict[str, Any]:
     _install_minestudio_namespace_shim()
-    from minestudio.simulator.minerl.herobraine.hero.handler import Handler
     from minestudio.simulator.minerl.herobraine.hero.handlers.agent.start import AgentStartPlacement
 
     required_location_keys = {"xpos", "ypos", "zpos", "pitch", "yaw"}
@@ -594,116 +590,44 @@ def _configure_native_mission_fixture(
     base_x = math.floor(discovery_location["xpos"])
     base_y = math.floor(discovery_location["ypos"])
     base_z = math.floor(discovery_location["zpos"])
-    draw_blocks = [
+    expected_blocks = [
         {
             "x": base_x + offset_x,
             "y": base_y + offset_y,
             "z": base_z + offset_z,
             "type": "iron_ore",
         }
-        for offset_x, offset_y, offset_z in NATIVE_FIXTURE_DRAW_OFFSETS
+        for offset_x, offset_y, offset_z in NATIVE_FIXTURE_BLOCK_OFFSETS
     ]
-    drawing_xml = "".join(
-        f'<DrawBlock x="{block["x"]}" y="{block["y"]}" z="{block["z"]}" type="iron_ore"/>'
-        for block in draw_blocks
-    )
-    default_placement = {
+    placement = {
         "x": discovery_location["xpos"],
         "y": discovery_location["ypos"],
         "z": discovery_location["zpos"],
         "yaw": discovery_location["yaw"],
         "pitch": discovery_location["pitch"],
     }
-    placement = dict(placement_override or default_placement)
     original_agent_start = simulator.airicraft_original_create_agent_start
-    original_server_decorators = simulator.airicraft_original_create_server_decorators
-
-    class NativeDrawingDecorator(Handler):
-        def to_string(self) -> str:
-            return "drawing_decorator"
-
-        def xml_template(self) -> str:
-            # MineStudio's DrawingDecorator interpolates the child XML through an
-            # autoescaping Jinja variable, turning DrawBlock nodes into text.
-            return f"<DrawingDecorator>{drawing_xml}</DrawingDecorator>"
 
     def create_agent_start(_task: Any) -> list[Any]:
         return [*original_agent_start(), AgentStartPlacement(**placement)]
 
-    def create_server_decorators(_task: Any) -> list[Any]:
-        return [*original_server_decorators(), NativeDrawingDecorator()]
-
     task = simulator.env.task
     task.create_agent_start = types.MethodType(create_agent_start, task)
-    task.create_server_decorators = types.MethodType(create_server_decorators, task)
     return {
         "method": NATIVE_FIXTURE_METHOD,
         "spec_sha256": NATIVE_FIXTURE_SPEC_SHA256,
-        "upstream_commands_executed": False,
-        "compatibility_reason": "pinned engine dropped callback chat commands during CPU preflight",
+        "upstream_commands": list(NATIVE_UPSTREAM_TASK_COMMANDS),
         "discovery_location": dict(discovery_location),
         "placement": placement,
-        "draw_blocks": draw_blocks,
-        "drawing_xml_sha256": hashlib.sha256(drawing_xml.encode("utf-8")).hexdigest(),
-    }
-
-
-def _rendered_draw_blocks(rendered_mission: str) -> list[dict[str, Any]]:
-    root = ElementTree.fromstring(rendered_mission)
-    blocks: list[dict[str, Any]] = []
-    for element in root.iter():
-        if element.tag.rsplit("}", 1)[-1] != "DrawBlock":
-            continue
-        try:
-            blocks.append(
-                {
-                    "x": int(element.attrib["x"]),
-                    "y": int(element.attrib["y"]),
-                    "z": int(element.attrib["z"]),
-                    "type": element.attrib["type"].removeprefix("minecraft:"),
-                }
-            )
-        except (KeyError, ValueError) as error:
-            raise RuntimeError(f"invalid DrawBlock declaration in rendered mission: {element.attrib}") from error
-    return sorted(blocks, key=lambda block: (block["x"], block["y"], block["z"], block["type"]))
-
-
-def _fixture_declaration_evidence(
-    rendered_mission: str,
-    expected_blocks: list[dict[str, Any]],
-) -> dict[str, Any]:
-    def key(block: Mapping[str, Any]) -> tuple[int, int, int, str]:
-        return (int(block["x"]), int(block["y"]), int(block["z"]), str(block["type"]))
-
-    rendered_blocks = _rendered_draw_blocks(rendered_mission)
-    expected_keys = {key(block) for block in expected_blocks}
-    rendered_keys = {key(block) for block in rendered_blocks}
-    matching = [block for block in rendered_blocks if key(block) in expected_keys]
-    return {
-        "expected_count": len(expected_blocks),
-        "expected_unique_count": len(expected_keys),
-        "matching_unique_count": len(expected_keys & rendered_keys),
-        "all_expected_present": expected_keys <= rendered_keys,
-        "matching_draw_blocks": matching,
-        "rendered_draw_block_count": len(rendered_blocks),
+        "expected_blocks": expected_blocks,
+        "settle_noop_steps": NATIVE_FIXTURE_SETTLE_STEPS,
+        "voxel_bounds_half_open": list(NATIVE_FIXTURE_VOXEL_BOUNDS),
     }
 
 
 def _frame_sha256(frame: Any) -> str:
     validate_frame_shape(frame)
     return hashlib.sha256(frame.tobytes()).hexdigest()
-
-
-def _frame_png_base64(frame: Any) -> str:
-    import base64
-    import io
-
-    from PIL import Image
-
-    validate_frame_shape(frame)
-    output = io.BytesIO()
-    Image.fromarray(frame).save(output, format="PNG")
-    return base64.b64encode(output.getvalue()).decode("ascii")
 
 
 def _mainhand_type(info: Mapping[str, Any]) -> str:
@@ -766,6 +690,59 @@ def _simulator_noop(simulator: Any) -> dict[str, Any]:
     return dict(action)
 
 
+def _materialize_native_fixture(
+    simulator: Any,
+) -> tuple[Any, dict[str, Any], dict[str, Any]]:
+    command_outcomes: list[dict[str, Any]] = []
+    for command in NATIVE_UPSTREAM_TASK_COMMANDS:
+        command_observation, reward, done, command_info = simulator.env.execute_cmd(command)
+        command_outcomes.append(
+            {
+                "command": command,
+                "reward": float(reward),
+                "done": bool(done),
+                "observation_keys": sorted(command_observation or {}),
+                "info_keys": sorted(command_info or {}),
+            }
+        )
+        if done:
+            raise RuntimeError(f"native fixture command terminated the environment: {command}")
+
+    observation = None
+    info: dict[str, Any] = {}
+    terminated = False
+    truncated = False
+    for _ in range(NATIVE_FIXTURE_SETTLE_STEPS):
+        observation, _reward, terminated, truncated, info = simulator.step(_simulator_noop(simulator))
+        if terminated or truncated:
+            raise RuntimeError("native fixture terminated while settling command effects")
+
+    query = _simulator_noop(simulator)
+    query["voxels"] = list(NATIVE_FIXTURE_VOXEL_BOUNDS)
+    observation, _reward, terminated, truncated, info = simulator.step(query)
+    if terminated or truncated:
+        raise RuntimeError("native fixture terminated during voxel validation")
+    voxel_value = info.get("voxels")
+    iron_blocks = _count_voxel_type(voxel_value, "iron_ore")
+    runtime_query = {
+        "method": "released_engine_voxel_action",
+        "bounds_semantics": "half_open",
+        "bounds": list(NATIVE_FIXTURE_VOXEL_BOUNDS),
+        "expected_volume": NATIVE_EXPECTED_IRON_BLOCKS,
+        "iron_blocks": iron_blocks,
+        "passed": iron_blocks == NATIVE_EXPECTED_IRON_BLOCKS,
+        "python_type": f"{type(voxel_value).__module__}.{type(voxel_value).__qualname__}",
+        "value": voxel_value,
+    }
+    evidence = {
+        "upstream_commands_executed": True,
+        "command_outcomes": command_outcomes,
+        "settle_noop_steps": NATIVE_FIXTURE_SETTLE_STEPS,
+        "runtime_query": runtime_query,
+    }
+    return observation, info, evidence
+
+
 def _coerce_action_value(value: Any, template: Any, np_module: Any) -> Any:
     if hasattr(template, "dtype") and hasattr(template, "shape"):
         coerced = np_module.asarray(value, dtype=template.dtype)
@@ -823,9 +800,7 @@ def _native_simulator_action(
 def _native_reset(
     simulator: Any,
     world_seed: int,
-    np_module: Any,
     *,
-    verify_runtime_target: bool,
     strict_fixture: bool,
 ) -> tuple[Any, dict[str, Any], dict[str, Any]]:
     _restore_native_mission(simulator)
@@ -835,146 +810,21 @@ def _native_reset(
     discovery_location = _location(discovery_info)
     if discovery_location is None:
         raise RuntimeError("native discovery reset did not return a location")
-
-    base_x = math.floor(discovery_location["xpos"])
-    base_y = math.floor(discovery_location["ypos"])
-    base_z = math.floor(discovery_location["zpos"])
-    target_offset_x, target_offset_y, target_offset_z = NATIVE_FIXTURE_PROOF_TARGET_OFFSET
-    proof_target = {
-        "x": base_x + target_offset_x,
-        "y": base_y + target_offset_y,
-        "z": base_z + target_offset_z,
-        "type": "iron_ore",
-    }
-    runtime_proof: dict[str, Any] = {
-        "performed": False,
-        "passed": None,
-        "reason": "only the first episode in a run performs the destructive canary",
-        "target": proof_target,
-    }
-
-    if verify_runtime_target:
-        proof_horizontal_distance = 2.0
-        proof_eye_y = discovery_location["ypos"] + 1.62
-        proof_target_center_y = proof_target["y"] + 0.5
-        proof_placement = {
-            "x": proof_target["x"] + 0.5,
-            "y": discovery_location["ypos"],
-            "z": proof_target["z"] - 1.5,
-            "yaw": 0.0,
-            "pitch": math.degrees(
-                math.atan2(proof_eye_y - proof_target_center_y, proof_horizontal_distance)
-            ),
-        }
-        proof_fixture = _configure_native_mission_fixture(
-            simulator,
-            discovery_location,
-            placement_override=proof_placement,
-        )
-        simulator.env.seed(world_seed)
-        proof_observation, proof_info = simulator.reset()
-        validate_frame_shape(proof_observation.get("image"))
-        proof_frame_samples = [{"step": 0, "sha256": _frame_sha256(proof_observation["image"])}]
-        proof_initial_frame_png_base64 = _frame_png_base64(proof_observation["image"])
-        proof_mission = simulator.env.task.to_xml()
-        proof_declaration = _fixture_declaration_evidence(proof_mission, proof_fixture["draw_blocks"])
-        proof_location = _location(proof_info)
-        proof_location_valid = proof_location is not None and all(
-            observed_key in proof_location
-            and abs(proof_location[observed_key] - proof_placement[expected_key]) <= 0.01
-            for observed_key, expected_key in (
-                ("xpos", "x"),
-                ("ypos", "y"),
-                ("zpos", "z"),
-            )
-        )
-        mine_before = stat_count(proof_info.get("mine_block"), "iron_ore")
-        mine_after = mine_before
-        attack_steps = 0
-        proof_terminated = False
-        proof_action_evidence: dict[str, Any] | None = None
-        release_action_evidence: dict[str, Any] | None = None
-        if proof_location_valid and proof_declaration["all_expected_present"]:
-            applied_attack = {
-                key: [0.0, 0.0] if key == "camera" else 0 for key in ALL_ACTION_KEYS
-            }
-            applied_attack["attack"] = 1
-            simulator_action, proof_action_evidence = _native_simulator_action(
-                simulator, applied_attack, np_module
-            )
-            for _ in range(NATIVE_FIXTURE_PROOF_MAX_ATTACK_STEPS):
-                proof_observation, _reward, terminated, truncated, proof_info = simulator.step(
-                    simulator_action
-                )
-                attack_steps += 1
-                if attack_steps in (1, 5, 10, 20, 40, NATIVE_FIXTURE_PROOF_MAX_ATTACK_STEPS):
-                    proof_frame_samples.append(
-                        {"step": attack_steps, "sha256": _frame_sha256(proof_observation["image"])}
-                    )
-                mine_after = stat_count(proof_info.get("mine_block"), "iron_ore")
-                proof_terminated = bool(terminated or truncated)
-                if mine_after > mine_before:
-                    break
-                if proof_terminated:
-                    break
-            if not proof_terminated:
-                applied_release = {
-                    key: [0.0, 0.0] if key == "camera" else 0 for key in ALL_ACTION_KEYS
-                }
-                release_action, release_action_evidence = _native_simulator_action(
-                    simulator, applied_release, np_module
-                )
-                proof_observation, _reward, terminated, truncated, proof_info = simulator.step(
-                    release_action
-                )
-                proof_terminated = bool(terminated or truncated)
-                mine_after = stat_count(proof_info.get("mine_block"), "iron_ore")
-
-        mine_delta = mine_after - mine_before
-        proof_passed = (
-            proof_declaration["all_expected_present"]
-            and proof_declaration["matching_unique_count"] == NATIVE_EXPECTED_IRON_BLOCKS
-            and proof_location_valid
-            and mine_delta >= 1
-            and not proof_terminated
-        )
-        runtime_proof = {
-            "performed": True,
-            "passed": proof_passed,
-            "method": "unscored_adjacent_attack_then_mine_stat",
-            "target": proof_target,
-            "placement": proof_placement,
-            "observed_location": proof_location,
-            "placement_valid": proof_location_valid,
-            "attack_steps": attack_steps,
-            "maximum_attack_steps": NATIVE_FIXTURE_PROOF_MAX_ATTACK_STEPS,
-            "mine_iron_ore_before": mine_before,
-            "mine_iron_ore_after": mine_after,
-            "mine_iron_ore_delta": mine_delta,
-            "terminated_or_truncated": proof_terminated,
-            "sent_attack_action": proof_action_evidence,
-            "sent_release_action": release_action_evidence,
-            "frame_samples": proof_frame_samples,
-            "initial_frame_png_base64": proof_initial_frame_png_base64,
-            "final_frame_png_base64": _frame_png_base64(proof_observation["image"]),
-            "rendered_mission_sha256": hashlib.sha256(proof_mission.encode("utf-8")).hexdigest(),
-            "declaration": proof_declaration,
-        }
-
     mission_fixture = _configure_native_mission_fixture(simulator, discovery_location)
 
     simulator.env.seed(world_seed)
     observation, info = simulator.reset()
     rendered_mission = simulator.env.task.to_xml()
-    declaration = _fixture_declaration_evidence(rendered_mission, mission_fixture["draw_blocks"])
+    observation, info, runtime_materialization = _materialize_native_fixture(simulator)
     mission_fixture.update(
         {
-            "hard_resets": 3 if verify_runtime_target else 2,
+            "hard_resets": 2,
             "rendered_mission_sha256": hashlib.sha256(rendered_mission.encode("utf-8")).hexdigest(),
-            "rendered_mission_contains_drawing": "<DrawingDecorator>" in rendered_mission,
-            "rendered_mission_contains_ray": "<ObservationFromRay" in rendered_mission,
-            "declaration": declaration,
-            "runtime_proof": runtime_proof,
+            "rendered_mission_contains_privileged_observer": any(
+                marker in rendered_mission
+                for marker in ("<ObservationFromGrid", "<ObservationFromRay")
+            ),
+            **runtime_materialization,
         }
     )
     frame = observation.get("image")
@@ -988,7 +838,7 @@ def _native_reset(
     }
     setup = {
         "frame_sha256": _frame_sha256(frame),
-        "declared_iron_blocks": declaration["matching_unique_count"],
+        "runtime_iron_blocks": mission_fixture["runtime_query"]["iron_blocks"],
         "mainhand": mainhand,
         "inventory": _inventory_snapshot(info),
         "location": _location(info),
@@ -996,15 +846,13 @@ def _native_reset(
         "mission_fixture": mission_fixture,
     }
     fixture_errors: list[str] = []
-    if not declaration["all_expected_present"] or declaration["matching_unique_count"] != NATIVE_EXPECTED_IRON_BLOCKS:
+    if mission_fixture["runtime_query"]["passed"] is not True:
         fixture_errors.append(
-            f"expected {NATIVE_EXPECTED_IRON_BLOCKS} unique iron DrawBlock declarations, "
-            f"got {declaration['matching_unique_count']}"
+            f"expected {NATIVE_EXPECTED_IRON_BLOCKS} runtime iron blocks, "
+            f"got {mission_fixture['runtime_query']['iron_blocks']}"
         )
-    if mission_fixture["rendered_mission_contains_ray"]:
-        fixture_errors.append("scored policy mission unexpectedly contains the privileged ray observer")
-    if verify_runtime_target and runtime_proof["passed"] is not True:
-        fixture_errors.append("unscored runtime target proof did not pass")
+    if mission_fixture["rendered_mission_contains_privileged_observer"]:
+        fixture_errors.append("scored policy mission unexpectedly contains a privileged observer")
     if mainhand != "stone_pickaxe":
         fixture_errors.append(f"expected mainhand stone_pickaxe, got {mainhand!r}")
     if initial_iron != 0:
@@ -1051,8 +899,6 @@ def simulator_preflight() -> dict[str, Any]:
         observation, info, setup = _native_reset(
             simulator,
             world_seed,
-            np,
-            verify_runtime_target=True,
             strict_fixture=False,
         )
         masked_noop = {key: [0.0, 0.0] if key == "camera" else 0 for key in ALL_ACTION_KEYS}
@@ -1069,10 +915,9 @@ def simulator_preflight() -> dict[str, Any]:
             "java_8": 'version "1.8.' in (java.stderr + java.stdout),
             "java_exit_zero": java.returncode == 0,
             "frame_shape_valid": list(observation["image"].shape) == list(FRAME_SHAPE),
-            "fixture_draw_declarations_valid": setup["declared_iron_blocks"]
+            "fixture_runtime_iron_blocks_valid": setup["runtime_iron_blocks"]
             == NATIVE_EXPECTED_IRON_BLOCKS,
-            "fixture_runtime_target_valid": setup["mission_fixture"]["runtime_proof"]["passed"]
-            is True,
+            "fixture_voxel_oracle_valid": setup["mission_fixture"]["runtime_query"]["passed"] is True,
             "fixture_errors_empty": not setup["fixture_errors"],
             "fixture_mainhand_valid": setup["mainhand"] == "stone_pickaxe",
             "fixture_initial_inventory_valid": setup["baseline"]["inventory_iron_ore"] == 0,
@@ -1116,15 +961,11 @@ class _NativeEpisodeMixin:
         projected: Any,
         episode_index: int,
         wall_deadline: float,
-        *,
-        verify_runtime_target: bool,
     ) -> dict[str, Any]:
         world_seed, policy_seed = native_episode_seeds(episode_index)
         observation, info, setup = _native_reset(
             simulator,
             world_seed,
-            self.np,
-            verify_runtime_target=verify_runtime_target,
             strict_fixture=True,
         )
         baseline = setup["baseline"]
@@ -1363,7 +1204,7 @@ class _NativeEpisodeMixin:
             try:
                 first_world_seed, _first_policy_seed = native_episode_seeds(episode_indices[0])
                 simulator = _new_native_simulator(first_world_seed)
-                for episode_position, episode_index in enumerate(episode_indices):
+                for episode_index in episode_indices:
                     if time.perf_counter() >= wall_deadline:
                         suite_error = {
                             "type": "WallBudgetExceeded",
@@ -1376,7 +1217,6 @@ class _NativeEpisodeMixin:
                             projected,
                             episode_index,
                             wall_deadline,
-                            verify_runtime_target=episode_position == 0,
                         )
                     except Exception as error:
                         episode = {
@@ -1409,9 +1249,7 @@ class _NativeEpisodeMixin:
         schema_failures = sum(episode.get("failure_reason") == "policy_schema_error" for episode in episodes)
         first_setup = episodes[0].get("setup", {}) if episodes else {}
         first_mission_fixture = first_setup.get("mission_fixture", {})
-        fixture_runtime_proof_valid = (
-            first_mission_fixture.get("runtime_proof", {}).get("passed") is True
-        )
+        fixture_voxel_oracle_valid = first_mission_fixture.get("runtime_query", {}).get("passed") is True
         infrastructure_checks = {
             "requested_gpu_present": GPU_TYPE.lower() in self.cuda_device_name.lower(),
             "torch_runtime_matches_pin": self.torch.__version__ == RUNTIME_PINS["torch"],
@@ -1423,7 +1261,7 @@ class _NativeEpisodeMixin:
             == NATIVE_UPSTREAM_TASK_COMMANDS_SHA256,
             "pinned_fixture_spec_ready": task_metadata["fixture_spec_sha256"]
             == NATIVE_FIXTURE_SPEC_SHA256,
-            "fixture_runtime_proof_valid": fixture_runtime_proof_valid,
+            "fixture_voxel_oracle_valid": fixture_voxel_oracle_valid,
             **conditioning_checks,
             "all_requested_episodes_completed": completed,
             "all_completed_episodes_valid": valid_episodes == len(episode_indices),
@@ -1480,8 +1318,8 @@ class _NativeEpisodeMixin:
                     "video_recording": False,
                     "setup_steps_are_unscored": True,
                     "fixture_runtime_proof": (
-                        "the first episode audits all eight DrawBlock declarations, then uses an "
-                        "unscored adjacent attack-and-mine-stat canary before a hard reset"
+                        "every episode executes the pinned upstream setup commands, settles two no-op "
+                        "ticks, and requires eight iron cells from the half-open VoxelAction query"
                     ),
                     "privileged_fixture_observer_available_to_policy": False,
                     "oracle": "mine_block.iron_ore delta >= 1 and inventory iron_ore delta >= 1",

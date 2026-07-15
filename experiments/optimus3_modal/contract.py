@@ -47,16 +47,16 @@ NATIVE_UPSTREAM_TASK_COMMANDS = (
     "/execute as @p at @s run fill ~2 ~ ~2 ~3 ~1 ~3 minecraft:iron_ore",
 )
 NATIVE_UPSTREAM_TASK_COMMANDS_SHA256 = "b0a5ad53ce0b70b7a62ae16543b9d68b099b874a9283cfb59b21448b51fa91a6"
-NATIVE_FIXTURE_METHOD = "mission_xml_semantic_equivalent_with_destructive_canary"
-NATIVE_FIXTURE_DRAW_OFFSETS = tuple(
+NATIVE_FIXTURE_METHOD = "upstream_commands_with_half_open_voxel_oracle"
+NATIVE_FIXTURE_BLOCK_OFFSETS = tuple(
     (x, y, z)
     for x in (2, 3)
     for y in (0, 1)
     for z in (2, 3)
 )
-NATIVE_FIXTURE_PROOF_TARGET_OFFSET = (2, 1, 2)
-NATIVE_FIXTURE_PROOF_MAX_ATTACK_STEPS = 60
-NATIVE_FIXTURE_SPEC_SHA256 = "41b94b6c82d903a5e844712c24c73c07ffacb89765b2134212fb41cd9832c9fc"
+NATIVE_FIXTURE_SETTLE_STEPS = 2
+NATIVE_FIXTURE_VOXEL_BOUNDS = (2, 4, 0, 2, 2, 4)
+NATIVE_FIXTURE_SPEC_SHA256 = "0f31ab84484bcee8602c76bde30205198b71df00bea36bc4d7047c59df560b79"
 NATIVE_EXPECTED_IRON_BLOCKS = 8
 NATIVE_EMBEDDING_SEED = 7
 NATIVE_EXPECTED_LABEL = "<iron>"
@@ -67,14 +67,14 @@ NATIVE_SEED_NAMESPACE = "airicraft-optimus3-stage3-v1"
 
 def native_fixture_spec() -> dict[str, Any]:
     return {
-        "draw_offsets": [list(offset) for offset in NATIVE_FIXTURE_DRAW_OFFSETS],
+        "block_offsets": [list(offset) for offset in NATIVE_FIXTURE_BLOCK_OFFSETS],
+        "command_transport": "MineStudio execute_cmd chat action",
+        "commands": list(NATIVE_UPSTREAM_TASK_COMMANDS),
+        "expected_iron_blocks": NATIVE_EXPECTED_IRON_BLOCKS,
         "inventory": {"0": {"quantity": 1, "type": "stone_pickaxe"}},
         "placement": "discovery_location",
-        "runtime_proof": {
-            "max_attack_steps": NATIVE_FIXTURE_PROOF_MAX_ATTACK_STEPS,
-            "method": "unscored_adjacent_attack_then_mine_stat",
-            "target_offset": list(NATIVE_FIXTURE_PROOF_TARGET_OFFSET),
-        },
+        "settle_noop_steps": NATIVE_FIXTURE_SETTLE_STEPS,
+        "voxel_bounds_half_open": list(NATIVE_FIXTURE_VOXEL_BOUNDS),
     }
 
 SIMULATOR_ENGINE_REPOSITORY = "CraftJarvis/SimulatorEngine"
@@ -662,13 +662,13 @@ def pilot_manifest() -> dict[str, Any]:
             "fixture_spec": native_fixture_spec(),
             "fixture_spec_sha256": NATIVE_FIXTURE_SPEC_SHA256,
             "fixture_compatibility_note": (
-                "reproduces the upstream stone-pickaxe and relative 2x2x2 iron state through "
-                "mission XML because callback chat commands were dropped by the pinned engine"
+                "executes the pinned upstream commands through MineStudio's chat action and keeps "
+                "AgentStart inventory as a deterministic stone-pickaxe backstop"
             ),
-            "expected_declared_iron_blocks": NATIVE_EXPECTED_IRON_BLOCKS,
+            "expected_runtime_iron_blocks": NATIVE_EXPECTED_IRON_BLOCKS,
             "runtime_fixture_proof": (
-                "audit eight unique DrawBlock declarations, then mine one directly targeted block "
-                "on an unscored reset before hard-resetting the policy episode"
+                "query the command target with the released engine's half-open VoxelAction bounds "
+                "and require all eight cells to contain iron ore before policy inference"
             ),
             "episode_count": NATIVE_EPISODE_COUNT,
             "required_successes": NATIVE_REQUIRED_SUCCESSES,
