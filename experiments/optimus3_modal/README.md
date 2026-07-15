@@ -324,6 +324,24 @@ contamination was gone, and the episode succeeded at step 181 with both mine and
 pickup deltas equal to one. It is paired diagnostic evidence, not an independent
 v2 gate sample.
 
+The frozen held-out v2 gate under
+`20260715T173603Z-episodes.kBiA8o`, run from commit `29b4a22`, passed at exactly
+`8/10`. All ten episodes were valid; all infrastructure and mandatory same-run
+capture checks passed; and schema failures, safety violations, and suite errors
+were zero. Episodes 1, 2, 3, 4, 5, 7, 8, and 9 completed at steps 84, 77, 58,
+92, 100, 71, 138, and 57. Episode 0 mined two blocks but collected none;
+episode 6 neither mined nor collected and moved away from the fixture. The
+capture phase encoded all ten trace-bound videos in 1.925 seconds after scoring,
+and the full method took 795.420 seconds. The result artifact SHA-256 is
+`0085ea218829f762dae05145017b48887a63eee38244ac9edb3dd271bd0c049d`.
+
+Manual inspection of first, middle, and final frames from every same-run video
+found no setup command or tutorial overlays. The eight successes generally
+stayed near visible ore, aligned, mined, and collected; the two failures were
+coherent collection/navigation failures rather than contaminated inputs. This
+passes the isolated native-fixture pilot, but it is not an estimate of the
+official benchmark aggregate or of Airicraft 1.21.8 performance.
+
 The preceding single-episode run under `20260715T131739Z-episode` succeeded at
 step 114 and proved that the released policy can complete the native task. The
 first suite under `20260715T132001Z-episodes` reused one Minecraft JVM and became
