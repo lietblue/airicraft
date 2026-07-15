@@ -7,6 +7,7 @@ import json
 import sys
 import time
 import types
+from importlib.metadata import version as package_version
 from pathlib import Path
 from typing import Any
 
@@ -90,6 +91,7 @@ runtime_image = (
         "tokenizers==0.21.1",
         "transformers==4.51.3",
         "trl==0.9.6",
+        "tyro==0.8.14",
         "x-transformers==0.27.1",
     )
     .run_commands(
@@ -210,6 +212,7 @@ def gpu_preflight() -> dict[str, Any]:
     import datasets
     import peft
     import trl
+    import tyro
     import torch
     import transformers
     import qwen_vl_utils
@@ -231,6 +234,7 @@ def gpu_preflight() -> dict[str, Any]:
             "datasets": datasets.__version__,
             "peft": peft.__version__,
             "trl": trl.__version__,
+            "tyro": package_version("tyro"),
             "qwen_vl_utils": getattr(qwen_vl_utils, "__version__", "unknown"),
             "optimus3_model_class": Optimus3ForConditionalGeneration.__name__,
             "action_head_class": Optimus3ActionAgent.__name__,

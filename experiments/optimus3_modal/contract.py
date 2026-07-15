@@ -35,6 +35,7 @@ RUNTIME_PINS = {
     "datasets": "3.6.0",
     "peft": "0.15.2",
     "trl": "0.9.6",
+    "tyro": "0.8.14",
     "qwen_vl_utils": "0.0.11",
     "attention_implementation": "sdpa",
 }
