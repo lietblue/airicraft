@@ -98,6 +98,39 @@ model_volume = modal.Volume.from_name(VOLUME_NAME, create_if_missing=True)
 simulator_volume = modal.Volume.from_name(SIMULATOR_VOLUME_NAME, create_if_missing=True)
 _simulator_verification_cache: tuple[tuple[int, int, int, int], bool] | None = None
 
+SIMULATOR_SUBPROCESS_SITE_CUSTOMIZE = """\
+import collections
+import collections.abc
+import sys
+import types
+from pathlib import Path
+
+import minestudio
+
+for name in ("Mapping", "MutableMapping", "Sequence"):
+    if not hasattr(collections, name):
+        setattr(collections, name, getattr(collections.abc, name))
+
+simulator_path = Path("/opt/optimus3/MineStudio/minestudio/simulator")
+simulator_module = types.ModuleType("minestudio.simulator")
+simulator_module.__path__ = [str(simulator_path)]
+simulator_module.__package__ = "minestudio.simulator"
+sys.modules["minestudio.simulator"] = simulator_module
+minestudio.simulator = simulator_module
+
+callbacks_name = "minestudio.simulator.callbacks"
+callbacks_path = simulator_path / "callbacks"
+callbacks_module = types.ModuleType(callbacks_name)
+callbacks_module.__path__ = [str(callbacks_path)]
+callbacks_module.__package__ = callbacks_name
+sys.modules[callbacks_name] = callbacks_module
+simulator_module.callbacks = callbacks_module
+
+from minestudio.simulator.callbacks.callback import MinecraftCallback
+
+callbacks_module.MinecraftCallback = MinecraftCallback
+"""
+
 
 def _read_only_volume(volume: modal.Volume) -> modal.Volume:
     with_mount_options = getattr(volume, "with_mount_options", None)
@@ -449,11 +482,22 @@ def _prepare_simulator_runtime() -> dict[str, Any]:
     (SIMULATOR_RUNTIME_ROOT / "tmp").mkdir()
     (SIMULATOR_RUNTIME_ROOT / "minecraft-output").mkdir()
     (SIMULATOR_RUNTIME_ROOT / "engine").symlink_to(SIMULATOR_ROOT / "engine", target_is_directory=True)
+    subprocess_shim = SIMULATOR_RUNTIME_ROOT / "subprocess-shim"
+    subprocess_shim.mkdir()
+    sitecustomize = subprocess_shim / "sitecustomize.py"
+    sitecustomize.write_text(SIMULATOR_SUBPROCESS_SITE_CUSTOMIZE, encoding="utf-8")
+    inherited_pythonpath = os.environ.get("PYTHONPATH")
+    os.environ["PYTHONPATH"] = os.pathsep.join(
+        path for path in (str(subprocess_shim), inherited_pythonpath) if path
+    )
     os.environ["MINESTUDIO_DIR"] = str(SIMULATOR_RUNTIME_ROOT)
     os.environ["MINESTUDIO_GPU_RENDER"] = "0"
     os.environ["LIBGL_ALWAYS_SOFTWARE"] = "1"
     os.environ["MALMO_MINECRAFT_OUTPUT_LOGDIR"] = str(SIMULATOR_RUNTIME_ROOT / "minecraft-output")
-    return json.loads((SIMULATOR_ROOT / SIMULATOR_READY_MARKER).read_text(encoding="utf-8"))
+    metadata = json.loads((SIMULATOR_ROOT / SIMULATOR_READY_MARKER).read_text(encoding="utf-8"))
+    metadata["subprocess_sitecustomize_sha256"] = _file_sha256(sitecustomize)
+    metadata["subprocess_callback_imports"] = SIMULATOR_RUNTIME_PINS["subprocess_callback_imports"]
+    return metadata
 
 
 def _native_fixture_callback() -> Any:

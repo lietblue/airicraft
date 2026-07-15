@@ -98,6 +98,7 @@ RUNTIME_PINS = {
 SIMULATOR_RUNTIME_PINS = {
     "java": "8",
     "renderer": "xvfb_cpu_mesa",
+    "subprocess_callback_imports": "sitecustomize_minecraft_callback_only",
     "gymnasium": "0.29.1",
     "pyro4": "4.82",
     "psutil": "7.0.0",
