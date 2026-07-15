@@ -1,0 +1,73 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+experiment_dir="$repo_root/experiments/optimus3_modal"
+command="${1:-help}"
+if [[ $# -gt 0 ]]; then
+	shift
+fi
+
+usage() {
+	cat <<'EOF'
+usage: scripts/optimus3-modal <command> [args]
+
+commands:
+  self-test             run local non-billable contract tests
+  dry-run               print the pinned manifest without contacting Modal
+  preflight             build/import the runtime on one L40S
+  cache                 download pinned weights on CPU into the Modal Volume
+  smoke [Modal args]    run one embedding + synthetic-frame action on one L40S
+EOF
+}
+
+require_modal() {
+	if ! command -v modal >/dev/null 2>&1; then
+		printf 'error: modal is not installed; see %s/README.md\n' "$experiment_dir" >&2
+		exit 3
+	fi
+}
+
+new_run_dir() {
+	local kind="$1"
+	local timestamp
+	timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
+	printf '%s/eval-output/optimus3-modal/%s-%s\n' "$repo_root" "$timestamp" "$kind"
+}
+
+run_remote() {
+	local mode="$1"
+	shift
+	local run_dir
+	run_dir="$(new_run_dir "$mode")"
+	mkdir -p "$run_dir"
+	python3 "$experiment_dir/contract.py" --output "$run_dir/run-manifest.json"
+	printf 'run_dir: %s\n' "$run_dir"
+	modal run "$experiment_dir/modal_app.py" --mode "$mode" --output "$run_dir/result.json" "$@"
+}
+
+case "$command" in
+	self-test)
+		cd "$repo_root"
+		if [[ -f .envrc ]]; then
+			# shellcheck disable=SC1091
+			source .envrc
+		fi
+		python3 -m unittest discover -s experiments/optimus3_modal -p 'test_*.py'
+		;;
+	dry-run)
+		python3 "$experiment_dir/contract.py" "$@"
+		;;
+	preflight | cache | smoke)
+		require_modal
+		run_remote "$command" "$@"
+		;;
+	help | -h | --help)
+		usage
+		;;
+	*)
+		printf 'error: unknown command: %s\n' "$command" >&2
+		usage >&2
+		exit 2
+		;;
+esac
