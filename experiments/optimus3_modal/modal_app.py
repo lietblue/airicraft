@@ -11,6 +11,7 @@ import shutil
 import sys
 import time
 import types
+import xml.etree.ElementTree as ElementTree
 from importlib.metadata import version as package_version
 from pathlib import Path
 from typing import Any, Callable, Mapping
@@ -41,9 +42,10 @@ from contract import (
     NATIVE_EXPECTED_PROJECTION_SHA256,
     NATIVE_FIXTURE_DRAW_OFFSETS,
     NATIVE_FIXTURE_METHOD,
+    NATIVE_FIXTURE_PROOF_MAX_ATTACK_STEPS,
+    NATIVE_FIXTURE_PROOF_TARGET_OFFSET,
     NATIVE_FIXTURE_SPEC_SHA256,
     NATIVE_GATE_NAME,
-    NATIVE_GRID_BOUNDS,
     NATIVE_MAX_STEPS,
     NATIVE_REQUIRED_SUCCESSES,
     NATIVE_SUITE_WALL_BUDGET_SECONDS,
@@ -578,6 +580,9 @@ def _restore_native_mission(simulator: Any) -> None:
 def _configure_native_mission_fixture(
     simulator: Any,
     discovery_location: Mapping[str, float],
+    *,
+    placement_override: Mapping[str, float] | None = None,
+    include_ray_observation: bool = False,
 ) -> dict[str, Any]:
     _install_minestudio_namespace_shim()
     from minestudio.simulator.minerl.herobraine.hero import spaces
@@ -606,47 +611,44 @@ def _configure_native_mission_fixture(
         f'<DrawBlock x="{block["x"]}" y="{block["y"]}" z="{block["z"]}" type="iron_ore"/>'
         for block in draw_blocks
     )
-    placement = {
+    default_placement = {
         "x": discovery_location["xpos"],
         "y": discovery_location["ypos"],
         "z": discovery_location["zpos"],
         "yaw": discovery_location["yaw"],
         "pitch": discovery_location["pitch"],
     }
+    placement = dict(placement_override or default_placement)
     original_agent_start = simulator.airicraft_original_create_agent_start
     original_observables = simulator.airicraft_original_create_observables
     original_server_decorators = simulator.airicraft_original_create_server_decorators
 
-    class NativeIronGridObservation(TranslationHandler):
-        name = "airicraft_native_iron_grid"
+    class NativeFixtureRayObservation(TranslationHandler):
+        name = "airicraft_fixture_ray"
 
         def __init__(self) -> None:
-            super().__init__(spaces.Text(shape=(NATIVE_EXPECTED_IRON_BLOCKS,)))
+            super().__init__(spaces.Text(1))
 
         def to_string(self) -> str:
             return self.name
 
         def xml_template(self) -> str:
-            x_min, x_max, y_min, y_max, z_min, z_max = NATIVE_GRID_BOUNDS
-            return (
-                f'<ObservationFromGrid><Grid name="{self.name}" '
-                'absoluteCoords="false" projectDown="false" atSpawn="false">'
-                f'<min x="{x_min}" y="{y_min}" z="{z_min}"/>'
-                f'<max x="{x_max}" y="{y_max}" z="{z_max}"/>'
-                "</Grid></ObservationFromGrid>"
-            )
+            return '<ObservationFromRay includeNBT="false"/>'
 
-        def from_hero(self, info: Mapping[str, Any]) -> dict[str, Any]:
-            return {"present": self.name in info, "value": info.get(self.name)}
+        def from_hero(self, info: Mapping[str, Any]) -> str:
+            return json.dumps(to_jsonable(info.get("LineOfSight")), sort_keys=True, separators=(",", ":"))
 
-        def from_universal(self, info: Mapping[str, Any]) -> dict[str, Any]:
+        def from_universal(self, info: Mapping[str, Any]) -> str:
             return self.from_hero(info)
 
     def create_agent_start(_task: Any) -> list[Any]:
         return [*original_agent_start(), AgentStartPlacement(**placement)]
 
     def create_observables(_task: Any) -> list[Any]:
-        return [*original_observables(), NativeIronGridObservation()]
+        observables = list(original_observables())
+        if include_ray_observation:
+            observables.append(NativeFixtureRayObservation())
+        return observables
 
     def create_server_decorators(_task: Any) -> list[Any]:
         return [*original_server_decorators(), DrawingDecorator(drawing_xml)]
@@ -660,13 +662,80 @@ def _configure_native_mission_fixture(
         "spec_sha256": NATIVE_FIXTURE_SPEC_SHA256,
         "upstream_commands_executed": False,
         "compatibility_reason": "pinned engine dropped callback chat commands during CPU preflight",
-        "hard_resets": 2,
         "discovery_location": dict(discovery_location),
         "placement": placement,
         "draw_blocks": draw_blocks,
-        "grid_bounds": list(NATIVE_GRID_BOUNDS),
-        "grid_observation": NativeIronGridObservation.name,
+        "ray_observation": NativeFixtureRayObservation.name if include_ray_observation else None,
         "drawing_xml_sha256": hashlib.sha256(drawing_xml.encode("utf-8")).hexdigest(),
+    }
+
+
+def _rendered_draw_blocks(rendered_mission: str) -> list[dict[str, Any]]:
+    root = ElementTree.fromstring(rendered_mission)
+    blocks: list[dict[str, Any]] = []
+    for element in root.iter():
+        if element.tag.rsplit("}", 1)[-1] != "DrawBlock":
+            continue
+        try:
+            blocks.append(
+                {
+                    "x": int(element.attrib["x"]),
+                    "y": int(element.attrib["y"]),
+                    "z": int(element.attrib["z"]),
+                    "type": element.attrib["type"].removeprefix("minecraft:"),
+                }
+            )
+        except (KeyError, ValueError) as error:
+            raise RuntimeError(f"invalid DrawBlock declaration in rendered mission: {element.attrib}") from error
+    return sorted(blocks, key=lambda block: (block["x"], block["y"], block["z"], block["type"]))
+
+
+def _fixture_ray_value(info: Mapping[str, Any]) -> dict[str, Any] | None:
+    value = info.get("airicraft_fixture_ray")
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError:
+            return None
+    return dict(value) if isinstance(value, Mapping) else None
+
+
+def _ray_hits_block(ray: Mapping[str, Any] | None, block: Mapping[str, Any]) -> bool:
+    if ray is None:
+        return False
+    if ray.get("hitType") != "block":
+        return False
+    if str(ray.get("type", "")).removeprefix("minecraft:") != block["type"]:
+        return False
+    if ray.get("inRange") is not True:
+        return False
+    try:
+        return all(
+            float(block[axis]) - 1e-6 <= float(ray[axis]) <= float(block[axis]) + 1.0 + 1e-6
+            for axis in ("x", "y", "z")
+        )
+    except (KeyError, TypeError, ValueError):
+        return False
+
+
+def _fixture_declaration_evidence(
+    rendered_mission: str,
+    expected_blocks: list[dict[str, Any]],
+) -> dict[str, Any]:
+    def key(block: Mapping[str, Any]) -> tuple[int, int, int, str]:
+        return (int(block["x"]), int(block["y"]), int(block["z"]), str(block["type"]))
+
+    rendered_blocks = _rendered_draw_blocks(rendered_mission)
+    expected_keys = {key(block) for block in expected_blocks}
+    rendered_keys = {key(block) for block in rendered_blocks}
+    matching = [block for block in rendered_blocks if key(block) in expected_keys]
+    return {
+        "expected_count": len(expected_blocks),
+        "expected_unique_count": len(expected_keys),
+        "matching_unique_count": len(expected_keys & rendered_keys),
+        "all_expected_present": expected_keys <= rendered_keys,
+        "matching_draw_blocks": matching,
+        "rendered_draw_block_count": len(rendered_blocks),
     }
 
 
@@ -789,7 +858,13 @@ def _native_simulator_action(
     return action, evidence
 
 
-def _native_reset(simulator: Any, world_seed: int) -> tuple[Any, dict[str, Any], dict[str, Any]]:
+def _native_reset(
+    simulator: Any,
+    world_seed: int,
+    np_module: Any,
+    *,
+    verify_runtime_target: bool,
+) -> tuple[Any, dict[str, Any], dict[str, Any]]:
     _restore_native_mission(simulator)
     simulator.env.seed(world_seed)
     discovery_observation, discovery_info = simulator.reset()
@@ -797,32 +872,141 @@ def _native_reset(simulator: Any, world_seed: int) -> tuple[Any, dict[str, Any],
     discovery_location = _location(discovery_info)
     if discovery_location is None:
         raise RuntimeError("native discovery reset did not return a location")
+
+    base_x = math.floor(discovery_location["xpos"])
+    base_y = math.floor(discovery_location["ypos"])
+    base_z = math.floor(discovery_location["zpos"])
+    target_offset_x, target_offset_y, target_offset_z = NATIVE_FIXTURE_PROOF_TARGET_OFFSET
+    proof_target = {
+        "x": base_x + target_offset_x,
+        "y": base_y + target_offset_y,
+        "z": base_z + target_offset_z,
+        "type": "iron_ore",
+    }
+    runtime_proof: dict[str, Any] = {
+        "performed": False,
+        "passed": None,
+        "reason": "only the first episode in a run performs the destructive canary",
+        "target": proof_target,
+    }
+
+    if verify_runtime_target:
+        proof_placement = {
+            "x": proof_target["x"] + 0.5,
+            "y": proof_target["y"] + 1.0,
+            "z": proof_target["z"] + 0.5,
+            "yaw": 0.0,
+            "pitch": 90.0,
+        }
+        proof_fixture = _configure_native_mission_fixture(
+            simulator,
+            discovery_location,
+            placement_override=proof_placement,
+            include_ray_observation=True,
+        )
+        simulator.env.seed(world_seed)
+        proof_observation, proof_info = simulator.reset()
+        validate_frame_shape(proof_observation.get("image"))
+        proof_mission = simulator.env.task.to_xml()
+        proof_declaration = _fixture_declaration_evidence(proof_mission, proof_fixture["draw_blocks"])
+
+        ray = _fixture_ray_value(proof_info)
+        ray_wait_steps = 0
+        while ray_wait_steps < 10 and not _ray_hits_block(ray, proof_target):
+            proof_observation, _reward, terminated, truncated, proof_info = simulator.step(
+                _simulator_noop(simulator)
+            )
+            ray_wait_steps += 1
+            if terminated or truncated:
+                break
+            ray = _fixture_ray_value(proof_info)
+
+        ray_valid = _ray_hits_block(ray, proof_target)
+        mine_before = stat_count(proof_info.get("mine_block"), "iron_ore")
+        mine_after = mine_before
+        attack_steps = 0
+        proof_terminated = False
+        proof_action_evidence: dict[str, Any] | None = None
+        release_action_evidence: dict[str, Any] | None = None
+        if ray_valid:
+            applied_attack = {
+                key: [0.0, 0.0] if key == "camera" else 0 for key in ALL_ACTION_KEYS
+            }
+            applied_attack["attack"] = 1
+            simulator_action, proof_action_evidence = _native_simulator_action(
+                simulator, applied_attack, np_module
+            )
+            for _ in range(NATIVE_FIXTURE_PROOF_MAX_ATTACK_STEPS):
+                proof_observation, _reward, terminated, truncated, proof_info = simulator.step(
+                    simulator_action
+                )
+                attack_steps += 1
+                mine_after = stat_count(proof_info.get("mine_block"), "iron_ore")
+                proof_terminated = bool(terminated or truncated)
+                if mine_after > mine_before:
+                    break
+                if proof_terminated:
+                    break
+            if not proof_terminated:
+                applied_release = {
+                    key: [0.0, 0.0] if key == "camera" else 0 for key in ALL_ACTION_KEYS
+                }
+                release_action, release_action_evidence = _native_simulator_action(
+                    simulator, applied_release, np_module
+                )
+                proof_observation, _reward, terminated, truncated, proof_info = simulator.step(
+                    release_action
+                )
+                proof_terminated = bool(terminated or truncated)
+                mine_after = stat_count(proof_info.get("mine_block"), "iron_ore")
+
+        mine_delta = mine_after - mine_before
+        proof_passed = (
+            proof_declaration["all_expected_present"]
+            and proof_declaration["matching_unique_count"] == NATIVE_EXPECTED_IRON_BLOCKS
+            and ray_valid
+            and mine_delta >= 1
+            and not proof_terminated
+        )
+        runtime_proof = {
+            "performed": True,
+            "passed": proof_passed,
+            "method": "unscored_observation_from_ray_then_mine_stat",
+            "target": proof_target,
+            "placement": proof_placement,
+            "ray_wait_steps": ray_wait_steps,
+            "ray": ray,
+            "ray_hits_target": ray_valid,
+            "attack_steps": attack_steps,
+            "maximum_attack_steps": NATIVE_FIXTURE_PROOF_MAX_ATTACK_STEPS,
+            "mine_iron_ore_before": mine_before,
+            "mine_iron_ore_after": mine_after,
+            "mine_iron_ore_delta": mine_delta,
+            "terminated_or_truncated": proof_terminated,
+            "sent_attack_action": proof_action_evidence,
+            "sent_release_action": release_action_evidence,
+            "rendered_mission_sha256": hashlib.sha256(proof_mission.encode("utf-8")).hexdigest(),
+            "declaration": proof_declaration,
+        }
+
     mission_fixture = _configure_native_mission_fixture(simulator, discovery_location)
 
     simulator.env.seed(world_seed)
     observation, info = simulator.reset()
     rendered_mission = simulator.env.task.to_xml()
+    declaration = _fixture_declaration_evidence(rendered_mission, mission_fixture["draw_blocks"])
     mission_fixture.update(
         {
+            "hard_resets": 3 if verify_runtime_target else 2,
             "rendered_mission_sha256": hashlib.sha256(rendered_mission.encode("utf-8")).hexdigest(),
-            "rendered_mission_contains_grid": "airicraft_native_iron_grid" in rendered_mission,
             "rendered_mission_contains_drawing": "<DrawingDecorator>" in rendered_mission,
+            "rendered_mission_contains_ray": "<ObservationFromRay" in rendered_mission,
+            "declaration": declaration,
+            "runtime_proof": runtime_proof,
         }
     )
-    grid_wait_steps = 0
-    while grid_wait_steps < 10:
-        grid_probe = info.get("airicraft_native_iron_grid")
-        if isinstance(grid_probe, Mapping) and grid_probe.get("present"):
-            break
-        observation, _reward, terminated, truncated, info = simulator.step(_simulator_noop(simulator))
-        grid_wait_steps += 1
-        if terminated or truncated:
-            raise RuntimeError("MineStudio terminated while waiting for the native grid observation")
-    mission_fixture["grid_wait_steps"] = grid_wait_steps
     frame = observation.get("image")
     validate_frame_shape(frame)
-    grid_value = info.get("airicraft_native_iron_grid")
-    iron_blocks = _count_voxel_type(grid_value, "iron_ore")
     mainhand = _mainhand_type(info)
     initial_iron = inventory_quantity(info.get("inventory"), "iron_ore")
     baseline = {
@@ -832,21 +1016,23 @@ def _native_reset(simulator: Any, world_seed: int) -> tuple[Any, dict[str, Any],
     }
     setup = {
         "frame_sha256": _frame_sha256(frame),
-        "iron_blocks": iron_blocks,
+        "declared_iron_blocks": declaration["matching_unique_count"],
         "mainhand": mainhand,
         "inventory": _inventory_snapshot(info),
         "location": _location(info),
         "baseline": baseline,
         "mission_fixture": mission_fixture,
-        "grid_observation": {
-            "python_type": f"{type(grid_value).__module__}.{type(grid_value).__qualname__}",
-            "shape": list(getattr(grid_value, "shape", ())),
-            "value": to_jsonable(grid_value),
-        },
     }
     fixture_errors: list[str] = []
-    if iron_blocks != NATIVE_EXPECTED_IRON_BLOCKS:
-        fixture_errors.append(f"expected {NATIVE_EXPECTED_IRON_BLOCKS} iron blocks, got {iron_blocks}")
+    if not declaration["all_expected_present"] or declaration["matching_unique_count"] != NATIVE_EXPECTED_IRON_BLOCKS:
+        fixture_errors.append(
+            f"expected {NATIVE_EXPECTED_IRON_BLOCKS} unique iron DrawBlock declarations, "
+            f"got {declaration['matching_unique_count']}"
+        )
+    if mission_fixture["rendered_mission_contains_ray"]:
+        fixture_errors.append("scored policy mission unexpectedly contains the privileged ray observer")
+    if verify_runtime_target and runtime_proof["passed"] is not True:
+        fixture_errors.append("unscored runtime target proof did not pass")
     if mainhand != "stone_pickaxe":
         fixture_errors.append(f"expected mainhand stone_pickaxe, got {mainhand!r}")
     if initial_iron != 0:
@@ -889,7 +1075,12 @@ def simulator_preflight() -> dict[str, Any]:
     try:
         world_seed, _policy_seed = native_episode_seeds(0)
         simulator = _new_native_simulator(world_seed)
-        observation, info, setup = _native_reset(simulator, world_seed)
+        observation, info, setup = _native_reset(
+            simulator,
+            world_seed,
+            np,
+            verify_runtime_target=True,
+        )
         masked_noop = {key: [0.0, 0.0] if key == "camera" else 0 for key in ALL_ACTION_KEYS}
         simulator_action, adapter_evidence = _native_simulator_action(simulator, masked_noop, np)
         adapter_started = time.perf_counter()
@@ -904,7 +1095,10 @@ def simulator_preflight() -> dict[str, Any]:
             "java_8": 'version "1.8.' in (java.stderr + java.stdout),
             "java_exit_zero": java.returncode == 0,
             "frame_shape_valid": list(observation["image"].shape) == list(FRAME_SHAPE),
-            "fixture_iron_blocks_valid": setup["iron_blocks"] == NATIVE_EXPECTED_IRON_BLOCKS,
+            "fixture_draw_declarations_valid": setup["declared_iron_blocks"]
+            == NATIVE_EXPECTED_IRON_BLOCKS,
+            "fixture_runtime_target_valid": setup["mission_fixture"]["runtime_proof"]["passed"]
+            is True,
             "fixture_mainhand_valid": setup["mainhand"] == "stone_pickaxe",
             "fixture_initial_inventory_valid": setup["baseline"]["inventory_iron_ore"] == 0,
             "action_adapter_changed_no_controls": adapter_evidence["changed_keys"] == [],
@@ -947,9 +1141,16 @@ class _NativeEpisodeMixin:
         projected: Any,
         episode_index: int,
         wall_deadline: float,
+        *,
+        verify_runtime_target: bool,
     ) -> dict[str, Any]:
         world_seed, policy_seed = native_episode_seeds(episode_index)
-        observation, info, setup = _native_reset(simulator, world_seed)
+        observation, info, setup = _native_reset(
+            simulator,
+            world_seed,
+            self.np,
+            verify_runtime_target=verify_runtime_target,
+        )
         baseline = setup["baseline"]
         self._reset_action_policy(policy_seed)
 
@@ -1186,7 +1387,7 @@ class _NativeEpisodeMixin:
             try:
                 first_world_seed, _first_policy_seed = native_episode_seeds(episode_indices[0])
                 simulator = _new_native_simulator(first_world_seed)
-                for episode_index in episode_indices:
+                for episode_position, episode_index in enumerate(episode_indices):
                     if time.perf_counter() >= wall_deadline:
                         suite_error = {
                             "type": "WallBudgetExceeded",
@@ -1194,7 +1395,13 @@ class _NativeEpisodeMixin:
                         }
                         break
                     try:
-                        episode = self._native_episode(simulator, projected, episode_index, wall_deadline)
+                        episode = self._native_episode(
+                            simulator,
+                            projected,
+                            episode_index,
+                            wall_deadline,
+                            verify_runtime_target=episode_position == 0,
+                        )
                     except Exception as error:
                         episode = {
                             "episode_index": episode_index,
@@ -1224,6 +1431,11 @@ class _NativeEpisodeMixin:
             len(episode.get("action_evidence", {}).get("safety_violations", [])) for episode in episodes
         )
         schema_failures = sum(episode.get("failure_reason") == "policy_schema_error" for episode in episodes)
+        first_setup = episodes[0].get("setup", {}) if episodes else {}
+        first_mission_fixture = first_setup.get("mission_fixture", {})
+        fixture_runtime_proof_valid = (
+            first_mission_fixture.get("runtime_proof", {}).get("passed") is True
+        )
         infrastructure_checks = {
             "requested_gpu_present": GPU_TYPE.lower() in self.cuda_device_name.lower(),
             "torch_runtime_matches_pin": self.torch.__version__ == RUNTIME_PINS["torch"],
@@ -1235,6 +1447,7 @@ class _NativeEpisodeMixin:
             == NATIVE_UPSTREAM_TASK_COMMANDS_SHA256,
             "pinned_fixture_spec_ready": task_metadata["fixture_spec_sha256"]
             == NATIVE_FIXTURE_SPEC_SHA256,
+            "fixture_runtime_proof_valid": fixture_runtime_proof_valid,
             **conditioning_checks,
             "all_requested_episodes_completed": completed,
             "all_completed_episodes_valid": valid_episodes == len(episode_indices),
@@ -1290,6 +1503,11 @@ class _NativeEpisodeMixin:
                     "fallback_enabled": False,
                     "video_recording": False,
                     "setup_steps_are_unscored": True,
+                    "fixture_runtime_proof": (
+                        "the first episode audits all eight DrawBlock declarations, then uses an "
+                        "unscored ray-and-mine canary before a hard reset"
+                    ),
+                    "privileged_fixture_observer_available_to_policy": False,
                     "oracle": "mine_block.iron_ore delta >= 1 and inventory iron_ore delta >= 1",
                 },
                 "engine": engine_metadata,

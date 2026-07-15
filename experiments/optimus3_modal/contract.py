@@ -47,15 +47,16 @@ NATIVE_UPSTREAM_TASK_COMMANDS = (
     "/execute as @p at @s run fill ~2 ~ ~2 ~3 ~1 ~3 minecraft:iron_ore",
 )
 NATIVE_UPSTREAM_TASK_COMMANDS_SHA256 = "b0a5ad53ce0b70b7a62ae16543b9d68b099b874a9283cfb59b21448b51fa91a6"
-NATIVE_FIXTURE_METHOD = "two_reset_mission_xml_semantic_equivalent"
+NATIVE_FIXTURE_METHOD = "mission_xml_semantic_equivalent_with_ray_canary"
 NATIVE_FIXTURE_DRAW_OFFSETS = tuple(
     (x, y, z)
     for x in (2, 3)
     for y in (0, 1)
     for z in (2, 3)
 )
-NATIVE_FIXTURE_SPEC_SHA256 = "381d46ade4f953199af916db6fbfbf0e1d7a1cb349047d384e5ad66ba65ce2f7"
-NATIVE_GRID_BOUNDS = (2, 3, 0, 1, 2, 3)
+NATIVE_FIXTURE_PROOF_TARGET_OFFSET = (2, 1, 2)
+NATIVE_FIXTURE_PROOF_MAX_ATTACK_STEPS = 60
+NATIVE_FIXTURE_SPEC_SHA256 = "50904ca8203f249206cbe565cb0e871a5df4a44fdcecfe5198af681ceb97d732"
 NATIVE_EXPECTED_IRON_BLOCKS = 8
 NATIVE_EMBEDDING_SEED = 7
 NATIVE_EXPECTED_LABEL = "<iron>"
@@ -67,9 +68,13 @@ NATIVE_SEED_NAMESPACE = "airicraft-optimus3-stage3-v1"
 def native_fixture_spec() -> dict[str, Any]:
     return {
         "draw_offsets": [list(offset) for offset in NATIVE_FIXTURE_DRAW_OFFSETS],
-        "grid_bounds": list(NATIVE_GRID_BOUNDS),
         "inventory": {"0": {"quantity": 1, "type": "stone_pickaxe"}},
         "placement": "discovery_location",
+        "runtime_proof": {
+            "max_attack_steps": NATIVE_FIXTURE_PROOF_MAX_ATTACK_STEPS,
+            "method": "unscored_observation_from_ray_then_mine_stat",
+            "target_offset": list(NATIVE_FIXTURE_PROOF_TARGET_OFFSET),
+        },
     }
 
 SIMULATOR_ENGINE_REPOSITORY = "CraftJarvis/SimulatorEngine"
@@ -660,8 +665,11 @@ def pilot_manifest() -> dict[str, Any]:
                 "reproduces the upstream stone-pickaxe and relative 2x2x2 iron state through "
                 "mission XML because callback chat commands were dropped by the pinned engine"
             ),
-            "grid_bounds": list(NATIVE_GRID_BOUNDS),
-            "expected_iron_blocks": NATIVE_EXPECTED_IRON_BLOCKS,
+            "expected_declared_iron_blocks": NATIVE_EXPECTED_IRON_BLOCKS,
+            "runtime_fixture_proof": (
+                "audit eight unique DrawBlock declarations, then ray-observe and mine one target "
+                "on an unscored reset before hard-resetting the policy episode"
+            ),
             "episode_count": NATIVE_EPISODE_COUNT,
             "required_successes": NATIVE_REQUIRED_SUCCESSES,
             "maximum_policy_steps_per_episode": NATIVE_MAX_STEPS,
