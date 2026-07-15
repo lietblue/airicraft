@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import random
+import shutil
 import sys
 import time
 import types
@@ -29,9 +32,33 @@ from contract import (
     LLAMA_FACTORY_REPOSITORY,
     LLAMA_FACTORY_REVISION,
     MODEL_SPECS,
+    NATIVE_EMBEDDING_SEED,
+    NATIVE_EPISODE_COUNT,
+    NATIVE_EXPECTED_EMBEDDING_SHA256,
+    NATIVE_EXPECTED_IRON_BLOCKS,
+    NATIVE_EXPECTED_LABEL,
+    NATIVE_EXPECTED_PROJECTION_SHA256,
+    NATIVE_GATE_NAME,
+    NATIVE_MAX_STEPS,
+    NATIVE_REQUIRED_SUCCESSES,
+    NATIVE_SUITE_WALL_BUDGET_SECONDS,
+    NATIVE_TASK_COMMANDS,
+    NATIVE_TASK_COMMANDS_SHA256,
+    NATIVE_TASK_CONFIG,
+    NATIVE_TASK_CONFIG_SHA256,
+    NATIVE_UPSTREAM_TASK_TEXT,
+    NATIVE_VOXEL_QUERY,
     OPTIMUS3_REPOSITORY,
     OPTIMUS3_REVISION,
     RUNTIME_PINS,
+    SIMULATOR_ENGINE_EXPECTED_BYTES,
+    SIMULATOR_ENGINE_FILENAME,
+    SIMULATOR_ENGINE_JAR,
+    SIMULATOR_ENGINE_REPOSITORY,
+    SIMULATOR_ENGINE_REVISION,
+    SIMULATOR_ENGINE_SHA256,
+    SIMULATOR_RUNTIME_PINS,
+    SIMULATOR_VOLUME_NAME,
     TARGET_LATENCY_MS,
     VOLUME_NAME,
     active_action_keys,
@@ -39,22 +66,35 @@ from contract import (
     latency_gate,
     latency_summary,
     model_spec,
+    native_motor_controls,
+    native_episode_seeds,
+    native_episode_success,
+    inventory_quantity,
+    native_suite_outcome,
     result_envelope,
+    stat_count,
     validate_benchmark_steps,
     validate_complete_action,
+    validate_episode_index,
+    validate_frame_shape,
     validate_seed,
     validate_task,
 )
 
 
 MODEL_ROOT = Path("/models")
+SIMULATOR_ROOT = Path("/simulator-engine")
+SIMULATOR_RUNTIME_ROOT = Path("/tmp/airicraft-minestudio")
 SOURCE_ROOT = Path("/opt/optimus3")
 READY_MARKER = ".airicraft-ready.json"
+SIMULATOR_READY_MARKER = ".airicraft-ready.json"
 LOCAL_CONTRACT_PATH = Path(__file__).with_name("contract.py")
 LOCAL_APP_PATH = Path(__file__)
 
 app = modal.App(APP_NAME, include_source=False)
 model_volume = modal.Volume.from_name(VOLUME_NAME, create_if_missing=True)
+simulator_volume = modal.Volume.from_name(SIMULATOR_VOLUME_NAME, create_if_missing=True)
+_simulator_verification_cache: tuple[tuple[int, int, int, int], bool] | None = None
 
 
 def _read_only_volume(volume: modal.Volume) -> modal.Volume:
@@ -128,6 +168,52 @@ runtime_image = (
     .add_local_file(LOCAL_APP_PATH, "/root/modal_app.py")
 )
 
+simulator_runtime_image = (
+    runtime_image
+    .apt_install(
+        "openjdk-8-jre",
+        "xvfb",
+        "xauth",
+        "libgl1-mesa-dri",
+        "libgl1-mesa-glx",
+        "libglu1-mesa",
+        "libegl1",
+        "libosmesa6",
+        "libsm6",
+        "libxrender1",
+        "libxext6",
+        "libxi6",
+        "libxtst6",
+        "libxrandr2",
+        "libxxf86vm1",
+        "libasound2",
+        "unzip",
+    )
+    .uv_pip_install(
+        "gymnasium==0.29.1",
+        "Pyro4==4.82",
+        "psutil==7.0.0",
+        "diskcache==5.6.3",
+        "lxml==5.4.0",
+        "xmltodict==0.14.2",
+        "coloredlogs==15.0.1",
+        "daemoniker==0.2.3",
+        "cuda-python==12.4.0",
+        "rich==14.0.0",
+        "PyYAML==6.0.2",
+        "absl-py==2.2.2",
+        "Jinja2==3.1.6",
+    )
+    .env(
+        {
+            "LIBGL_ALWAYS_SOFTWARE": "1",
+            "MALMO_MINECRAFT_OUTPUT_LOGDIR": str(SIMULATOR_RUNTIME_ROOT / "minecraft-output"),
+            "MINESTUDIO_DIR": str(SIMULATOR_RUNTIME_ROOT),
+            "MINESTUDIO_GPU_RENDER": "0",
+        }
+    )
+)
+
 
 def _model_path(key: str) -> Path:
     return MODEL_ROOT / model_spec(key).relative_path
@@ -143,6 +229,42 @@ def _ready(spec: Any) -> bool:
     except (OSError, json.JSONDecodeError):
         return False
     return metadata.get("revision") == spec.revision and all((target / name).is_file() for name in spec.required_files)
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(8 * 1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _simulator_ready() -> bool:
+    global _simulator_verification_cache
+
+    marker = SIMULATOR_ROOT / SIMULATOR_READY_MARKER
+    jar = SIMULATOR_ROOT / SIMULATOR_ENGINE_JAR
+    if not marker.is_file() or not jar.is_file():
+        return False
+    try:
+        metadata = json.loads(marker.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    marker_stat = marker.stat()
+    jar_stat = jar.stat()
+    signature = (marker_stat.st_mtime_ns, marker_stat.st_size, jar_stat.st_mtime_ns, jar_stat.st_size)
+    if _simulator_verification_cache is not None and _simulator_verification_cache[0] == signature:
+        return _simulator_verification_cache[1]
+    metadata_matches = (
+        metadata.get("repository") == SIMULATOR_ENGINE_REPOSITORY
+        and metadata.get("revision") == SIMULATOR_ENGINE_REVISION
+        and metadata.get("archive_sha256") == SIMULATOR_ENGINE_SHA256
+        and metadata.get("archive_bytes") == SIMULATOR_ENGINE_EXPECTED_BYTES
+        and metadata.get("jar_bytes") == jar_stat.st_size
+    )
+    verified = metadata_matches and metadata.get("jar_sha256") == _file_sha256(jar)
+    _simulator_verification_cache = (signature, verified)
+    return verified
 
 
 @app.function(
@@ -190,13 +312,168 @@ def cache_weights() -> dict[str, Any]:
     )
 
 
+@app.function(
+    image=download_image,
+    volumes={str(SIMULATOR_ROOT): simulator_volume},
+    timeout=2 * 60 * 60,
+    retries=0,
+    max_containers=1,
+    single_use_containers=True,
+)
+def cache_simulator_engine() -> dict[str, Any]:
+    import zipfile
+
+    from huggingface_hub import hf_hub_download
+
+    started = time.perf_counter()
+    if not _simulator_ready():
+        download_dir = Path("/tmp/airicraft-simulator-download")
+        if download_dir.exists():
+            shutil.rmtree(download_dir)
+        download_dir.mkdir(parents=True)
+        archive = Path(
+            hf_hub_download(
+                repo_id=SIMULATOR_ENGINE_REPOSITORY,
+                filename=SIMULATOR_ENGINE_FILENAME,
+                revision=SIMULATOR_ENGINE_REVISION,
+                local_dir=str(download_dir),
+            )
+        )
+        archive_bytes = archive.stat().st_size
+        archive_sha256 = _file_sha256(archive)
+        if archive_bytes != SIMULATOR_ENGINE_EXPECTED_BYTES:
+            raise RuntimeError(
+                f"simulator archive size mismatch: expected {SIMULATOR_ENGINE_EXPECTED_BYTES}, got {archive_bytes}"
+            )
+        if archive_sha256 != SIMULATOR_ENGINE_SHA256:
+            raise RuntimeError(
+                f"simulator archive digest mismatch: expected {SIMULATOR_ENGINE_SHA256}, got {archive_sha256}"
+            )
+
+        engine_dir = SIMULATOR_ROOT / "engine"
+        if engine_dir.exists():
+            shutil.rmtree(engine_dir)
+        with zipfile.ZipFile(archive, "r") as zip_file:
+            root = SIMULATOR_ROOT.resolve()
+            for member in zip_file.infolist():
+                destination = (SIMULATOR_ROOT / member.filename).resolve()
+                if destination != root and root not in destination.parents:
+                    raise RuntimeError(f"unsafe simulator archive member: {member.filename}")
+            zip_file.extractall(SIMULATOR_ROOT)
+
+        jar = SIMULATOR_ROOT / SIMULATOR_ENGINE_JAR
+        if not jar.is_file():
+            raise RuntimeError(f"simulator archive is missing required jar: {SIMULATOR_ENGINE_JAR}")
+        jar_bytes = jar.stat().st_size
+        jar_sha256 = _file_sha256(jar)
+        (SIMULATOR_ROOT / SIMULATOR_READY_MARKER).write_text(
+            json.dumps(
+                {
+                    "repository": SIMULATOR_ENGINE_REPOSITORY,
+                    "revision": SIMULATOR_ENGINE_REVISION,
+                    "archive_bytes": archive_bytes,
+                    "archive_sha256": archive_sha256,
+                    "required_jar": SIMULATOR_ENGINE_JAR,
+                    "jar_bytes": jar_bytes,
+                    "jar_sha256": jar_sha256,
+                },
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        simulator_volume.commit()
+
+    engine_files = [path for path in (SIMULATOR_ROOT / "engine").rglob("*") if path.is_file()]
+    return result_envelope(
+        "simulator_engine_cached",
+        {
+            "elapsed_seconds": time.perf_counter() - started,
+            "repository": SIMULATOR_ENGINE_REPOSITORY,
+            "revision": SIMULATOR_ENGINE_REVISION,
+            "archive_bytes": SIMULATOR_ENGINE_EXPECTED_BYTES,
+            "archive_sha256": SIMULATOR_ENGINE_SHA256,
+            "required_jar": SIMULATOR_ENGINE_JAR,
+            "jar_bytes": (SIMULATOR_ROOT / SIMULATOR_ENGINE_JAR).stat().st_size,
+            "jar_sha256": _file_sha256(SIMULATOR_ROOT / SIMULATOR_ENGINE_JAR),
+            "extracted_file_count": len(engine_files),
+            "extracted_bytes": sum(path.stat().st_size for path in engine_files),
+            "ready": _simulator_ready(),
+        },
+    )
+
+
 def _install_minestudio_namespace_shim() -> None:
-    """Avoid importing the Java simulator when only its static action map is needed."""
+    """Load only simulator modules needed by the policy and native pilot."""
+    import collections
+    import collections.abc
+
+    for name in ("Mapping", "MutableMapping", "Sequence"):
+        if not hasattr(collections, name):
+            setattr(collections, name, getattr(collections.abc, name))
+
     simulator_path = SOURCE_ROOT / "MineStudio" / "minestudio" / "simulator"
-    module = types.ModuleType("minestudio.simulator")
-    module.__path__ = [str(simulator_path)]
-    module.__package__ = "minestudio.simulator"
-    sys.modules["minestudio.simulator"] = module
+    if "minestudio.simulator" not in sys.modules:
+        module = types.ModuleType("minestudio.simulator")
+        module.__path__ = [str(simulator_path)]
+        module.__package__ = "minestudio.simulator"
+        sys.modules["minestudio.simulator"] = module
+
+    callbacks_name = "minestudio.simulator.callbacks"
+    if callbacks_name not in sys.modules:
+        callbacks_path = simulator_path / "callbacks"
+        callbacks_module = types.ModuleType(callbacks_name)
+        callbacks_module.__path__ = [str(callbacks_path)]
+        callbacks_module.__package__ = callbacks_name
+        sys.modules[callbacks_name] = callbacks_module
+        from minestudio.simulator.callbacks.callback import MinecraftCallback
+
+        callbacks_module.MinecraftCallback = MinecraftCallback
+
+
+def _prepare_simulator_runtime() -> dict[str, Any]:
+    if not _simulator_ready():
+        raise RuntimeError("missing pinned simulator engine; run engine-cache mode first")
+    if SIMULATOR_RUNTIME_ROOT.exists():
+        shutil.rmtree(SIMULATOR_RUNTIME_ROOT)
+    SIMULATOR_RUNTIME_ROOT.mkdir(parents=True)
+    (SIMULATOR_RUNTIME_ROOT / "runtime").mkdir()
+    (SIMULATOR_RUNTIME_ROOT / "tmp").mkdir()
+    (SIMULATOR_RUNTIME_ROOT / "minecraft-output").mkdir()
+    (SIMULATOR_RUNTIME_ROOT / "engine").symlink_to(SIMULATOR_ROOT / "engine", target_is_directory=True)
+    os.environ["MINESTUDIO_DIR"] = str(SIMULATOR_RUNTIME_ROOT)
+    os.environ["MINESTUDIO_GPU_RENDER"] = "0"
+    os.environ["LIBGL_ALWAYS_SOFTWARE"] = "1"
+    os.environ["MALMO_MINECRAFT_OUTPUT_LOGDIR"] = str(SIMULATOR_RUNTIME_ROOT / "minecraft-output")
+    return json.loads((SIMULATOR_ROOT / SIMULATOR_READY_MARKER).read_text(encoding="utf-8"))
+
+
+def _native_fixture_callback() -> Any:
+    _install_minestudio_namespace_shim()
+    from minestudio.simulator.callbacks.callback import MinecraftCallback
+
+    class NativeIronFixtureCallback(MinecraftCallback):
+        def after_reset(self, sim: Any, obs: dict[str, Any], info: dict[str, Any]) -> tuple[Any, Any]:
+            outcomes: list[dict[str, Any]] = []
+            for command in NATIVE_TASK_COMMANDS:
+                command_obs, _reward, _done, command_info = sim.env.execute_cmd(command)
+                outcomes.append(
+                    {
+                        "command": command,
+                        "reward": float(_reward),
+                        "done": bool(_done),
+                        "observation_keys": sorted(command_obs or {}),
+                        "info_keys": sorted(command_info or {}),
+                    }
+                )
+                if _done:
+                    raise RuntimeError(f"native fixture command terminated the environment: {command}")
+                obs.update(command_obs or {})
+                info.update(command_info or {})
+            sim.airicraft_fixture_command_outcomes = outcomes
+            return sim._wrap_obs_info(obs, info)
+
+    return NativeIronFixtureCallback()
 
 
 def _install_clip_tokenizer_shim() -> None:
@@ -206,6 +483,614 @@ def _install_clip_tokenizer_shim() -> None:
     tokenizer = AutoTokenizer.from_pretrained(str(_model_path("clip_tokenizer")), local_files_only=True)
     mineclip_tokenization.get_tokenizer = lambda _name, use_fast=True: tokenizer
 
+
+def _native_task_source_metadata() -> dict[str, Any]:
+    path = SOURCE_ROOT / NATIVE_TASK_CONFIG
+    if not path.is_file():
+        raise RuntimeError(f"missing pinned native task config: {path}")
+    digest = _file_sha256(path)
+    if digest != NATIVE_TASK_CONFIG_SHA256:
+        raise RuntimeError(
+            f"native task config digest mismatch: expected {NATIVE_TASK_CONFIG_SHA256}, got {digest}"
+        )
+    fixture_digest = hashlib.sha256(("\n".join(NATIVE_TASK_COMMANDS) + "\n").encode("utf-8")).hexdigest()
+    if fixture_digest != NATIVE_TASK_COMMANDS_SHA256:
+        raise RuntimeError(
+            f"native fixture command digest mismatch: expected {NATIVE_TASK_COMMANDS_SHA256}, got {fixture_digest}"
+        )
+    return {
+        "path": str(path),
+        "sha256": digest,
+        "engine_compatible_commands_sha256": fixture_digest,
+    }
+
+
+def _new_native_simulator(world_seed: int) -> Any:
+    _install_minestudio_namespace_shim()
+    from minestudio.simulator.entry import MinecraftSim
+
+    simulator = MinecraftSim(
+        action_type="env",
+        obs_size=FRAME_SHAPE[:2],
+        render_size=(640, 360),
+        seed=world_seed,
+        inventory={},
+        preferred_spawn_biome=None,
+        num_empty_frames=20,
+        callbacks=[_native_fixture_callback()],
+    )
+    return simulator
+
+
+def _frame_sha256(frame: Any) -> str:
+    validate_frame_shape(frame)
+    return hashlib.sha256(frame.tobytes()).hexdigest()
+
+
+def _mainhand_type(info: Mapping[str, Any]) -> str:
+    equipped = info.get("equipped_items", {})
+    if isinstance(equipped, Mapping):
+        mainhand = equipped.get("mainhand", {})
+        if isinstance(mainhand, Mapping):
+            return str(mainhand.get("type", "")).removeprefix("minecraft:")
+    return ""
+
+
+def _count_voxel_type(value: Any, item: str) -> int:
+    if isinstance(value, Mapping):
+        return sum(_count_voxel_type(item_value, item) for item_value in value.values())
+    if isinstance(value, (list, tuple)):
+        return sum(_count_voxel_type(item_value, item) for item_value in value)
+    if hasattr(value, "tolist"):
+        return _count_voxel_type(value.tolist(), item)
+    if isinstance(value, str):
+        return int(value.removeprefix("minecraft:") == item)
+    return 0
+
+
+def _numeric(value: Any) -> float:
+    if hasattr(value, "item"):
+        value = value.item()
+    return float(value)
+
+
+def _location(info: Mapping[str, Any]) -> dict[str, float] | None:
+    location = info.get("location_stats")
+    if not isinstance(location, Mapping):
+        return None
+    result: dict[str, float] = {}
+    for key in ("xpos", "ypos", "zpos", "pitch", "yaw"):
+        if key in location:
+            result[key] = _numeric(location[key])
+    return result or None
+
+
+def _inventory_snapshot(info: Mapping[str, Any]) -> list[dict[str, Any]]:
+    inventory = info.get("inventory", {})
+    if not isinstance(inventory, Mapping):
+        return []
+    snapshot: list[dict[str, Any]] = []
+    for slot, item in inventory.items():
+        if not isinstance(item, Mapping):
+            continue
+        quantity = _numeric(item.get("quantity", 0))
+        item_type = str(item.get("type", "")).removeprefix("minecraft:")
+        if quantity > 0 and item_type not in ("", "air"):
+            snapshot.append({"slot": str(slot), "type": item_type, "quantity": quantity})
+    return sorted(snapshot, key=lambda item: item["slot"])
+
+
+def _simulator_noop(simulator: Any) -> dict[str, Any]:
+    action = simulator.env.action_space.no_op()
+    if not isinstance(action, Mapping):
+        raise RuntimeError("MineStudio no-op action is not a mapping")
+    return dict(action)
+
+
+def _coerce_action_value(value: Any, template: Any, np_module: Any) -> Any:
+    if hasattr(template, "dtype") and hasattr(template, "shape"):
+        coerced = np_module.asarray(value, dtype=template.dtype)
+        return coerced.reshape(template.shape)
+    if hasattr(template, "dtype"):
+        return np_module.asarray(value, dtype=template.dtype)
+    return value
+
+
+def _native_simulator_action(simulator: Any, applied_action: Mapping[str, Any], np_module: Any) -> dict[str, Any]:
+    action = _simulator_noop(simulator)
+    controls = native_motor_controls(applied_action)
+    missing = sorted(set(ALLOWED_ACTION_KEYS) - set(action))
+    if missing:
+        raise RuntimeError(f"MineStudio action space is missing allowed controls: {missing}")
+    for key in ALLOWED_ACTION_KEYS:
+        action[key] = _coerce_action_value(controls[key], action[key], np_module)
+    return action
+
+
+def _native_reset(simulator: Any, world_seed: int) -> tuple[Any, dict[str, Any], dict[str, Any]]:
+    simulator.env.seed(world_seed)
+    observation, info = simulator.reset()
+    query = _simulator_noop(simulator)
+    query["voxels"] = list(NATIVE_VOXEL_QUERY)
+    observation, _reward, terminated, truncated, info = simulator.step(query)
+    if terminated or truncated:
+        raise RuntimeError("MineStudio terminated during fixture validation")
+    frame = observation.get("image")
+    validate_frame_shape(frame)
+    iron_blocks = _count_voxel_type(info.get("voxels"), "iron_ore")
+    mainhand = _mainhand_type(info)
+    initial_iron = inventory_quantity(info.get("inventory"), "iron_ore")
+    if iron_blocks != NATIVE_EXPECTED_IRON_BLOCKS:
+        raise RuntimeError(
+            f"native iron fixture mismatch: expected {NATIVE_EXPECTED_IRON_BLOCKS} blocks, got {iron_blocks}"
+        )
+    if mainhand != "stone_pickaxe":
+        raise RuntimeError(f"native iron fixture main hand mismatch: expected stone_pickaxe, got {mainhand!r}")
+    if initial_iron != 0:
+        raise RuntimeError(f"native iron fixture starts with {initial_iron} iron ore")
+    baseline = {
+        "inventory_iron_ore": initial_iron,
+        "mine_iron_ore": stat_count(info.get("mine_block"), "iron_ore"),
+        "pickup_iron_ore": stat_count(info.get("pickup"), "iron_ore"),
+    }
+    setup = {
+        "frame_sha256": _frame_sha256(frame),
+        "iron_blocks": iron_blocks,
+        "mainhand": mainhand,
+        "inventory": _inventory_snapshot(info),
+        "location": _location(info),
+        "baseline": baseline,
+        "fixture_command_outcomes": getattr(simulator, "airicraft_fixture_command_outcomes", []),
+    }
+    return observation, info, setup
+
+
+@app.function(
+    image=simulator_runtime_image,
+    volumes={str(SIMULATOR_ROOT): _read_only_volume(simulator_volume)},
+    cpu=4.0,
+    memory=16_384,
+    startup_timeout=15 * 60,
+    timeout=15 * 60,
+    retries=0,
+    min_containers=0,
+    max_containers=1,
+    buffer_containers=0,
+    scaledown_window=60,
+    single_use_containers=True,
+)
+def simulator_preflight() -> dict[str, Any]:
+    import subprocess
+
+    engine_metadata = _prepare_simulator_runtime()
+    task_metadata = _native_task_source_metadata()
+    java = subprocess.run(["java", "-version"], capture_output=True, text=True, check=False, timeout=30)
+    simulator = None
+    started = time.perf_counter()
+    try:
+        world_seed, _policy_seed = native_episode_seeds(0)
+        simulator = _new_native_simulator(world_seed)
+        observation, info, setup = _native_reset(simulator, world_seed)
+        noop_started = time.perf_counter()
+        observation, _reward, terminated, truncated, info = simulator.step(_simulator_noop(simulator))
+        noop_seconds = time.perf_counter() - noop_started
+        checks = {
+            "engine_ready": _simulator_ready(),
+            "task_source_pinned": task_metadata["sha256"] == NATIVE_TASK_CONFIG_SHA256,
+            "fixture_commands_pinned": task_metadata["engine_compatible_commands_sha256"]
+            == NATIVE_TASK_COMMANDS_SHA256,
+            "java_8": 'version "1.8.' in (java.stderr + java.stdout),
+            "java_exit_zero": java.returncode == 0,
+            "frame_shape_valid": list(observation["image"].shape) == list(FRAME_SHAPE),
+            "fixture_iron_blocks_valid": setup["iron_blocks"] == NATIVE_EXPECTED_IRON_BLOCKS,
+            "fixture_mainhand_valid": setup["mainhand"] == "stone_pickaxe",
+            "fixture_initial_inventory_valid": setup["baseline"]["inventory_iron_ore"] == 0,
+            "noop_did_not_terminate": not terminated and not truncated,
+        }
+        return result_envelope(
+            "simulator_preflight",
+            {
+                "gate": NATIVE_GATE_NAME,
+                "engine": engine_metadata,
+                "task_source": task_metadata,
+                "java_version": (java.stderr or java.stdout).strip(),
+                "renderer": SIMULATOR_RUNTIME_PINS["renderer"],
+                "world_seed": world_seed,
+                "setup": setup,
+                "post_noop": {
+                    "frame_sha256": _frame_sha256(observation["image"]),
+                    "inventory": _inventory_snapshot(info),
+                    "location": _location(info),
+                },
+                "underlying_action_keys": sorted(_simulator_noop(simulator)),
+                "timing": {
+                    "total_seconds": time.perf_counter() - started,
+                    "noop_seconds": noop_seconds,
+                },
+                "acceptance": {"checks": checks, "passed": all(checks.values())},
+            },
+        )
+    finally:
+        if simulator is not None:
+            simulator.close()
+
+
+class _NativeEpisodeMixin:
+    def _native_episode(
+        self,
+        simulator: Any,
+        projected: Any,
+        episode_index: int,
+        wall_deadline: float,
+    ) -> dict[str, Any]:
+        world_seed, policy_seed = native_episode_seeds(episode_index)
+        observation, info, setup = _native_reset(simulator, world_seed)
+        baseline = setup["baseline"]
+        self._reset_action_policy(policy_seed)
+
+        records: list[dict[str, Any]] = []
+        success = False
+        valid = True
+        failure_reason: str | None = None
+        completion_step: int | None = None
+        initial_location = setup["location"]
+        previous_location = initial_location
+        distance_travelled = 0.0
+
+        for step in range(1, NATIVE_MAX_STEPS + 1):
+            if time.perf_counter() >= wall_deadline:
+                valid = False
+                failure_reason = "wall_budget_exhausted"
+                break
+
+            frame = observation["image"]
+            input_frame_sha256 = _frame_sha256(frame)
+            loop_started_ns = time.perf_counter_ns()
+            try:
+                record = self._timed_action(lambda: self._cached_equivalent_action(projected, frame))
+            except (TypeError, ValueError) as error:
+                valid = False
+                failure_reason = "policy_schema_error"
+                records.append(
+                    {
+                        "step": step,
+                        "input_frame_sha256": input_frame_sha256,
+                        "error": {"type": type(error).__name__, "message": str(error)},
+                    }
+                )
+                break
+            except Exception as error:
+                valid = False
+                failure_reason = "policy_inference_error"
+                records.append(
+                    {
+                        "step": step,
+                        "input_frame_sha256": input_frame_sha256,
+                        "error": {"type": type(error).__name__, "message": str(error)},
+                    }
+                )
+                break
+
+            record.update({"phase": "native_episode", "index": step - 1, "step": step})
+            record["input_frame_sha256"] = input_frame_sha256
+            if record["safety_violations"]:
+                valid = False
+                failure_reason = "safety_violation"
+                records.append(record)
+                break
+
+            try:
+                simulator_action = _native_simulator_action(simulator, record["applied_action"], self.np)
+            except Exception as error:
+                valid = False
+                failure_reason = "action_adapter_error"
+                record["error"] = {"type": type(error).__name__, "message": str(error)}
+                records.append(record)
+                break
+
+            env_started_ns = time.perf_counter_ns()
+            try:
+                observation, reward, terminated, truncated, info = simulator.step(simulator_action)
+            except Exception as error:
+                valid = False
+                failure_reason = "simulator_step_error"
+                record["error"] = {"type": type(error).__name__, "message": str(error)}
+                records.append(record)
+                break
+            env_finished_ns = time.perf_counter_ns()
+
+            current_location = _location(info)
+            if previous_location is not None and current_location is not None:
+                dx = current_location.get("xpos", 0.0) - previous_location.get("xpos", 0.0)
+                dy = current_location.get("ypos", 0.0) - previous_location.get("ypos", 0.0)
+                dz = current_location.get("zpos", 0.0) - previous_location.get("zpos", 0.0)
+                distance_travelled += (dx * dx + dy * dy + dz * dz) ** 0.5
+            previous_location = current_location
+
+            inventory_iron = inventory_quantity(info.get("inventory"), "iron_ore")
+            mine_iron = stat_count(info.get("mine_block"), "iron_ore")
+            pickup_iron = stat_count(info.get("pickup"), "iron_ore")
+            success = native_episode_success(info, baseline)
+            record.update(
+                {
+                    "env_step_ms": (env_finished_ns - env_started_ns) / 1_000_000.0,
+                    "closed_loop_ms": (time.perf_counter_ns() - loop_started_ns) / 1_000_000.0,
+                    "reward": _numeric(reward),
+                    "terminated": bool(terminated),
+                    "truncated": bool(truncated),
+                    "inventory_iron_ore": inventory_iron,
+                    "mine_iron_ore": mine_iron,
+                    "pickup_iron_ore": pickup_iron,
+                    "oracle_success": success,
+                    "location": current_location,
+                }
+            )
+            records.append(record)
+            if success:
+                completion_step = step
+                break
+            if terminated or truncated:
+                failure_reason = "environment_terminated"
+                break
+
+        if valid and not success and failure_reason is None:
+            failure_reason = "timeout_200_steps"
+
+        complete_records = [record for record in records if "raw_action" in record]
+        action_evidence = self._action_evidence(complete_records)
+        trace_digest = hashlib.sha256()
+        for record in records:
+            canonical_record = {
+                key: record[key]
+                for key in (
+                    "step",
+                    "input_frame_sha256",
+                    "raw_action",
+                    "applied_action",
+                    "forbidden_attempts",
+                    "terminated",
+                    "truncated",
+                    "inventory_iron_ore",
+                    "mine_iron_ore",
+                    "pickup_iron_ore",
+                    "oracle_success",
+                    "location",
+                )
+                if key in record
+            }
+            if "error" in record:
+                canonical_record["error_type"] = record["error"]["type"]
+            trace_digest.update(
+                json.dumps(canonical_record, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            )
+
+        def summarize(name: str) -> dict[str, Any] | None:
+            samples = [float(record[name]) for record in complete_records if name in record]
+            return latency_summary(samples) if samples else None
+
+        final_inventory = _inventory_snapshot(info)
+        final_inventory_iron = inventory_quantity(info.get("inventory"), "iron_ore")
+        final_mine_iron = stat_count(info.get("mine_block"), "iron_ore")
+        final_pickup_iron = stat_count(info.get("pickup"), "iron_ore")
+        attack_steps = sum(record["applied_action"]["attack"] == 1 for record in complete_records)
+        camera_travel = sum(
+            abs(float(record["applied_action"]["camera"][0]))
+            + abs(float(record["applied_action"]["camera"][1]))
+            for record in complete_records
+        )
+        return {
+            "episode_index": episode_index,
+            "world_seed": world_seed,
+            "policy_seed": policy_seed,
+            "valid": valid,
+            "success": success,
+            "failure_reason": failure_reason,
+            "completion_step": completion_step,
+            "policy_steps": len(complete_records),
+            "setup": setup,
+            "final": {
+                "frame_sha256": _frame_sha256(observation["image"]),
+                "inventory": final_inventory,
+                "location": _location(info),
+                "inventory_iron_ore": final_inventory_iron,
+                "mine_iron_ore": final_mine_iron,
+                "pickup_iron_ore": final_pickup_iron,
+                "inventory_iron_ore_delta": final_inventory_iron - baseline["inventory_iron_ore"],
+                "mine_iron_ore_delta": final_mine_iron - baseline["mine_iron_ore"],
+                "pickup_iron_ore_delta": final_pickup_iron - baseline["pickup_iron_ore"],
+            },
+            "metrics": {
+                "policy_call_ms": summarize("policy_call_ms"),
+                "native_action_ms": summarize("native_step_ms"),
+                "environment_step_ms": summarize("env_step_ms"),
+                "closed_loop_ms": summarize("closed_loop_ms"),
+                "distance_travelled": distance_travelled,
+                "attack_steps": attack_steps,
+                "attack_duty_cycle": attack_steps / len(complete_records) if complete_records else 0.0,
+                "camera_travel_degrees": camera_travel,
+            },
+            "action_evidence": action_evidence,
+            "action_trace_sha256": trace_digest.hexdigest(),
+            "trace": records,
+        }
+
+    def _run_native(self, episode_indices: list[int]) -> dict[str, Any]:
+        episode_indices = [validate_episode_index(index) for index in episode_indices]
+        if not episode_indices:
+            raise ValueError("at least one native episode is required")
+        if len(set(episode_indices)) != len(episode_indices):
+            raise ValueError("native episode indices must be unique")
+
+        method_started = time.perf_counter()
+        wall_budget_seconds = 10 * 60.0 if len(episode_indices) == 1 else NATIVE_SUITE_WALL_BUDGET_SECONDS
+        wall_deadline = method_started + wall_budget_seconds
+        engine_metadata = _prepare_simulator_runtime()
+        task_metadata = _native_task_source_metadata()
+
+        self._set_seed(NATIVE_EMBEDDING_SEED)
+        embedding_started = time.perf_counter()
+        embedding, task_label = self._task_embedding(DEFAULT_TASK)
+        self.torch.cuda.synchronize()
+        embedding_seconds = time.perf_counter() - embedding_started
+        embedding_cpu = embedding.detach().cpu().numpy()
+        embedding_sha256 = hashlib.sha256(embedding_cpu.tobytes()).hexdigest()
+
+        self.torch.cuda.synchronize()
+        projection_started = time.perf_counter()
+        with self.torch.inference_mode():
+            projected = self._project_task_embedding(embedding)
+        self.torch.cuda.synchronize()
+        projection_seconds = time.perf_counter() - projection_started
+        projected_cpu = projected.detach().cpu().numpy()
+        projection_sha256 = hashlib.sha256(projected_cpu.tobytes()).hexdigest()
+
+        conditioning_checks = {
+            "task_label_is_iron": task_label == NATIVE_EXPECTED_LABEL,
+            "embedding_digest_matches_stage_2": embedding_sha256 == NATIVE_EXPECTED_EMBEDDING_SHA256,
+            "projection_digest_matches_stage_2": projection_sha256 == NATIVE_EXPECTED_PROJECTION_SHA256,
+        }
+        episodes: list[dict[str, Any]] = []
+        simulator = None
+        suite_error: dict[str, str] | None = None
+        if all(conditioning_checks.values()):
+            try:
+                first_world_seed, _first_policy_seed = native_episode_seeds(episode_indices[0])
+                simulator = _new_native_simulator(first_world_seed)
+                for episode_index in episode_indices:
+                    if time.perf_counter() >= wall_deadline:
+                        suite_error = {
+                            "type": "WallBudgetExceeded",
+                            "message": "native episode wall budget exhausted before the next reset",
+                        }
+                        break
+                    try:
+                        episode = self._native_episode(simulator, projected, episode_index, wall_deadline)
+                    except Exception as error:
+                        episode = {
+                            "episode_index": episode_index,
+                            "world_seed": native_episode_seeds(episode_index)[0],
+                            "policy_seed": native_episode_seeds(episode_index)[1],
+                            "valid": False,
+                            "success": False,
+                            "failure_reason": "fixture_or_reset_error",
+                            "error": {"type": type(error).__name__, "message": str(error)},
+                            "trace": [],
+                        }
+                    episodes.append(episode)
+                    if not episode["valid"]:
+                        break
+            except Exception as error:
+                suite_error = {"type": type(error).__name__, "message": str(error)}
+            finally:
+                if simulator is not None:
+                    simulator.close()
+
+        completed = len(episodes) == len(episode_indices)
+        valid_episodes = sum(bool(episode.get("valid")) for episode in episodes)
+        successes = sum(
+            bool(episode.get("valid")) and bool(episode.get("success")) for episode in episodes
+        )
+        safety_violations = sum(
+            len(episode.get("action_evidence", {}).get("safety_violations", [])) for episode in episodes
+        )
+        schema_failures = sum(episode.get("failure_reason") == "policy_schema_error" for episode in episodes)
+        infrastructure_checks = {
+            "requested_gpu_present": GPU_TYPE.lower() in self.cuda_device_name.lower(),
+            "torch_runtime_matches_pin": self.torch.__version__ == RUNTIME_PINS["torch"],
+            "cuda_runtime_matches_pin": self.torch.version.cuda == RUNTIME_PINS["cuda"],
+            "pinned_checkpoints_ready": all(_ready(spec) for spec in MODEL_SPECS),
+            "pinned_simulator_engine_ready": _simulator_ready(),
+            "pinned_task_source_ready": task_metadata["sha256"] == NATIVE_TASK_CONFIG_SHA256,
+            "pinned_fixture_commands_ready": task_metadata["engine_compatible_commands_sha256"]
+            == NATIVE_TASK_COMMANDS_SHA256,
+            **conditioning_checks,
+            "all_requested_episodes_completed": completed,
+            "all_completed_episodes_valid": valid_episodes == len(episode_indices),
+            "schema_failures_zero": schema_failures == 0,
+            "safety_violations_zero": safety_violations == 0,
+            "suite_error_absent": suite_error is None,
+        }
+        infrastructure_passed = all(infrastructure_checks.values())
+        gate_requested = episode_indices == list(range(NATIVE_EPISODE_COUNT))
+        outcome = native_suite_outcome(episodes, infrastructure_passed)
+        gate_checks = {
+            **infrastructure_checks,
+            "exact_locked_episode_schedule": outcome["exact_locked_episode_schedule"],
+            "ten_valid_episodes": outcome["complete_and_valid"],
+            "successes_at_least_eight": outcome["successes"] >= NATIVE_REQUIRED_SUCCESSES,
+        }
+        kind = "model_native_episode_suite" if gate_requested else "model_native_episode"
+        return result_envelope(
+            kind,
+            {
+                "gate": NATIVE_GATE_NAME,
+                "gate_requested": gate_requested,
+                "gate_evaluated": outcome["evaluated"],
+                "task": DEFAULT_TASK,
+                "task_label": task_label,
+                "episode_indices": episode_indices,
+                "protocol": {
+                    "claim_scope": "native MineStudio simple iron task; not a visible-iron test",
+                    "upstream_task_text": NATIVE_UPSTREAM_TASK_TEXT,
+                    "policy_prompt": DEFAULT_TASK,
+                    "policy_prompt_note": "retained from Stages 1 and 2 for conditioning continuity",
+                    "maximum_policy_steps_per_episode": NATIVE_MAX_STEPS,
+                    "required_successes": NATIVE_REQUIRED_SUCCESSES,
+                    "wall_budget_seconds": wall_budget_seconds,
+                    "hard_reset_between_episodes": True,
+                    "reuse_minecraft_process": True,
+                    "policy_reset_once_per_episode": True,
+                    "policy_warmup_steps": 0,
+                    "per_frame_stochastic_prior_preserved": True,
+                    "fallback_enabled": False,
+                    "video_recording": False,
+                    "setup_steps_are_unscored": True,
+                    "oracle": "mine_block.iron_ore delta >= 1 and inventory iron_ore delta >= 1",
+                },
+                "engine": engine_metadata,
+                "task_source": task_metadata,
+                "conditioning": {
+                    "embedding_seed": NATIVE_EMBEDDING_SEED,
+                    "embedding_shape": list(embedding_cpu.shape),
+                    "embedding_sha256": embedding_sha256,
+                    "projection_shape": list(projected_cpu.shape),
+                    "projection_sha256": projection_sha256,
+                },
+                "episodes": episodes,
+                "summary": {
+                    "requested_episodes": len(episode_indices),
+                    "completed_episodes": len(episodes),
+                    "valid_episodes": valid_episodes,
+                    "successes": successes,
+                    "required_successes": NATIVE_REQUIRED_SUCCESSES if gate_requested else None,
+                    "safety_violations": safety_violations,
+                    "schema_failures": schema_failures,
+                },
+                "suite_error": suite_error,
+                "timing": {
+                    "model_load_seconds": self.load_seconds,
+                    "task_embedding_seconds": embedding_seconds,
+                    "task_projection_seconds": projection_seconds,
+                    "method_seconds": time.perf_counter() - method_started,
+                },
+                "cuda": {
+                    "device_name": self.cuda_device_name,
+                    "device_total_memory_bytes": self.cuda_total_memory_bytes,
+                    "allocated_bytes": self.torch.cuda.memory_allocated(),
+                    "reserved_bytes": self.torch.cuda.memory_reserved(),
+                    "peak_allocated_bytes": self.torch.cuda.max_memory_allocated(),
+                },
+                "infrastructure_acceptance": {
+                    "checks": infrastructure_checks,
+                    "passed": infrastructure_passed,
+                },
+                "acceptance": {
+                    "evaluated": outcome["evaluated"],
+                    "checks": gate_checks,
+                    "passed": outcome["passed"],
+                },
+            },
+        )
 
 @app.function(
     image=runtime_image,
@@ -224,7 +1109,7 @@ def gpu_preflight() -> dict[str, Any]:
     import datasets
     import peft
     import trl
-    import tyro
+    import tyro  # noqa: F401 - import is the preflight check
     import torch
     import transformers
     import qwen_vl_utils
@@ -256,12 +1141,16 @@ def gpu_preflight() -> dict[str, Any]:
 
 
 @app.cls(
-    image=runtime_image,
+    image=simulator_runtime_image,
     gpu=GPU_TYPE,
-    volumes={str(MODEL_ROOT): _read_only_volume(model_volume)},
+    volumes={
+        str(MODEL_ROOT): _read_only_volume(model_volume),
+        str(SIMULATOR_ROOT): _read_only_volume(simulator_volume),
+    },
+    cpu=4.0,
     memory=65_536,
-    startup_timeout=10 * 60,
-    timeout=5 * 60,
+    startup_timeout=15 * 60,
+    timeout=30 * 60,
     retries=0,
     min_containers=0,
     max_containers=1,
@@ -269,7 +1158,7 @@ def gpu_preflight() -> dict[str, Any]:
     scaledown_window=60,
     single_use_containers=True,
 )
-class Optimus3Smoke:
+class Optimus3Smoke(_NativeEpisodeMixin):
     @modal.enter()
     def load(self) -> None:
         import numpy as np
@@ -411,6 +1300,7 @@ class Optimus3Smoke:
         return embedding, task_label
 
     def _set_seed(self, seed: int) -> None:
+        random.seed(seed)
         self.torch.manual_seed(seed)
         self.torch.cuda.manual_seed_all(seed)
         self.np.random.seed(seed)
@@ -787,6 +1677,14 @@ class Optimus3Smoke:
             },
         )
 
+    @modal.method()
+    def native_episode(self, episode_index: int = 0) -> dict[str, Any]:
+        return self._run_native([validate_episode_index(episode_index)])
+
+    @modal.method()
+    def native_suite(self) -> dict[str, Any]:
+        return self._run_native(list(range(NATIVE_EPISODE_COUNT)))
+
 
 def _emit(result: dict[str, Any], output: str) -> None:
     rendered = json.dumps(result, indent=2, sort_keys=True) + "\n"
@@ -804,6 +1702,7 @@ def main(
     mode: str = "preflight",
     task: str = DEFAULT_TASK,
     seed: int = 7,
+    episode_index: int = 0,
     reference_steps: int = DEFAULT_REFERENCE_STEPS,
     warmup_steps: int = DEFAULT_WARMUP_STEPS,
     measured_steps: int = DEFAULT_MEASURED_STEPS,
@@ -813,11 +1712,21 @@ def main(
         result = gpu_preflight.remote()
     elif mode == "cache":
         result = cache_weights.remote()
+    elif mode == "engine-cache":
+        result = cache_simulator_engine.remote()
+    elif mode == "sim-preflight":
+        result = simulator_preflight.remote()
     elif mode == "smoke":
         result = Optimus3Smoke().run.remote(validate_task(task), validate_seed(seed))
     elif mode == "bench":
         counts = validate_benchmark_steps(reference_steps, warmup_steps, measured_steps)
         result = Optimus3Smoke().bench.remote(validate_task(task), validate_seed(seed), *counts)
+    elif mode == "episode":
+        result = Optimus3Smoke().native_episode.remote(validate_episode_index(episode_index))
+    elif mode == "episodes":
+        result = Optimus3Smoke().native_suite.remote()
     else:
-        raise ValueError("mode must be one of: preflight, cache, smoke, bench")
+        raise ValueError(
+            "mode must be one of: preflight, cache, engine-cache, sim-preflight, smoke, bench, episode, episodes"
+        )
     _emit(result, output)

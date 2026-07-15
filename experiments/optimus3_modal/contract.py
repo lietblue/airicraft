@@ -17,6 +17,7 @@ from typing import Any, Mapping, Sequence
 SCHEMA_VERSION = 1
 APP_NAME = "airicraft-optimus3-pilot"
 VOLUME_NAME = "airicraft-optimus3-models"
+SIMULATOR_VOLUME_NAME = "airicraft-optimus3-simulator"
 GPU_TYPE = "L40S"
 DEFAULT_TASK = "collect one iron ore"
 FRAME_SHAPE = (128, 128, 3)
@@ -31,6 +32,48 @@ MAX_TOTAL_BENCHMARK_STEPS = 600
 TARGET_LATENCY_MS = 50.0
 MAX_DEADLINE_MISS_RATE = 0.05
 BENCHMARK_WALL_BUDGET_SECONDS = 240.0
+
+NATIVE_GATE_NAME = "native_simple_mine_iron_v1"
+NATIVE_EPISODE_COUNT = 10
+NATIVE_REQUIRED_SUCCESSES = 8
+NATIVE_MAX_STEPS = 200
+NATIVE_SUITE_WALL_BUDGET_SECONDS = 25 * 60.0
+NATIVE_TASK_CONFIG = "MineStudio/minestudio/benchmark/task_configs/simple/mine_iron_ore.yaml"
+NATIVE_TASK_CONFIG_GIT_BLOB = "97fb7ffa93621ac3aa031bee41a4d2bf55f251e9"
+NATIVE_TASK_CONFIG_SHA256 = "49a6396dc868bf902823a4c6db0a71736525fcb3d7baf12b8103461a33af639d"
+NATIVE_UPSTREAM_TASK_TEXT = "Mine iron ore from the environment."
+NATIVE_UPSTREAM_TASK_COMMANDS = (
+    "/replaceitem entity @s weapon.mainhand minecraft:stone_pickaxe",
+    "/execute as @p at @s run fill ~2 ~ ~2 ~3 ~1 ~3 minecraft:iron_ore",
+)
+NATIVE_TASK_COMMANDS = (
+    "/replaceitem entity @p slot.weapon.mainhand minecraft:stone_pickaxe",
+    "/execute @p ~ ~ ~ fill ~2 ~ ~2 ~3 ~1 ~3 minecraft:iron_ore",
+)
+NATIVE_TASK_COMMANDS_SHA256 = "d45b5b7e30ea5ec8f2e111779af1b171e212ecb2d2138ffc5fe8c0189a03f637"
+NATIVE_VOXEL_QUERY = (2, 3, 0, 1, 2, 3)
+NATIVE_EXPECTED_IRON_BLOCKS = 8
+NATIVE_EMBEDDING_SEED = 7
+NATIVE_EXPECTED_LABEL = "<iron>"
+NATIVE_EXPECTED_EMBEDDING_SHA256 = "19df8b793320e5b48aa835f09e5faa10e82283986c84f805a691e4f86d34949b"
+NATIVE_EXPECTED_PROJECTION_SHA256 = "0712a98f46d96845045aecd80fa9fddc6fa0617b5a94a1accf14ff07efcfd847"
+NATIVE_SEED_NAMESPACE = "airicraft-optimus3-stage3-v1"
+
+SIMULATOR_ENGINE_REPOSITORY = "CraftJarvis/SimulatorEngine"
+SIMULATOR_ENGINE_REVISION = "48d4809cfddc7e2b85295e8c39b3c5e8c6d46ae7"
+SIMULATOR_ENGINE_FILENAME = "engine.zip"
+SIMULATOR_ENGINE_EXPECTED_BYTES = 458_106_630
+SIMULATOR_ENGINE_SHA256 = "293fac6ac72245b3365dce0e8bfbb6396fb94df29b23b6538f3bd7e2eec13ec6"
+SIMULATOR_ENGINE_JAR = "engine/build/libs/mcprec-6.13.jar"
+
+
+def _native_seed(stream: str, index: int) -> int:
+    digest = hashlib.sha256(f"{NATIVE_SEED_NAMESPACE}:{stream}:{index}".encode("utf-8")).digest()
+    return int.from_bytes(digest[:4], byteorder="big", signed=False)
+
+
+NATIVE_WORLD_SEEDS = tuple(_native_seed("world", index) for index in range(NATIVE_EPISODE_COUNT))
+NATIVE_POLICY_SEEDS = tuple(_native_seed("policy", index) for index in range(NATIVE_EPISODE_COUNT))
 
 OPTIMUS3_REPOSITORY = "https://github.com/JiuTian-VL/Optimus-3.git"
 OPTIMUS3_REVISION = "a73c01365f8091d45e61585aee59b8ef73fb5fb7"
@@ -50,6 +93,24 @@ RUNTIME_PINS = {
     "tyro": "0.8.14",
     "qwen_vl_utils": "0.0.11",
     "attention_implementation": "sdpa",
+}
+
+SIMULATOR_RUNTIME_PINS = {
+    "java": "8",
+    "renderer": "xvfb_cpu_mesa",
+    "gymnasium": "0.29.1",
+    "pyro4": "4.82",
+    "psutil": "7.0.0",
+    "diskcache": "5.6.3",
+    "lxml": "5.4.0",
+    "xmltodict": "0.14.2",
+    "coloredlogs": "15.0.1",
+    "daemoniker": "0.2.3",
+    "cuda_python": "12.4.0",
+    "rich": "14.0.0",
+    "pyyaml": "6.0.2",
+    "absl_py": "2.2.2",
+    "jinja2": "3.1.6",
 }
 
 ALLOWED_ACTION_KEYS = (
@@ -172,6 +233,87 @@ def validate_seed(seed: int) -> int:
     return seed
 
 
+def validate_episode_index(index: int) -> int:
+    if isinstance(index, bool) or not isinstance(index, int):
+        raise TypeError("episode index must be an integer")
+    if index < 0 or index >= NATIVE_EPISODE_COUNT:
+        raise ValueError(f"episode index must be between 0 and {NATIVE_EPISODE_COUNT - 1}")
+    return index
+
+
+def native_episode_seeds(index: int) -> tuple[int, int]:
+    index = validate_episode_index(index)
+    return NATIVE_WORLD_SEEDS[index], NATIVE_POLICY_SEEDS[index]
+
+
+def _count_value(value: Any) -> float:
+    if hasattr(value, "item"):
+        value = value.item()
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise TypeError(f"counter value must be numeric, got {type(value).__name__}")
+    normalized = float(value)
+    if not math.isfinite(normalized) or normalized < 0:
+        raise ValueError("counter value must be finite and non-negative")
+    return normalized
+
+
+def stat_count(stats: Any, item: str) -> float:
+    if stats is None:
+        return 0.0
+    if not isinstance(stats, Mapping):
+        raise TypeError("stats must be a mapping")
+    return _count_value(stats.get(item, 0))
+
+
+def inventory_quantity(inventory: Any, item: str) -> float:
+    if inventory is None:
+        return 0.0
+    if not isinstance(inventory, Mapping):
+        raise TypeError("inventory must be a mapping")
+    total = 0.0
+    for slot in inventory.values():
+        if not isinstance(slot, Mapping):
+            raise TypeError("inventory slots must be mappings")
+        item_type = str(slot.get("type", "")).removeprefix("minecraft:")
+        if item_type == item:
+            total += _count_value(slot.get("quantity", 0))
+    return total
+
+
+def native_episode_success(info: Mapping[str, Any], baseline: Mapping[str, float]) -> bool:
+    inventory_delta = inventory_quantity(info.get("inventory"), "iron_ore") - float(
+        baseline["inventory_iron_ore"]
+    )
+    mined_delta = stat_count(info.get("mine_block"), "iron_ore") - float(baseline["mine_iron_ore"])
+    return inventory_delta >= 1 and mined_delta >= 1
+
+
+def native_suite_outcome(
+    episodes: Sequence[Mapping[str, Any]],
+    infrastructure_passed: bool,
+) -> dict[str, Any]:
+    if not isinstance(infrastructure_passed, bool):
+        raise TypeError("infrastructure_passed must be a boolean")
+    expected_indices = list(range(NATIVE_EPISODE_COUNT))
+    observed_indices = [episode.get("episode_index") for episode in episodes]
+    exact_schedule = observed_indices == expected_indices
+    valid_episodes = sum(bool(episode.get("valid")) for episode in episodes)
+    successes = sum(
+        bool(episode.get("valid")) and bool(episode.get("success")) for episode in episodes
+    )
+    complete_and_valid = len(episodes) == NATIVE_EPISODE_COUNT and valid_episodes == NATIVE_EPISODE_COUNT
+    evaluated = infrastructure_passed and exact_schedule and complete_and_valid
+    return {
+        "evaluated": evaluated,
+        "passed": successes >= NATIVE_REQUIRED_SUCCESSES if evaluated else None,
+        "exact_locked_episode_schedule": exact_schedule,
+        "complete_and_valid": complete_and_valid,
+        "valid_episodes": valid_episodes,
+        "successes": successes,
+        "required_successes": NATIVE_REQUIRED_SUCCESSES,
+    }
+
+
 def validate_benchmark_steps(
     reference_steps: int,
     warmup_steps: int,
@@ -289,6 +431,22 @@ def apply_pilot_safety_mask(action: Mapping[str, Any]) -> tuple[dict[str, Any], 
     return applied, attempted
 
 
+def native_motor_controls(applied_action: Mapping[str, Any]) -> dict[str, Any]:
+    if not isinstance(applied_action, Mapping):
+        raise TypeError("applied action must be a mapping")
+    keys = set(applied_action)
+    expected = set(ALL_ACTION_KEYS)
+    missing = sorted(expected - keys)
+    unknown = sorted(keys - expected)
+    if missing or unknown:
+        raise ValueError(f"applied action schema mismatch: missing={missing}, unknown={unknown}")
+    normalized = normalize_action(applied_action)
+    surviving = [key for key in FORBIDDEN_ACTION_KEYS if _is_active(normalized[key])]
+    if surviving:
+        raise ValueError(f"forbidden actions survived safety mask: {surviving}")
+    return {key: normalized[key] for key in ALLOWED_ACTION_KEYS}
+
+
 def latency_summary(samples_ms: Sequence[float], deadline_ms: float = TARGET_LATENCY_MS) -> dict[str, Any]:
     if not samples_ms:
         raise ValueError("latency samples must not be empty")
@@ -359,6 +517,7 @@ def pilot_manifest() -> dict[str, Any]:
         "schema_version": SCHEMA_VERSION,
         "app_name": APP_NAME,
         "volume_name": VOLUME_NAME,
+        "simulator_volume_name": SIMULATOR_VOLUME_NAME,
         "gpu": GPU_TYPE,
         "source": {
             "optimus3_repository": OPTIMUS3_REPOSITORY,
@@ -370,6 +529,15 @@ def pilot_manifest() -> dict[str, Any]:
         "models": [asdict(spec) for spec in MODEL_SPECS],
         "expected_model_bytes": sum(spec.expected_bytes for spec in MODEL_SPECS),
         "runtime": dict(RUNTIME_PINS),
+        "simulator_runtime": dict(SIMULATOR_RUNTIME_PINS),
+        "simulator_engine": {
+            "repository": SIMULATOR_ENGINE_REPOSITORY,
+            "revision": SIMULATOR_ENGINE_REVISION,
+            "filename": SIMULATOR_ENGINE_FILENAME,
+            "expected_bytes": SIMULATOR_ENGINE_EXPECTED_BYTES,
+            "sha256": SIMULATOR_ENGINE_SHA256,
+            "required_jar": SIMULATOR_ENGINE_JAR,
+        },
         "task": DEFAULT_TASK,
         "frame_shape": list(FRAME_SHAPE),
         "benchmark_defaults": {
@@ -382,6 +550,38 @@ def pilot_manifest() -> dict[str, Any]:
             "maximum_deadline_miss_rate": MAX_DEADLINE_MISS_RATE,
             "synchronize_each_step": True,
         },
+        "native_episode_gate": {
+            "name": NATIVE_GATE_NAME,
+            "claim_scope": "MineStudio native simple iron task; visibility is not guaranteed",
+            "task_config": NATIVE_TASK_CONFIG,
+            "task_config_git_blob": NATIVE_TASK_CONFIG_GIT_BLOB,
+            "task_config_sha256": NATIVE_TASK_CONFIG_SHA256,
+            "upstream_task_text": NATIVE_UPSTREAM_TASK_TEXT,
+            "policy_prompt": DEFAULT_TASK,
+            "policy_prompt_note": "retained from Stages 1 and 2 for conditioning continuity",
+            "upstream_commands": list(NATIVE_UPSTREAM_TASK_COMMANDS),
+            "engine_compatible_commands": list(NATIVE_TASK_COMMANDS),
+            "engine_compatible_commands_sha256": NATIVE_TASK_COMMANDS_SHA256,
+            "fixture_compatibility_note": "upstream task semantics translated to Minecraft 1.11 command syntax",
+            "voxel_query": list(NATIVE_VOXEL_QUERY),
+            "expected_iron_blocks": NATIVE_EXPECTED_IRON_BLOCKS,
+            "episode_count": NATIVE_EPISODE_COUNT,
+            "required_successes": NATIVE_REQUIRED_SUCCESSES,
+            "maximum_policy_steps_per_episode": NATIVE_MAX_STEPS,
+            "wall_budget_seconds": NATIVE_SUITE_WALL_BUDGET_SECONDS,
+            "embedding_seed": NATIVE_EMBEDDING_SEED,
+            "expected_label": NATIVE_EXPECTED_LABEL,
+            "expected_embedding_sha256": NATIVE_EXPECTED_EMBEDDING_SHA256,
+            "expected_projection_sha256": NATIVE_EXPECTED_PROJECTION_SHA256,
+            "seed_namespace": NATIVE_SEED_NAMESPACE,
+            "world_seeds": list(NATIVE_WORLD_SEEDS),
+            "policy_seeds": list(NATIVE_POLICY_SEEDS),
+            "oracle": "mine_block.iron_ore delta >= 1 and inventory iron_ore delta >= 1",
+            "forbidden_attempts_are_diagnostic": True,
+            "hard_reset_between_episodes": True,
+            "fast_reset": False,
+            "video_recording": False,
+        },
         "allowed_actions": list(ALLOWED_ACTION_KEYS),
         "forbidden_actions": list(FORBIDDEN_ACTION_KEYS),
         "policy_output_actions": list(POLICY_ACTION_KEYS),
@@ -393,10 +593,11 @@ def pilot_manifest() -> dict[str, Any]:
             "buffer_containers": 0,
             "single_use_containers": True,
             "configured_retries": 0,
-            "gpu_startup_timeout_seconds": 600,
-            "gpu_method_timeout_seconds": 300,
+            "gpu_startup_timeout_seconds": 900,
+            "gpu_method_timeout_seconds": 1800,
+            "simulator_cpu_cores": 4,
         },
-        "scope": "checkpoint load, cached task conditioning, and bounded synthetic-frame action latency",
+        "scope": "checkpoint load, bounded synthetic latency, and locked native MineStudio competence episodes",
     }
 
 
@@ -415,9 +616,13 @@ def result_envelope(kind: str, payload: Mapping[str, Any]) -> dict[str, Any]:
 def _main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path)
-    parser.add_argument("--mode", choices=("preflight", "cache", "smoke", "bench"))
+    parser.add_argument(
+        "--mode",
+        choices=("preflight", "cache", "smoke", "bench", "engine-cache", "sim-preflight", "episode", "episodes"),
+    )
     parser.add_argument("--task", default=DEFAULT_TASK)
     parser.add_argument("--seed", type=int, default=7)
+    parser.add_argument("--episode-index", type=int, default=0)
     parser.add_argument("--reference-steps", type=int, default=DEFAULT_REFERENCE_STEPS)
     parser.add_argument("--warmup-steps", type=int, default=DEFAULT_WARMUP_STEPS)
     parser.add_argument("--measured-steps", type=int, default=DEFAULT_MEASURED_STEPS)
@@ -443,6 +648,24 @@ def _main() -> None:
                     "reference_steps": reference_steps,
                     "warmup_steps": warmup_steps,
                     "measured_steps": measured_steps,
+                }
+            )
+        if args.mode == "episode":
+            episode_index = validate_episode_index(args.episode_index)
+            world_seed, policy_seed = native_episode_seeds(episode_index)
+            invocation.update(
+                {
+                    "episode_index": episode_index,
+                    "world_seed": world_seed,
+                    "policy_seed": policy_seed,
+                }
+            )
+        if args.mode == "episodes":
+            invocation.update(
+                {
+                    "episode_indices": list(range(NATIVE_EPISODE_COUNT)),
+                    "world_seeds": list(NATIVE_WORLD_SEEDS),
+                    "policy_seeds": list(NATIVE_POLICY_SEEDS),
                 }
             )
         manifest["invocation"] = invocation

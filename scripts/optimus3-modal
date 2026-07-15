@@ -17,8 +17,12 @@ commands:
   dry-run               print the pinned manifest without contacting Modal
   preflight             build/import the runtime on one L40S
   cache                 download pinned weights on CPU into the Modal Volume
+  engine-cache          download/verify the pinned MineStudio engine on CPU
+  sim-preflight         boot the pinned engine under CPU Mesa/Xvfb
   smoke [Modal args]    run one embedding + synthetic-frame action on one L40S
   bench [Modal args]    benchmark the warmed recurrent action loop on one L40S
+  episode [Modal args]  run one fixed-seed native MineStudio episode on one L40S
+  episodes              run the locked ten-episode native competence gate
 EOF
 }
 
@@ -59,7 +63,7 @@ case "$command" in
 	dry-run)
 		python3 "$experiment_dir/contract.py" "$@"
 		;;
-	preflight | cache | smoke | bench)
+	preflight | cache | engine-cache | sim-preflight | smoke | bench | episode | episodes)
 		require_modal
 		run_remote "$command" "$@"
 		;;

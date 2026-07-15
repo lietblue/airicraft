@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import sys
@@ -25,12 +26,21 @@ class ArrayLike:
         return self.value
 
 
+class ScalarLike:
+    def __init__(self, value):
+        self.value = value
+
+    def item(self):
+        return self.value
+
+
 class ContractTest(unittest.TestCase):
     def test_manifest_pins_immutable_revisions_without_secrets(self):
         manifest = contract.pilot_manifest()
         revisions = [
             manifest["source"]["optimus3_revision"],
             manifest["source"]["llama_factory_revision"],
+            manifest["simulator_engine"]["revision"],
             *(model["revision"] for model in manifest["models"]),
         ]
         self.assertTrue(all(re.fullmatch(r"[0-9a-f]{40}", revision) for revision in revisions))
@@ -42,6 +52,14 @@ class ContractTest(unittest.TestCase):
         rendered = json.dumps(manifest).lower()
         self.assertNotIn("token_secret", rendered)
         self.assertNotIn("hf_token", rendered)
+
+        native_gate = manifest["native_episode_gate"]
+        self.assertEqual(native_gate["name"], "native_simple_mine_iron_v1")
+        self.assertEqual(native_gate["episode_count"], 10)
+        self.assertEqual(native_gate["required_successes"], 8)
+        self.assertIn("visibility is not guaranteed", native_gate["claim_scope"])
+        self.assertEqual(manifest["simulator_engine"]["expected_bytes"], 458_106_630)
+        self.assertRegex(manifest["simulator_engine"]["sha256"], r"^[0-9a-f]{64}$")
 
     def test_task_and_seed_validation(self):
         self.assertEqual(contract.validate_task(" collect   one iron ore "), "collect one iron ore")
@@ -69,6 +87,106 @@ class ContractTest(unittest.TestCase):
                 contract.validate_benchmark_steps(*counts)
         with self.assertRaises(TypeError):
             contract.validate_benchmark_steps(True, 32, 256)
+
+    def test_native_episode_seed_schedule_is_locked(self):
+        fixture_bytes = ("\n".join(contract.NATIVE_TASK_COMMANDS) + "\n").encode("utf-8")
+        self.assertEqual(hashlib.sha256(fixture_bytes).hexdigest(), contract.NATIVE_TASK_COMMANDS_SHA256)
+        self.assertEqual(
+            contract.NATIVE_WORLD_SEEDS,
+            (
+                1189277871,
+                1054978500,
+                2643425111,
+                303169024,
+                387523688,
+                3565273368,
+                4077019064,
+                1055531191,
+                2188313013,
+                2516925590,
+            ),
+        )
+        self.assertEqual(
+            contract.NATIVE_POLICY_SEEDS,
+            (
+                755769072,
+                2217087932,
+                3499080866,
+                257376347,
+                371041615,
+                3684550301,
+                2513634747,
+                3036068752,
+                352040951,
+                4028083782,
+            ),
+        )
+        self.assertEqual(contract.native_episode_seeds(0), (1189277871, 755769072))
+        with self.assertRaises(ValueError):
+            contract.validate_episode_index(10)
+        with self.assertRaises(TypeError):
+            contract.validate_episode_index(True)
+
+    def test_native_episode_oracle_requires_mining_and_collection(self):
+        baseline = {"inventory_iron_ore": 2, "mine_iron_ore": 3}
+        inventory = {
+            0: {"type": "minecraft:stone_pickaxe", "quantity": 1},
+            1: {"type": "minecraft:iron_ore", "quantity": 3},
+        }
+        self.assertEqual(contract.inventory_quantity(inventory, "iron_ore"), 3)
+        self.assertFalse(
+            contract.native_episode_success(
+                {"inventory": inventory, "mine_block": {"iron_ore": 3}},
+                baseline,
+            )
+        )
+        self.assertFalse(
+            contract.native_episode_success(
+                {
+                    "inventory": {1: {"type": "iron_ore", "quantity": 2}},
+                    "mine_block": {"iron_ore": 4},
+                },
+                baseline,
+            )
+        )
+        self.assertTrue(
+            contract.native_episode_success(
+                {"inventory": inventory, "mine_block": {"iron_ore": ScalarLike(4)}},
+                baseline,
+            )
+        )
+
+    def test_native_suite_gate_distinguishes_failure_from_invalidity(self):
+        def episodes(successes, valid=True, count=10):
+            return [
+                {
+                    "episode_index": index,
+                    "valid": valid,
+                    "success": index < successes,
+                }
+                for index in range(count)
+            ]
+
+        passing = contract.native_suite_outcome(episodes(8), infrastructure_passed=True)
+        self.assertTrue(passing["evaluated"])
+        self.assertTrue(passing["passed"])
+
+        competence_failure = contract.native_suite_outcome(episodes(7), infrastructure_passed=True)
+        self.assertTrue(competence_failure["evaluated"])
+        self.assertFalse(competence_failure["passed"])
+
+        invalid = contract.native_suite_outcome(episodes(8, valid=False), infrastructure_passed=False)
+        self.assertFalse(invalid["evaluated"])
+        self.assertIsNone(invalid["passed"])
+        self.assertEqual(invalid["successes"], 0)
+
+        incomplete = contract.native_suite_outcome(episodes(8, count=9), infrastructure_passed=True)
+        self.assertFalse(incomplete["evaluated"])
+        self.assertIsNone(incomplete["passed"])
+
+        single = contract.native_suite_outcome(episodes(1, count=1), infrastructure_passed=True)
+        self.assertFalse(single["evaluated"])
+        self.assertIsNone(single["passed"])
 
     def test_frame_shape_validation(self):
         self.assertEqual(contract.validate_frame_shape(ShapedFrame()), contract.FRAME_SHAPE)
@@ -105,6 +223,13 @@ class ContractTest(unittest.TestCase):
         self.assertEqual(len(policy_applied), 24)
         self.assertEqual(policy_applied["pickItem"], 0)
         self.assertEqual(policy_applied["swapHands"], 0)
+        motor_controls = contract.native_motor_controls(policy_applied)
+        self.assertEqual(set(motor_controls), set(contract.ALLOWED_ACTION_KEYS))
+        self.assertEqual(motor_controls["forward"], 1)
+        with self.assertRaises(ValueError):
+            contract.native_motor_controls({**policy_applied, "use": 1})
+        with self.assertRaises(ValueError):
+            contract.native_motor_controls({key: value for key, value in policy_applied.items() if key != "use"})
         with self.assertRaises(ValueError):
             contract.validate_complete_action({"forward": 1})
         with self.assertRaises(ValueError):
