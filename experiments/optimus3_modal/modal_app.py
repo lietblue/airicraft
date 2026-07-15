@@ -112,7 +112,7 @@ download_image = (
     .add_local_file(LOCAL_APP_PATH, "/root/modal_app.py")
 )
 
-runtime_image = (
+runtime_base_image = (
     modal.Image.from_registry(
         "nvidia/cuda:12.4.1-cudnn-devel-ubuntu22.04",
         add_python="3.11",
@@ -164,12 +164,16 @@ runtime_image = (
             "TRANSFORMERS_OFFLINE": "1",
         }
     )
+)
+
+runtime_image = (
+    runtime_base_image
     .add_local_file(LOCAL_CONTRACT_PATH, "/root/contract.py")
     .add_local_file(LOCAL_APP_PATH, "/root/modal_app.py")
 )
 
 simulator_runtime_image = (
-    runtime_image
+    runtime_base_image
     .apt_install(
         "openjdk-8-jre",
         "xvfb",
@@ -212,6 +216,8 @@ simulator_runtime_image = (
             "MINESTUDIO_GPU_RENDER": "0",
         }
     )
+    .add_local_file(LOCAL_CONTRACT_PATH, "/root/contract.py")
+    .add_local_file(LOCAL_APP_PATH, "/root/modal_app.py")
 )
 
 
