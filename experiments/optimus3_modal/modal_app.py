@@ -588,8 +588,8 @@ def _configure_native_mission_fixture(
     import numpy as np
 
     from minestudio.simulator.minerl.herobraine.hero import spaces
+    from minestudio.simulator.minerl.herobraine.hero.handler import Handler
     from minestudio.simulator.minerl.herobraine.hero.handlers.agent.start import AgentStartPlacement
-    from minestudio.simulator.minerl.herobraine.hero.handlers.server.world import DrawingDecorator
     from minestudio.simulator.minerl.herobraine.hero.handlers.translation import TranslationHandler
 
     required_location_keys = {"xpos", "ypos", "zpos", "pitch", "yaw"}
@@ -625,6 +625,15 @@ def _configure_native_mission_fixture(
     original_observables = simulator.airicraft_original_create_observables
     original_server_decorators = simulator.airicraft_original_create_server_decorators
 
+    class NativeDrawingDecorator(Handler):
+        def to_string(self) -> str:
+            return "drawing_decorator"
+
+        def xml_template(self) -> str:
+            # MineStudio's DrawingDecorator interpolates the child XML through an
+            # autoescaping Jinja variable, turning DrawBlock nodes into text.
+            return f"<DrawingDecorator>{drawing_xml}</DrawingDecorator>"
+
     class NativeFixtureRayObservation(TranslationHandler):
         name = "airicraft_fixture_ray"
 
@@ -656,7 +665,7 @@ def _configure_native_mission_fixture(
         return observables
 
     def create_server_decorators(_task: Any) -> list[Any]:
-        return [*original_server_decorators(), DrawingDecorator(drawing_xml)]
+        return [*original_server_decorators(), NativeDrawingDecorator()]
 
     task = simulator.env.task
     task.create_agent_start = types.MethodType(create_agent_start, task)
@@ -973,6 +982,7 @@ def _native_reset(
         proof_passed = (
             proof_declaration["all_expected_present"]
             and proof_declaration["matching_unique_count"] == NATIVE_EXPECTED_IRON_BLOCKS
+            and "<ObservationFromRay" in proof_mission
             and ray_valid
             and mine_delta >= 1
             and not proof_terminated
@@ -995,6 +1005,7 @@ def _native_reset(
             "sent_attack_action": proof_action_evidence,
             "sent_release_action": release_action_evidence,
             "rendered_mission_sha256": hashlib.sha256(proof_mission.encode("utf-8")).hexdigest(),
+            "rendered_mission_contains_ray": "<ObservationFromRay" in proof_mission,
             "declaration": proof_declaration,
         }
 
