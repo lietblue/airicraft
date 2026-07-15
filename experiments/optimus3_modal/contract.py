@@ -64,6 +64,25 @@ NATIVE_EXPECTED_LABEL = "<iron>"
 NATIVE_EXPECTED_EMBEDDING_SHA256 = "19df8b793320e5b48aa835f09e5faa10e82283986c84f805a691e4f86d34949b"
 NATIVE_EXPECTED_PROJECTION_SHA256 = "0712a98f46d96845045aecd80fa9fddc6fa0617b5a94a1accf14ff07efcfd847"
 NATIVE_SEED_NAMESPACE = "airicraft-optimus3-stage3-v1"
+NATIVE_FAILURE_REPLAY_INDICES = (1, 2, 3, 5, 6)
+NATIVE_FAILURE_REPLAY_SOURCE_RESULT = "eval-output/optimus3-modal/20260715T133606Z-episodes/result.json"
+NATIVE_FAILURE_REPLAY_SOURCE_SHA256 = "ea6b38e87b95c7c471797e5e72b73b772c0ed10d79508a6de8e998386ee62302"
+NATIVE_FAILURE_REPLAY_TRACE_SHA256 = {
+    1: "2cf5d0d863a52eaff116c1a3dfb8a208f30bc7e580d2a780bee36c77d732c8ae",
+    2: "c4e9b2b51ab5f10fbca82e2a61e719c7cdb641fa1f9c35fb2f082bfa82dc512d",
+    3: "bbca04d885f4d7e778fa8a6393ce950afa6f0714a1e2b4412d21ecd8c89c5c3e",
+    5: "b77b74a1e1e7056f2c9a1d78c84fb1c0938db82f619e8c948c864234b69ff8ee",
+    6: "2a95ca42e4d278c2e400a60c1ea96ecbe0500cab7afd11566261badbdd8874dc",
+}
+NATIVE_FAILURE_REPLAY_ACTION_SHA256 = {
+    1: "b373d6e92fa181f84795b0da0b65be52718083332e79f1e5919a589a10f09ab1",
+    2: "8358c3dff92d89d3e4be55da503cacdd048c814386f64c0a2b5abf3e7a61188e",
+    3: "85390a0d291762364ec892c1523f44bd6226412c7e4afd15a83629ac2732f17f",
+    5: "2f6168246008c21edb8b925a6bc03b841d57526b06384a943c03280198e6c90e",
+    6: "2bde48dc038bcd299ea6f9296f5647cb47c0e293479737eff3b27ccd90e5bb3b",
+}
+NATIVE_FAILURE_REPLAY_VIDEO_FPS = 20
+NATIVE_FAILURE_REPLAY_MAX_TOTAL_BYTES = 32 * 1024 * 1024
 
 
 def native_fixture_spec() -> dict[str, Any]:
@@ -307,6 +326,21 @@ def native_episode_success(info: Mapping[str, Any], baseline: Mapping[str, float
     )
     mined_delta = stat_count(info.get("mine_block"), "iron_ore") - float(baseline["mine_iron_ore"])
     return inventory_delta >= 1 and mined_delta >= 1
+
+
+def applied_action_sequence_sha256(trace: Sequence[Mapping[str, Any]]) -> str:
+    actions: list[dict[str, Any]] = []
+    for record in trace:
+        if "applied_action" not in record:
+            continue
+        action = record["applied_action"]
+        if not isinstance(action, Mapping):
+            raise TypeError("applied action must be a mapping")
+        actions.append(to_jsonable(action))
+    if not actions:
+        raise ValueError("trace must contain at least one applied action")
+    payload = (json.dumps(actions, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
 
 
 def native_suite_outcome(
@@ -693,6 +727,30 @@ def pilot_manifest() -> dict[str, Any]:
             "fast_reset": False,
             "video_recording": False,
         },
+        "native_failure_replay": {
+            "scope": "passive diagnostic replay; never rescored as the Stage 3 gate",
+            "source_result": NATIVE_FAILURE_REPLAY_SOURCE_RESULT,
+            "source_result_sha256": NATIVE_FAILURE_REPLAY_SOURCE_SHA256,
+            "episode_indices": list(NATIVE_FAILURE_REPLAY_INDICES),
+            "expected_trace_sha256": {
+                str(index): NATIVE_FAILURE_REPLAY_TRACE_SHA256[index]
+                for index in NATIVE_FAILURE_REPLAY_INDICES
+            },
+            "expected_applied_action_sha256": {
+                str(index): NATIVE_FAILURE_REPLAY_ACTION_SHA256[index]
+                for index in NATIVE_FAILURE_REPLAY_INDICES
+            },
+            "capture": "strict-fixture observation before step 1, then each post-step observation",
+            "frame_shape": list(FRAME_SHAPE),
+            "frames_per_timeout_episode": NATIVE_MAX_STEPS + 1,
+            "video_fps": NATIVE_FAILURE_REPLAY_VIDEO_FPS,
+            "video_codec": "h264",
+            "maximum_total_video_bytes": NATIVE_FAILURE_REPLAY_MAX_TOTAL_BYTES,
+            "clean_policy_view": True,
+            "overlays": False,
+            "policy_or_environment_inputs_changed": False,
+            "exactness_oracle": "replay trace and applied-action sequence SHA-256",
+        },
         "allowed_actions": list(ALLOWED_ACTION_KEYS),
         "forbidden_actions": list(FORBIDDEN_ACTION_KEYS),
         "policy_output_actions": list(POLICY_ACTION_KEYS),
@@ -729,7 +787,17 @@ def _main() -> None:
     parser.add_argument("--output", type=Path)
     parser.add_argument(
         "--mode",
-        choices=("preflight", "cache", "smoke", "bench", "engine-cache", "sim-preflight", "episode", "episodes"),
+        choices=(
+            "preflight",
+            "cache",
+            "smoke",
+            "bench",
+            "engine-cache",
+            "sim-preflight",
+            "episode",
+            "episodes",
+            "failure-replay",
+        ),
     )
     parser.add_argument("--task", default=DEFAULT_TASK)
     parser.add_argument("--seed", type=int, default=7)
@@ -777,6 +845,16 @@ def _main() -> None:
                     "episode_indices": list(range(NATIVE_EPISODE_COUNT)),
                     "world_seeds": list(NATIVE_WORLD_SEEDS),
                     "policy_seeds": list(NATIVE_POLICY_SEEDS),
+                }
+            )
+        if args.mode == "failure-replay":
+            invocation.update(
+                {
+                    "episode_indices": list(NATIVE_FAILURE_REPLAY_INDICES),
+                    "world_seeds": [NATIVE_WORLD_SEEDS[index] for index in NATIVE_FAILURE_REPLAY_INDICES],
+                    "policy_seeds": [NATIVE_POLICY_SEEDS[index] for index in NATIVE_FAILURE_REPLAY_INDICES],
+                    "source_result": NATIVE_FAILURE_REPLAY_SOURCE_RESULT,
+                    "source_result_sha256": NATIVE_FAILURE_REPLAY_SOURCE_SHA256,
                 }
             )
         manifest["invocation"] = invocation

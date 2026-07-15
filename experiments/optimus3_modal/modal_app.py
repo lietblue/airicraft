@@ -9,6 +9,7 @@ import os
 import random
 import shutil
 import sys
+import tempfile
 import time
 import types
 from importlib.metadata import version as package_version
@@ -45,6 +46,13 @@ from contract import (
     NATIVE_FIXTURE_SETTLE_STEPS,
     NATIVE_FIXTURE_SPEC_SHA256,
     NATIVE_FIXTURE_VOXEL_BOUNDS,
+    NATIVE_FAILURE_REPLAY_ACTION_SHA256,
+    NATIVE_FAILURE_REPLAY_INDICES,
+    NATIVE_FAILURE_REPLAY_MAX_TOTAL_BYTES,
+    NATIVE_FAILURE_REPLAY_SOURCE_RESULT,
+    NATIVE_FAILURE_REPLAY_SOURCE_SHA256,
+    NATIVE_FAILURE_REPLAY_TRACE_SHA256,
+    NATIVE_FAILURE_REPLAY_VIDEO_FPS,
     NATIVE_GATE_NAME,
     NATIVE_MAX_STEPS,
     NATIVE_REQUIRED_SUCCESSES,
@@ -68,6 +76,7 @@ from contract import (
     TARGET_LATENCY_MS,
     VOLUME_NAME,
     active_action_keys,
+    applied_action_sequence_sha256,
     apply_pilot_safety_mask,
     latency_gate,
     latency_summary,
@@ -233,6 +242,7 @@ simulator_runtime_image = (
         "libxrandr2",
         "libxxf86vm1",
         "libasound2",
+        "ffmpeg",
         "unzip",
     )
     .uv_pip_install(
@@ -629,6 +639,102 @@ def _configure_native_mission_fixture(
 def _frame_sha256(frame: Any) -> str:
     validate_frame_shape(frame)
     return hashlib.sha256(frame.tobytes()).hexdigest()
+
+
+def _encode_h264_policy_video(frames: list[Any], output_path: Path) -> tuple[bytes, dict[str, Any]]:
+    import subprocess
+
+    if not frames:
+        raise ValueError("capture must contain at least one frame")
+    for index, frame in enumerate(frames):
+        validate_frame_shape(frame)
+        if str(getattr(frame, "dtype", "")) != "uint8":
+            raise ValueError(f"capture frame {index} must use uint8 pixels")
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.unlink(missing_ok=True)
+    width = FRAME_SHAPE[1]
+    height = FRAME_SHAPE[0]
+    raw_video = b"".join(frame.tobytes(order="C") for frame in frames)
+    command = [
+        "ffmpeg",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-y",
+        "-f",
+        "rawvideo",
+        "-pix_fmt",
+        "rgb24",
+        "-s:v",
+        f"{width}x{height}",
+        "-r",
+        str(NATIVE_FAILURE_REPLAY_VIDEO_FPS),
+        "-i",
+        "pipe:0",
+        "-an",
+        "-c:v",
+        "libx264",
+        "-preset",
+        "veryfast",
+        "-crf",
+        "20",
+        "-pix_fmt",
+        "yuv420p",
+        "-movflags",
+        "+faststart",
+        str(output_path),
+    ]
+    encoded = subprocess.run(command, input=raw_video, capture_output=True, check=False, timeout=120)
+    if encoded.returncode != 0:
+        stderr = encoded.stderr.decode("utf-8", errors="replace").strip()
+        raise RuntimeError(f"ffmpeg failed with exit {encoded.returncode}: {stderr}")
+    video = output_path.read_bytes()
+    if not video:
+        raise RuntimeError("ffmpeg produced an empty capture")
+
+    probed = subprocess.run(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "stream=codec_name,width,height,avg_frame_rate,nb_frames",
+            "-of",
+            "json",
+            str(output_path),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
+    if probed.returncode != 0:
+        raise RuntimeError(f"ffprobe failed with exit {probed.returncode}: {probed.stderr.strip()}")
+    streams = json.loads(probed.stdout).get("streams", [])
+    if len(streams) != 1:
+        raise RuntimeError(f"expected one captured video stream, got {len(streams)}")
+    stream = streams[0]
+    checks = {
+        "codec_is_h264": stream.get("codec_name") == "h264",
+        "width_matches": stream.get("width") == width,
+        "height_matches": stream.get("height") == height,
+        "fps_matches": stream.get("avg_frame_rate") == f"{NATIVE_FAILURE_REPLAY_VIDEO_FPS}/1",
+        "frame_count_matches": int(stream.get("nb_frames", -1)) == len(frames),
+    }
+    if not all(checks.values()):
+        raise RuntimeError(f"captured video metadata mismatch: {checks}; stream={stream}")
+    return video, {
+        "bytes": len(video),
+        "sha256": hashlib.sha256(video).hexdigest(),
+        "frame_count": len(frames),
+        "frame_shape": list(FRAME_SHAPE),
+        "fps": NATIVE_FAILURE_REPLAY_VIDEO_FPS,
+        "codec": stream["codec_name"],
+        "checks": checks,
+    }
 
 
 def _mainhand_type(info: Mapping[str, Any]) -> str:
@@ -1042,6 +1148,7 @@ class _NativeEpisodeMixin:
         projected: Any,
         episode_index: int,
         wall_deadline: float,
+        capture_frames: list[Any] | None = None,
     ) -> dict[str, Any]:
         world_seed, policy_seed = native_episode_seeds(episode_index)
         observation, info, setup = _native_reset(
@@ -1051,6 +1158,8 @@ class _NativeEpisodeMixin:
         )
         baseline = setup["baseline"]
         self._reset_action_policy(policy_seed)
+        if capture_frames is not None:
+            capture_frames.append(observation["image"].copy())
 
         records: list[dict[str, Any]] = []
         success = False
@@ -1152,6 +1261,8 @@ class _NativeEpisodeMixin:
                     "location": current_location,
                 }
             )
+            if capture_frames is not None:
+                capture_frames.append(observation["image"].copy())
             records.append(record)
             if success:
                 completion_step = step
@@ -1243,12 +1354,14 @@ class _NativeEpisodeMixin:
             "trace": records,
         }
 
-    def _run_native(self, episode_indices: list[int]) -> dict[str, Any]:
+    def _run_native(self, episode_indices: list[int], *, capture_replay: bool = False) -> dict[str, Any]:
         episode_indices = [validate_episode_index(index) for index in episode_indices]
         if not episode_indices:
             raise ValueError("at least one native episode is required")
         if len(set(episode_indices)) != len(episode_indices):
             raise ValueError("native episode indices must be unique")
+        if capture_replay and episode_indices != list(NATIVE_FAILURE_REPLAY_INDICES):
+            raise ValueError("failure replay must use the exact locked failed-episode schedule")
 
         method_started = time.perf_counter()
         wall_budget_seconds = 10 * 60.0 if len(episode_indices) == 1 else NATIVE_SUITE_WALL_BUDGET_SECONDS
@@ -1279,6 +1392,9 @@ class _NativeEpisodeMixin:
             "projection_digest_matches_stage_2": projection_sha256 == NATIVE_EXPECTED_PROJECTION_SHA256,
         }
         episodes: list[dict[str, Any]] = []
+        captures: list[dict[str, Any]] = []
+        capture_files: dict[str, bytes] = {}
+        total_capture_bytes = 0
         suite_error: dict[str, str] | None = None
         if all(conditioning_checks.values()):
             for episode_index in episode_indices:
@@ -1292,6 +1408,7 @@ class _NativeEpisodeMixin:
                 simulator = None
                 episode: dict[str, Any]
                 close_error: Exception | None = None
+                capture_frames: list[Any] | None = [] if capture_replay else None
                 try:
                     simulator = _new_native_simulator(world_seed)
                     episode = self._native_episode(
@@ -1299,6 +1416,7 @@ class _NativeEpisodeMixin:
                         projected,
                         episode_index,
                         wall_deadline,
+                        capture_frames=capture_frames,
                     )
                 except Exception as error:
                     episode = {
@@ -1325,6 +1443,70 @@ class _NativeEpisodeMixin:
                         "type": type(close_error).__name__,
                         "message": str(close_error),
                     }
+                if capture_replay:
+                    filename = f"episode-{episode_index:02d}-policy-view.mp4"
+                    expected_trace_sha256 = NATIVE_FAILURE_REPLAY_TRACE_SHA256[episode_index]
+                    expected_action_sha256 = NATIVE_FAILURE_REPLAY_ACTION_SHA256[episode_index]
+                    capture: dict[str, Any] = {
+                        "episode_index": episode_index,
+                        "relative_path": f"videos/{filename}",
+                        "frame_mapping": "frame 0 is pre-step 1; frame n is post-step n",
+                        "simulator_close_attempted": simulator is not None,
+                        "simulator_close_succeeded": simulator is not None and close_error is None,
+                        "expected_trace_sha256": expected_trace_sha256,
+                        "replay_trace_sha256": episode.get("action_trace_sha256"),
+                        "trace_matches": False,
+                        "expected_applied_action_sha256": expected_action_sha256,
+                        "replay_applied_action_sha256": None,
+                        "applied_actions_match": False,
+                        "reproduction": "unavailable",
+                        "video": None,
+                        "valid": episode["valid"],
+                        "success": episode["success"],
+                        "failure_reason": episode["failure_reason"],
+                        "policy_steps": episode.get("policy_steps", 0),
+                        "final": episode.get("final"),
+                    }
+                    try:
+                        trace = episode.get("trace", [])
+                        if not trace:
+                            raise RuntimeError("episode produced no action trace to capture")
+                        replay_action_sha256 = applied_action_sequence_sha256(trace)
+                        trace_matches = episode["action_trace_sha256"] == expected_trace_sha256
+                        actions_match = replay_action_sha256 == expected_action_sha256
+                        if trace_matches:
+                            reproduction = "exact_trajectory_replay"
+                        elif actions_match:
+                            reproduction = "same_actions_environment_drift"
+                        else:
+                            reproduction = "policy_divergence"
+                        capture.update(
+                            {
+                                "replay_applied_action_sha256": replay_action_sha256,
+                                "trace_matches": trace_matches,
+                                "applied_actions_match": actions_match,
+                                "reproduction": reproduction,
+                            }
+                        )
+                        video, video_metadata = _encode_h264_policy_video(
+                            capture_frames or [],
+                            Path("/tmp/airicraft-failure-replay") / filename,
+                        )
+                        prospective_total = total_capture_bytes + len(video)
+                        if prospective_total > NATIVE_FAILURE_REPLAY_MAX_TOTAL_BYTES:
+                            raise RuntimeError(
+                                "failure replay video payload exceeds the configured "
+                                f"{NATIVE_FAILURE_REPLAY_MAX_TOTAL_BYTES}-byte limit"
+                            )
+                        total_capture_bytes = prospective_total
+                        capture_files[filename] = video
+                        capture["video"] = video_metadata
+                    except Exception as error:
+                        capture["capture_error"] = {
+                            "type": type(error).__name__,
+                            "message": str(error),
+                        }
+                    captures.append(capture)
                 episodes.append(episode)
                 if not episode["valid"]:
                     break
@@ -1369,8 +1551,11 @@ class _NativeEpisodeMixin:
             "ten_valid_episodes": outcome["complete_and_valid"],
             "successes_at_least_eight": outcome["successes"] >= NATIVE_REQUIRED_SUCCESSES,
         }
-        kind = "model_native_episode_suite" if gate_requested else "model_native_episode"
-        return result_envelope(
+        if capture_replay:
+            kind = "model_native_failure_replay"
+        else:
+            kind = "model_native_episode_suite" if gate_requested else "model_native_episode"
+        result = result_envelope(
             kind,
             {
                 "gate": NATIVE_GATE_NAME,
@@ -1407,7 +1592,12 @@ class _NativeEpisodeMixin:
                     "policy_warmup_steps": 0,
                     "per_frame_stochastic_prior_preserved": True,
                     "fallback_enabled": False,
-                    "video_recording": False,
+                    "video_recording": capture_replay,
+                    "video_capture_timing": (
+                        "copy after scored timing; encode only after the episode and simulator close attempt"
+                        if capture_replay
+                        else None
+                    ),
                     "setup_steps_are_unscored": True,
                     "fixture_runtime_proof": (
                         "every episode creates the upstream-equivalent 2x2x2 state with absolute "
@@ -1461,6 +1651,87 @@ class _NativeEpisodeMixin:
                 },
             },
         )
+        if capture_replay:
+            capture_checks = {
+                "exact_failed_episode_schedule": episode_indices == list(NATIVE_FAILURE_REPLAY_INDICES),
+                "all_replays_completed": len(episodes) == len(NATIVE_FAILURE_REPLAY_INDICES),
+                "all_capture_records_present": len(captures) == len(NATIVE_FAILURE_REPLAY_INDICES),
+                "capture_errors_absent": all("capture_error" not in capture for capture in captures),
+                "all_simulator_closes_succeeded": all(
+                    capture["simulator_close_succeeded"] for capture in captures
+                ),
+                "all_videos_encoded": (
+                    len(capture_files) == len(NATIVE_FAILURE_REPLAY_INDICES)
+                    and all(capture["video"] is not None for capture in captures)
+                ),
+                "all_frame_counts_match": all(
+                    capture["video"] is not None
+                    and capture["video"]["frame_count"] == capture["policy_steps"] + 1
+                    for capture in captures
+                ),
+                "all_video_metadata_valid": all(
+                    capture["video"] is not None
+                    and all(capture["video"]["checks"].values())
+                    for capture in captures
+                ),
+                "all_trajectories_match_source": all(capture["trace_matches"] for capture in captures),
+                "all_applied_actions_match_source": all(
+                    capture["applied_actions_match"] for capture in captures
+                ),
+                "all_replays_reproduce_timeout_failures": all(
+                    capture["valid"]
+                    and not capture["success"]
+                    and capture["failure_reason"] == "timeout_200_steps"
+                    for capture in captures
+                ),
+                "total_video_bytes_within_limit": (
+                    0 < total_capture_bytes <= NATIVE_FAILURE_REPLAY_MAX_TOTAL_BYTES
+                ),
+            }
+            result["payload"]["capture_protocol"] = {
+                "scope": "passive diagnostic replay; never rescored as the Stage 3 gate",
+                "source_result": NATIVE_FAILURE_REPLAY_SOURCE_RESULT,
+                "source_result_sha256": NATIVE_FAILURE_REPLAY_SOURCE_SHA256,
+                "episode_indices": list(NATIVE_FAILURE_REPLAY_INDICES),
+                "frame_mapping": "frame 0 is pre-step 1; frame n is post-step n",
+                "clean_policy_view": True,
+                "overlays": False,
+                "frame_copy_after_scored_timing": True,
+                "encoding_after_episode_and_simulator_close_attempt": True,
+                "simulator_close_outcome_recorded_per_capture": True,
+                "policy_or_environment_inputs_changed": False,
+                "maximum_total_video_bytes": NATIVE_FAILURE_REPLAY_MAX_TOTAL_BYTES,
+            }
+            result["payload"]["captures"] = captures
+            result["payload"]["capture_acceptance"] = {
+                "checks": capture_checks,
+                "passed": all(capture_checks.values()),
+                "non_gating": True,
+            }
+            result["payload"]["episodes"] = [
+                {
+                    key: episode[key]
+                    for key in (
+                        "episode_index",
+                        "world_seed",
+                        "policy_seed",
+                        "valid",
+                        "success",
+                        "failure_reason",
+                        "completion_step",
+                        "policy_steps",
+                        "final",
+                        "metrics",
+                        "action_evidence",
+                        "action_trace_sha256",
+                    )
+                    if key in episode
+                }
+                for episode in episodes
+            ]
+            result["_capture_files"] = capture_files
+        return result
+
 
 @app.function(
     image=runtime_image,
@@ -2055,14 +2326,89 @@ class Optimus3Smoke(_NativeEpisodeMixin):
     def native_suite(self) -> dict[str, Any]:
         return self._run_native(list(range(NATIVE_EPISODE_COUNT)))
 
+    @modal.method()
+    def native_failure_replay(self) -> dict[str, Any]:
+        return self._run_native(list(NATIVE_FAILURE_REPLAY_INDICES), capture_replay=True)
+
 
 def _emit(result: dict[str, Any], output: str) -> None:
+    capture_files = result.pop("_capture_files", {})
+    if capture_files and not output:
+        raise ValueError("failure replay capture requires an output path")
+    video_paths: list[Path] = []
+    staged_video_paths: list[tuple[Path, Path]] = []
+    if capture_files:
+        output_path = Path(output).expanduser().resolve()
+        video_dir = output_path.parent / "videos"
+        video_dir.mkdir(parents=True, exist_ok=True)
+        metadata_by_name = {
+            Path(capture["relative_path"]).name: capture for capture in result["payload"]["captures"]
+        }
+        try:
+            for filename, video in capture_files.items():
+                if Path(filename).name != filename or filename not in metadata_by_name:
+                    raise ValueError(f"unexpected capture filename: {filename!r}")
+                metadata = metadata_by_name[filename]["video"]
+                if metadata is None:
+                    raise ValueError(f"capture metadata is absent for {filename}")
+                if len(video) != metadata["bytes"]:
+                    raise ValueError(f"capture byte count mismatch for {filename}")
+                if hashlib.sha256(video).hexdigest() != metadata["sha256"]:
+                    raise ValueError(f"capture digest mismatch for {filename}")
+                video_path = video_dir / filename
+                descriptor, temporary_name = tempfile.mkstemp(
+                    prefix=f".{filename}.",
+                    suffix=".tmp",
+                    dir=video_dir,
+                )
+                temporary_path = Path(temporary_name)
+                try:
+                    with os.fdopen(descriptor, "wb") as handle:
+                        handle.write(video)
+                        handle.flush()
+                        os.fsync(handle.fileno())
+                    if temporary_path.stat().st_size != metadata["bytes"]:
+                        raise ValueError(f"staged capture byte count mismatch for {filename}")
+                    if _file_sha256(temporary_path) != metadata["sha256"]:
+                        raise ValueError(f"staged capture digest mismatch for {filename}")
+                except Exception:
+                    temporary_path.unlink(missing_ok=True)
+                    raise
+                staged_video_paths.append((temporary_path, video_path))
+        except Exception:
+            for temporary_path, _ in staged_video_paths:
+                temporary_path.unlink(missing_ok=True)
+            raise
+        try:
+            for temporary_path, video_path in staged_video_paths:
+                os.replace(temporary_path, video_path)
+                video_paths.append(video_path)
+        except Exception:
+            for temporary_path, _ in staged_video_paths:
+                temporary_path.unlink(missing_ok=True)
+            raise
     rendered = json.dumps(result, indent=2, sort_keys=True) + "\n"
     if output:
         path = Path(output).expanduser().resolve()
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(rendered, encoding="utf-8")
+        descriptor, temporary_name = tempfile.mkstemp(
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            dir=path.parent,
+        )
+        temporary_path = Path(temporary_name)
+        try:
+            with os.fdopen(descriptor, "wb") as handle:
+                handle.write(rendered.encode("utf-8"))
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary_path, path)
+        except Exception:
+            temporary_path.unlink(missing_ok=True)
+            raise
         print(f"result: {path}")
+        for video_path in video_paths:
+            print(f"video: {video_path}")
     else:
         print(rendered, end="")
 
@@ -2095,8 +2441,11 @@ def main(
         result = Optimus3Smoke().native_episode.remote(validate_episode_index(episode_index))
     elif mode == "episodes":
         result = Optimus3Smoke().native_suite.remote()
+    elif mode == "failure-replay":
+        result = Optimus3Smoke().native_failure_replay.remote()
     else:
         raise ValueError(
-            "mode must be one of: preflight, cache, engine-cache, sim-preflight, smoke, bench, episode, episodes"
+            "mode must be one of: preflight, cache, engine-cache, sim-preflight, smoke, bench, "
+            "episode, episodes, failure-replay"
         )
     _emit(result, output)

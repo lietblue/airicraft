@@ -133,6 +133,26 @@ scripts/optimus3-modal episode
 scripts/optimus3-modal episodes
 ```
 
+Passive policy-view capture for the five failures in the definitive Stage 3
+artifact:
+
+```sh
+scripts/optimus3-modal failure-replay
+```
+
+`failure-replay` first requires the local definitive result to match its pinned
+SHA-256. It uses the same five world/policy seed pairs, fixture, prompt, safety
+mask, and 200-step limit. Frame 0 is the strict-fixture observation before step
+1; frame `n` is the observation after scored step `n`. Frames are copied after
+scored timing and encoded only after the episode and simulator-close attempt.
+Every capture records whether simulator shutdown succeeded; an encode/probe
+error is isolated to that capture and makes the diagnostic acceptance fail
+without discarding earlier videos or the structured result.
+Clean `128x128` policy-view frames become 20 fps H.264 MP4s under the run's
+`videos/` directory. The replay is diagnostic and never rescores Stage 3. Its
+trace and applied-action digests report exact reproduction, environment drift,
+or policy divergence from the source artifact.
+
 The benchmark first samples eight exact released `optimus3_action` calls as an
 unadjusted diagnostic. It then independently resets and reseeds the action
 policy, runs 32 warm-up steps, and measures the next 256 steps without resetting

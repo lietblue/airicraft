@@ -23,6 +23,7 @@ commands:
   bench [Modal args]    benchmark the warmed recurrent action loop on one L40S
   episode [Modal args]  run one fixed-seed native MineStudio episode on one L40S
   episodes              run the locked ten-episode native competence gate
+  failure-replay        replay the five locked failures and capture policy-view MP4s
 EOF
 }
 
@@ -51,6 +52,22 @@ run_remote() {
 	modal run "$experiment_dir/modal_app.py" --mode "$mode" --output "$run_dir/result.json" "$@"
 }
 
+verify_failure_replay_source() {
+	local source_result="$repo_root/eval-output/optimus3-modal/20260715T133606Z-episodes/result.json"
+	local expected_sha="ea6b38e87b95c7c471797e5e72b73b772c0ed10d79508a6de8e998386ee62302"
+	if [[ ! -f "$source_result" ]]; then
+		printf 'error: missing failure replay source: %s\n' "$source_result" >&2
+		exit 4
+	fi
+	local actual_sha
+	actual_sha="$(shasum -a 256 "$source_result" | awk '{print $1}')"
+	if [[ "$actual_sha" != "$expected_sha" ]]; then
+		printf 'error: failure replay source digest mismatch: expected %s, got %s\n' \
+			"$expected_sha" "$actual_sha" >&2
+		exit 4
+	fi
+}
+
 case "$command" in
 	self-test)
 		cd "$repo_root"
@@ -64,6 +81,11 @@ case "$command" in
 		python3 "$experiment_dir/contract.py" "$@"
 		;;
 	preflight | cache | engine-cache | sim-preflight | smoke | bench | episode | episodes)
+		require_modal
+		run_remote "$command" "$@"
+		;;
+	failure-replay)
+		verify_failure_replay_source
 		require_modal
 		run_remote "$command" "$@"
 		;;

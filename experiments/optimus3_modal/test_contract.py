@@ -71,6 +71,22 @@ class ContractTest(unittest.TestCase):
         self.assertEqual(manifest["simulator_engine"]["expected_bytes"], 458_106_630)
         self.assertRegex(manifest["simulator_engine"]["sha256"], r"^[0-9a-f]{64}$")
 
+        replay = manifest["native_failure_replay"]
+        self.assertEqual(replay["episode_indices"], [1, 2, 3, 5, 6])
+        self.assertEqual(replay["frame_shape"], [128, 128, 3])
+        self.assertEqual(replay["frames_per_timeout_episode"], 201)
+        self.assertEqual(replay["video_codec"], "h264")
+        self.assertFalse(replay["policy_or_environment_inputs_changed"])
+        self.assertTrue(
+            all(re.fullmatch(r"[0-9a-f]{64}", value) for value in replay["expected_trace_sha256"].values())
+        )
+        self.assertTrue(
+            all(
+                re.fullmatch(r"[0-9a-f]{64}", value)
+                for value in replay["expected_applied_action_sha256"].values()
+            )
+        )
+
     def test_task_and_seed_validation(self):
         self.assertEqual(contract.validate_task(" collect   one iron ore "), "collect one iron ore")
         self.assertEqual(contract.validate_seed(7), 7)
@@ -182,6 +198,24 @@ class ContractTest(unittest.TestCase):
                 baseline,
             )
         )
+
+    def test_applied_action_sequence_digest_is_stable(self):
+        trace = [
+            {"step": 1, "applied_action": {"forward": 1, "camera": [0.0, 0.0]}},
+            {"step": 2, "applied_action": {"camera": [1.5, -2.0], "attack": 1}},
+        ]
+        self.assertEqual(
+            contract.applied_action_sequence_sha256(trace),
+            "adeccad32882bafc345a2baa0f05f7c6bfd46e2ae3764f328a31cdbe53e952ba",
+        )
+        self.assertEqual(
+            contract.applied_action_sequence_sha256([{}, *trace]),
+            contract.applied_action_sequence_sha256(trace),
+        )
+        with self.assertRaisesRegex(ValueError, "at least one"):
+            contract.applied_action_sequence_sha256([{"step": 1}])
+        with self.assertRaises(TypeError):
+            contract.applied_action_sequence_sha256([{"applied_action": 1}])
 
     def test_native_suite_gate_distinguishes_failure_from_invalidity(self):
         def episodes(successes, valid=True, count=10):
