@@ -718,11 +718,10 @@ def _query_native_voxels(
 def _materialize_native_fixture(
     simulator: Any,
     expected_blocks: list[dict[str, Any]],
-    *,
-    diagnostic_absolute_probe: bool,
 ) -> tuple[Any, dict[str, Any], dict[str, Any]]:
     command_outcomes: list[dict[str, Any]] = []
-    for command in NATIVE_UPSTREAM_TASK_COMMANDS:
+    for block in expected_blocks:
+        command = f'/setblock {block["x"]} {block["y"]} {block["z"]} minecraft:iron_ore'
         command_observation, reward, done, command_info = simulator.env.execute_cmd(command)
         command_outcomes.append(
             {
@@ -750,41 +749,16 @@ def _materialize_native_fixture(
         NATIVE_FIXTURE_VOXEL_BOUNDS,
         NATIVE_EXPECTED_IRON_BLOCKS,
     )
-    absolute_command_probe: dict[str, Any] | None = None
-    if diagnostic_absolute_probe and runtime_query["passed"] is not True:
-        target = expected_blocks[0]
-        command = f'/setblock {target["x"]} {target["y"]} {target["z"]} minecraft:iron_ore'
-        command_observation, reward, done, command_info = simulator.env.execute_cmd(command)
-        if done:
-            raise RuntimeError(f"absolute fixture probe terminated the environment: {command}")
-        for _ in range(NATIVE_FIXTURE_SETTLE_STEPS):
-            observation, _reward, terminated, truncated, info = simulator.step(_simulator_noop(simulator))
-            if terminated or truncated:
-                raise RuntimeError("absolute fixture probe terminated while settling command effects")
-        offset_x, offset_y, offset_z = NATIVE_FIXTURE_BLOCK_OFFSETS[0]
-        single_cell_bounds = (
-            offset_x,
-            offset_x + 1,
-            offset_y,
-            offset_y + 1,
-            offset_z,
-            offset_z + 1,
-        )
-        observation, info, absolute_query = _query_native_voxels(simulator, single_cell_bounds, 1)
-        absolute_command_probe = {
-            "command": command,
-            "reward": float(reward),
-            "done": bool(done),
-            "observation_keys": sorted(command_observation or {}),
-            "info_keys": sorted(command_info or {}),
-            "runtime_query": absolute_query,
-        }
     evidence = {
-        "upstream_commands_executed": True,
+        "upstream_commands_executed": False,
+        "compatibility_reason": (
+            "the released engine applies absolute setblock commands but drops the upstream "
+            "selector-relative fill command"
+        ),
+        "materialization": "one absolute setblock command per expected block",
         "command_outcomes": command_outcomes,
         "settle_noop_steps": NATIVE_FIXTURE_SETTLE_STEPS,
         "runtime_query": runtime_query,
-        "diagnostic_absolute_command_probe": absolute_command_probe,
     }
     return observation, info, evidence
 
@@ -864,7 +838,6 @@ def _native_reset(
     observation, info, runtime_materialization = _materialize_native_fixture(
         simulator,
         mission_fixture["expected_blocks"],
-        diagnostic_absolute_probe=not strict_fixture,
     )
     mission_fixture.update(
         {
@@ -1368,8 +1341,9 @@ class _NativeEpisodeMixin:
                     "video_recording": False,
                     "setup_steps_are_unscored": True,
                     "fixture_runtime_proof": (
-                        "every episode executes the pinned upstream setup commands, settles two no-op "
-                        "ticks, and requires eight iron cells from the half-open VoxelAction query"
+                        "every episode creates the upstream-equivalent 2x2x2 state with absolute "
+                        "setblock commands, settles two no-op ticks, and requires eight iron cells "
+                        "from the half-open VoxelAction query"
                     ),
                     "privileged_fixture_observer_available_to_policy": False,
                     "oracle": "mine_block.iron_ore delta >= 1 and inventory iron_ore delta >= 1",
