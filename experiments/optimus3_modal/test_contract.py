@@ -67,6 +67,7 @@ class ContractTest(unittest.TestCase):
         self.assertEqual(native_gate["required_successes"], 8)
         self.assertIn("not upstream-prompt parity", native_gate["claim_scope"])
         self.assertIn("visibility is not guaranteed", native_gate["claim_scope"])
+        self.assertTrue(native_gate["fresh_simulator_process_between_episodes"])
         self.assertEqual(manifest["simulator_engine"]["expected_bytes"], 458_106_630)
         self.assertRegex(manifest["simulator_engine"]["sha256"], r"^[0-9a-f]{64}$")
 

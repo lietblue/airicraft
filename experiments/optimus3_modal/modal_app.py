@@ -961,6 +961,22 @@ def simulator_preflight() -> dict[str, Any]:
         adapter_started = time.perf_counter()
         observation, _reward, terminated, truncated, info = simulator.step(simulator_action)
         adapter_seconds = time.perf_counter() - adapter_started
+        underlying_action_keys = sorted(_simulator_noop(simulator))
+        post_adapter_step = {
+            "frame_sha256": _frame_sha256(observation["image"]),
+            "inventory": _inventory_snapshot(info),
+            "location": _location(info),
+        }
+        simulator.close()
+        simulator = None
+
+        second_world_seed, _second_policy_seed = native_episode_seeds(1)
+        simulator = _new_native_simulator(second_world_seed)
+        second_observation, second_info, second_setup = _native_reset(
+            simulator,
+            second_world_seed,
+            strict_fixture=False,
+        )
         checks = {
             "engine_ready": _simulator_ready(),
             "task_source_pinned": task_metadata["sha256"] == NATIVE_TASK_CONFIG_SHA256,
@@ -979,6 +995,14 @@ def simulator_preflight() -> dict[str, Any]:
             "action_adapter_changed_no_controls": adapter_evidence["changed_keys"] == [],
             "action_adapter_motor_controls_in_space": adapter_evidence["motor_controls_in_space"],
             "adapter_step_did_not_terminate": not terminated and not truncated,
+            "fresh_process_frame_shape_valid": list(second_observation["image"].shape)
+            == list(FRAME_SHAPE),
+            "fresh_process_fixture_voxel_oracle_valid": second_setup["mission_fixture"][
+                "runtime_query"
+            ]["passed"]
+            is True,
+            "fresh_process_fixture_errors_empty": not second_setup["fixture_errors"],
+            "fresh_process_mainhand_valid": second_setup["mainhand"] == "stone_pickaxe",
         }
         return result_envelope(
             "simulator_preflight",
@@ -988,15 +1012,17 @@ def simulator_preflight() -> dict[str, Any]:
                 "task_source": task_metadata,
                 "java_version": (java.stderr or java.stdout).strip(),
                 "renderer": SIMULATOR_RUNTIME_PINS["renderer"],
-                "world_seed": world_seed,
+                "world_seeds": [world_seed, second_world_seed],
                 "setup": setup,
+                "fresh_process_setup": second_setup,
                 "action_adapter": adapter_evidence,
-                "post_adapter_step": {
-                    "frame_sha256": _frame_sha256(observation["image"]),
-                    "inventory": _inventory_snapshot(info),
-                    "location": _location(info),
+                "post_adapter_step": post_adapter_step,
+                "fresh_process_observation": {
+                    "frame_sha256": _frame_sha256(second_observation["image"]),
+                    "inventory": _inventory_snapshot(second_info),
+                    "location": _location(second_info),
                 },
-                "underlying_action_keys": sorted(_simulator_noop(simulator)),
+                "underlying_action_keys": underlying_action_keys,
                 "timing": {
                     "total_seconds": time.perf_counter() - started,
                     "adapter_step_seconds": adapter_seconds,
@@ -1253,45 +1279,55 @@ class _NativeEpisodeMixin:
             "projection_digest_matches_stage_2": projection_sha256 == NATIVE_EXPECTED_PROJECTION_SHA256,
         }
         episodes: list[dict[str, Any]] = []
-        simulator = None
         suite_error: dict[str, str] | None = None
         if all(conditioning_checks.values()):
-            try:
-                first_world_seed, _first_policy_seed = native_episode_seeds(episode_indices[0])
-                simulator = _new_native_simulator(first_world_seed)
-                for episode_index in episode_indices:
-                    if time.perf_counter() >= wall_deadline:
-                        suite_error = {
-                            "type": "WallBudgetExceeded",
-                            "message": "native episode wall budget exhausted before the next reset",
-                        }
-                        break
-                    try:
-                        episode = self._native_episode(
-                            simulator,
-                            projected,
-                            episode_index,
-                            wall_deadline,
-                        )
-                    except Exception as error:
-                        episode = {
-                            "episode_index": episode_index,
-                            "world_seed": native_episode_seeds(episode_index)[0],
-                            "policy_seed": native_episode_seeds(episode_index)[1],
-                            "valid": False,
-                            "success": False,
-                            "failure_reason": "fixture_or_reset_error",
-                            "error": {"type": type(error).__name__, "message": str(error)},
-                            "trace": [],
-                        }
-                    episodes.append(episode)
-                    if not episode["valid"]:
-                        break
-            except Exception as error:
-                suite_error = {"type": type(error).__name__, "message": str(error)}
-            finally:
-                if simulator is not None:
-                    simulator.close()
+            for episode_index in episode_indices:
+                if time.perf_counter() >= wall_deadline:
+                    suite_error = {
+                        "type": "WallBudgetExceeded",
+                        "message": "native episode wall budget exhausted before the next reset",
+                    }
+                    break
+                world_seed, policy_seed = native_episode_seeds(episode_index)
+                simulator = None
+                episode: dict[str, Any]
+                close_error: Exception | None = None
+                try:
+                    simulator = _new_native_simulator(world_seed)
+                    episode = self._native_episode(
+                        simulator,
+                        projected,
+                        episode_index,
+                        wall_deadline,
+                    )
+                except Exception as error:
+                    episode = {
+                        "episode_index": episode_index,
+                        "world_seed": world_seed,
+                        "policy_seed": policy_seed,
+                        "valid": False,
+                        "success": False,
+                        "failure_reason": "fixture_or_reset_error",
+                        "error": {"type": type(error).__name__, "message": str(error)},
+                        "trace": [],
+                    }
+                finally:
+                    if simulator is not None:
+                        try:
+                            simulator.close()
+                        except Exception as error:
+                            close_error = error
+                if close_error is not None:
+                    episode["valid"] = False
+                    episode["success"] = False
+                    episode["failure_reason"] = "simulator_close_error"
+                    episode["close_error"] = {
+                        "type": type(close_error).__name__,
+                        "message": str(close_error),
+                    }
+                episodes.append(episode)
+                if not episode["valid"]:
+                    break
 
         completed = len(episodes) == len(episode_indices)
         valid_episodes = sum(bool(episode.get("valid")) for episode in episodes)
@@ -1365,7 +1401,8 @@ class _NativeEpisodeMixin:
                         "the Modal function timeout is the hard stop if a blocking JVM or model call hangs"
                     ),
                     "hard_reset_between_episodes": True,
-                    "reuse_minecraft_process": True,
+                    "fresh_minecraft_process_per_episode": True,
+                    "reuse_minecraft_process": False,
                     "policy_reset_once_per_episode": True,
                     "policy_warmup_steps": 0,
                     "per_frame_stochastic_prior_preserved": True,

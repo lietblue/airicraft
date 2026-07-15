@@ -689,6 +689,7 @@ def pilot_manifest() -> dict[str, Any]:
             "oracle": "mine_block.iron_ore delta >= 1 and inventory iron_ore delta >= 1",
             "forbidden_attempts_are_diagnostic": True,
             "hard_reset_between_episodes": True,
+            "fresh_simulator_process_between_episodes": True,
             "fast_reset": False,
             "video_recording": False,
         },
