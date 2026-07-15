@@ -279,6 +279,17 @@ Airicraft shadow mode. Across 1,592 native closed-loop steps, the pooled mean wa
 not part of this Stage 3 acceptance gate, and does not establish stable 20 Hz
 end-to-end control.
 
+The non-gating capture run under `20260715T153506Z-failure-replay` then replayed
+the five failed world/policy seed pairs. All five were valid 200-step timeouts
+again, with zero schema or safety failures, and all five 201-frame H.264 videos
+passed codec, size, frame-count, shutdown, and output-integrity checks. Episode
+5 independently reproduced the collection failure: it mined one iron block but
+never picked it up. Episodes 1, 2, 3, and 6 mined no iron while moving and
+attacking elsewhere. None of the replay action or trace digests matched the
+definitive run, so the videos are fresh examples of the same failure modes, not
+exact footage of the scored trajectories. The capture acceptance is therefore
+correctly false and remains separate from the locked Stage 3 result.
+
 The preceding single-episode run under `20260715T131739Z-episode` succeeded at
 step 114 and proved that the released policy can complete the native task. The
 first suite under `20260715T132001Z-episodes` reused one Minecraft JVM and became
