@@ -690,8 +690,36 @@ def _simulator_noop(simulator: Any) -> dict[str, Any]:
     return dict(action)
 
 
+def _query_native_voxels(
+    simulator: Any,
+    bounds: tuple[int, int, int, int, int, int],
+    expected_iron_blocks: int,
+) -> tuple[Any, dict[str, Any], dict[str, Any]]:
+    query = _simulator_noop(simulator)
+    query["voxels"] = list(bounds)
+    observation, _reward, terminated, truncated, info = simulator.step(query)
+    if terminated or truncated:
+        raise RuntimeError("native fixture terminated during voxel validation")
+    voxel_value = info.get("voxels")
+    iron_blocks = _count_voxel_type(voxel_value, "iron_ore")
+    evidence = {
+        "method": "released_engine_voxel_action",
+        "bounds_semantics": "half_open",
+        "bounds": list(bounds),
+        "expected_volume": expected_iron_blocks,
+        "iron_blocks": iron_blocks,
+        "passed": iron_blocks == expected_iron_blocks,
+        "python_type": f"{type(voxel_value).__module__}.{type(voxel_value).__qualname__}",
+        "value": voxel_value,
+    }
+    return observation, info, evidence
+
+
 def _materialize_native_fixture(
     simulator: Any,
+    expected_blocks: list[dict[str, Any]],
+    *,
+    diagnostic_absolute_probe: bool,
 ) -> tuple[Any, dict[str, Any], dict[str, Any]]:
     command_outcomes: list[dict[str, Any]] = []
     for command in NATIVE_UPSTREAM_TASK_COMMANDS:
@@ -717,28 +745,46 @@ def _materialize_native_fixture(
         if terminated or truncated:
             raise RuntimeError("native fixture terminated while settling command effects")
 
-    query = _simulator_noop(simulator)
-    query["voxels"] = list(NATIVE_FIXTURE_VOXEL_BOUNDS)
-    observation, _reward, terminated, truncated, info = simulator.step(query)
-    if terminated or truncated:
-        raise RuntimeError("native fixture terminated during voxel validation")
-    voxel_value = info.get("voxels")
-    iron_blocks = _count_voxel_type(voxel_value, "iron_ore")
-    runtime_query = {
-        "method": "released_engine_voxel_action",
-        "bounds_semantics": "half_open",
-        "bounds": list(NATIVE_FIXTURE_VOXEL_BOUNDS),
-        "expected_volume": NATIVE_EXPECTED_IRON_BLOCKS,
-        "iron_blocks": iron_blocks,
-        "passed": iron_blocks == NATIVE_EXPECTED_IRON_BLOCKS,
-        "python_type": f"{type(voxel_value).__module__}.{type(voxel_value).__qualname__}",
-        "value": voxel_value,
-    }
+    observation, info, runtime_query = _query_native_voxels(
+        simulator,
+        NATIVE_FIXTURE_VOXEL_BOUNDS,
+        NATIVE_EXPECTED_IRON_BLOCKS,
+    )
+    absolute_command_probe: dict[str, Any] | None = None
+    if diagnostic_absolute_probe and runtime_query["passed"] is not True:
+        target = expected_blocks[0]
+        command = f'/setblock {target["x"]} {target["y"]} {target["z"]} minecraft:iron_ore'
+        command_observation, reward, done, command_info = simulator.env.execute_cmd(command)
+        if done:
+            raise RuntimeError(f"absolute fixture probe terminated the environment: {command}")
+        for _ in range(NATIVE_FIXTURE_SETTLE_STEPS):
+            observation, _reward, terminated, truncated, info = simulator.step(_simulator_noop(simulator))
+            if terminated or truncated:
+                raise RuntimeError("absolute fixture probe terminated while settling command effects")
+        offset_x, offset_y, offset_z = NATIVE_FIXTURE_BLOCK_OFFSETS[0]
+        single_cell_bounds = (
+            offset_x,
+            offset_x + 1,
+            offset_y,
+            offset_y + 1,
+            offset_z,
+            offset_z + 1,
+        )
+        observation, info, absolute_query = _query_native_voxels(simulator, single_cell_bounds, 1)
+        absolute_command_probe = {
+            "command": command,
+            "reward": float(reward),
+            "done": bool(done),
+            "observation_keys": sorted(command_observation or {}),
+            "info_keys": sorted(command_info or {}),
+            "runtime_query": absolute_query,
+        }
     evidence = {
         "upstream_commands_executed": True,
         "command_outcomes": command_outcomes,
         "settle_noop_steps": NATIVE_FIXTURE_SETTLE_STEPS,
         "runtime_query": runtime_query,
+        "diagnostic_absolute_command_probe": absolute_command_probe,
     }
     return observation, info, evidence
 
@@ -815,7 +861,11 @@ def _native_reset(
     simulator.env.seed(world_seed)
     observation, info = simulator.reset()
     rendered_mission = simulator.env.task.to_xml()
-    observation, info, runtime_materialization = _materialize_native_fixture(simulator)
+    observation, info, runtime_materialization = _materialize_native_fixture(
+        simulator,
+        mission_fixture["expected_blocks"],
+        diagnostic_absolute_probe=not strict_fixture,
+    )
     mission_fixture.update(
         {
             "hard_resets": 2,
