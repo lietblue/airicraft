@@ -47,7 +47,7 @@ NATIVE_UPSTREAM_TASK_COMMANDS = (
     "/execute as @p at @s run fill ~2 ~ ~2 ~3 ~1 ~3 minecraft:iron_ore",
 )
 NATIVE_UPSTREAM_TASK_COMMANDS_SHA256 = "b0a5ad53ce0b70b7a62ae16543b9d68b099b874a9283cfb59b21448b51fa91a6"
-NATIVE_FIXTURE_METHOD = "mission_xml_semantic_equivalent_with_ray_canary"
+NATIVE_FIXTURE_METHOD = "mission_xml_semantic_equivalent_with_destructive_canary"
 NATIVE_FIXTURE_DRAW_OFFSETS = tuple(
     (x, y, z)
     for x in (2, 3)
@@ -56,7 +56,7 @@ NATIVE_FIXTURE_DRAW_OFFSETS = tuple(
 )
 NATIVE_FIXTURE_PROOF_TARGET_OFFSET = (2, 1, 2)
 NATIVE_FIXTURE_PROOF_MAX_ATTACK_STEPS = 60
-NATIVE_FIXTURE_SPEC_SHA256 = "50904ca8203f249206cbe565cb0e871a5df4a44fdcecfe5198af681ceb97d732"
+NATIVE_FIXTURE_SPEC_SHA256 = "1b4dacc81e12c021fa386885bc55f2482c21f079192140c8af8e9fe8f10c226c"
 NATIVE_EXPECTED_IRON_BLOCKS = 8
 NATIVE_EMBEDDING_SEED = 7
 NATIVE_EXPECTED_LABEL = "<iron>"
@@ -72,7 +72,7 @@ def native_fixture_spec() -> dict[str, Any]:
         "placement": "discovery_location",
         "runtime_proof": {
             "max_attack_steps": NATIVE_FIXTURE_PROOF_MAX_ATTACK_STEPS,
-            "method": "unscored_observation_from_ray_then_mine_stat",
+            "method": "unscored_overhead_attack_then_mine_stat",
             "target_offset": list(NATIVE_FIXTURE_PROOF_TARGET_OFFSET),
         },
     }
@@ -667,7 +667,7 @@ def pilot_manifest() -> dict[str, Any]:
             ),
             "expected_declared_iron_blocks": NATIVE_EXPECTED_IRON_BLOCKS,
             "runtime_fixture_proof": (
-                "audit eight unique DrawBlock declarations, then ray-observe and mine one target "
+                "audit eight unique DrawBlock declarations, then mine one directly targeted block "
                 "on an unscored reset before hard-resetting the policy episode"
             ),
             "episode_count": NATIVE_EPISODE_COUNT,

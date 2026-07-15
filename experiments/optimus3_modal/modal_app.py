@@ -81,7 +81,6 @@ from contract import (
     result_envelope,
     simulator_action_evidence,
     stat_count,
-    to_jsonable,
     validate_benchmark_steps,
     validate_complete_action,
     validate_episode_index,
@@ -582,15 +581,10 @@ def _configure_native_mission_fixture(
     discovery_location: Mapping[str, float],
     *,
     placement_override: Mapping[str, float] | None = None,
-    include_ray_observation: bool = False,
 ) -> dict[str, Any]:
     _install_minestudio_namespace_shim()
-    import numpy as np
-
-    from minestudio.simulator.minerl.herobraine.hero import spaces
     from minestudio.simulator.minerl.herobraine.hero.handler import Handler
     from minestudio.simulator.minerl.herobraine.hero.handlers.agent.start import AgentStartPlacement
-    from minestudio.simulator.minerl.herobraine.hero.handlers.translation import TranslationHandler
 
     required_location_keys = {"xpos", "ypos", "zpos", "pitch", "yaw"}
     missing = sorted(required_location_keys - set(discovery_location))
@@ -622,7 +616,6 @@ def _configure_native_mission_fixture(
     }
     placement = dict(placement_override or default_placement)
     original_agent_start = simulator.airicraft_original_create_agent_start
-    original_observables = simulator.airicraft_original_create_observables
     original_server_decorators = simulator.airicraft_original_create_server_decorators
 
     class NativeDrawingDecorator(Handler):
@@ -634,42 +627,14 @@ def _configure_native_mission_fixture(
             # autoescaping Jinja variable, turning DrawBlock nodes into text.
             return f"<DrawingDecorator>{drawing_xml}</DrawingDecorator>"
 
-    class NativeFixtureRayObservation(TranslationHandler):
-        name = "airicraft_fixture_ray"
-
-        def __init__(self) -> None:
-            super().__init__(spaces.Text(shape=(1,)))
-
-        def to_string(self) -> str:
-            return self.name
-
-        def xml_template(self) -> str:
-            return '<ObservationFromRay includeNBT="false"/>'
-
-        def from_hero(self, info: Mapping[str, Any]) -> Any:
-            encoded = json.dumps(
-                to_jsonable(info.get("LineOfSight")), sort_keys=True, separators=(",", ":")
-            )
-            return np.asarray([encoded], dtype=np.str_)
-
-        def from_universal(self, info: Mapping[str, Any]) -> Any:
-            return self.from_hero(info)
-
     def create_agent_start(_task: Any) -> list[Any]:
         return [*original_agent_start(), AgentStartPlacement(**placement)]
-
-    def create_observables(_task: Any) -> list[Any]:
-        observables = list(original_observables())
-        if include_ray_observation:
-            observables.append(NativeFixtureRayObservation())
-        return observables
 
     def create_server_decorators(_task: Any) -> list[Any]:
         return [*original_server_decorators(), NativeDrawingDecorator()]
 
     task = simulator.env.task
     task.create_agent_start = types.MethodType(create_agent_start, task)
-    task.create_observables = types.MethodType(create_observables, task)
     task.create_server_decorators = types.MethodType(create_server_decorators, task)
     return {
         "method": NATIVE_FIXTURE_METHOD,
@@ -679,7 +644,6 @@ def _configure_native_mission_fixture(
         "discovery_location": dict(discovery_location),
         "placement": placement,
         "draw_blocks": draw_blocks,
-        "ray_observation": NativeFixtureRayObservation.name if include_ray_observation else None,
         "drawing_xml_sha256": hashlib.sha256(drawing_xml.encode("utf-8")).hexdigest(),
     }
 
@@ -702,38 +666,6 @@ def _rendered_draw_blocks(rendered_mission: str) -> list[dict[str, Any]]:
         except (KeyError, ValueError) as error:
             raise RuntimeError(f"invalid DrawBlock declaration in rendered mission: {element.attrib}") from error
     return sorted(blocks, key=lambda block: (block["x"], block["y"], block["z"], block["type"]))
-
-
-def _fixture_ray_value(info: Mapping[str, Any]) -> dict[str, Any] | None:
-    value = info.get("airicraft_fixture_ray")
-    if hasattr(value, "tolist"):
-        value = value.tolist()
-    if isinstance(value, (list, tuple)) and len(value) == 1:
-        value = value[0]
-    if isinstance(value, str):
-        try:
-            value = json.loads(value)
-        except json.JSONDecodeError:
-            return None
-    return dict(value) if isinstance(value, Mapping) else None
-
-
-def _ray_hits_block(ray: Mapping[str, Any] | None, block: Mapping[str, Any]) -> bool:
-    if ray is None:
-        return False
-    if ray.get("hitType") != "block":
-        return False
-    if str(ray.get("type", "")).removeprefix("minecraft:") != block["type"]:
-        return False
-    if ray.get("inRange") is not True:
-        return False
-    try:
-        return all(
-            float(block[axis]) - 1e-6 <= float(ray[axis]) <= float(block[axis]) + 1.0 + 1e-6
-            for axis in ("x", "y", "z")
-        )
-    except (KeyError, TypeError, ValueError):
-        return False
 
 
 def _fixture_declaration_evidence(
@@ -920,33 +852,30 @@ def _native_reset(
             simulator,
             discovery_location,
             placement_override=proof_placement,
-            include_ray_observation=True,
         )
         simulator.env.seed(world_seed)
         proof_observation, proof_info = simulator.reset()
         validate_frame_shape(proof_observation.get("image"))
         proof_mission = simulator.env.task.to_xml()
         proof_declaration = _fixture_declaration_evidence(proof_mission, proof_fixture["draw_blocks"])
-
-        ray = _fixture_ray_value(proof_info)
-        ray_wait_steps = 0
-        while ray_wait_steps < 10 and not _ray_hits_block(ray, proof_target):
-            proof_observation, _reward, terminated, truncated, proof_info = simulator.step(
-                _simulator_noop(simulator)
+        proof_location = _location(proof_info)
+        proof_location_valid = proof_location is not None and all(
+            observed_key in proof_location
+            and abs(proof_location[observed_key] - proof_placement[expected_key]) <= 0.01
+            for observed_key, expected_key in (
+                ("xpos", "x"),
+                ("ypos", "y"),
+                ("zpos", "z"),
+                ("pitch", "pitch"),
             )
-            ray_wait_steps += 1
-            if terminated or truncated:
-                break
-            ray = _fixture_ray_value(proof_info)
-
-        ray_valid = _ray_hits_block(ray, proof_target)
+        )
         mine_before = stat_count(proof_info.get("mine_block"), "iron_ore")
         mine_after = mine_before
         attack_steps = 0
         proof_terminated = False
         proof_action_evidence: dict[str, Any] | None = None
         release_action_evidence: dict[str, Any] | None = None
-        if ray_valid:
+        if proof_location_valid and proof_declaration["all_expected_present"]:
             applied_attack = {
                 key: [0.0, 0.0] if key == "camera" else 0 for key in ALL_ACTION_KEYS
             }
@@ -982,20 +911,18 @@ def _native_reset(
         proof_passed = (
             proof_declaration["all_expected_present"]
             and proof_declaration["matching_unique_count"] == NATIVE_EXPECTED_IRON_BLOCKS
-            and "<ObservationFromRay" in proof_mission
-            and ray_valid
+            and proof_location_valid
             and mine_delta >= 1
             and not proof_terminated
         )
         runtime_proof = {
             "performed": True,
             "passed": proof_passed,
-            "method": "unscored_observation_from_ray_then_mine_stat",
+            "method": "unscored_overhead_attack_then_mine_stat",
             "target": proof_target,
             "placement": proof_placement,
-            "ray_wait_steps": ray_wait_steps,
-            "ray": ray,
-            "ray_hits_target": ray_valid,
+            "observed_location": proof_location,
+            "placement_valid": proof_location_valid,
             "attack_steps": attack_steps,
             "maximum_attack_steps": NATIVE_FIXTURE_PROOF_MAX_ATTACK_STEPS,
             "mine_iron_ore_before": mine_before,
@@ -1005,7 +932,6 @@ def _native_reset(
             "sent_attack_action": proof_action_evidence,
             "sent_release_action": release_action_evidence,
             "rendered_mission_sha256": hashlib.sha256(proof_mission.encode("utf-8")).hexdigest(),
-            "rendered_mission_contains_ray": "<ObservationFromRay" in proof_mission,
             "declaration": proof_declaration,
         }
 
@@ -1525,7 +1451,7 @@ class _NativeEpisodeMixin:
                     "setup_steps_are_unscored": True,
                     "fixture_runtime_proof": (
                         "the first episode audits all eight DrawBlock declarations, then uses an "
-                        "unscored ray-and-mine canary before a hard reset"
+                        "unscored overhead attack-and-mine-stat canary before a hard reset"
                     ),
                     "privileged_fixture_observer_available_to_policy": False,
                     "oracle": "mine_block.iron_ore delta >= 1 and inventory iron_ore delta >= 1",
