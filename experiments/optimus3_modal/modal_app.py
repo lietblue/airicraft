@@ -72,12 +72,14 @@ from contract import (
     inventory_quantity,
     native_suite_outcome,
     result_envelope,
+    simulator_action_evidence,
     stat_count,
     validate_benchmark_steps,
     validate_complete_action,
     validate_episode_index,
     validate_frame_shape,
     validate_seed,
+    validate_simulator_motor_membership,
     validate_task,
 )
 
@@ -599,18 +601,52 @@ def _coerce_action_value(value: Any, template: Any, np_module: Any) -> Any:
         return coerced.reshape(template.shape)
     if hasattr(template, "dtype"):
         return np_module.asarray(value, dtype=template.dtype)
+    if type(template) is int:
+        return int(value)
+    if type(template) is float:
+        return float(value)
     return value
 
 
-def _native_simulator_action(simulator: Any, applied_action: Mapping[str, Any], np_module: Any) -> dict[str, Any]:
-    action = _simulator_noop(simulator)
+def _native_simulator_action(
+    simulator: Any,
+    applied_action: Mapping[str, Any],
+    np_module: Any,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    noop = _simulator_noop(simulator)
+    action = dict(noop)
     controls = native_motor_controls(applied_action)
     missing = sorted(set(ALLOWED_ACTION_KEYS) - set(action))
     if missing:
         raise RuntimeError(f"MineStudio action space is missing allowed controls: {missing}")
     for key in ALLOWED_ACTION_KEYS:
         action[key] = _coerce_action_value(controls[key], action[key], np_module)
-    return action
+
+    evidence = simulator_action_evidence(noop, action)
+    action_space = simulator.env.action_space
+    spaces = getattr(action_space, "spaces", None)
+    if not isinstance(spaces, Mapping):
+        raise RuntimeError("MineStudio action space does not expose per-control spaces")
+    membership = validate_simulator_motor_membership(action, spaces)
+
+    whole_contains: bool | None = None
+    whole_contains_error: str | None = None
+    whole_contains_call = getattr(action_space, "contains", None)
+    if callable(whole_contains_call):
+        try:
+            whole_contains = bool(whole_contains_call(action))
+        except Exception as error:
+            whole_contains_error = f"{type(error).__name__}: {error}"
+    evidence.update(
+        {
+            "motor_control_membership": membership,
+            "motor_controls_in_space": True,
+            "whole_action_space_contains_diagnostic": whole_contains,
+            "whole_action_space_contains_error": whole_contains_error,
+            "action_space_type": f"{type(action_space).__module__}.{type(action_space).__qualname__}",
+        }
+    )
+    return action, evidence
 
 
 def _native_reset(simulator: Any, world_seed: int) -> tuple[Any, dict[str, Any], dict[str, Any]]:
@@ -667,6 +703,7 @@ def _native_reset(simulator: Any, world_seed: int) -> tuple[Any, dict[str, Any],
 )
 def simulator_preflight() -> dict[str, Any]:
     import subprocess
+    import numpy as np
 
     engine_metadata = _prepare_simulator_runtime()
     task_metadata = _native_task_source_metadata()
@@ -677,9 +714,11 @@ def simulator_preflight() -> dict[str, Any]:
         world_seed, _policy_seed = native_episode_seeds(0)
         simulator = _new_native_simulator(world_seed)
         observation, info, setup = _native_reset(simulator, world_seed)
-        noop_started = time.perf_counter()
-        observation, _reward, terminated, truncated, info = simulator.step(_simulator_noop(simulator))
-        noop_seconds = time.perf_counter() - noop_started
+        masked_noop = {key: [0.0, 0.0] if key == "camera" else 0 for key in ALL_ACTION_KEYS}
+        simulator_action, adapter_evidence = _native_simulator_action(simulator, masked_noop, np)
+        adapter_started = time.perf_counter()
+        observation, _reward, terminated, truncated, info = simulator.step(simulator_action)
+        adapter_seconds = time.perf_counter() - adapter_started
         checks = {
             "engine_ready": _simulator_ready(),
             "task_source_pinned": task_metadata["sha256"] == NATIVE_TASK_CONFIG_SHA256,
@@ -691,7 +730,9 @@ def simulator_preflight() -> dict[str, Any]:
             "fixture_iron_blocks_valid": setup["iron_blocks"] == NATIVE_EXPECTED_IRON_BLOCKS,
             "fixture_mainhand_valid": setup["mainhand"] == "stone_pickaxe",
             "fixture_initial_inventory_valid": setup["baseline"]["inventory_iron_ore"] == 0,
-            "noop_did_not_terminate": not terminated and not truncated,
+            "action_adapter_changed_no_controls": adapter_evidence["changed_keys"] == [],
+            "action_adapter_motor_controls_in_space": adapter_evidence["motor_controls_in_space"],
+            "adapter_step_did_not_terminate": not terminated and not truncated,
         }
         return result_envelope(
             "simulator_preflight",
@@ -703,7 +744,8 @@ def simulator_preflight() -> dict[str, Any]:
                 "renderer": SIMULATOR_RUNTIME_PINS["renderer"],
                 "world_seed": world_seed,
                 "setup": setup,
-                "post_noop": {
+                "action_adapter": adapter_evidence,
+                "post_adapter_step": {
                     "frame_sha256": _frame_sha256(observation["image"]),
                     "inventory": _inventory_snapshot(info),
                     "location": _location(info),
@@ -711,7 +753,7 @@ def simulator_preflight() -> dict[str, Any]:
                 "underlying_action_keys": sorted(_simulator_noop(simulator)),
                 "timing": {
                     "total_seconds": time.perf_counter() - started,
-                    "noop_seconds": noop_seconds,
+                    "adapter_step_seconds": adapter_seconds,
                 },
                 "acceptance": {"checks": checks, "passed": all(checks.values())},
             },
@@ -786,7 +828,10 @@ class _NativeEpisodeMixin:
                 break
 
             try:
-                simulator_action = _native_simulator_action(simulator, record["applied_action"], self.np)
+                simulator_action, sent_action = _native_simulator_action(
+                    simulator, record["applied_action"], self.np
+                )
+                record["sent_action"] = sent_action
             except Exception as error:
                 valid = False
                 failure_reason = "action_adapter_error"
@@ -836,7 +881,8 @@ class _NativeEpisodeMixin:
                 completion_step = step
                 break
             if terminated or truncated:
-                failure_reason = "environment_terminated"
+                valid = False
+                failure_reason = "unexpected_environment_termination"
                 break
 
         if valid and not success and failure_reason is None:
@@ -853,6 +899,7 @@ class _NativeEpisodeMixin:
                     "input_frame_sha256",
                     "raw_action",
                     "applied_action",
+                    "sent_action",
                     "forbidden_attempts",
                     "terminated",
                     "truncated",
@@ -1036,13 +1083,26 @@ class _NativeEpisodeMixin:
                 "task_label": task_label,
                 "episode_indices": episode_indices,
                 "protocol": {
-                    "claim_scope": "native MineStudio simple iron task; not a visible-iron test",
+                    "claim_scope": (
+                        "native MineStudio simple iron fixture with the locked Stage 2 translated prompt; "
+                        "not upstream-prompt parity and not a visible-iron test"
+                    ),
                     "upstream_task_text": NATIVE_UPSTREAM_TASK_TEXT,
                     "policy_prompt": DEFAULT_TASK,
-                    "policy_prompt_note": "retained from Stages 1 and 2 for conditioning continuity",
+                    "policy_prompt_note": (
+                        "retained from Stages 1 and 2 for conditioning continuity; the upstream task "
+                        "text is recorded but is not the model input"
+                    ),
                     "maximum_policy_steps_per_episode": NATIVE_MAX_STEPS,
                     "required_successes": NATIVE_REQUIRED_SUCCESSES,
                     "wall_budget_seconds": wall_budget_seconds,
+                    "wall_budget_enforcement": (
+                        "cooperative checks between blocking reset, inference, and simulator-step calls"
+                    ),
+                    "outer_hard_timeout_seconds": 1800,
+                    "outer_hard_timeout_note": (
+                        "the Modal function timeout is the hard stop if a blocking JVM or model call hangs"
+                    ),
                     "hard_reset_between_episodes": True,
                     "reuse_minecraft_process": True,
                     "policy_reset_once_per_episode": True,

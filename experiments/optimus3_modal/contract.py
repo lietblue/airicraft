@@ -362,6 +362,8 @@ def to_jsonable(value: Any) -> Any:
         value = value.cpu()
     if hasattr(value, "tolist"):
         value = value.tolist()
+    elif hasattr(value, "item"):
+        value = value.item()
     if isinstance(value, Mapping):
         return {str(key): to_jsonable(item) for key, item in value.items()}
     if isinstance(value, (list, tuple)):
@@ -445,6 +447,76 @@ def native_motor_controls(applied_action: Mapping[str, Any]) -> dict[str, Any]:
     if surviving:
         raise ValueError(f"forbidden actions survived safety mask: {surviving}")
     return {key: normalized[key] for key in ALLOWED_ACTION_KEYS}
+
+
+def simulator_action_evidence(
+    noop_action: Mapping[str, Any],
+    sent_action: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Canonicalize the exact MineRL action and prove only motor controls changed."""
+    if not isinstance(noop_action, Mapping) or not isinstance(sent_action, Mapping):
+        raise TypeError("simulator actions must be mappings")
+    if any(not isinstance(key, str) for key in (*noop_action.keys(), *sent_action.keys())):
+        raise ValueError("simulator action keys must be strings")
+
+    noop = to_jsonable(noop_action)
+    sent = to_jsonable(sent_action)
+    noop_keys = set(noop)
+    sent_keys = set(sent)
+    missing = sorted(noop_keys - sent_keys)
+    unknown = sorted(sent_keys - noop_keys)
+    if missing or unknown:
+        raise ValueError(f"simulator action envelope mismatch: missing={missing}, unknown={unknown}")
+
+    changed_keys = sorted(key for key in sent if sent[key] != noop[key])
+    unexpected = sorted(set(changed_keys) - set(ALLOWED_ACTION_KEYS))
+    if unexpected:
+        raise ValueError(f"non-motor simulator controls changed from no-op: {unexpected}")
+
+    active_keys = sorted(key for key, value in sent.items() if _is_active(value))
+    unexpected_active = sorted(set(active_keys) - set(ALLOWED_ACTION_KEYS))
+    if unexpected_active:
+        raise ValueError(f"non-motor simulator controls are active: {unexpected_active}")
+
+    canonical = json.dumps(sent, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return {
+        "canonical_action": sent,
+        "action_keys": sorted(sent),
+        "changed_keys": changed_keys,
+        "active_keys": active_keys,
+        "active_motor_keys": active_keys,
+        "sha256": hashlib.sha256(canonical).hexdigest(),
+    }
+
+
+def validate_simulator_motor_membership(
+    sent_action: Mapping[str, Any],
+    control_spaces: Mapping[str, Any],
+) -> dict[str, bool]:
+    """Validate each safety-approved value against its real MineRL control space."""
+    if not isinstance(sent_action, Mapping) or not isinstance(control_spaces, Mapping):
+        raise TypeError("simulator action and control spaces must be mappings")
+    missing_actions = sorted(set(ALLOWED_ACTION_KEYS) - set(sent_action))
+    missing_spaces = sorted(set(ALLOWED_ACTION_KEYS) - set(control_spaces))
+    if missing_actions or missing_spaces:
+        raise ValueError(
+            "simulator motor schema mismatch: "
+            f"missing_actions={missing_actions}, missing_spaces={missing_spaces}"
+        )
+
+    membership: dict[str, bool] = {}
+    for key in ALLOWED_ACTION_KEYS:
+        contains = getattr(control_spaces[key], "contains", None)
+        if not callable(contains):
+            raise TypeError(f"simulator control space does not expose contains(): {key}")
+        try:
+            membership[key] = bool(contains(sent_action[key]))
+        except Exception as error:
+            raise ValueError(f"simulator control-space validation failed for {key}: {error}") from error
+    rejected = sorted(key for key, contained in membership.items() if not contained)
+    if rejected:
+        raise ValueError(f"simulator motor controls are outside their spaces: {rejected}")
+    return membership
 
 
 def latency_summary(samples_ms: Sequence[float], deadline_ms: float = TARGET_LATENCY_MS) -> dict[str, Any]:
@@ -552,13 +624,19 @@ def pilot_manifest() -> dict[str, Any]:
         },
         "native_episode_gate": {
             "name": NATIVE_GATE_NAME,
-            "claim_scope": "MineStudio native simple iron task; visibility is not guaranteed",
+            "claim_scope": (
+                "MineStudio native simple iron fixture with the locked Stage 2 translated prompt; "
+                "not upstream-prompt parity and visibility is not guaranteed"
+            ),
             "task_config": NATIVE_TASK_CONFIG,
             "task_config_git_blob": NATIVE_TASK_CONFIG_GIT_BLOB,
             "task_config_sha256": NATIVE_TASK_CONFIG_SHA256,
             "upstream_task_text": NATIVE_UPSTREAM_TASK_TEXT,
             "policy_prompt": DEFAULT_TASK,
-            "policy_prompt_note": "retained from Stages 1 and 2 for conditioning continuity",
+            "policy_prompt_note": (
+                "retained from Stages 1 and 2 for conditioning continuity; the upstream task text "
+                "is recorded but is not the model input"
+            ),
             "upstream_commands": list(NATIVE_UPSTREAM_TASK_COMMANDS),
             "engine_compatible_commands": list(NATIVE_TASK_COMMANDS),
             "engine_compatible_commands_sha256": NATIVE_TASK_COMMANDS_SHA256,
@@ -569,6 +647,8 @@ def pilot_manifest() -> dict[str, Any]:
             "required_successes": NATIVE_REQUIRED_SUCCESSES,
             "maximum_policy_steps_per_episode": NATIVE_MAX_STEPS,
             "wall_budget_seconds": NATIVE_SUITE_WALL_BUDGET_SECONDS,
+            "wall_budget_enforcement": "cooperative checks between blocking model and simulator calls",
+            "outer_hard_timeout_seconds": 1800,
             "embedding_seed": NATIVE_EMBEDDING_SEED,
             "expected_label": NATIVE_EXPECTED_LABEL,
             "expected_embedding_sha256": NATIVE_EXPECTED_EMBEDDING_SHA256,

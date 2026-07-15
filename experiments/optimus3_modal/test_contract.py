@@ -34,6 +34,14 @@ class ScalarLike:
         return self.value
 
 
+class PredicateSpace:
+    def __init__(self, predicate):
+        self.predicate = predicate
+
+    def contains(self, value):
+        return self.predicate(value)
+
+
 class ContractTest(unittest.TestCase):
     def test_manifest_pins_immutable_revisions_without_secrets(self):
         manifest = contract.pilot_manifest()
@@ -57,6 +65,7 @@ class ContractTest(unittest.TestCase):
         self.assertEqual(native_gate["name"], "native_simple_mine_iron_v1")
         self.assertEqual(native_gate["episode_count"], 10)
         self.assertEqual(native_gate["required_successes"], 8)
+        self.assertIn("not upstream-prompt parity", native_gate["claim_scope"])
         self.assertIn("visibility is not guaranteed", native_gate["claim_scope"])
         self.assertEqual(manifest["simulator_engine"]["expected_bytes"], 458_106_630)
         self.assertRegex(manifest["simulator_engine"]["sha256"], r"^[0-9a-f]{64}$")
@@ -242,6 +251,64 @@ class ContractTest(unittest.TestCase):
             contract.validate_complete_action({**complete, "forward": [1]})
         with self.assertRaises(ValueError):
             contract.validate_complete_action({**complete, "forward": 2})
+
+    def test_simulator_action_evidence_captures_exact_noop_overlay(self):
+        noop = {
+            "attack": 0,
+            "camera": ArrayLike([0.0, 0.0]),
+            "forward": 0,
+            "chat": "",
+        }
+        sent = {
+            "attack": 0,
+            "camera": ArrayLike([0.0, 0.0]),
+            "forward": ScalarLike(1),
+            "chat": "",
+        }
+        evidence = contract.simulator_action_evidence(noop, sent)
+        self.assertEqual(evidence["changed_keys"], ["forward"])
+        self.assertEqual(evidence["active_keys"], ["forward"])
+        self.assertEqual(evidence["active_motor_keys"], ["forward"])
+        self.assertEqual(evidence["canonical_action"]["forward"], 1)
+        self.assertRegex(evidence["sha256"], r"^[0-9a-f]{64}$")
+
+        with self.assertRaisesRegex(ValueError, "non-motor simulator controls changed"):
+            contract.simulator_action_evidence(noop, {**sent, "chat": "hello"})
+        with self.assertRaisesRegex(ValueError, "non-motor simulator controls are active"):
+            contract.simulator_action_evidence(
+                {**noop, "chat": "already-active"},
+                {**noop, "chat": "already-active"},
+            )
+        with self.assertRaisesRegex(ValueError, "simulator action envelope mismatch"):
+            contract.simulator_action_evidence(
+                noop,
+                {key: value for key, value in sent.items() if key != "chat"},
+            )
+
+    def test_simulator_motor_membership_validates_each_allowed_control(self):
+        action = {
+            key: [0.0, 0.0] if key == "camera" else 0
+            for key in contract.ALLOWED_ACTION_KEYS
+        }
+        spaces = {
+            key: PredicateSpace(
+                (lambda value: isinstance(value, list) and len(value) == 2)
+                if key == "camera"
+                else (lambda value: type(value) is int and value in (0, 1))
+            )
+            for key in contract.ALLOWED_ACTION_KEYS
+        }
+        membership = contract.validate_simulator_motor_membership(action, spaces)
+        self.assertEqual(set(membership), set(contract.ALLOWED_ACTION_KEYS))
+        self.assertTrue(all(membership.values()))
+
+        with self.assertRaisesRegex(ValueError, "outside their spaces"):
+            contract.validate_simulator_motor_membership({**action, "forward": 2}, spaces)
+        with self.assertRaisesRegex(ValueError, "missing_spaces"):
+            contract.validate_simulator_motor_membership(
+                action,
+                {key: space for key, space in spaces.items() if key != "attack"},
+            )
 
     def test_latency_summary_and_gate(self):
         summary = contract.latency_summary([10, 20, 30, 40, 60], deadline_ms=50)
