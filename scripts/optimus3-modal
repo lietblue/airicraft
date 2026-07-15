@@ -18,6 +18,7 @@ commands:
   preflight             build/import the runtime on one L40S
   cache                 download pinned weights on CPU into the Modal Volume
   smoke [Modal args]    run one embedding + synthetic-frame action on one L40S
+  bench [Modal args]    benchmark the warmed recurrent action loop on one L40S
 EOF
 }
 
@@ -41,7 +42,7 @@ run_remote() {
 	local run_dir
 	run_dir="$(new_run_dir "$mode")"
 	mkdir -p "$run_dir"
-	python3 "$experiment_dir/contract.py" --output "$run_dir/run-manifest.json"
+	python3 "$experiment_dir/contract.py" --output "$run_dir/run-manifest.json" --mode "$mode" "$@"
 	printf 'run_dir: %s\n' "$run_dir"
 	modal run "$experiment_dir/modal_app.py" --mode "$mode" --output "$run_dir/result.json" "$@"
 }
@@ -58,7 +59,7 @@ case "$command" in
 	dry-run)
 		python3 "$experiment_dir/contract.py" "$@"
 		;;
-	preflight | cache | smoke)
+	preflight | cache | smoke | bench)
 		require_modal
 		run_remote "$command" "$@"
 		;;

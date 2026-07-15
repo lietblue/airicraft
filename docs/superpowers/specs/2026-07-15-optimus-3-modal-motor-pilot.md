@@ -14,8 +14,8 @@ deterministic ownership of intent, completion, safety, and recovery.
 ```text
 Airicraft planner
   -> action graph
-    -> cached Optimus-3 task embedding
-      -> Optimus-3 action policy
+    -> cached Optimus-3 task embedding and deterministic projection
+      -> per-frame stochastic prior and recurrent action policy
         -> Airicraft safety and actuator gate
           -> Minecraft
     <- deterministic completion and failure evidence
@@ -29,16 +29,20 @@ low-level controls only. It cannot complete, fail, replan, or transfer a task.
 
 1. GPU artifact gate: load immutable upstream source and checkpoints on a Modal
    L40S, compute one task embedding, and run one synthetic-frame action.
-2. Native reproduction: run ten locked MineStudio episodes and require at least
-   eight successes plus a measured 20 Hz loop.
-3. Airicraft shadow mode: send real 1.21.8 frames without applying actions and
+2. GPU latency screen: preserve the released stochastic prior and recurrent
+   policy while caching deterministic task conditioning, then require a warmed
+   20 Hz action loop.
+3. Native reproduction: run ten locked MineStudio episodes and require at least
+   eight successes.
+4. Airicraft shadow mode: send real 1.21.8 frames without applying actions and
    verify dimensions, recurrent resets, latency, and stale-result rejection.
-4. Matched live A/B: intercept only one action-graph-owned visible-iron mining
+5. Matched live A/B: intercept only one action-graph-owned visible-iron mining
    job and compare the neural backend against Baritone in a frozen world.
-5. Cancellation and fallback: inject cancellation and inference timeouts, then
+6. Cancellation and fallback: inject cancellation and inference timeouts, then
    require input release within one tick and deterministic Baritone recovery.
 
-Only stage 1 is implemented by the initial Modal setup.
+Stages 1 and 2 are implemented by the Modal pilot. They remain synthetic GPU
+gates and do not authorize a Minecraft actuator integration.
 
 ## Stage 1 Contract
 
@@ -85,7 +89,34 @@ The gate passes only when:
   version, memory allocation, and all immutable revisions.
 
 This pass does not authorize an Airicraft actuator integration. It authorizes
-the native episode and performance stage.
+the Stage 2 latency screen only.
+
+## Stage 2 Latency Contract
+
+The default run uses eight exact released-path reference calls, then an
+independent policy reset and seed for 32 warm-up plus 256 measured cached-path
+steps. Recurrent state is continuous across warm-up and measurement. The fixed
+synthetic frame is not paced or changed between steps.
+
+Only the deterministic `1x1x3584 -> 1x512` projection is cached. The stochastic
+prior is sampled each frame, followed by the released classifier-free-guidance
+recurrent policy and stochastic action sampling. A pinned-source audit indicates
+that removing the released dead MineCLIP lookup is distribution-equivalent, but
+the pilot does not statistically test that assumption. It also changes RNG
+consumption, so the paths are not same-seed trace-equivalent.
+
+Each timed native step includes frame preprocessing and transfer, stochastic
+prior, recurrent inference, action sampling and mapping, fail-closed action
+schema validation, normalization, and the safety mask. It excludes model load,
+one-time MLLM embedding and projection, Minecraft capture, transport, tick
+scheduling, and actuator application. CUDA is synchronized around every timed
+step, and nearest-rank percentiles are used.
+
+Stage 2 passes only when the full run completes with at least 200 continuous
+measured steps, p95 native-step latency is at most 50 ms, strictly fewer than 5%
+of samples exceed 50 ms, every action schema is complete, and no safety-mask
+violation occurs. Passing this screen authorizes ten locked native MineStudio
+episodes; it is not evidence of task competence or live closed-loop latency.
 
 ## Verified Stage 1 Result
 
@@ -97,16 +128,16 @@ The 2026-07-15 Modal run passed the Stage 1 correctness gate:
 - `collect one iron ore` routed to `<iron>` and produced a finite
   `1x1x3584` embedding with SHA-256
   `19df8b793320e5b48aa835f09e5faa10e82283986c84f805a691e4f86d34949b`;
-- the raw gray-frame action was `forward + left + use`; the safety mask
+- the normalized raw gray-frame action was `forward + left + use`; the safety mask
   recorded the forbidden `use` attempt and zeroed it in the applied action;
 - model load took 68.347 seconds, the one-time task embedding took 0.582
   seconds, and the first recurrent action took 0.434 seconds; and
 - peak allocated CUDA memory was 21,345,110,016 bytes.
 
 The local evidence is retained under `eval-output/optimus3-modal/` and remains
-ignored by Git. The 434 ms first action is not evidence of 20 Hz operation; it
-makes the warmed native multi-step latency measurement in Stage 2 the next
-gate, before any Minecraft actuator work.
+ignored by Git. The 434 ms first action is not evidence of 20 Hz operation; the
+warmed native multi-step latency measurement in Stage 2 is the next gate,
+before native episodes or any Minecraft actuator work.
 
 ## Later Live-Pilot Gate
 

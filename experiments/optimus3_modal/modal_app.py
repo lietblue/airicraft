@@ -9,15 +9,22 @@ import time
 import types
 from importlib.metadata import version as package_version
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, Mapping
 
 import modal
 
 from contract import (
     ACTION_LABELS,
+    ALLOWED_ACTION_KEYS,
+    ALL_ACTION_KEYS,
     APP_NAME,
+    BENCHMARK_WALL_BUDGET_SECONDS,
     DEFAULT_TASK,
+    DEFAULT_MEASURED_STEPS,
+    DEFAULT_REFERENCE_STEPS,
+    DEFAULT_WARMUP_STEPS,
     FRAME_SHAPE,
+    FORBIDDEN_ACTION_KEYS,
     GPU_TYPE,
     LLAMA_FACTORY_REPOSITORY,
     LLAMA_FACTORY_REVISION,
@@ -25,11 +32,16 @@ from contract import (
     OPTIMUS3_REPOSITORY,
     OPTIMUS3_REVISION,
     RUNTIME_PINS,
+    TARGET_LATENCY_MS,
     VOLUME_NAME,
+    active_action_keys,
     apply_pilot_safety_mask,
+    latency_gate,
+    latency_summary,
     model_spec,
-    normalize_action,
     result_envelope,
+    validate_benchmark_steps,
+    validate_complete_action,
     validate_seed,
     validate_task,
 )
@@ -280,6 +292,9 @@ class Optimus3Smoke:
         self.np = np
         self.torch = torch
         self.device = torch.device("cuda")
+        properties = torch.cuda.get_device_properties(0)
+        self.cuda_device_name = properties.name
+        self.cuda_total_memory_bytes = properties.total_memory
         self.load_started = time.perf_counter()
         self.model = Optimus3ForConditionalGeneration.from_pretrained(
             str(_model_path("mllm")),
@@ -299,6 +314,8 @@ class Optimus3Smoke:
             "policy": self.action_head.agent.policy,
             "mllm_embed_linear": self.action_head.mllm_embed_linear,
         }
+        for module in action_modules.values():
+            module.eval()
         misplaced: list[str] = []
         for module_name, module in action_modules.items():
             for tensor_kind, named_tensors in (
@@ -393,13 +410,104 @@ class Optimus3Smoke:
             raise RuntimeError("action embedding contains non-finite values")
         return embedding, task_label
 
+    def _set_seed(self, seed: int) -> None:
+        self.torch.manual_seed(seed)
+        self.torch.cuda.manual_seed_all(seed)
+        self.np.random.seed(seed)
+
+    def _reset_action_policy(self, seed: int) -> None:
+        self._set_seed(seed)
+        self.action_head.agent.reset(self.action_head.text_cond_scale)
+
+    def _project_task_embedding(self, embedding: Any) -> Any:
+        projected = self.action_head.mllm_embed_linear(embedding).reshape(embedding.shape[0], -1).contiguous()
+        if tuple(projected.shape) != (1, 512):
+            raise RuntimeError(f"unexpected projected task shape: {tuple(projected.shape)}")
+        if not self.torch.isfinite(projected).all():
+            raise RuntimeError("projected task embedding contains non-finite values")
+        return projected
+
+    def _cached_equivalent_action(self, projected: Any, frame: Any) -> Mapping[str, Any]:
+        goal = self.action_head.prior(projected, deterministic=False)
+        minerl_action, _ = self.action_head.agent.get_action({"pov": frame}, goal)
+        for key, value in minerl_action.items():
+            minerl_action[key] = self.np.array(value.tolist()[0])
+        minerl_action["ESC"] = self.np.array(0)
+        return minerl_action
+
+    def _timed_action(self, action_call: Callable[[], Mapping[str, Any]]) -> dict[str, Any]:
+        self.torch.cuda.synchronize()
+        started_ns = time.perf_counter_ns()
+        with self.torch.inference_mode():
+            raw_action = action_call()
+        self.torch.cuda.synchronize()
+        policy_finished_ns = time.perf_counter_ns()
+        raw_action = validate_complete_action(raw_action)
+        applied_action, forbidden_attempts = apply_pilot_safety_mask(raw_action)
+        safety_violations = [
+            f"allowed action changed: {key}"
+            for key in ALLOWED_ACTION_KEYS
+            if applied_action[key] != raw_action[key]
+        ]
+        active_applied = set(active_action_keys(applied_action))
+        safety_violations.extend(
+            f"forbidden action survived mask: {key}"
+            for key in FORBIDDEN_ACTION_KEYS
+            if key in active_applied
+        )
+        finished_ns = time.perf_counter_ns()
+        return {
+            "policy_call_ms": (policy_finished_ns - started_ns) / 1_000_000.0,
+            "safety_ms": (finished_ns - policy_finished_ns) / 1_000_000.0,
+            "native_step_ms": (finished_ns - started_ns) / 1_000_000.0,
+            "raw_action": raw_action,
+            "applied_action": applied_action,
+            "forbidden_attempts": forbidden_attempts,
+            "safety_violations": safety_violations,
+        }
+
+    @staticmethod
+    def _summarize_records(records: list[dict[str, Any]]) -> dict[str, Any] | None:
+        if not records:
+            return None
+        return {
+            "policy_call_ms": latency_summary([record["policy_call_ms"] for record in records]),
+            "native_step_ms": latency_summary([record["native_step_ms"] for record in records]),
+        }
+
+    @staticmethod
+    def _action_evidence(records: list[dict[str, Any]]) -> dict[str, Any]:
+        raw_active_counts = {key: 0 for key in ALL_ACTION_KEYS}
+        applied_active_counts = {key: 0 for key in ALL_ACTION_KEYS}
+        forbidden_attempt_counts = {key: 0 for key in FORBIDDEN_ACTION_KEYS}
+        safety_violations: list[dict[str, Any]] = []
+        for index, record in enumerate(records):
+            for key in active_action_keys(record["raw_action"]):
+                raw_active_counts[key] += 1
+            for key in active_action_keys(record["applied_action"]):
+                applied_active_counts[key] += 1
+            for key in record["forbidden_attempts"]:
+                forbidden_attempt_counts[key] += 1
+            safety_violations.extend(
+                {
+                    "phase": record.get("phase", "unknown"),
+                    "index": record.get("index", index),
+                    "message": message,
+                }
+                for message in record["safety_violations"]
+            )
+        return {
+            "raw_active_counts": raw_active_counts,
+            "applied_active_counts": applied_active_counts,
+            "forbidden_attempt_counts": forbidden_attempt_counts,
+            "safety_violations": safety_violations,
+        }
+
     @modal.method()
     def run(self, task: str = DEFAULT_TASK, seed: int = 7) -> dict[str, Any]:
         task = validate_task(task)
         seed = validate_seed(seed)
-        self.torch.manual_seed(seed)
-        self.torch.cuda.manual_seed_all(seed)
-        self.np.random.seed(seed)
+        self._set_seed(seed)
 
         embedding_started = time.perf_counter()
         embedding, task_label = self._task_embedding(task)
@@ -414,7 +522,7 @@ class Optimus3Smoke:
             raw_action, _ = self.action_head.optimus3_action(embedding, frame, task=task)
         self.torch.cuda.synchronize()
         action_seconds = time.perf_counter() - action_started
-        raw_action = normalize_action(raw_action)
+        raw_action = validate_complete_action(raw_action)
         applied_action, forbidden_attempts = apply_pilot_safety_mask(raw_action)
 
         return result_envelope(
@@ -448,6 +556,237 @@ class Optimus3Smoke:
             },
         )
 
+    @modal.method()
+    def bench(
+        self,
+        task: str = DEFAULT_TASK,
+        seed: int = 7,
+        reference_steps: int = DEFAULT_REFERENCE_STEPS,
+        warmup_steps: int = DEFAULT_WARMUP_STEPS,
+        measured_steps: int = DEFAULT_MEASURED_STEPS,
+    ) -> dict[str, Any]:
+        task = validate_task(task)
+        seed = validate_seed(seed)
+        reference_steps, warmup_steps, measured_steps = validate_benchmark_steps(
+            reference_steps,
+            warmup_steps,
+            measured_steps,
+        )
+        method_started = time.perf_counter()
+        wall_deadline = method_started + BENCHMARK_WALL_BUDGET_SECONDS
+        self._set_seed(seed)
+
+        embedding_started = time.perf_counter()
+        embedding, task_label = self._task_embedding(task)
+        self.torch.cuda.synchronize()
+        embedding_seconds = time.perf_counter() - embedding_started
+        embedding_cpu = embedding.detach().cpu().numpy()
+
+        self.torch.cuda.synchronize()
+        projection_started = time.perf_counter()
+        with self.torch.inference_mode():
+            projected = self._project_task_embedding(embedding)
+        self.torch.cuda.synchronize()
+        projection_seconds = time.perf_counter() - projection_started
+        projected_cpu = projected.detach().cpu().numpy()
+        frame = self.np.full(FRAME_SHAPE, 127, dtype=self.np.uint8)
+
+        validation_errors: list[dict[str, Any]] = []
+        recurrent_reset_events: list[str] = []
+
+        def collect_phase(
+            phase: str,
+            count: int,
+            action_call: Callable[[], Mapping[str, Any]],
+        ) -> tuple[list[dict[str, Any]], str | None]:
+            records: list[dict[str, Any]] = []
+            for index in range(count):
+                if time.perf_counter() >= wall_deadline:
+                    return records, "wall_budget_exhausted"
+                try:
+                    record = self._timed_action(action_call)
+                except (TypeError, ValueError) as error:
+                    validation_errors.append({"phase": phase, "index": index, "message": str(error)})
+                    return records, "action_validation_failed"
+                record["phase"] = phase
+                record["index"] = index
+                records.append(record)
+            return records, None
+
+        self._reset_action_policy(seed)
+        recurrent_reset_events.append("upstream_reference")
+        reference_records, status = collect_phase(
+            "upstream_reference",
+            reference_steps,
+            lambda: self.action_head.optimus3_action(embedding, frame, task=task)[0],
+        )
+
+        warmup_records: list[dict[str, Any]] = []
+        measured_records: list[dict[str, Any]] = []
+        if status is None:
+            self._reset_action_policy(seed)
+            recurrent_reset_events.append("cached_projection_before_warmup")
+            warmup_records, status = collect_phase(
+                "cached_projection_warmup",
+                warmup_steps,
+                lambda: self._cached_equivalent_action(projected, frame),
+            )
+        if status is None:
+            self.torch.cuda.reset_peak_memory_stats()
+            measured_records, status = collect_phase(
+                "cached_projection_measured",
+                measured_steps,
+                lambda: self._cached_equivalent_action(projected, frame),
+            )
+        status = status or "complete"
+
+        reference_summary = self._summarize_records(reference_records)
+        warmup_summary = self._summarize_records(warmup_records)
+        measured_summary = self._summarize_records(measured_records)
+        all_evidence = self._action_evidence(reference_records + warmup_records + measured_records)
+        measured_evidence = self._action_evidence(measured_records)
+        latency_checks = (
+            latency_gate(measured_summary["native_step_ms"])
+            if measured_summary is not None
+            else {
+                "p95_within_deadline": False,
+                "miss_rate_below_five_percent": False,
+                "passed": False,
+            }
+        )
+        checks = {
+            "status_complete": status == "complete",
+            "requested_gpu_present": GPU_TYPE.lower() in self.cuda_device_name.lower(),
+            "torch_runtime_matches_pin": self.torch.__version__ == RUNTIME_PINS["torch"],
+            "cuda_runtime_matches_pin": self.torch.version.cuda == RUNTIME_PINS["cuda"],
+            "pinned_checkpoints_ready": all(_ready(spec) for spec in MODEL_SPECS),
+            "embedding_shape_valid": list(embedding_cpu.shape) == [1, 1, 3584],
+            "projection_shape_valid": list(projected_cpu.shape) == [1, 512],
+            "default_task_routes_to_iron": task != DEFAULT_TASK or task_label == "<iron>",
+            "reference_steps_complete": len(reference_records) == reference_steps,
+            "warmup_steps_complete": len(warmup_records) == warmup_steps,
+            "measured_steps_complete": len(measured_records) == measured_steps,
+            "minimum_measured_steps": len(measured_records) >= 200,
+            "p95_within_50_ms": latency_checks["p95_within_deadline"],
+            "deadline_miss_rate_below_five_percent": latency_checks["miss_rate_below_five_percent"],
+            "raw_action_schema_valid": not validation_errors,
+            "safety_mask_violations_zero": not all_evidence["safety_violations"],
+            "recurrent_reset_sequence_valid": recurrent_reset_events
+            == ["upstream_reference", "cached_projection_before_warmup"],
+            "single_cached_recurrent_stream": (
+                len(warmup_records) + len(measured_records) == warmup_steps + measured_steps
+            ),
+        }
+        sequence_digest = hashlib.sha256()
+        for record in measured_records:
+            sequence_digest.update(
+                json.dumps(record["applied_action"], sort_keys=True, separators=(",", ":")).encode("utf-8")
+            )
+        unadjusted_latency_ratio = None
+        if reference_summary is not None and measured_summary is not None:
+            unadjusted_latency_ratio = (
+                reference_summary["native_step_ms"]["mean_ms"]
+                / measured_summary["native_step_ms"]["mean_ms"]
+            )
+
+        return result_envelope(
+            "model_action_latency_benchmark",
+            {
+                "status": status,
+                "task": task,
+                "task_label": task_label,
+                "seed": seed,
+                "protocol": {
+                    "scope": "in_container_compute_loop",
+                    "frame": {"shape": list(FRAME_SHAPE), "fill": 127},
+                    "reference_steps": reference_steps,
+                    "warmup_steps": warmup_steps,
+                    "measured_steps": measured_steps,
+                    "deadline_ms": TARGET_LATENCY_MS,
+                    "wall_budget_seconds": BENCHMARK_WALL_BUDGET_SECONDS,
+                    "synchronize_each_step": True,
+                    "recurrent_resets": {
+                        "upstream_reference": 1,
+                        "cached_projection_before_warmup": 1,
+                        "between_warmup_and_measurement": 0,
+                        "observed_events": recurrent_reset_events,
+                    },
+                    "timed_step_includes": [
+                        "stochastic_prior",
+                        "frame_resize_and_host_to_device_transfer",
+                        "classifier_free_guidance_recurrent_policy",
+                        "stochastic_action_sampling",
+                        "device_to_host_action_mapping",
+                        "fail_closed_action_validation",
+                        "normalization",
+                        "safety_mask",
+                    ],
+                    "timed_step_excludes": [
+                        "model_load",
+                        "mllm_task_embedding",
+                        "deterministic_task_projection",
+                        "minecraft_frame_capture",
+                        "network_transport",
+                        "tick_scheduling",
+                        "minecraft_action_application",
+                    ],
+                },
+                "embedding": {
+                    "shape": list(embedding_cpu.shape),
+                    "sha256": hashlib.sha256(embedding_cpu.tobytes()).hexdigest(),
+                    "finite": True,
+                },
+                "cached_projection": {
+                    "shape": list(projected_cpu.shape),
+                    "sha256": hashlib.sha256(projected_cpu.tobytes()).hexdigest(),
+                    "finite": True,
+                    "intended_distribution_equivalence": True,
+                    "distribution_equivalence_basis": "pinned_source_path_audit",
+                    "distribution_equivalence_statistically_tested": False,
+                    "same_seed_trace_equivalent": False,
+                    "per_frame_stochastic_prior_preserved": True,
+                },
+                "upstream_reference": {
+                    "description": "released optimus3_action including dead per-step MineCLIP shape lookup",
+                    "summary": reference_summary,
+                    "samples": reference_records,
+                },
+                "cached_projection_warmup": {
+                    "summary": warmup_summary,
+                    "samples": warmup_records,
+                },
+                "cached_projection_measured": {
+                    "summary": measured_summary,
+                    "samples": measured_records,
+                    "action_evidence": measured_evidence,
+                    "applied_action_sequence_sha256": sequence_digest.hexdigest(),
+                },
+                "comparison": {
+                    "unadjusted_reference_to_cached_mean_latency_ratio": unadjusted_latency_ratio,
+                    "warm_state_matched": False,
+                    "acceptance_uses_comparison": False,
+                },
+                "validation_errors": validation_errors,
+                "all_phase_safety_evidence": all_evidence,
+                "timing": {
+                    "model_load_seconds": self.load_seconds,
+                    "task_embedding_seconds": embedding_seconds,
+                    "task_projection_seconds": projection_seconds,
+                    "method_seconds": time.perf_counter() - method_started,
+                },
+                "cuda": {
+                    "device_name": self.cuda_device_name,
+                    "device_total_memory_bytes": self.cuda_total_memory_bytes,
+                    "torch": self.torch.__version__,
+                    "cuda_runtime": self.torch.version.cuda,
+                    "allocated_bytes": self.torch.cuda.memory_allocated(),
+                    "reserved_bytes": self.torch.cuda.memory_reserved(),
+                    "peak_allocated_bytes_since_measurement": self.torch.cuda.max_memory_allocated(),
+                },
+                "acceptance": {"checks": checks, "passed": all(checks.values())},
+            },
+        )
+
 
 def _emit(result: dict[str, Any], output: str) -> None:
     rendered = json.dumps(result, indent=2, sort_keys=True) + "\n"
@@ -456,17 +795,29 @@ def _emit(result: dict[str, Any], output: str) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(rendered, encoding="utf-8")
         print(f"result: {path}")
-    print(rendered, end="")
+    else:
+        print(rendered, end="")
 
 
 @app.local_entrypoint()
-def main(mode: str = "preflight", task: str = DEFAULT_TASK, seed: int = 7, output: str = "") -> None:
+def main(
+    mode: str = "preflight",
+    task: str = DEFAULT_TASK,
+    seed: int = 7,
+    reference_steps: int = DEFAULT_REFERENCE_STEPS,
+    warmup_steps: int = DEFAULT_WARMUP_STEPS,
+    measured_steps: int = DEFAULT_MEASURED_STEPS,
+    output: str = "",
+) -> None:
     if mode == "preflight":
         result = gpu_preflight.remote()
     elif mode == "cache":
         result = cache_weights.remote()
     elif mode == "smoke":
         result = Optimus3Smoke().run.remote(validate_task(task), validate_seed(seed))
+    elif mode == "bench":
+        counts = validate_benchmark_steps(reference_steps, warmup_steps, measured_steps)
+        result = Optimus3Smoke().bench.remote(validate_task(task), validate_seed(seed), *counts)
     else:
-        raise ValueError("mode must be one of: preflight, cache, smoke")
+        raise ValueError("mode must be one of: preflight, cache, smoke, bench")
     _emit(result, output)

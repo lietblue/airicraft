@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import re
@@ -19,6 +20,17 @@ VOLUME_NAME = "airicraft-optimus3-models"
 GPU_TYPE = "L40S"
 DEFAULT_TASK = "collect one iron ore"
 FRAME_SHAPE = (128, 128, 3)
+DEFAULT_REFERENCE_STEPS = 8
+DEFAULT_WARMUP_STEPS = 32
+DEFAULT_MEASURED_STEPS = 256
+MIN_MEASURED_STEPS = 200
+MAX_MEASURED_STEPS = 512
+MAX_WARMUP_STEPS = 256
+MAX_REFERENCE_STEPS = 32
+MAX_TOTAL_BENCHMARK_STEPS = 600
+TARGET_LATENCY_MS = 50.0
+MAX_DEADLINE_MISS_RATE = 0.05
+BENCHMARK_WALL_BUDGET_SECONDS = 240.0
 
 OPTIMUS3_REPOSITORY = "https://github.com/JiuTian-VL/Optimus-3.git"
 OPTIMUS3_REVISION = "a73c01365f8091d45e61585aee59b8ef73fb5fb7"
@@ -158,6 +170,26 @@ def validate_seed(seed: int) -> int:
     return seed
 
 
+def validate_benchmark_steps(
+    reference_steps: int,
+    warmup_steps: int,
+    measured_steps: int,
+) -> tuple[int, int, int]:
+    values = {
+        "reference_steps": (reference_steps, 1, MAX_REFERENCE_STEPS),
+        "warmup_steps": (warmup_steps, 1, MAX_WARMUP_STEPS),
+        "measured_steps": (measured_steps, MIN_MEASURED_STEPS, MAX_MEASURED_STEPS),
+    }
+    for name, (value, minimum, maximum) in values.items():
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise TypeError(f"{name} must be an integer")
+        if value < minimum or value > maximum:
+            raise ValueError(f"{name} must be between {minimum} and {maximum}")
+    if reference_steps + warmup_steps + measured_steps > MAX_TOTAL_BENCHMARK_STEPS:
+        raise ValueError(f"total benchmark steps must not exceed {MAX_TOTAL_BENCHMARK_STEPS}")
+    return reference_steps, warmup_steps, measured_steps
+
+
 def validate_frame_shape(frame: Any) -> tuple[int, int, int]:
     shape = getattr(frame, "shape", None)
     if shape is None and isinstance(frame, Sequence):
@@ -213,10 +245,36 @@ def normalize_action(action: Mapping[str, Any]) -> dict[str, Any]:
     return normalized
 
 
+def validate_complete_action(action: Mapping[str, Any]) -> dict[str, Any]:
+    if not isinstance(action, Mapping):
+        raise TypeError("action must be a mapping")
+    if any(not isinstance(key, str) for key in action):
+        raise ValueError("action keys must be strings")
+    keys = set(action)
+    expected = set(ALL_ACTION_KEYS)
+    missing = sorted(expected - keys)
+    unknown = sorted(keys - expected)
+    if missing or unknown:
+        raise ValueError(f"action schema mismatch: missing={missing}, unknown={unknown}")
+    normalized = normalize_action(action)
+    for key, value in normalized.items():
+        if key == "camera":
+            if any(not math.isfinite(component) for component in value):
+                raise ValueError("camera action must contain finite values")
+        elif type(value) not in (int, float) or not math.isfinite(float(value)) or value not in (0, 1):
+            raise ValueError(f"discrete action {key} must be scalar 0 or 1")
+    return normalized
+
+
 def _is_active(value: Any) -> bool:
     if isinstance(value, list):
         return any(_is_active(item) for item in value)
     return bool(value)
+
+
+def active_action_keys(action: Mapping[str, Any]) -> list[str]:
+    normalized = normalize_action(action)
+    return [key for key in ALL_ACTION_KEYS if _is_active(normalized[key])]
 
 
 def apply_pilot_safety_mask(action: Mapping[str, Any]) -> tuple[dict[str, Any], list[str]]:
@@ -226,6 +284,71 @@ def apply_pilot_safety_mask(action: Mapping[str, Any]) -> tuple[dict[str, Any], 
     for key in FORBIDDEN_ACTION_KEYS:
         applied[key] = 0
     return applied, attempted
+
+
+def latency_summary(samples_ms: Sequence[float], deadline_ms: float = TARGET_LATENCY_MS) -> dict[str, Any]:
+    if not samples_ms:
+        raise ValueError("latency samples must not be empty")
+    if not isinstance(deadline_ms, (int, float)) or isinstance(deadline_ms, bool):
+        raise TypeError("deadline_ms must be numeric")
+    deadline_ms = float(deadline_ms)
+    if not math.isfinite(deadline_ms) or deadline_ms <= 0:
+        raise ValueError("deadline_ms must be finite and greater than zero")
+
+    samples: list[float] = []
+    for sample in samples_ms:
+        if not isinstance(sample, (int, float)) or isinstance(sample, bool):
+            raise TypeError("latency samples must be numeric")
+        normalized = float(sample)
+        if not math.isfinite(normalized) or normalized <= 0:
+            raise ValueError("latency samples must be finite and greater than zero")
+        samples.append(normalized)
+    ordered = sorted(samples)
+
+    def percentile(fraction: float) -> float:
+        rank = max(1, math.ceil(fraction * len(ordered)))
+        return ordered[rank - 1]
+
+    mean_ms = sum(samples) / len(samples)
+    variance = sum((sample - mean_ms) ** 2 for sample in samples) / len(samples)
+    deadline_misses = sum(sample > deadline_ms for sample in samples)
+    return {
+        "count": len(samples),
+        "percentile_method": "nearest_rank",
+        "total_ms": sum(samples),
+        "minimum_ms": ordered[0],
+        "maximum_ms": ordered[-1],
+        "mean_ms": mean_ms,
+        "standard_deviation_ms": math.sqrt(variance),
+        "p50_ms": percentile(0.50),
+        "p90_ms": percentile(0.90),
+        "p95_ms": percentile(0.95),
+        "p99_ms": percentile(0.99),
+        "effective_hz": 1000.0 / mean_ms,
+        "deadline_ms": deadline_ms,
+        "deadline_misses": deadline_misses,
+        "deadline_miss_rate": deadline_misses / len(samples),
+    }
+
+
+def latency_gate(summary: Mapping[str, Any]) -> dict[str, Any]:
+    p95_within_deadline = float(summary["p95_ms"]) <= float(summary["deadline_ms"])
+    miss_rate_within_limit = float(summary["deadline_miss_rate"]) < MAX_DEADLINE_MISS_RATE
+    return {
+        "p95_within_deadline": p95_within_deadline,
+        "miss_rate_below_five_percent": miss_rate_within_limit,
+        "passed": p95_within_deadline and miss_rate_within_limit,
+    }
+
+
+def uploaded_source_sha256() -> dict[str, str]:
+    hashes: dict[str, str] = {}
+    for name in ("contract.py", "modal_app.py"):
+        path = Path(__file__).with_name(name)
+        if not path.is_file():
+            raise RuntimeError(f"missing uploaded source file: {path}")
+        hashes[name] = hashlib.sha256(path.read_bytes()).hexdigest()
+    return hashes
 
 
 def pilot_manifest() -> dict[str, Any]:
@@ -240,11 +363,22 @@ def pilot_manifest() -> dict[str, Any]:
             "llama_factory_repository": LLAMA_FACTORY_REPOSITORY,
             "llama_factory_revision": LLAMA_FACTORY_REVISION,
         },
+        "uploaded_source_sha256": uploaded_source_sha256(),
         "models": [asdict(spec) for spec in MODEL_SPECS],
         "expected_model_bytes": sum(spec.expected_bytes for spec in MODEL_SPECS),
         "runtime": dict(RUNTIME_PINS),
         "task": DEFAULT_TASK,
         "frame_shape": list(FRAME_SHAPE),
+        "benchmark_defaults": {
+            "reference_steps": DEFAULT_REFERENCE_STEPS,
+            "warmup_steps": DEFAULT_WARMUP_STEPS,
+            "measured_steps": DEFAULT_MEASURED_STEPS,
+            "maximum_total_steps": MAX_TOTAL_BENCHMARK_STEPS,
+            "wall_budget_seconds": BENCHMARK_WALL_BUDGET_SECONDS,
+            "target_latency_ms": TARGET_LATENCY_MS,
+            "maximum_deadline_miss_rate": MAX_DEADLINE_MISS_RATE,
+            "synchronize_each_step": True,
+        },
         "allowed_actions": list(ALLOWED_ACTION_KEYS),
         "forbidden_actions": list(FORBIDDEN_ACTION_KEYS),
         "cost_controls": {
@@ -257,7 +391,7 @@ def pilot_manifest() -> dict[str, Any]:
             "gpu_startup_timeout_seconds": 600,
             "gpu_method_timeout_seconds": 300,
         },
-        "scope": "checkpoint load, task embedding, and one synthetic-frame action only",
+        "scope": "checkpoint load, cached task conditioning, and bounded synthetic-frame action latency",
     }
 
 
@@ -276,8 +410,38 @@ def result_envelope(kind: str, payload: Mapping[str, Any]) -> dict[str, Any]:
 def _main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path)
+    parser.add_argument("--mode", choices=("preflight", "cache", "smoke", "bench"))
+    parser.add_argument("--task", default=DEFAULT_TASK)
+    parser.add_argument("--seed", type=int, default=7)
+    parser.add_argument("--reference-steps", type=int, default=DEFAULT_REFERENCE_STEPS)
+    parser.add_argument("--warmup-steps", type=int, default=DEFAULT_WARMUP_STEPS)
+    parser.add_argument("--measured-steps", type=int, default=DEFAULT_MEASURED_STEPS)
     args = parser.parse_args()
-    rendered = json.dumps(pilot_manifest(), indent=2, sort_keys=True) + "\n"
+    manifest = pilot_manifest()
+    if args.mode is not None:
+        invocation: dict[str, Any] = {"mode": args.mode}
+        if args.mode in ("smoke", "bench"):
+            invocation.update(
+                {
+                    "task": validate_task(args.task),
+                    "seed": validate_seed(args.seed),
+                }
+            )
+        if args.mode == "bench":
+            reference_steps, warmup_steps, measured_steps = validate_benchmark_steps(
+                args.reference_steps,
+                args.warmup_steps,
+                args.measured_steps,
+            )
+            invocation.update(
+                {
+                    "reference_steps": reference_steps,
+                    "warmup_steps": warmup_steps,
+                    "measured_steps": measured_steps,
+                }
+            )
+        manifest["invocation"] = invocation
+    rendered = json.dumps(manifest, indent=2, sort_keys=True) + "\n"
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(rendered, encoding="utf-8")
