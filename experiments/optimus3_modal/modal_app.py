@@ -74,6 +74,7 @@ from contract import (
     result_envelope,
     simulator_action_evidence,
     stat_count,
+    to_jsonable,
     validate_benchmark_steps,
     validate_complete_action,
     validate_episode_index,
@@ -706,14 +707,6 @@ def _native_reset(simulator: Any, world_seed: int) -> tuple[Any, dict[str, Any],
     iron_blocks = _count_voxel_type(info.get("voxels"), "iron_ore")
     mainhand = _mainhand_type(info)
     initial_iron = inventory_quantity(info.get("inventory"), "iron_ore")
-    if iron_blocks != NATIVE_EXPECTED_IRON_BLOCKS:
-        raise RuntimeError(
-            f"native iron fixture mismatch: expected {NATIVE_EXPECTED_IRON_BLOCKS} blocks, got {iron_blocks}"
-        )
-    if mainhand != "stone_pickaxe":
-        raise RuntimeError(f"native iron fixture main hand mismatch: expected stone_pickaxe, got {mainhand!r}")
-    if initial_iron != 0:
-        raise RuntimeError(f"native iron fixture starts with {initial_iron} iron ore")
     baseline = {
         "inventory_iron_ore": initial_iron,
         "mine_iron_ore": stat_count(info.get("mine_block"), "iron_ore"),
@@ -727,7 +720,22 @@ def _native_reset(simulator: Any, world_seed: int) -> tuple[Any, dict[str, Any],
         "location": _location(info),
         "baseline": baseline,
         "fixture_command_outcomes": getattr(simulator, "airicraft_fixture_command_outcomes", []),
+        "voxel_observation": {
+            "python_type": f"{type(info.get('voxels')).__module__}.{type(info.get('voxels')).__qualname__}",
+            "shape": list(getattr(info.get("voxels"), "shape", ())),
+            "value": to_jsonable(info.get("voxels")),
+        },
     }
+    fixture_errors: list[str] = []
+    if iron_blocks != NATIVE_EXPECTED_IRON_BLOCKS:
+        fixture_errors.append(f"expected {NATIVE_EXPECTED_IRON_BLOCKS} iron blocks, got {iron_blocks}")
+    if mainhand != "stone_pickaxe":
+        fixture_errors.append(f"expected mainhand stone_pickaxe, got {mainhand!r}")
+    if initial_iron != 0:
+        fixture_errors.append(f"expected zero initial iron ore, got {initial_iron}")
+    if fixture_errors:
+        diagnostics = json.dumps(setup, sort_keys=True, separators=(",", ":"))
+        raise RuntimeError(f"native fixture mismatch: {'; '.join(fixture_errors)}; diagnostics={diagnostics}")
     return observation, info, setup
 
 
