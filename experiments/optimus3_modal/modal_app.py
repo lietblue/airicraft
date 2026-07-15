@@ -554,7 +554,8 @@ def _native_task_source_metadata() -> dict[str, Any]:
     return {
         "path": str(path),
         "sha256": digest,
-        "engine_compatible_commands_sha256": fixture_digest,
+        "fixture_commands_sha256": fixture_digest,
+        "fixture_commands_match_upstream": True,
     }
 
 
@@ -774,8 +775,7 @@ def simulator_preflight() -> dict[str, Any]:
         checks = {
             "engine_ready": _simulator_ready(),
             "task_source_pinned": task_metadata["sha256"] == NATIVE_TASK_CONFIG_SHA256,
-            "fixture_commands_pinned": task_metadata["engine_compatible_commands_sha256"]
-            == NATIVE_TASK_COMMANDS_SHA256,
+            "fixture_commands_pinned": task_metadata["fixture_commands_sha256"] == NATIVE_TASK_COMMANDS_SHA256,
             "java_8": 'version "1.8.' in (java.stderr + java.stdout),
             "java_exit_zero": java.returncode == 0,
             "frame_shape_valid": list(observation["image"].shape) == list(FRAME_SHAPE),
@@ -1106,7 +1106,7 @@ class _NativeEpisodeMixin:
             "pinned_checkpoints_ready": all(_ready(spec) for spec in MODEL_SPECS),
             "pinned_simulator_engine_ready": _simulator_ready(),
             "pinned_task_source_ready": task_metadata["sha256"] == NATIVE_TASK_CONFIG_SHA256,
-            "pinned_fixture_commands_ready": task_metadata["engine_compatible_commands_sha256"]
+            "pinned_fixture_commands_ready": task_metadata["fixture_commands_sha256"]
             == NATIVE_TASK_COMMANDS_SHA256,
             **conditioning_checks,
             "all_requested_episodes_completed": completed,
@@ -1136,7 +1136,7 @@ class _NativeEpisodeMixin:
                 "episode_indices": episode_indices,
                 "protocol": {
                     "claim_scope": (
-                        "native MineStudio simple iron fixture with the locked Stage 2 translated prompt; "
+                        "native MineStudio simple iron fixture with the locked Stage 2 continuity prompt; "
                         "not upstream-prompt parity and not a visible-iron test"
                     ),
                     "upstream_task_text": NATIVE_UPSTREAM_TASK_TEXT,

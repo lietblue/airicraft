@@ -46,11 +46,8 @@ NATIVE_UPSTREAM_TASK_COMMANDS = (
     "/replaceitem entity @s weapon.mainhand minecraft:stone_pickaxe",
     "/execute as @p at @s run fill ~2 ~ ~2 ~3 ~1 ~3 minecraft:iron_ore",
 )
-NATIVE_TASK_COMMANDS = (
-    "/replaceitem entity @p slot.weapon.mainhand minecraft:stone_pickaxe",
-    "/execute @p ~ ~ ~ fill ~2 ~ ~2 ~3 ~1 ~3 minecraft:iron_ore",
-)
-NATIVE_TASK_COMMANDS_SHA256 = "d45b5b7e30ea5ec8f2e111779af1b171e212ecb2d2138ffc5fe8c0189a03f637"
+NATIVE_TASK_COMMANDS = NATIVE_UPSTREAM_TASK_COMMANDS
+NATIVE_TASK_COMMANDS_SHA256 = "b0a5ad53ce0b70b7a62ae16543b9d68b099b874a9283cfb59b21448b51fa91a6"
 NATIVE_VOXEL_QUERY = (2, 3, 0, 1, 2, 3)
 NATIVE_EXPECTED_IRON_BLOCKS = 8
 NATIVE_EMBEDDING_SEED = 7
@@ -626,7 +623,7 @@ def pilot_manifest() -> dict[str, Any]:
         "native_episode_gate": {
             "name": NATIVE_GATE_NAME,
             "claim_scope": (
-                "MineStudio native simple iron fixture with the locked Stage 2 translated prompt; "
+                "MineStudio native simple iron fixture with the locked Stage 2 continuity prompt; "
                 "not upstream-prompt parity and visibility is not guaranteed"
             ),
             "task_config": NATIVE_TASK_CONFIG,
@@ -639,9 +636,10 @@ def pilot_manifest() -> dict[str, Any]:
                 "is recorded but is not the model input"
             ),
             "upstream_commands": list(NATIVE_UPSTREAM_TASK_COMMANDS),
-            "engine_compatible_commands": list(NATIVE_TASK_COMMANDS),
-            "engine_compatible_commands_sha256": NATIVE_TASK_COMMANDS_SHA256,
-            "fixture_compatibility_note": "upstream task semantics translated to Minecraft 1.11 command syntax",
+            "fixture_commands": list(NATIVE_TASK_COMMANDS),
+            "fixture_commands_sha256": NATIVE_TASK_COMMANDS_SHA256,
+            "fixture_commands_match_upstream": NATIVE_TASK_COMMANDS == NATIVE_UPSTREAM_TASK_COMMANDS,
+            "fixture_compatibility_note": "uses the upstream task commands verbatim",
             "voxel_query": list(NATIVE_VOXEL_QUERY),
             "expected_iron_blocks": NATIVE_EXPECTED_IRON_BLOCKS,
             "episode_count": NATIVE_EPISODE_COUNT,
