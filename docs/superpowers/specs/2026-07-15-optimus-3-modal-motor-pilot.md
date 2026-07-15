@@ -64,7 +64,7 @@ latency configuration.
 - Use one ephemeral L40S App with no deployment, detached execution, warm
   containers, or public endpoint.
 - Disable Modal's automatic source inclusion and explicitly upload only the
-  remote function definitions plus the pilot's secret-free `contract.py`.
+  pilot's `modal_app.py` and secret-free `contract.py`.
 - Bound startup and inference with separate timeouts, one container, one input,
   and zero configured retries.
 - Write a local manifest and result bundle under ignored `eval-output/`.
@@ -86,6 +86,27 @@ The gate passes only when:
 
 This pass does not authorize an Airicraft actuator integration. It authorizes
 the native episode and performance stage.
+
+## Verified Stage 1 Result
+
+The 2026-07-15 Modal run passed the Stage 1 correctness gate:
+
+- the pinned runtime imported both released model classes on an NVIDIA L40S
+  with 47,665,709,056 bytes of device memory;
+- the Volume cached 22,160,412,506 bytes across the three pinned snapshots;
+- `collect one iron ore` routed to `<iron>` and produced a finite
+  `1x1x3584` embedding with SHA-256
+  `19df8b793320e5b48aa835f09e5faa10e82283986c84f805a691e4f86d34949b`;
+- the raw gray-frame action was `forward + left + use`; the safety mask
+  recorded the forbidden `use` attempt and zeroed it in the applied action;
+- model load took 68.347 seconds, the one-time task embedding took 0.582
+  seconds, and the first recurrent action took 0.434 seconds; and
+- peak allocated CUDA memory was 21,345,110,016 bytes.
+
+The local evidence is retained under `eval-output/optimus3-modal/` and remains
+ignored by Git. The 434 ms first action is not evidence of 20 Hz operation; it
+makes the warmed native multi-step latency measurement in Stage 2 the next
+gate, before any Minecraft actuator work.
 
 ## Later Live-Pilot Gate
 
