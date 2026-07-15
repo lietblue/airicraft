@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import random
 import shutil
@@ -38,14 +39,17 @@ from contract import (
     NATIVE_EXPECTED_IRON_BLOCKS,
     NATIVE_EXPECTED_LABEL,
     NATIVE_EXPECTED_PROJECTION_SHA256,
+    NATIVE_FIXTURE_DRAW_OFFSETS,
+    NATIVE_FIXTURE_METHOD,
+    NATIVE_FIXTURE_SPEC_SHA256,
     NATIVE_GATE_NAME,
     NATIVE_MAX_STEPS,
     NATIVE_REQUIRED_SUCCESSES,
     NATIVE_SUITE_WALL_BUDGET_SECONDS,
-    NATIVE_TASK_COMMANDS,
-    NATIVE_TASK_COMMANDS_SHA256,
     NATIVE_TASK_CONFIG,
     NATIVE_TASK_CONFIG_SHA256,
+    NATIVE_UPSTREAM_TASK_COMMANDS,
+    NATIVE_UPSTREAM_TASK_COMMANDS_SHA256,
     NATIVE_UPSTREAM_TASK_TEXT,
     NATIVE_VOXEL_QUERY,
     OPTIMUS3_REPOSITORY,
@@ -66,6 +70,7 @@ from contract import (
     latency_gate,
     latency_summary,
     model_spec,
+    native_fixture_spec,
     native_motor_controls,
     native_episode_seeds,
     native_episode_success,
@@ -501,34 +506,6 @@ def _prepare_simulator_runtime() -> dict[str, Any]:
     return metadata
 
 
-def _native_fixture_callback() -> Any:
-    _install_minestudio_namespace_shim()
-    from minestudio.simulator.callbacks.callback import MinecraftCallback
-
-    class NativeIronFixtureCallback(MinecraftCallback):
-        def after_reset(self, sim: Any, obs: dict[str, Any], info: dict[str, Any]) -> tuple[Any, Any]:
-            outcomes: list[dict[str, Any]] = []
-            for command in NATIVE_TASK_COMMANDS:
-                command_obs, _reward, _done, command_info = sim.env.execute_cmd(command)
-                outcomes.append(
-                    {
-                        "command": command,
-                        "reward": float(_reward),
-                        "done": bool(_done),
-                        "observation_keys": sorted(command_obs or {}),
-                        "info_keys": sorted(command_info or {}),
-                    }
-                )
-                if _done:
-                    raise RuntimeError(f"native fixture command terminated the environment: {command}")
-                obs.update(command_obs or {})
-                info.update(command_info or {})
-            sim.airicraft_fixture_command_outcomes = outcomes
-            return sim._wrap_obs_info(obs, info)
-
-    return NativeIronFixtureCallback()
-
-
 def _install_clip_tokenizer_shim() -> None:
     from transformers import AutoTokenizer
     import minestudio.utils.mineclip_lib.mineclip.tokenization as mineclip_tokenization
@@ -546,16 +523,27 @@ def _native_task_source_metadata() -> dict[str, Any]:
         raise RuntimeError(
             f"native task config digest mismatch: expected {NATIVE_TASK_CONFIG_SHA256}, got {digest}"
         )
-    fixture_digest = hashlib.sha256(("\n".join(NATIVE_TASK_COMMANDS) + "\n").encode("utf-8")).hexdigest()
-    if fixture_digest != NATIVE_TASK_COMMANDS_SHA256:
+    upstream_commands_digest = hashlib.sha256(
+        ("\n".join(NATIVE_UPSTREAM_TASK_COMMANDS) + "\n").encode("utf-8")
+    ).hexdigest()
+    if upstream_commands_digest != NATIVE_UPSTREAM_TASK_COMMANDS_SHA256:
         raise RuntimeError(
-            f"native fixture command digest mismatch: expected {NATIVE_TASK_COMMANDS_SHA256}, got {fixture_digest}"
+            "native upstream command digest mismatch: "
+            f"expected {NATIVE_UPSTREAM_TASK_COMMANDS_SHA256}, got {upstream_commands_digest}"
+        )
+    fixture_spec_digest = hashlib.sha256(
+        json.dumps(native_fixture_spec(), sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    if fixture_spec_digest != NATIVE_FIXTURE_SPEC_SHA256:
+        raise RuntimeError(
+            f"native fixture spec digest mismatch: expected {NATIVE_FIXTURE_SPEC_SHA256}, got {fixture_spec_digest}"
         )
     return {
         "path": str(path),
         "sha256": digest,
-        "fixture_commands_sha256": fixture_digest,
-        "fixture_commands_match_upstream": True,
+        "upstream_commands_sha256": upstream_commands_digest,
+        "fixture_method": NATIVE_FIXTURE_METHOD,
+        "fixture_spec_sha256": fixture_spec_digest,
     }
 
 
@@ -568,12 +556,82 @@ def _new_native_simulator(world_seed: int) -> Any:
         obs_size=FRAME_SHAPE[:2],
         render_size=(640, 360),
         seed=world_seed,
-        inventory={},
+        inventory={0: {"type": "stone_pickaxe", "quantity": 1}},
         preferred_spawn_biome=None,
         num_empty_frames=20,
-        callbacks=[_native_fixture_callback()],
+        callbacks=[],
     )
+    task = simulator.env.task
+    simulator.airicraft_original_create_agent_start = task.create_agent_start
+    simulator.airicraft_original_create_server_decorators = task.create_server_decorators
     return simulator
+
+
+def _restore_native_mission(simulator: Any) -> None:
+    task = simulator.env.task
+    task.create_agent_start = simulator.airicraft_original_create_agent_start
+    task.create_server_decorators = simulator.airicraft_original_create_server_decorators
+
+
+def _configure_native_mission_fixture(
+    simulator: Any,
+    discovery_location: Mapping[str, float],
+) -> dict[str, Any]:
+    _install_minestudio_namespace_shim()
+    from minestudio.simulator.minerl.herobraine.hero.handlers.agent.start import AgentStartPlacement
+    from minestudio.simulator.minerl.herobraine.hero.handlers.server.world import DrawingDecorator
+
+    required_location_keys = {"xpos", "ypos", "zpos", "pitch", "yaw"}
+    missing = sorted(required_location_keys - set(discovery_location))
+    if missing:
+        raise RuntimeError(f"native discovery reset is missing location fields: {missing}")
+
+    base_x = math.floor(discovery_location["xpos"])
+    base_y = math.floor(discovery_location["ypos"])
+    base_z = math.floor(discovery_location["zpos"])
+    draw_blocks = [
+        {
+            "x": base_x + offset_x,
+            "y": base_y + offset_y,
+            "z": base_z + offset_z,
+            "type": "iron_ore",
+        }
+        for offset_x, offset_y, offset_z in NATIVE_FIXTURE_DRAW_OFFSETS
+    ]
+    drawing_xml = "".join(
+        f'<DrawBlock x="{block["x"]}" y="{block["y"]}" z="{block["z"]}" type="iron_ore"/>'
+        for block in draw_blocks
+    )
+    placement = {
+        "x": discovery_location["xpos"],
+        "y": discovery_location["ypos"],
+        "z": discovery_location["zpos"],
+        "yaw": discovery_location["yaw"],
+        "pitch": discovery_location["pitch"],
+    }
+    original_agent_start = simulator.airicraft_original_create_agent_start
+    original_server_decorators = simulator.airicraft_original_create_server_decorators
+
+    def create_agent_start(_task: Any) -> list[Any]:
+        return [*original_agent_start(), AgentStartPlacement(**placement)]
+
+    def create_server_decorators(_task: Any) -> list[Any]:
+        return [*original_server_decorators(), DrawingDecorator(drawing_xml)]
+
+    task = simulator.env.task
+    task.create_agent_start = types.MethodType(create_agent_start, task)
+    task.create_server_decorators = types.MethodType(create_server_decorators, task)
+    return {
+        "method": NATIVE_FIXTURE_METHOD,
+        "spec_sha256": NATIVE_FIXTURE_SPEC_SHA256,
+        "upstream_commands_executed": False,
+        "compatibility_reason": "pinned engine dropped callback chat commands during CPU preflight",
+        "hard_resets": 2,
+        "discovery_location": dict(discovery_location),
+        "placement": placement,
+        "draw_blocks": draw_blocks,
+        "drawing_xml_sha256": hashlib.sha256(drawing_xml.encode("utf-8")).hexdigest(),
+    }
 
 
 def _frame_sha256(frame: Any) -> str:
@@ -696,6 +754,15 @@ def _native_simulator_action(
 
 
 def _native_reset(simulator: Any, world_seed: int) -> tuple[Any, dict[str, Any], dict[str, Any]]:
+    _restore_native_mission(simulator)
+    simulator.env.seed(world_seed)
+    discovery_observation, discovery_info = simulator.reset()
+    validate_frame_shape(discovery_observation.get("image"))
+    discovery_location = _location(discovery_info)
+    if discovery_location is None:
+        raise RuntimeError("native discovery reset did not return a location")
+    mission_fixture = _configure_native_mission_fixture(simulator, discovery_location)
+
     simulator.env.seed(world_seed)
     observation, info = simulator.reset()
     query = _simulator_noop(simulator)
@@ -720,7 +787,7 @@ def _native_reset(simulator: Any, world_seed: int) -> tuple[Any, dict[str, Any],
         "inventory": _inventory_snapshot(info),
         "location": _location(info),
         "baseline": baseline,
-        "fixture_command_outcomes": getattr(simulator, "airicraft_fixture_command_outcomes", []),
+        "mission_fixture": mission_fixture,
         "voxel_observation": {
             "python_type": f"{type(info.get('voxels')).__module__}.{type(info.get('voxels')).__qualname__}",
             "shape": list(getattr(info.get("voxels"), "shape", ())),
@@ -734,6 +801,12 @@ def _native_reset(simulator: Any, world_seed: int) -> tuple[Any, dict[str, Any],
         fixture_errors.append(f"expected mainhand stone_pickaxe, got {mainhand!r}")
     if initial_iron != 0:
         fixture_errors.append(f"expected zero initial iron ore, got {initial_iron}")
+    final_location = setup["location"]
+    if final_location is None or any(
+        abs(final_location[key] - discovery_location[key]) > 0.01
+        for key in ("xpos", "ypos", "zpos")
+    ):
+        fixture_errors.append("mission placement does not match the discovery location")
     if fixture_errors:
         diagnostics = json.dumps(setup, sort_keys=True, separators=(",", ":"))
         raise RuntimeError(f"native fixture mismatch: {'; '.join(fixture_errors)}; diagnostics={diagnostics}")
@@ -775,7 +848,9 @@ def simulator_preflight() -> dict[str, Any]:
         checks = {
             "engine_ready": _simulator_ready(),
             "task_source_pinned": task_metadata["sha256"] == NATIVE_TASK_CONFIG_SHA256,
-            "fixture_commands_pinned": task_metadata["fixture_commands_sha256"] == NATIVE_TASK_COMMANDS_SHA256,
+            "upstream_commands_pinned": task_metadata["upstream_commands_sha256"]
+            == NATIVE_UPSTREAM_TASK_COMMANDS_SHA256,
+            "fixture_spec_pinned": task_metadata["fixture_spec_sha256"] == NATIVE_FIXTURE_SPEC_SHA256,
             "java_8": 'version "1.8.' in (java.stderr + java.stdout),
             "java_exit_zero": java.returncode == 0,
             "frame_shape_valid": list(observation["image"].shape) == list(FRAME_SHAPE),
@@ -1106,8 +1181,10 @@ class _NativeEpisodeMixin:
             "pinned_checkpoints_ready": all(_ready(spec) for spec in MODEL_SPECS),
             "pinned_simulator_engine_ready": _simulator_ready(),
             "pinned_task_source_ready": task_metadata["sha256"] == NATIVE_TASK_CONFIG_SHA256,
-            "pinned_fixture_commands_ready": task_metadata["fixture_commands_sha256"]
-            == NATIVE_TASK_COMMANDS_SHA256,
+            "pinned_upstream_commands_ready": task_metadata["upstream_commands_sha256"]
+            == NATIVE_UPSTREAM_TASK_COMMANDS_SHA256,
+            "pinned_fixture_spec_ready": task_metadata["fixture_spec_sha256"]
+            == NATIVE_FIXTURE_SPEC_SHA256,
             **conditioning_checks,
             "all_requested_episodes_completed": completed,
             "all_completed_episodes_valid": valid_episodes == len(episode_indices),

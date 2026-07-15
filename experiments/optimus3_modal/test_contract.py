@@ -98,9 +98,17 @@ class ContractTest(unittest.TestCase):
             contract.validate_benchmark_steps(True, 32, 256)
 
     def test_native_episode_seed_schedule_is_locked(self):
-        self.assertEqual(contract.NATIVE_TASK_COMMANDS, contract.NATIVE_UPSTREAM_TASK_COMMANDS)
-        fixture_bytes = ("\n".join(contract.NATIVE_TASK_COMMANDS) + "\n").encode("utf-8")
-        self.assertEqual(hashlib.sha256(fixture_bytes).hexdigest(), contract.NATIVE_TASK_COMMANDS_SHA256)
+        upstream_bytes = ("\n".join(contract.NATIVE_UPSTREAM_TASK_COMMANDS) + "\n").encode("utf-8")
+        self.assertEqual(
+            hashlib.sha256(upstream_bytes).hexdigest(),
+            contract.NATIVE_UPSTREAM_TASK_COMMANDS_SHA256,
+        )
+        fixture_bytes = json.dumps(
+            contract.native_fixture_spec(),
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        self.assertEqual(hashlib.sha256(fixture_bytes).hexdigest(), contract.NATIVE_FIXTURE_SPEC_SHA256)
         self.assertEqual(
             contract.NATIVE_WORLD_SEEDS,
             (

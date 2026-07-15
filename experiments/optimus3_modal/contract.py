@@ -46,8 +46,15 @@ NATIVE_UPSTREAM_TASK_COMMANDS = (
     "/replaceitem entity @s weapon.mainhand minecraft:stone_pickaxe",
     "/execute as @p at @s run fill ~2 ~ ~2 ~3 ~1 ~3 minecraft:iron_ore",
 )
-NATIVE_TASK_COMMANDS = NATIVE_UPSTREAM_TASK_COMMANDS
-NATIVE_TASK_COMMANDS_SHA256 = "b0a5ad53ce0b70b7a62ae16543b9d68b099b874a9283cfb59b21448b51fa91a6"
+NATIVE_UPSTREAM_TASK_COMMANDS_SHA256 = "b0a5ad53ce0b70b7a62ae16543b9d68b099b874a9283cfb59b21448b51fa91a6"
+NATIVE_FIXTURE_METHOD = "two_reset_mission_xml_semantic_equivalent"
+NATIVE_FIXTURE_DRAW_OFFSETS = tuple(
+    (x, y, z)
+    for x in (2, 3)
+    for y in (0, 1)
+    for z in (2, 3)
+)
+NATIVE_FIXTURE_SPEC_SHA256 = "9c8fcbf593e0eeca8b0201c708437e1ffc333898fb0d4c57470f0fde6dbc86d4"
 NATIVE_VOXEL_QUERY = (2, 3, 0, 1, 2, 3)
 NATIVE_EXPECTED_IRON_BLOCKS = 8
 NATIVE_EMBEDDING_SEED = 7
@@ -55,6 +62,14 @@ NATIVE_EXPECTED_LABEL = "<iron>"
 NATIVE_EXPECTED_EMBEDDING_SHA256 = "19df8b793320e5b48aa835f09e5faa10e82283986c84f805a691e4f86d34949b"
 NATIVE_EXPECTED_PROJECTION_SHA256 = "0712a98f46d96845045aecd80fa9fddc6fa0617b5a94a1accf14ff07efcfd847"
 NATIVE_SEED_NAMESPACE = "airicraft-optimus3-stage3-v1"
+
+
+def native_fixture_spec() -> dict[str, Any]:
+    return {
+        "draw_offsets": [list(offset) for offset in NATIVE_FIXTURE_DRAW_OFFSETS],
+        "inventory": {"0": {"quantity": 1, "type": "stone_pickaxe"}},
+        "placement": "discovery_location",
+    }
 
 SIMULATOR_ENGINE_REPOSITORY = "CraftJarvis/SimulatorEngine"
 SIMULATOR_ENGINE_REVISION = "48d4809cfddc7e2b85295e8c39b3c5e8c6d46ae7"
@@ -636,10 +651,14 @@ def pilot_manifest() -> dict[str, Any]:
                 "is recorded but is not the model input"
             ),
             "upstream_commands": list(NATIVE_UPSTREAM_TASK_COMMANDS),
-            "fixture_commands": list(NATIVE_TASK_COMMANDS),
-            "fixture_commands_sha256": NATIVE_TASK_COMMANDS_SHA256,
-            "fixture_commands_match_upstream": NATIVE_TASK_COMMANDS == NATIVE_UPSTREAM_TASK_COMMANDS,
-            "fixture_compatibility_note": "uses the upstream task commands verbatim",
+            "upstream_commands_sha256": NATIVE_UPSTREAM_TASK_COMMANDS_SHA256,
+            "fixture_method": NATIVE_FIXTURE_METHOD,
+            "fixture_spec": native_fixture_spec(),
+            "fixture_spec_sha256": NATIVE_FIXTURE_SPEC_SHA256,
+            "fixture_compatibility_note": (
+                "reproduces the upstream stone-pickaxe and relative 2x2x2 iron state through "
+                "mission XML because callback chat commands were dropped by the pinned engine"
+            ),
             "voxel_query": list(NATIVE_VOXEL_QUERY),
             "expected_iron_blocks": NATIVE_EXPECTED_IRON_BLOCKS,
             "episode_count": NATIVE_EPISODE_COUNT,
