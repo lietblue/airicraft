@@ -37,8 +37,9 @@ from contract import (
 MODEL_ROOT = Path("/models")
 SOURCE_ROOT = Path("/opt/optimus3")
 READY_MARKER = ".airicraft-ready.json"
+LOCAL_CONTRACT_PATH = Path(__file__).with_name("contract.py")
 
-app = modal.App(APP_NAME)
+app = modal.App(APP_NAME, include_source=False)
 model_volume = modal.Volume.from_name(VOLUME_NAME, create_if_missing=True)
 
 
@@ -53,6 +54,7 @@ download_image = (
     modal.Image.debian_slim(python_version="3.11")
     .env({"HF_XET_HIGH_PERFORMANCE": "1", "HF_HOME": str(MODEL_ROOT / "hf-home")})
     .uv_pip_install("huggingface-hub==0.30.2", "hf-xet==1.1.5")
+    .add_local_file(LOCAL_CONTRACT_PATH, "/root/contract.py")
 )
 
 runtime_image = (
@@ -103,6 +105,7 @@ runtime_image = (
             "TRANSFORMERS_OFFLINE": "1",
         }
     )
+    .add_local_file(LOCAL_CONTRACT_PATH, "/root/contract.py")
 )
 
 

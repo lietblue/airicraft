@@ -63,6 +63,8 @@ latency configuration.
   function before starting the GPU model.
 - Use one ephemeral L40S App with no deployment, detached execution, warm
   containers, or public endpoint.
+- Disable Modal's automatic source inclusion and explicitly upload only the
+  remote function definitions plus the pilot's secret-free `contract.py`.
 - Bound startup and inference with separate timeouts, one container, one input,
   and zero configured retries.
 - Write a local manifest and result bundle under ignored `eval-output/`.

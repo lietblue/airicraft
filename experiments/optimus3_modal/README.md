@@ -27,6 +27,11 @@ No public web endpoint is created. Every invocation is an authenticated,
 ephemeral `modal run`; this experiment must not be run with `--detach` or
 `modal deploy`.
 
+Automatic source inclusion is disabled. Modal receives the remote function
+definitions plus the explicitly mounted `contract.py`; it does not mount the
+Airicraft repository or any other workspace file. Review those two pilot files
+before approving a remote run.
+
 ## Pinned Inputs
 
 The full manifest is printed by:
