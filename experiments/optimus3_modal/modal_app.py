@@ -809,6 +809,16 @@ def _native_reset(simulator: Any, world_seed: int) -> tuple[Any, dict[str, Any],
             "rendered_mission_contains_drawing": "<DrawingDecorator>" in rendered_mission,
         }
     )
+    grid_wait_steps = 0
+    while grid_wait_steps < 10:
+        grid_probe = info.get("airicraft_native_iron_grid")
+        if isinstance(grid_probe, Mapping) and grid_probe.get("present"):
+            break
+        observation, _reward, terminated, truncated, info = simulator.step(_simulator_noop(simulator))
+        grid_wait_steps += 1
+        if terminated or truncated:
+            raise RuntimeError("MineStudio terminated while waiting for the native grid observation")
+    mission_fixture["grid_wait_steps"] = grid_wait_steps
     frame = observation.get("image")
     validate_frame_shape(frame)
     grid_value = info.get("airicraft_native_iron_grid")
