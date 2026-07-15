@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 APP_NAME = "airicraft-optimus3-pilot"
 VOLUME_NAME = "airicraft-optimus3-models"
 SIMULATOR_VOLUME_NAME = "airicraft-optimus3-simulator"
@@ -33,7 +33,8 @@ TARGET_LATENCY_MS = 50.0
 MAX_DEADLINE_MISS_RATE = 0.05
 BENCHMARK_WALL_BUDGET_SECONDS = 240.0
 
-NATIVE_GATE_NAME = "native_simple_mine_iron_v1"
+LEGACY_NATIVE_GATE_NAME = "native_simple_mine_iron_v1"
+NATIVE_GATE_NAME = "native_simple_mine_iron_v2_parity"
 NATIVE_EPISODE_COUNT = 10
 NATIVE_REQUIRED_SUCCESSES = 8
 NATIVE_MAX_STEPS = 200
@@ -42,11 +43,28 @@ NATIVE_TASK_CONFIG = "MineStudio/minestudio/benchmark/task_configs/simple/mine_i
 NATIVE_TASK_CONFIG_GIT_BLOB = "97fb7ffa93621ac3aa031bee41a4d2bf55f251e9"
 NATIVE_TASK_CONFIG_SHA256 = "49a6396dc868bf902823a4c6db0a71736525fcb3d7baf12b8103461a33af639d"
 NATIVE_UPSTREAM_TASK_TEXT = "Mine iron ore from the environment."
+NATIVE_POLICY_PROMPT = NATIVE_UPSTREAM_TASK_TEXT
 NATIVE_UPSTREAM_TASK_COMMANDS = (
     "/replaceitem entity @s weapon.mainhand minecraft:stone_pickaxe",
     "/execute as @p at @s run fill ~2 ~ ~2 ~3 ~1 ~3 minecraft:iron_ore",
 )
 NATIVE_UPSTREAM_TASK_COMMANDS_SHA256 = "b0a5ad53ce0b70b7a62ae16543b9d68b099b874a9283cfb59b21448b51fa91a6"
+NATIVE_ENVIRONMENT_COMMANDS = (
+    "/gamerule sendCommandFeedback false",
+    "/gamerule commandBlockOutput false",
+    "/gamerule keepInventory true",
+    "/effect give @a night_vision 99999 250 true",
+    "/gamerule doDaylightCycle false",
+    "/time set 0",
+    "/gamerule doImmediateRespawn true",
+    "/spawnpoint",
+)
+NATIVE_ENVIRONMENT_COMMANDS_SHA256 = "c7feb48511e37e86037a6f97a500e08058324135298ae6d692df17b0efcb6ed9"
+NATIVE_POLICY_VIEW_SETTLE_STEPS = 220
+NATIVE_RUNTIME_TEMPLATE_SHA256 = {
+    "options.txt": "f55c7a867d5ea1309cf13e3def7a25a71ac73f5948f2d5580af3905210644a6f",
+    "optionsof.txt": "c4d755753b6b4dcd7137119895b778de1aef941b87f246418a6c845e1be557ee",
+}
 NATIVE_FIXTURE_METHOD = "absolute_setblocks_with_half_open_voxel_oracle"
 NATIVE_FIXTURE_BLOCK_OFFSETS = tuple(
     (x, y, z)
@@ -61,9 +79,10 @@ NATIVE_FIXTURE_SPEC_SHA256 = "ed7c14283d42e4d1acaf94625ebd7473149664080e4237fb9a
 NATIVE_EXPECTED_IRON_BLOCKS = 8
 NATIVE_EMBEDDING_SEED = 7
 NATIVE_EXPECTED_LABEL = "<iron>"
-NATIVE_EXPECTED_EMBEDDING_SHA256 = "19df8b793320e5b48aa835f09e5faa10e82283986c84f805a691e4f86d34949b"
-NATIVE_EXPECTED_PROJECTION_SHA256 = "0712a98f46d96845045aecd80fa9fddc6fa0617b5a94a1accf14ff07efcfd847"
-NATIVE_SEED_NAMESPACE = "airicraft-optimus3-stage3-v1"
+NATIVE_EXPECTED_EMBEDDING_SHA256 = "6ad1d2ed8fc13474afef66fafd96ef24b622ae880fffc24d9825c16c3101f4c3"
+NATIVE_EXPECTED_PROJECTION_SHA256 = "b9d7cb0abcc9f5f0192f28212f4894485a6770d523a7e4bd718bdfea12a687e3"
+LEGACY_NATIVE_SEED_NAMESPACE = "airicraft-optimus3-stage3-v1"
+NATIVE_SEED_NAMESPACE = "airicraft-optimus3-stage3-v2-parity-heldout"
 NATIVE_FAILURE_REPLAY_INDICES = (1, 2, 3, 5, 6)
 NATIVE_FAILURE_REPLAY_SOURCE_RESULT = "eval-output/optimus3-modal/20260715T133606Z-episodes/result.json"
 NATIVE_FAILURE_REPLAY_SOURCE_SHA256 = "ea6b38e87b95c7c471797e5e72b73b772c0ed10d79508a6de8e998386ee62302"
@@ -83,6 +102,11 @@ NATIVE_FAILURE_REPLAY_ACTION_SHA256 = {
 }
 NATIVE_FAILURE_REPLAY_VIDEO_FPS = 20
 NATIVE_FAILURE_REPLAY_MAX_TOTAL_BYTES = 32 * 1024 * 1024
+NATIVE_GATE_VIDEO_FPS = 20
+NATIVE_GATE_MAX_TOTAL_VIDEO_BYTES = 32 * 1024 * 1024
+NATIVE_CAPTURE_WALL_BUDGET_SECONDS = 3 * 60.0
+NATIVE_MODAL_METHOD_TIMEOUT_SECONDS = 35 * 60
+_SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
 
 
 def native_fixture_spec() -> dict[str, Any]:
@@ -98,6 +122,17 @@ def native_fixture_spec() -> dict[str, Any]:
         "voxel_bounds_half_open": list(NATIVE_FIXTURE_VOXEL_BOUNDS),
     }
 
+
+def native_environment_spec() -> dict[str, Any]:
+    return {
+        "commands": list(NATIVE_ENVIRONMENT_COMMANDS),
+        "commands_sha256": NATIVE_ENVIRONMENT_COMMANDS_SHA256,
+        "policy_view_settle_noop_steps": NATIVE_POLICY_VIEW_SETTLE_STEPS,
+        "runtime_template_sha256": dict(NATIVE_RUNTIME_TEMPLATE_SHA256),
+        "purpose": "match the released GUI reset and allow transient setup HUD to clear",
+    }
+
+
 SIMULATOR_ENGINE_REPOSITORY = "CraftJarvis/SimulatorEngine"
 SIMULATOR_ENGINE_REVISION = "48d4809cfddc7e2b85295e8c39b3c5e8c6d46ae7"
 SIMULATOR_ENGINE_FILENAME = "engine.zip"
@@ -106,13 +141,25 @@ SIMULATOR_ENGINE_SHA256 = "293fac6ac72245b3365dce0e8bfbb6396fb94df29b23b6538f3bd
 SIMULATOR_ENGINE_JAR = "engine/build/libs/mcprec-6.13.jar"
 
 
-def _native_seed(stream: str, index: int) -> int:
-    digest = hashlib.sha256(f"{NATIVE_SEED_NAMESPACE}:{stream}:{index}".encode("utf-8")).digest()
+def _native_seed(namespace: str, stream: str, index: int) -> int:
+    digest = hashlib.sha256(f"{namespace}:{stream}:{index}".encode("utf-8")).digest()
     return int.from_bytes(digest[:4], byteorder="big", signed=False)
 
 
-NATIVE_WORLD_SEEDS = tuple(_native_seed("world", index) for index in range(NATIVE_EPISODE_COUNT))
-NATIVE_POLICY_SEEDS = tuple(_native_seed("policy", index) for index in range(NATIVE_EPISODE_COUNT))
+LEGACY_NATIVE_WORLD_SEEDS = tuple(
+    _native_seed(LEGACY_NATIVE_SEED_NAMESPACE, "world", index)
+    for index in range(NATIVE_EPISODE_COUNT)
+)
+LEGACY_NATIVE_POLICY_SEEDS = tuple(
+    _native_seed(LEGACY_NATIVE_SEED_NAMESPACE, "policy", index)
+    for index in range(NATIVE_EPISODE_COUNT)
+)
+NATIVE_WORLD_SEEDS = tuple(
+    _native_seed(NATIVE_SEED_NAMESPACE, "world", index) for index in range(NATIVE_EPISODE_COUNT)
+)
+NATIVE_POLICY_SEEDS = tuple(
+    _native_seed(NATIVE_SEED_NAMESPACE, "policy", index) for index in range(NATIVE_EPISODE_COUNT)
+)
 
 OPTIMUS3_REPOSITORY = "https://github.com/JiuTian-VL/Optimus-3.git"
 OPTIMUS3_REVISION = "a73c01365f8091d45e61585aee59b8ef73fb5fb7"
@@ -158,6 +205,13 @@ ALLOWED_ACTION_KEYS = (
     "back",
     "camera",
     "forward",
+    "jump",
+    "left",
+    "right",
+    "sneak",
+    "sprint",
+)
+OFFICIAL_ATTACK_STABILIZED_KEYS = (
     "jump",
     "left",
     "right",
@@ -286,6 +340,11 @@ def native_episode_seeds(index: int) -> tuple[int, int]:
     return NATIVE_WORLD_SEEDS[index], NATIVE_POLICY_SEEDS[index]
 
 
+def native_diagnostic_episode_seeds(index: int) -> tuple[int, int]:
+    index = validate_episode_index(index)
+    return LEGACY_NATIVE_WORLD_SEEDS[index], LEGACY_NATIVE_POLICY_SEEDS[index]
+
+
 def _count_value(value: Any) -> float:
     if hasattr(value, "item"):
         value = value.item()
@@ -343,6 +402,138 @@ def applied_action_sequence_sha256(trace: Sequence[Mapping[str, Any]]) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
+def capture_frame_sequence_evidence(
+    frame_sha256s: Sequence[str],
+    trace: Sequence[Mapping[str, Any]],
+    final_frame_sha256: str,
+    policy_steps: int,
+) -> dict[str, Any]:
+    if isinstance(policy_steps, bool) or not isinstance(policy_steps, int):
+        raise TypeError("policy_steps must be an integer")
+    if policy_steps < 0:
+        raise ValueError("policy_steps must be non-negative")
+
+    normalized_frame_sha256s = list(frame_sha256s)
+    if not normalized_frame_sha256s:
+        raise ValueError("capture must contain at least one source frame digest")
+    if not all(
+        isinstance(digest, str) and _SHA256_PATTERN.fullmatch(digest)
+        for digest in normalized_frame_sha256s
+    ):
+        raise ValueError("source frame digests must be lowercase SHA-256 values")
+    if not isinstance(final_frame_sha256, str) or not _SHA256_PATTERN.fullmatch(
+        final_frame_sha256
+    ):
+        raise ValueError("final frame digest must be a lowercase SHA-256 value")
+
+    trace_input_sha256s: list[str] = []
+    for record in trace:
+        if "applied_action" not in record:
+            continue
+        digest = record.get("input_frame_sha256")
+        if not isinstance(digest, str) or not _SHA256_PATTERN.fullmatch(digest):
+            raise ValueError("every applied-action trace record must have an input frame digest")
+        trace_input_sha256s.append(digest)
+
+    def sequence_digest(values: Sequence[str]) -> str:
+        payload = (json.dumps(list(values), separators=(",", ":")) + "\n").encode("utf-8")
+        return hashlib.sha256(payload).hexdigest()
+
+    return {
+        "source_frame_sha256s": normalized_frame_sha256s,
+        "source_frame_sequence_sha256": sequence_digest(normalized_frame_sha256s),
+        "trace_input_frame_sha256s": trace_input_sha256s,
+        "trace_input_frame_sequence_sha256": sequence_digest(trace_input_sha256s),
+        "source_frame_count": len(normalized_frame_sha256s),
+        "trace_input_frame_count": len(trace_input_sha256s),
+        "frame_count_matches_policy_steps": len(normalized_frame_sha256s) == policy_steps + 1,
+        "source_frames_match_trace_inputs": (
+            normalized_frame_sha256s[:-1] == trace_input_sha256s
+        ),
+        "final_source_frame_matches_episode": (
+            normalized_frame_sha256s[-1] == final_frame_sha256
+        ),
+    }
+
+
+def native_capture_acceptance_checks(
+    episode_indices: Sequence[int],
+    episodes: Sequence[Mapping[str, Any]],
+    captures: Sequence[Mapping[str, Any]],
+    capture_file_count: int,
+    total_capture_bytes: int,
+) -> dict[str, bool]:
+    for name, value in (
+        ("capture_file_count", capture_file_count),
+        ("total_capture_bytes", total_capture_bytes),
+    ):
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise TypeError(f"{name} must be an integer")
+        if value < 0:
+            raise ValueError(f"{name} must be non-negative")
+
+    requested = list(episode_indices)
+    capture_records = list(captures)
+    return {
+        "exact_requested_episode_schedule": [
+            capture.get("episode_index") for capture in capture_records
+        ]
+        == requested,
+        "all_requested_episodes_completed": len(episodes) == len(requested),
+        "all_capture_records_present": len(capture_records) == len(requested),
+        "capture_errors_absent": all(
+            "capture_error" not in capture for capture in capture_records
+        ),
+        "all_simulator_closes_succeeded": all(
+            capture.get("simulator_close_succeeded") is True for capture in capture_records
+        ),
+        "all_videos_encoded": (
+            capture_file_count == len(requested)
+            and all(capture.get("video") is not None for capture in capture_records)
+        ),
+        "all_frame_counts_match": all(
+            isinstance(capture.get("video"), Mapping)
+            and capture["video"].get("frame_count") == capture.get("policy_steps", 0) + 1
+            and capture.get("frame_count_matches_policy_steps") is True
+            for capture in capture_records
+        ),
+        "all_video_metadata_valid": all(
+            isinstance(capture.get("video"), Mapping)
+            and isinstance(capture["video"].get("checks"), Mapping)
+            and all(capture["video"]["checks"].values())
+            for capture in capture_records
+        ),
+        "all_trace_digests_recorded": all(
+            isinstance(capture.get("authoritative_trace_sha256"), str)
+            and bool(_SHA256_PATTERN.fullmatch(capture["authoritative_trace_sha256"]))
+            for capture in capture_records
+        ),
+        "all_action_digests_recorded": all(
+            isinstance(capture.get("applied_action_sha256"), str)
+            and bool(_SHA256_PATTERN.fullmatch(capture["applied_action_sha256"]))
+            for capture in capture_records
+        ),
+        "all_source_frames_match_trace": all(
+            capture.get("source_frames_match_trace_inputs") is True
+            for capture in capture_records
+        ),
+        "all_final_frames_match_episode": all(
+            capture.get("final_source_frame_matches_episode") is True
+            for capture in capture_records
+        ),
+        "all_source_frame_digests_recorded": all(
+            isinstance(capture.get("source_frame_sha256s"), list)
+            and len(capture["source_frame_sha256s"]) == capture.get("policy_steps", 0) + 1
+            and isinstance(capture.get("source_frame_sequence_sha256"), str)
+            and bool(_SHA256_PATTERN.fullmatch(capture["source_frame_sequence_sha256"]))
+            for capture in capture_records
+        ),
+        "total_video_bytes_within_limit": (
+            0 < total_capture_bytes <= NATIVE_GATE_MAX_TOTAL_VIDEO_BYTES
+        ),
+    }
+
+
 def native_suite_outcome(
     episodes: Sequence[Mapping[str, Any]],
     infrastructure_passed: bool,
@@ -366,6 +557,27 @@ def native_suite_outcome(
         "valid_episodes": valid_episodes,
         "successes": successes,
         "required_successes": NATIVE_REQUIRED_SUCCESSES,
+    }
+
+
+def native_gate_acceptance(
+    suite_outcome: Mapping[str, Any],
+    gate_requested: bool,
+    capture_integrity_passed: bool,
+) -> dict[str, bool | None]:
+    for name, value in (
+        ("gate_requested", gate_requested),
+        ("capture_integrity_passed", capture_integrity_passed),
+    ):
+        if not isinstance(value, bool):
+            raise TypeError(f"{name} must be a boolean")
+    suite_evaluated = suite_outcome.get("evaluated") is True
+    capture_requirement_met = not gate_requested or capture_integrity_passed
+    evaluated = suite_evaluated and capture_requirement_met
+    return {
+        "evaluated": evaluated,
+        "passed": suite_outcome.get("passed") if evaluated else None,
+        "capture_requirement_met": capture_requirement_met,
     }
 
 
@@ -477,6 +689,21 @@ def _is_active(value: Any) -> bool:
 def active_action_keys(action: Mapping[str, Any]) -> list[str]:
     normalized = normalize_action(action)
     return [key for key in ALL_ACTION_KEYS if _is_active(normalized[key])]
+
+
+def apply_official_attack_stabilizer(
+    action: Mapping[str, Any],
+) -> tuple[dict[str, Any], list[str]]:
+    """Match the released GUI's locomotion clamp while attack is active."""
+    normalized = normalize_action(action)
+    stabilized = dict(normalized)
+    changed: list[str] = []
+    if _is_active(normalized["attack"]):
+        for key in OFFICIAL_ATTACK_STABILIZED_KEYS:
+            if _is_active(normalized[key]):
+                changed.append(key)
+            stabilized[key] = 0
+    return stabilized, changed
 
 
 def apply_pilot_safety_mask(action: Mapping[str, Any]) -> tuple[dict[str, Any], list[str]]:
@@ -665,7 +892,10 @@ def pilot_manifest() -> dict[str, Any]:
             "sha256": SIMULATOR_ENGINE_SHA256,
             "required_jar": SIMULATOR_ENGINE_JAR,
         },
-        "task": DEFAULT_TASK,
+        "tasks": {
+            "synthetic_benchmark": DEFAULT_TASK,
+            "native_episode_gate": NATIVE_POLICY_PROMPT,
+        },
         "frame_shape": list(FRAME_SHAPE),
         "benchmark_defaults": {
             "reference_steps": DEFAULT_REFERENCE_STEPS,
@@ -680,18 +910,19 @@ def pilot_manifest() -> dict[str, Any]:
         "native_episode_gate": {
             "name": NATIVE_GATE_NAME,
             "claim_scope": (
-                "MineStudio native simple iron fixture with the locked Stage 2 continuity prompt; "
-                "not upstream-prompt parity and visibility is not guaranteed"
+                "MineStudio native simple iron fixture with the upstream task prompt, released-GUI "
+                "reset commands, startup-overlay suppression protocol, and released attack stabilization"
             ),
             "task_config": NATIVE_TASK_CONFIG,
             "task_config_git_blob": NATIVE_TASK_CONFIG_GIT_BLOB,
             "task_config_sha256": NATIVE_TASK_CONFIG_SHA256,
             "upstream_task_text": NATIVE_UPSTREAM_TASK_TEXT,
-            "policy_prompt": DEFAULT_TASK,
+            "policy_prompt": NATIVE_POLICY_PROMPT,
             "policy_prompt_note": (
-                "retained from Stages 1 and 2 for conditioning continuity; the upstream task text "
-                "is recorded but is not the model input"
+                "the native gate now uses the exact released task text; Stage 2 synthetic latency "
+                "continues to use the historical default prompt"
             ),
+            "environment": native_environment_spec(),
             "upstream_commands": list(NATIVE_UPSTREAM_TASK_COMMANDS),
             "upstream_commands_sha256": NATIVE_UPSTREAM_TASK_COMMANDS_SHA256,
             "fixture_method": NATIVE_FIXTURE_METHOD,
@@ -712,7 +943,8 @@ def pilot_manifest() -> dict[str, Any]:
             "maximum_policy_steps_per_episode": NATIVE_MAX_STEPS,
             "wall_budget_seconds": NATIVE_SUITE_WALL_BUDGET_SECONDS,
             "wall_budget_enforcement": "cooperative checks between blocking model and simulator calls",
-            "outer_hard_timeout_seconds": 1800,
+            "capture_wall_budget_seconds": NATIVE_CAPTURE_WALL_BUDGET_SECONDS,
+            "outer_hard_timeout_seconds": NATIVE_MODAL_METHOD_TIMEOUT_SECONDS,
             "embedding_seed": NATIVE_EMBEDDING_SEED,
             "expected_label": NATIVE_EXPECTED_LABEL,
             "expected_embedding_sha256": NATIVE_EXPECTED_EMBEDDING_SHA256,
@@ -722,16 +954,39 @@ def pilot_manifest() -> dict[str, Any]:
             "policy_seeds": list(NATIVE_POLICY_SEEDS),
             "oracle": "mine_block.iron_ore delta >= 1 and inventory iron_ore delta >= 1",
             "forbidden_attempts_are_diagnostic": True,
+            "attack_stabilizer": {
+                "source": "released Optimus-3 GUI postprocessor",
+                "when": "attack is active",
+                "zeroed_controls": list(OFFICIAL_ATTACK_STABILIZED_KEYS),
+            },
             "hard_reset_between_episodes": True,
             "fresh_simulator_process_between_episodes": True,
             "fast_reset": False,
-            "video_recording": False,
+            "video_recording": True,
+            "video_recording_note": (
+                "copy each policy frame after scored timing and encode only after all scored episodes"
+            ),
+        },
+        "native_diagnostic_episode": {
+            "scope": "pre-gate paired diagnostics; never part of the held-out gate",
+            "seed_namespace": LEGACY_NATIVE_SEED_NAMESPACE,
+            "world_seeds": list(LEGACY_NATIVE_WORLD_SEEDS),
+            "policy_seeds": list(LEGACY_NATIVE_POLICY_SEEDS),
+            "environment_contract": NATIVE_GATE_NAME,
         },
         "native_failure_replay": {
-            "scope": "passive diagnostic replay; never rescored as the Stage 3 gate",
+            "scope": "archived v1 diagnostic; rerun requires commit 5dcfd53",
+            "gate": LEGACY_NATIVE_GATE_NAME,
+            "seed_namespace": LEGACY_NATIVE_SEED_NAMESPACE,
             "source_result": NATIVE_FAILURE_REPLAY_SOURCE_RESULT,
             "source_result_sha256": NATIVE_FAILURE_REPLAY_SOURCE_SHA256,
             "episode_indices": list(NATIVE_FAILURE_REPLAY_INDICES),
+            "world_seeds": [
+                LEGACY_NATIVE_WORLD_SEEDS[index] for index in NATIVE_FAILURE_REPLAY_INDICES
+            ],
+            "policy_seeds": [
+                LEGACY_NATIVE_POLICY_SEEDS[index] for index in NATIVE_FAILURE_REPLAY_INDICES
+            ],
             "expected_trace_sha256": {
                 str(index): NATIVE_FAILURE_REPLAY_TRACE_SHA256[index]
                 for index in NATIVE_FAILURE_REPLAY_INDICES
@@ -746,7 +1001,8 @@ def pilot_manifest() -> dict[str, Any]:
             "video_fps": NATIVE_FAILURE_REPLAY_VIDEO_FPS,
             "video_codec": "h264",
             "maximum_total_video_bytes": NATIVE_FAILURE_REPLAY_MAX_TOTAL_BYTES,
-            "clean_policy_view": True,
+            "unmodified_policy_view_capture": True,
+            "environment_hud_present": True,
             "overlays": False,
             "policy_or_environment_inputs_changed": False,
             "exactness_oracle": "replay trace and applied-action sequence SHA-256",
@@ -763,7 +1019,7 @@ def pilot_manifest() -> dict[str, Any]:
             "single_use_containers": True,
             "configured_retries": 0,
             "gpu_startup_timeout_seconds": 900,
-            "gpu_method_timeout_seconds": 1800,
+            "gpu_method_timeout_seconds": NATIVE_MODAL_METHOD_TIMEOUT_SECONDS,
             "simulator_cpu_cores": 4,
         },
         "scope": "checkpoint load, bounded synthetic latency, and locked native MineStudio competence episodes",
@@ -796,7 +1052,6 @@ def _main() -> None:
             "sim-preflight",
             "episode",
             "episodes",
-            "failure-replay",
         ),
     )
     parser.add_argument("--task", default=DEFAULT_TASK)
@@ -831,10 +1086,11 @@ def _main() -> None:
             )
         if args.mode == "episode":
             episode_index = validate_episode_index(args.episode_index)
-            world_seed, policy_seed = native_episode_seeds(episode_index)
+            world_seed, policy_seed = native_diagnostic_episode_seeds(episode_index)
             invocation.update(
                 {
                     "episode_index": episode_index,
+                    "seed_namespace": LEGACY_NATIVE_SEED_NAMESPACE,
                     "world_seed": world_seed,
                     "policy_seed": policy_seed,
                 }
@@ -845,16 +1101,6 @@ def _main() -> None:
                     "episode_indices": list(range(NATIVE_EPISODE_COUNT)),
                     "world_seeds": list(NATIVE_WORLD_SEEDS),
                     "policy_seeds": list(NATIVE_POLICY_SEEDS),
-                }
-            )
-        if args.mode == "failure-replay":
-            invocation.update(
-                {
-                    "episode_indices": list(NATIVE_FAILURE_REPLAY_INDICES),
-                    "world_seeds": [NATIVE_WORLD_SEEDS[index] for index in NATIVE_FAILURE_REPLAY_INDICES],
-                    "policy_seeds": [NATIVE_POLICY_SEEDS[index] for index in NATIVE_FAILURE_REPLAY_INDICES],
-                    "source_result": NATIVE_FAILURE_REPLAY_SOURCE_RESULT,
-                    "source_result_sha256": NATIVE_FAILURE_REPLAY_SOURCE_SHA256,
                 }
             )
         manifest["invocation"] = invocation

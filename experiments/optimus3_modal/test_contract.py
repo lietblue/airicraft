@@ -60,14 +60,35 @@ class ContractTest(unittest.TestCase):
         rendered = json.dumps(manifest).lower()
         self.assertNotIn("token_secret", rendered)
         self.assertNotIn("hf_token", rendered)
+        self.assertEqual(
+            manifest["tasks"],
+            {
+                "synthetic_benchmark": contract.DEFAULT_TASK,
+                "native_episode_gate": contract.NATIVE_POLICY_PROMPT,
+            },
+        )
 
         native_gate = manifest["native_episode_gate"]
-        self.assertEqual(native_gate["name"], "native_simple_mine_iron_v1")
+        self.assertEqual(native_gate["name"], "native_simple_mine_iron_v2_parity")
         self.assertEqual(native_gate["episode_count"], 10)
         self.assertEqual(native_gate["required_successes"], 8)
-        self.assertIn("not upstream-prompt parity", native_gate["claim_scope"])
-        self.assertIn("visibility is not guaranteed", native_gate["claim_scope"])
+        self.assertEqual(native_gate["policy_prompt"], contract.NATIVE_UPSTREAM_TASK_TEXT)
+        self.assertEqual(
+            native_gate["attack_stabilizer"]["zeroed_controls"],
+            list(contract.OFFICIAL_ATTACK_STABILIZED_KEYS),
+        )
+        self.assertEqual(
+            native_gate["environment"]["policy_view_settle_noop_steps"],
+            contract.NATIVE_POLICY_VIEW_SETTLE_STEPS,
+        )
         self.assertTrue(native_gate["fresh_simulator_process_between_episodes"])
+        self.assertTrue(native_gate["video_recording"])
+        self.assertEqual(native_gate["capture_wall_budget_seconds"], 180.0)
+        self.assertEqual(native_gate["outer_hard_timeout_seconds"], 2100)
+        self.assertEqual(
+            manifest["native_diagnostic_episode"]["seed_namespace"],
+            contract.LEGACY_NATIVE_SEED_NAMESPACE,
+        )
         self.assertEqual(manifest["simulator_engine"]["expected_bytes"], 458_106_630)
         self.assertRegex(manifest["simulator_engine"]["sha256"], r"^[0-9a-f]{64}$")
 
@@ -120,6 +141,22 @@ class ContractTest(unittest.TestCase):
             hashlib.sha256(upstream_bytes).hexdigest(),
             contract.NATIVE_UPSTREAM_TASK_COMMANDS_SHA256,
         )
+        environment_bytes = ("\n".join(contract.NATIVE_ENVIRONMENT_COMMANDS) + "\n").encode(
+            "utf-8"
+        )
+        self.assertEqual(
+            hashlib.sha256(environment_bytes).hexdigest(),
+            contract.NATIVE_ENVIRONMENT_COMMANDS_SHA256,
+        )
+        self.assertEqual(contract.NATIVE_POLICY_PROMPT, contract.NATIVE_UPSTREAM_TASK_TEXT)
+        self.assertEqual(contract.NATIVE_POLICY_VIEW_SETTLE_STEPS, 220)
+        self.assertEqual(
+            contract.NATIVE_RUNTIME_TEMPLATE_SHA256,
+            {
+                "options.txt": "f55c7a867d5ea1309cf13e3def7a25a71ac73f5948f2d5580af3905210644a6f",
+                "optionsof.txt": "c4d755753b6b4dcd7137119895b778de1aef941b87f246418a6c845e1be557ee",
+            },
+        )
         fixture_bytes = json.dumps(
             contract.native_fixture_spec(),
             sort_keys=True,
@@ -137,34 +174,40 @@ class ContractTest(unittest.TestCase):
         self.assertEqual(
             contract.NATIVE_WORLD_SEEDS,
             (
-                1189277871,
-                1054978500,
-                2643425111,
-                303169024,
-                387523688,
-                3565273368,
-                4077019064,
-                1055531191,
-                2188313013,
-                2516925590,
+                1393141024,
+                851357790,
+                3842314870,
+                2057505974,
+                1796445709,
+                3959490677,
+                4056707612,
+                2867472100,
+                4128692959,
+                121629994,
             ),
         )
         self.assertEqual(
             contract.NATIVE_POLICY_SEEDS,
             (
-                755769072,
-                2217087932,
-                3499080866,
-                257376347,
-                371041615,
-                3684550301,
-                2513634747,
-                3036068752,
-                352040951,
-                4028083782,
+                3345470550,
+                309602449,
+                3950613036,
+                2381837806,
+                4107765080,
+                421881608,
+                1811199394,
+                1370296776,
+                2564906271,
+                3032025746,
             ),
         )
-        self.assertEqual(contract.native_episode_seeds(0), (1189277871, 755769072))
+        self.assertEqual(contract.native_episode_seeds(0), (1393141024, 3345470550))
+        self.assertEqual(
+            contract.native_diagnostic_episode_seeds(6),
+            (4077019064, 2513634747),
+        )
+        self.assertEqual(contract.LEGACY_NATIVE_WORLD_SEEDS[6], 4077019064)
+        self.assertEqual(contract.LEGACY_NATIVE_POLICY_SEEDS[6], 2513634747)
         with self.assertRaises(ValueError):
             contract.validate_episode_index(10)
         with self.assertRaises(TypeError):
@@ -216,6 +259,92 @@ class ContractTest(unittest.TestCase):
             contract.applied_action_sequence_sha256([{"step": 1}])
         with self.assertRaises(TypeError):
             contract.applied_action_sequence_sha256([{"applied_action": 1}])
+
+    def test_capture_frame_sequence_is_tied_to_policy_trace(self):
+        frame_hashes = ["a" * 64, "b" * 64, "c" * 64]
+        trace = [
+            {"input_frame_sha256": frame_hashes[0], "applied_action": {"forward": 1}},
+            {"input_frame_sha256": frame_hashes[1], "applied_action": {"attack": 1}},
+        ]
+        evidence = contract.capture_frame_sequence_evidence(
+            frame_hashes,
+            trace,
+            frame_hashes[-1],
+            policy_steps=2,
+        )
+        self.assertTrue(evidence["frame_count_matches_policy_steps"])
+        self.assertTrue(evidence["source_frames_match_trace_inputs"])
+        self.assertTrue(evidence["final_source_frame_matches_episode"])
+        self.assertEqual(evidence["trace_input_frame_sha256s"], frame_hashes[:-1])
+        self.assertRegex(evidence["source_frame_sequence_sha256"], r"^[0-9a-f]{64}$")
+
+        reordered = contract.capture_frame_sequence_evidence(
+            [frame_hashes[1], frame_hashes[0], frame_hashes[2]],
+            trace,
+            frame_hashes[-1],
+            policy_steps=2,
+        )
+        self.assertFalse(reordered["source_frames_match_trace_inputs"])
+
+        wrong_final = contract.capture_frame_sequence_evidence(
+            frame_hashes,
+            trace,
+            "d" * 64,
+            policy_steps=2,
+        )
+        self.assertFalse(wrong_final["final_source_frame_matches_episode"])
+        with self.assertRaisesRegex(ValueError, "source frame digests"):
+            contract.capture_frame_sequence_evidence(["not-a-digest"], [], "c" * 64, 0)
+
+    def test_capture_acceptance_fails_closed_and_is_mandatory_for_gate(self):
+        capture = {
+            "episode_index": 0,
+            "simulator_close_succeeded": True,
+            "video": {
+                "frame_count": 2,
+                "checks": {
+                    "codec_is_h264": True,
+                    "width_matches": True,
+                    "height_matches": True,
+                    "fps_matches": True,
+                    "frame_count_matches": True,
+                },
+            },
+            "policy_steps": 1,
+            "frame_count_matches_policy_steps": True,
+            "authoritative_trace_sha256": "a" * 64,
+            "applied_action_sha256": "b" * 64,
+            "source_frames_match_trace_inputs": True,
+            "final_source_frame_matches_episode": True,
+            "source_frame_sha256s": ["c" * 64, "d" * 64],
+            "source_frame_sequence_sha256": "e" * 64,
+        }
+        checks = contract.native_capture_acceptance_checks(
+            [0],
+            [{"episode_index": 0, "valid": True}],
+            [capture],
+            capture_file_count=1,
+            total_capture_bytes=1024,
+        )
+        self.assertTrue(all(checks.values()))
+
+        failed_checks = contract.native_capture_acceptance_checks(
+            [0],
+            [{"episode_index": 0, "valid": True}],
+            [{**capture, "source_frames_match_trace_inputs": False}],
+            capture_file_count=1,
+            total_capture_bytes=1024,
+        )
+        self.assertFalse(failed_checks["all_source_frames_match_trace"])
+
+        suite_outcome = {"evaluated": True, "passed": True}
+        accepted = contract.native_gate_acceptance(suite_outcome, True, True)
+        self.assertEqual(accepted, {"evaluated": True, "passed": True, "capture_requirement_met": True})
+        rejected = contract.native_gate_acceptance(suite_outcome, True, False)
+        self.assertEqual(
+            rejected,
+            {"evaluated": False, "passed": None, "capture_requirement_met": False},
+        )
 
     def test_native_suite_gate_distinguishes_failure_from_invalidity(self):
         def episodes(successes, valid=True, count=10):
@@ -303,6 +432,35 @@ class ContractTest(unittest.TestCase):
             contract.validate_complete_action({**complete, "forward": [1]})
         with self.assertRaises(ValueError):
             contract.validate_complete_action({**complete, "forward": 2})
+
+    def test_official_attack_stabilizer_matches_released_gui(self):
+        raw = {key: 0 for key in contract.ALL_ACTION_KEYS}
+        raw.update(
+            {
+                "attack": 1,
+                "back": 1,
+                "camera": [1.25, -2.5],
+                "forward": 1,
+                "jump": 1,
+                "left": 1,
+                "right": 1,
+                "sneak": 1,
+                "sprint": 1,
+            }
+        )
+        stabilized, changed = contract.apply_official_attack_stabilizer(raw)
+        self.assertEqual(changed, ["jump", "left", "right", "sneak", "sprint"])
+        self.assertTrue(all(stabilized[key] == 0 for key in changed))
+        self.assertEqual(
+            {key: stabilized[key] for key in ("attack", "back", "camera", "forward")},
+            {key: raw[key] for key in ("attack", "back", "camera", "forward")},
+        )
+        self.assertEqual(raw["jump"], 1, "postprocessor must not mutate model evidence")
+
+        inactive = {**raw, "attack": 0}
+        unchanged, inactive_changes = contract.apply_official_attack_stabilizer(inactive)
+        self.assertEqual(inactive_changes, [])
+        self.assertEqual(unchanged, inactive)
 
     def test_simulator_action_evidence_captures_exact_noop_overlay(self):
         noop = {

@@ -60,9 +60,12 @@ The important pins are:
 - Native fixture specification: SHA-256
   `ed7c14283d42e4d1acaf94625ebd7473149664080e4237fb9a0a9b6631519e92`
 
-The v2 checkpoint is intentionally excluded because the published action head
-is paired with the preview/full checkpoint, and no v2-specific action head is
-published.
+The current released interactive instructions still use this preview/full
+checkpoint with the public `0.7B` action head. `Optimus-3-v2` is published for
+the static MineSys2 evaluation, but no matched v2 action head or public System-1
+runner is provided. A v2-plus-current-head experiment remains a separate,
+explicitly non-official follow-up rather than being conflated with this parity
+repair.
 
 ## Prerequisites
 
@@ -126,32 +129,30 @@ scripts/optimus3-modal engine-cache
 scripts/optimus3-modal sim-preflight
 ```
 
-One fixed-seed native episode, then the locked ten-episode gate:
+One legacy-seed paired diagnostic, then the locked ten-episode parity gate:
 
 ```sh
-scripts/optimus3-modal episode
+scripts/optimus3-modal episode --episode-index 6
 scripts/optimus3-modal episodes
 ```
 
-Passive policy-view capture for the five failures in the definitive Stage 3
-artifact:
+`episode` and `sim-preflight` are deliberately restricted to the already-seen
+v1 seed namespace. Only `episodes` may consume the preregistered held-out v2
+schedule, and the frozen code must be committed before that command is run.
 
-```sh
-scripts/optimus3-modal failure-replay
-```
+Both commands copy the policy's source `128x128` frames in the same run that is
+scored. Frame 0 is the strict-fixture observation before step 1; frame `n` is
+the observation after scored step `n`. Frames are copied after scored timing,
+then all videos are encoded only after every scored episode and simulator-close
+attempt. The resulting 20 fps H.264 files are lossy visual renditions under the
+run's `videos/` directory; ordered raw-frame hashes tie each rendition to the
+trace inputs and final observation. This avoids post-hoc replay drift without
+mislabeling the encoded pixels as bit-exact source frames.
 
-`failure-replay` first requires the local definitive result to match its pinned
-SHA-256. It uses the same five world/policy seed pairs, fixture, prompt, safety
-mask, and 200-step limit. Frame 0 is the strict-fixture observation before step
-1; frame `n` is the observation after scored step `n`. Frames are copied after
-scored timing and encoded only after the episode and simulator-close attempt.
-Every capture records whether simulator shutdown succeeded; an encode/probe
-error is isolated to that capture and makes the diagnostic acceptance fail
-without discarding earlier videos or the structured result.
-Clean `128x128` policy-view frames become 20 fps H.264 MP4s under the run's
-`videos/` directory. The replay is diagnostic and never rescores Stage 3. Its
-trace and applied-action digests report exact reproduction, environment drift,
-or policy divergence from the source artifact.
+The old v1 `failure-replay` command is retired. Its artifacts remain under
+`20260715T153506Z-failure-replay`; reproducing that historical protocol requires
+commit `5dcfd53` because its contaminated environment is intentionally no longer
+available through the current runner.
 
 The benchmark first samples eight exact released `optimus3_action` calls as an
 unadjusted diagnostic. It then independently resets and reseeds the action
@@ -162,20 +163,22 @@ its sampled output would change the policy. Because the reference calls are not
 warm-state matched, their mean-latency ratio is not an acceptance metric or a
 controlled speedup claim.
 
-Each command writes a manifest and result under
-`eval-output/optimus3-modal/<UTC timestamp>/`. That directory is already
-ignored by Git.
+Each command writes a manifest and result under an exclusive
+`eval-output/optimus3-modal/<UTC timestamp>-<mode>.<suffix>/` directory. That
+directory is already ignored by Git.
 
 ## Cost and Lifetime Controls
 
 GPU work requests one L40S, at most one container, zero warm or buffer
 containers, no configured retries, and a single input per container. GPU import
 preflight allows 10 minutes for startup and 3 minutes for the method. Model and
-native-episode work allows 15 minutes for startup and has a 30-minute hard
+native-episode work allows 15 minutes for startup and has a 35-minute hard
 method timeout. The latency benchmark has a stricter internal 240-second wall
 budget; a single native episode has 10 minutes; the ten-episode suite has 25
-minutes. These cooperative budgets are checked between blocking model and
-simulator calls; the Modal method timeout remains the hard stop for a hung call.
+minutes; and post-score capture has a separate three-minute total budget.
+These cooperative budgets are checked between blocking model, simulator, and
+encoder calls. The hard timeout leaves seven minutes beyond the maximum
+suite-plus-capture budgets for result construction and return.
 
 `cache` and `engine-cache` use CPU rather than an L40S and allow two hours for
 large immutable downloads. `sim-preflight` uses four CPU cores, Mesa/Xvfb, and
@@ -217,7 +220,8 @@ latency, mining competence, safety, or naturalness.
 ## Expected Benchmark Result
 
 The benchmark result has `kind: model_action_latency_benchmark` and retains the
-full raw and safety-masked action evidence for every step. It reports nearest-
+raw model action, safety-masked pre-reflex action, and final applied action for
+every step. It reports nearest-
 rank p50, p90, p95, and p99 latency, mean-derived throughput, 50 ms deadline
 misses, CUDA memory, the one-time embedding and projection costs, and an
 explicitly unadjusted released-path diagnostic.
@@ -232,32 +236,48 @@ The pinned Optimus policy emits 22 controls: movement, camera, attack, use,
 inventory, drop, escape, and nine hotbar choices. `pickItem` and `swapHands` are
 Airicraft actuator controls, not Optimus outputs. Fail-closed validation requires
 the exact 22-key policy schema; normalization then adds those two actuator-only
-controls as zero before the safety mask produces the 24-key applied action.
+controls as zero before the safety mask. The released GUI's attack stabilizer
+then zeroes `jump`, `left`, `right`, `sneak`, and `sprint` only while attack is
+active. Raw, pre-reflex, and applied counts remain separate so stabilized
+performance is not mislabeled as learned-policy-only performance.
 
 `native_step_ms` includes the stochastic prior, frame preprocessing and device
 transfer, classifier-free-guidance recurrent policy, action sampling and
-device-to-host mapping, fail-closed validation, normalization, and the safety
-mask. It excludes model load, one-time task conditioning, Minecraft frame
+device-to-host mapping, fail-closed validation, normalization, the safety mask,
+and the released attack stabilizer. It excludes model load, one-time task conditioning, Minecraft frame
 capture, transport, tick scheduling, and action application. A pass therefore
 authorizes locked native MineStudio episodes; it does not prove competence,
 naturalness, Minecraft 1.21.8 compatibility, or live closed-loop performance.
 
 ## Native Stage 3 Contract and Result
 
-The locked gate runs exactly ten fixed world/policy seed pairs, resets recurrent
-policy state once per episode, and starts a fresh Minecraft process for every
+Before any full v2 gate run, its ten pairs were preregistered from the held-out
+namespace `airicraft-optimus3-stage3-v2-parity-heldout`; they are distinct from
+the v1 schedule used to diagnose and repair the environment. V2 resets recurrent
+policy state once per episode and starts a fresh Minecraft process for every
 episode. Each episode allows at most 200 scored policy steps, with no warm-up,
-fallback, video recording, or privileged fixture observation available to the
-policy. Success requires both `mine_block.iron_ore >= 1` and inventory
-`iron_ore >= 1` relative to the pre-policy baseline.
+fallback, or privileged fixture observation available to the policy. Success
+requires both `mine_block.iron_ore >= 1` and inventory `iron_ore >= 1` relative
+to the pre-policy baseline.
+
+Before policy inference, v2 restores the pinned MineStudio client runtime,
+including `tutorialStep:none`; executes the released GUI reset commands that
+disable command feedback and establish its lighting/time rules; materializes
+the fixture; drains 220 unscored no-op ticks; and then revalidates the pickaxe,
+position, inventory, and all eight iron blocks. It uses the exact upstream task
+text `Mine iron ore from the environment.` and applies the released GUI attack
+stabilizer after the safety mask. Every scored episode records ordered source
+frame hashes and a same-run visual rendition.
 
 The gate is evaluated only when all ten requested episodes are present and
-valid and every infrastructure, pin, fixture, schema, and safety check passes.
-It passes at eight or more successes. `timeout_200_steps` is a valid competence
-failure; setup, reset, schema, or close failures leave the gate unevaluated.
+valid, every infrastructure, pin, fixture, schema, and safety check passes, and
+all mandatory same-run captures pass their trace, final-frame, codec, size, and
+shutdown integrity checks. It passes at eight or more successes.
+`timeout_200_steps` is a valid competence failure; setup, reset, schema, close,
+or capture-integrity failures leave the gate unevaluated.
 
-The definitive fresh-process run under `20260715T133606Z-episodes` was valid but
-failed the competence gate:
+The historical v1 fresh-process run under `20260715T133606Z-episodes` was
+internally valid under its declared contract but failed the competence gate:
 
 - all ten episodes were valid, with zero schema failures and zero safety
   violations;
@@ -272,14 +292,17 @@ failed the competence gate:
 - the method took 822.982 seconds after a 17.599-second model load on an NVIDIA
   L40S.
 
-Infrastructure acceptance passed, so this is an evaluated model-competence
-failure rather than an invalid benchmark. It does not authorize Stage 4
-Airicraft shadow mode. Across 1,592 native closed-loop steps, the pooled mean was
+Infrastructure acceptance passed for v1, but subsequent video inspection found
+that setup command feedback covered much of the `128x128` policy input for
+roughly half each episode and that the pinned MineStudio client options had
+been discarded, re-enabling the tutorial overlay. V1 therefore remains evidence
+about that isolated raw adapter, not an ideal-performance or official-stack
+estimate. Across 1,592 native closed-loop steps, the pooled mean was
 43.56 ms but 319 steps (20.04%) exceeded 50 ms. Native timing was diagnostic,
 not part of this Stage 3 acceptance gate, and does not establish stable 20 Hz
 end-to-end control.
 
-The non-gating capture run under `20260715T153506Z-failure-replay` then replayed
+The archived capture run under `20260715T153506Z-failure-replay` then replayed
 the five failed world/policy seed pairs. All five were valid 200-step timeouts
 again, with zero schema or safety failures, and all five 201-frame H.264 videos
 passed codec, size, frame-count, shutdown, and output-integrity checks. Episode
@@ -288,7 +311,18 @@ never picked it up. Episodes 1, 2, 3, and 6 mined no iron while moving and
 attacking elsewhere. None of the replay action or trace digests matched the
 definitive run, so the videos are fresh examples of the same failure modes, not
 exact footage of the scored trajectories. The capture acceptance is therefore
-correctly false and remains separate from the locked Stage 3 result.
+correctly false and remains separate from the locked v1 result. Those captures
+also exposed the HUD contamination that motivated v2.
+
+The v2 two-process simulator preflight under
+`20260715T170111Z-sim-preflight` passed all 26 checks, including the pinned
+runtime template, disabled tutorial, reset-command digest, 220-step policy-view
+drain, post-drain fixture proof, and exact five-control attack clamp. A same-run
+probe under `20260715T170547Z-episode` used the legacy v1 episode-6 seed pair
+before the held-out v2 schedule was frozen. Visual inspection showed the HUD
+contamination was gone, and the episode succeeded at step 181 with both mine and
+pickup deltas equal to one. It is paired diagnostic evidence, not an independent
+v2 gate sample.
 
 The preceding single-episode run under `20260715T131739Z-episode` succeeded at
 step 114 and proved that the released policy can complete the native task. The
@@ -324,8 +358,10 @@ queries the target volume with the released engine's half-open voxel bounds
 engine misses on the first pass; at most three passes are allowed. Policy
 inference starts only after all eight cells are proven. This is a
 semantic-equivalent fixture reproduction, not upstream-command parity. The
-locked policy prompt remains `collect one iron ore` for Stage 2 conditioning
-continuity, so the result is not upstream-prompt parity or a visible-iron test.
+synthetic Stage 2 prompt remains `collect one iron ore` for historical latency
+continuity. The native v2 parity gate instead uses the exact task-config text
+`Mine iron ore from the environment.` and pins its distinct embedding and
+projection digests.
 
 The released per-frame action path also computes a MineCLIP task embedding whose
 value is discarded, then repeats the deterministic MLLM projection before its

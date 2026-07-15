@@ -31,10 +31,14 @@ from contract import (
     FRAME_SHAPE,
     FORBIDDEN_ACTION_KEYS,
     GPU_TYPE,
+    LEGACY_NATIVE_SEED_NAMESPACE,
     LLAMA_FACTORY_REPOSITORY,
     LLAMA_FACTORY_REVISION,
     MODEL_SPECS,
+    NATIVE_CAPTURE_WALL_BUDGET_SECONDS,
     NATIVE_EMBEDDING_SEED,
+    NATIVE_ENVIRONMENT_COMMANDS,
+    NATIVE_ENVIRONMENT_COMMANDS_SHA256,
     NATIVE_EPISODE_COUNT,
     NATIVE_EXPECTED_EMBEDDING_SHA256,
     NATIVE_EXPECTED_IRON_BLOCKS,
@@ -46,16 +50,16 @@ from contract import (
     NATIVE_FIXTURE_SETTLE_STEPS,
     NATIVE_FIXTURE_SPEC_SHA256,
     NATIVE_FIXTURE_VOXEL_BOUNDS,
-    NATIVE_FAILURE_REPLAY_ACTION_SHA256,
-    NATIVE_FAILURE_REPLAY_INDICES,
-    NATIVE_FAILURE_REPLAY_MAX_TOTAL_BYTES,
-    NATIVE_FAILURE_REPLAY_SOURCE_RESULT,
-    NATIVE_FAILURE_REPLAY_SOURCE_SHA256,
-    NATIVE_FAILURE_REPLAY_TRACE_SHA256,
-    NATIVE_FAILURE_REPLAY_VIDEO_FPS,
+    NATIVE_GATE_MAX_TOTAL_VIDEO_BYTES,
     NATIVE_GATE_NAME,
+    NATIVE_GATE_VIDEO_FPS,
     NATIVE_MAX_STEPS,
+    NATIVE_MODAL_METHOD_TIMEOUT_SECONDS,
+    NATIVE_POLICY_PROMPT,
+    NATIVE_POLICY_VIEW_SETTLE_STEPS,
     NATIVE_REQUIRED_SUCCESSES,
+    NATIVE_RUNTIME_TEMPLATE_SHA256,
+    NATIVE_SEED_NAMESPACE,
     NATIVE_SUITE_WALL_BUDGET_SECONDS,
     NATIVE_TASK_CONFIG,
     NATIVE_TASK_CONFIG_SHA256,
@@ -77,11 +81,16 @@ from contract import (
     VOLUME_NAME,
     active_action_keys,
     applied_action_sequence_sha256,
+    apply_official_attack_stabilizer,
     apply_pilot_safety_mask,
+    capture_frame_sequence_evidence,
     latency_gate,
     latency_summary,
     model_spec,
     native_fixture_spec,
+    native_capture_acceptance_checks,
+    native_diagnostic_episode_seeds,
+    native_gate_acceptance,
     native_motor_controls,
     native_episode_seeds,
     native_episode_success,
@@ -495,7 +504,22 @@ def _prepare_simulator_runtime() -> dict[str, Any]:
     if SIMULATOR_RUNTIME_ROOT.exists():
         shutil.rmtree(SIMULATOR_RUNTIME_ROOT)
     SIMULATOR_RUNTIME_ROOT.mkdir(parents=True)
-    (SIMULATOR_RUNTIME_ROOT / "runtime").mkdir()
+    runtime_template = (
+        SOURCE_ROOT / "MineStudio" / "minestudio" / "simulator" / "minerl" / "env" / "runtime"
+    )
+    runtime_dir = SIMULATOR_RUNTIME_ROOT / "runtime"
+    shutil.copytree(runtime_template, runtime_dir)
+    runtime_hashes = {
+        name: _file_sha256(runtime_dir / name) for name in sorted(NATIVE_RUNTIME_TEMPLATE_SHA256)
+    }
+    if runtime_hashes != NATIVE_RUNTIME_TEMPLATE_SHA256:
+        raise RuntimeError(
+            "native runtime template digest mismatch: "
+            f"expected {NATIVE_RUNTIME_TEMPLATE_SHA256}, got {runtime_hashes}"
+        )
+    options_text = (runtime_dir / "options.txt").read_text(encoding="utf-8")
+    if "tutorialStep:none" not in options_text.splitlines():
+        raise RuntimeError("native runtime template does not disable the tutorial overlay")
     (SIMULATOR_RUNTIME_ROOT / "tmp").mkdir()
     (SIMULATOR_RUNTIME_ROOT / "minecraft-output").mkdir()
     (SIMULATOR_RUNTIME_ROOT / "engine").symlink_to(SIMULATOR_ROOT / "engine", target_is_directory=True)
@@ -514,6 +538,8 @@ def _prepare_simulator_runtime() -> dict[str, Any]:
     metadata = json.loads((SIMULATOR_ROOT / SIMULATOR_READY_MARKER).read_text(encoding="utf-8"))
     metadata["subprocess_sitecustomize_sha256"] = _file_sha256(sitecustomize)
     metadata["subprocess_callback_imports"] = SIMULATOR_RUNTIME_PINS["subprocess_callback_imports"]
+    metadata["runtime_template_sha256"] = runtime_hashes
+    metadata["runtime_tutorial_disabled"] = True
     return metadata
 
 
@@ -542,6 +568,14 @@ def _native_task_source_metadata() -> dict[str, Any]:
             "native upstream command digest mismatch: "
             f"expected {NATIVE_UPSTREAM_TASK_COMMANDS_SHA256}, got {upstream_commands_digest}"
         )
+    environment_commands_digest = hashlib.sha256(
+        ("\n".join(NATIVE_ENVIRONMENT_COMMANDS) + "\n").encode("utf-8")
+    ).hexdigest()
+    if environment_commands_digest != NATIVE_ENVIRONMENT_COMMANDS_SHA256:
+        raise RuntimeError(
+            "native environment command digest mismatch: "
+            f"expected {NATIVE_ENVIRONMENT_COMMANDS_SHA256}, got {environment_commands_digest}"
+        )
     fixture_spec_digest = hashlib.sha256(
         json.dumps(native_fixture_spec(), sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()
@@ -553,6 +587,8 @@ def _native_task_source_metadata() -> dict[str, Any]:
         "path": str(path),
         "sha256": digest,
         "upstream_commands_sha256": upstream_commands_digest,
+        "environment_commands": list(NATIVE_ENVIRONMENT_COMMANDS),
+        "environment_commands_sha256": environment_commands_digest,
         "fixture_method": NATIVE_FIXTURE_METHOD,
         "fixture_spec_sha256": fixture_spec_digest,
     }
@@ -561,6 +597,7 @@ def _native_task_source_metadata() -> dict[str, Any]:
 def _new_native_simulator(world_seed: int) -> Any:
     _install_minestudio_namespace_shim()
     from minestudio.simulator.entry import MinecraftSim
+    from minestudio.simulator.callbacks.commands import CommandsCallback
 
     simulator = MinecraftSim(
         action_type="env",
@@ -570,7 +607,7 @@ def _new_native_simulator(world_seed: int) -> Any:
         inventory={0: {"type": "stone_pickaxe", "quantity": 1}},
         preferred_spawn_biome=None,
         num_empty_frames=20,
-        callbacks=[],
+        callbacks=[CommandsCallback(list(NATIVE_ENVIRONMENT_COMMANDS))],
     )
     task = simulator.env.task
     simulator.airicraft_original_create_agent_start = task.create_agent_start
@@ -641,8 +678,18 @@ def _frame_sha256(frame: Any) -> str:
     return hashlib.sha256(frame.tobytes()).hexdigest()
 
 
-def _encode_h264_policy_video(frames: list[Any], output_path: Path) -> tuple[bytes, dict[str, Any]]:
+def _encode_h264_policy_video(
+    frames: list[Any],
+    output_path: Path,
+    wall_deadline: float,
+) -> tuple[bytes, dict[str, Any]]:
     import subprocess
+
+    def bounded_timeout(maximum_seconds: float) -> float:
+        remaining = wall_deadline - time.perf_counter()
+        if remaining <= 0:
+            raise TimeoutError("native capture wall budget exhausted")
+        return min(maximum_seconds, remaining)
 
     if not frames:
         raise ValueError("capture must contain at least one frame")
@@ -669,7 +716,7 @@ def _encode_h264_policy_video(frames: list[Any], output_path: Path) -> tuple[byt
         "-s:v",
         f"{width}x{height}",
         "-r",
-        str(NATIVE_FAILURE_REPLAY_VIDEO_FPS),
+        str(NATIVE_GATE_VIDEO_FPS),
         "-i",
         "pipe:0",
         "-an",
@@ -685,7 +732,13 @@ def _encode_h264_policy_video(frames: list[Any], output_path: Path) -> tuple[byt
         "+faststart",
         str(output_path),
     ]
-    encoded = subprocess.run(command, input=raw_video, capture_output=True, check=False, timeout=120)
+    encoded = subprocess.run(
+        command,
+        input=raw_video,
+        capture_output=True,
+        check=False,
+        timeout=bounded_timeout(30.0),
+    )
     if encoded.returncode != 0:
         stderr = encoded.stderr.decode("utf-8", errors="replace").strip()
         raise RuntimeError(f"ffmpeg failed with exit {encoded.returncode}: {stderr}")
@@ -709,7 +762,7 @@ def _encode_h264_policy_video(frames: list[Any], output_path: Path) -> tuple[byt
         capture_output=True,
         text=True,
         check=False,
-        timeout=30,
+        timeout=bounded_timeout(10.0),
     )
     if probed.returncode != 0:
         raise RuntimeError(f"ffprobe failed with exit {probed.returncode}: {probed.stderr.strip()}")
@@ -721,7 +774,7 @@ def _encode_h264_policy_video(frames: list[Any], output_path: Path) -> tuple[byt
         "codec_is_h264": stream.get("codec_name") == "h264",
         "width_matches": stream.get("width") == width,
         "height_matches": stream.get("height") == height,
-        "fps_matches": stream.get("avg_frame_rate") == f"{NATIVE_FAILURE_REPLAY_VIDEO_FPS}/1",
+        "fps_matches": stream.get("avg_frame_rate") == f"{NATIVE_GATE_VIDEO_FPS}/1",
         "frame_count_matches": int(stream.get("nb_frames", -1)) == len(frames),
     }
     if not all(checks.values()):
@@ -731,7 +784,7 @@ def _encode_h264_policy_video(frames: list[Any], output_path: Path) -> tuple[byt
         "sha256": hashlib.sha256(video).hexdigest(),
         "frame_count": len(frames),
         "frame_shape": list(FRAME_SHAPE),
-        "fps": NATIVE_FAILURE_REPLAY_VIDEO_FPS,
+        "fps": NATIVE_GATE_VIDEO_FPS,
         "codec": stream["codec_name"],
         "checks": checks,
     }
@@ -901,6 +954,29 @@ def _materialize_native_fixture(
     return observation, info, evidence
 
 
+def _settle_native_policy_view(
+    simulator: Any,
+) -> tuple[Any, dict[str, Any], dict[str, Any]]:
+    observation = None
+    info: dict[str, Any] = {}
+    for _ in range(NATIVE_POLICY_VIEW_SETTLE_STEPS):
+        observation, _reward, terminated, truncated, info = simulator.step(
+            _simulator_noop(simulator)
+        )
+        if terminated or truncated:
+            raise RuntimeError("native fixture terminated while clearing transient policy-view HUD")
+    observation, info, runtime_query = _query_native_voxels(
+        simulator,
+        NATIVE_FIXTURE_VOXEL_BOUNDS,
+        NATIVE_EXPECTED_IRON_BLOCKS,
+    )
+    return observation, info, {
+        "noop_steps": NATIVE_POLICY_VIEW_SETTLE_STEPS,
+        "purpose": "clear command, recipe, advancement, and tutorial overlays before policy inference",
+        "post_settle_runtime_query": runtime_query,
+    }
+
+
 def _coerce_action_value(value: Any, template: Any, np_module: Any) -> Any:
     if hasattr(template, "dtype") and hasattr(template, "shape"):
         coerced = np_module.asarray(value, dtype=template.dtype)
@@ -976,6 +1052,15 @@ def _native_reset(
     observation, info, runtime_materialization = _materialize_native_fixture(
         simulator,
         mission_fixture["expected_blocks"],
+    )
+    pre_settle_runtime_query = runtime_materialization["runtime_query"]
+    observation, info, policy_view_settle = _settle_native_policy_view(simulator)
+    runtime_materialization.update(
+        {
+            "pre_settle_runtime_query": pre_settle_runtime_query,
+            "runtime_query": policy_view_settle["post_settle_runtime_query"],
+            "policy_view_settle": policy_view_settle,
+        }
     )
     mission_fixture.update(
         {
@@ -1055,7 +1140,7 @@ def simulator_preflight() -> dict[str, Any]:
     simulator = None
     started = time.perf_counter()
     try:
-        world_seed, _policy_seed = native_episode_seeds(0)
+        world_seed, _policy_seed = native_diagnostic_episode_seeds(0)
         simulator = _new_native_simulator(world_seed)
         observation, info, setup = _native_reset(
             simulator,
@@ -1076,18 +1161,41 @@ def simulator_preflight() -> dict[str, Any]:
         simulator.close()
         simulator = None
 
-        second_world_seed, _second_policy_seed = native_episode_seeds(1)
+        second_world_seed, _second_policy_seed = native_diagnostic_episode_seeds(1)
         simulator = _new_native_simulator(second_world_seed)
         second_observation, second_info, second_setup = _native_reset(
             simulator,
             second_world_seed,
             strict_fixture=False,
         )
+        attack_probe_raw = {key: 0 for key in ALL_ACTION_KEYS}
+        attack_probe_raw.update(
+            {
+                "attack": 1,
+                "back": 1,
+                "camera": [2.0, -3.0],
+                "forward": 1,
+                "jump": 1,
+                "left": 1,
+                "right": 1,
+                "sneak": 1,
+                "sprint": 1,
+            }
+        )
+        attack_probe_pre_reflex, _attempted = apply_pilot_safety_mask(attack_probe_raw)
+        attack_probe_applied, attack_probe_clamped = apply_official_attack_stabilizer(
+            attack_probe_pre_reflex
+        )
         checks = {
             "engine_ready": _simulator_ready(),
+            "runtime_template_matches_pin": engine_metadata["runtime_template_sha256"]
+            == NATIVE_RUNTIME_TEMPLATE_SHA256,
+            "runtime_tutorial_disabled": engine_metadata["runtime_tutorial_disabled"] is True,
             "task_source_pinned": task_metadata["sha256"] == NATIVE_TASK_CONFIG_SHA256,
             "upstream_commands_pinned": task_metadata["upstream_commands_sha256"]
             == NATIVE_UPSTREAM_TASK_COMMANDS_SHA256,
+            "environment_commands_pinned": task_metadata["environment_commands_sha256"]
+            == NATIVE_ENVIRONMENT_COMMANDS_SHA256,
             "fixture_spec_pinned": task_metadata["fixture_spec_sha256"] == NATIVE_FIXTURE_SPEC_SHA256,
             "java_8": 'version "1.8.' in (java.stderr + java.stdout),
             "java_exit_zero": java.returncode == 0,
@@ -1098,6 +1206,10 @@ def simulator_preflight() -> dict[str, Any]:
             "fixture_errors_empty": not setup["fixture_errors"],
             "fixture_mainhand_valid": setup["mainhand"] == "stone_pickaxe",
             "fixture_initial_inventory_valid": setup["baseline"]["inventory_iron_ore"] == 0,
+            "policy_view_settle_complete": setup["mission_fixture"]["policy_view_settle"][
+                "noop_steps"
+            ]
+            == NATIVE_POLICY_VIEW_SETTLE_STEPS,
             "action_adapter_changed_no_controls": adapter_evidence["changed_keys"] == [],
             "action_adapter_motor_controls_in_space": adapter_evidence["motor_controls_in_space"],
             "adapter_step_did_not_terminate": not terminated and not truncated,
@@ -1109,6 +1221,16 @@ def simulator_preflight() -> dict[str, Any]:
             is True,
             "fresh_process_fixture_errors_empty": not second_setup["fixture_errors"],
             "fresh_process_mainhand_valid": second_setup["mainhand"] == "stone_pickaxe",
+            "fresh_process_policy_view_settle_complete": second_setup["mission_fixture"][
+                "policy_view_settle"
+            ]["noop_steps"]
+            == NATIVE_POLICY_VIEW_SETTLE_STEPS,
+            "attack_stabilizer_clamps_exact_controls": attack_probe_clamped
+            == ["jump", "left", "right", "sneak", "sprint"],
+            "attack_stabilizer_preserves_forward_back_camera": all(
+                attack_probe_applied[key] == attack_probe_raw[key]
+                for key in ("attack", "back", "camera", "forward")
+            ),
         }
         return result_envelope(
             "simulator_preflight",
@@ -1118,10 +1240,17 @@ def simulator_preflight() -> dict[str, Any]:
                 "task_source": task_metadata,
                 "java_version": (java.stderr or java.stdout).strip(),
                 "renderer": SIMULATOR_RUNTIME_PINS["renderer"],
+                "seed_namespace": LEGACY_NATIVE_SEED_NAMESPACE,
                 "world_seeds": [world_seed, second_world_seed],
                 "setup": setup,
                 "fresh_process_setup": second_setup,
                 "action_adapter": adapter_evidence,
+                "attack_stabilizer_probe": {
+                    "raw_action": attack_probe_raw,
+                    "pre_reflex_action": attack_probe_pre_reflex,
+                    "applied_action": attack_probe_applied,
+                    "clamped_keys": attack_probe_clamped,
+                },
                 "post_adapter_step": post_adapter_step,
                 "fresh_process_observation": {
                     "frame_sha256": _frame_sha256(second_observation["image"]),
@@ -1147,10 +1276,11 @@ class _NativeEpisodeMixin:
         simulator: Any,
         projected: Any,
         episode_index: int,
+        world_seed: int,
+        policy_seed: int,
         wall_deadline: float,
         capture_frames: list[Any] | None = None,
     ) -> dict[str, Any]:
-        world_seed, policy_seed = native_episode_seeds(episode_index)
         observation, info, setup = _native_reset(
             simulator,
             world_seed,
@@ -1285,7 +1415,10 @@ class _NativeEpisodeMixin:
                     "step",
                     "input_frame_sha256",
                     "raw_action",
+                    "pre_reflex_action",
                     "applied_action",
+                    "attack_reflex_active",
+                    "attack_reflex_clamped_keys",
                     "sent_action",
                     "forbidden_attempts",
                     "terminated",
@@ -1354,14 +1487,19 @@ class _NativeEpisodeMixin:
             "trace": records,
         }
 
-    def _run_native(self, episode_indices: list[int], *, capture_replay: bool = False) -> dict[str, Any]:
+    def _run_native(self, episode_indices: list[int], *, capture_video: bool = False) -> dict[str, Any]:
         episode_indices = [validate_episode_index(index) for index in episode_indices]
         if not episode_indices:
             raise ValueError("at least one native episode is required")
         if len(set(episode_indices)) != len(episode_indices):
             raise ValueError("native episode indices must be unique")
-        if capture_replay and episode_indices != list(NATIVE_FAILURE_REPLAY_INDICES):
-            raise ValueError("failure replay must use the exact locked failed-episode schedule")
+        gate_requested = episode_indices == list(range(NATIVE_EPISODE_COUNT))
+        seed_namespace = (
+            NATIVE_SEED_NAMESPACE if gate_requested else LEGACY_NATIVE_SEED_NAMESPACE
+        )
+        episode_seed_provider = (
+            native_episode_seeds if gate_requested else native_diagnostic_episode_seeds
+        )
 
         method_started = time.perf_counter()
         wall_budget_seconds = 10 * 60.0 if len(episode_indices) == 1 else NATIVE_SUITE_WALL_BUDGET_SECONDS
@@ -1371,7 +1509,7 @@ class _NativeEpisodeMixin:
 
         self._set_seed(NATIVE_EMBEDDING_SEED)
         embedding_started = time.perf_counter()
-        embedding, task_label = self._task_embedding(DEFAULT_TASK)
+        embedding, task_label = self._task_embedding(NATIVE_POLICY_PROMPT)
         self.torch.cuda.synchronize()
         embedding_seconds = time.perf_counter() - embedding_started
         embedding_cpu = embedding.detach().cpu().numpy()
@@ -1388,11 +1526,14 @@ class _NativeEpisodeMixin:
 
         conditioning_checks = {
             "task_label_is_iron": task_label == NATIVE_EXPECTED_LABEL,
-            "embedding_digest_matches_stage_2": embedding_sha256 == NATIVE_EXPECTED_EMBEDDING_SHA256,
-            "projection_digest_matches_stage_2": projection_sha256 == NATIVE_EXPECTED_PROJECTION_SHA256,
+            "embedding_digest_matches_native_prompt_pin": embedding_sha256
+            == NATIVE_EXPECTED_EMBEDDING_SHA256,
+            "projection_digest_matches_native_prompt_pin": projection_sha256
+            == NATIVE_EXPECTED_PROJECTION_SHA256,
         }
         episodes: list[dict[str, Any]] = []
         captures: list[dict[str, Any]] = []
+        pending_capture_frames: dict[int, list[Any]] = {}
         capture_files: dict[str, bytes] = {}
         total_capture_bytes = 0
         suite_error: dict[str, str] | None = None
@@ -1404,17 +1545,19 @@ class _NativeEpisodeMixin:
                         "message": "native episode wall budget exhausted before the next reset",
                     }
                     break
-                world_seed, policy_seed = native_episode_seeds(episode_index)
+                world_seed, policy_seed = episode_seed_provider(episode_index)
                 simulator = None
                 episode: dict[str, Any]
                 close_error: Exception | None = None
-                capture_frames: list[Any] | None = [] if capture_replay else None
+                capture_frames: list[Any] | None = [] if capture_video else None
                 try:
                     simulator = _new_native_simulator(world_seed)
                     episode = self._native_episode(
                         simulator,
                         projected,
                         episode_index,
+                        world_seed,
+                        policy_seed,
                         wall_deadline,
                         capture_frames=capture_frames,
                     )
@@ -1443,23 +1586,21 @@ class _NativeEpisodeMixin:
                         "type": type(close_error).__name__,
                         "message": str(close_error),
                     }
-                if capture_replay:
+                if capture_video:
                     filename = f"episode-{episode_index:02d}-policy-view.mp4"
-                    expected_trace_sha256 = NATIVE_FAILURE_REPLAY_TRACE_SHA256[episode_index]
-                    expected_action_sha256 = NATIVE_FAILURE_REPLAY_ACTION_SHA256[episode_index]
                     capture: dict[str, Any] = {
                         "episode_index": episode_index,
                         "relative_path": f"videos/{filename}",
                         "frame_mapping": "frame 0 is pre-step 1; frame n is post-step n",
                         "simulator_close_attempted": simulator is not None,
                         "simulator_close_succeeded": simulator is not None and close_error is None,
-                        "expected_trace_sha256": expected_trace_sha256,
-                        "replay_trace_sha256": episode.get("action_trace_sha256"),
-                        "trace_matches": False,
-                        "expected_applied_action_sha256": expected_action_sha256,
-                        "replay_applied_action_sha256": None,
-                        "applied_actions_match": False,
-                        "reproduction": "unavailable",
+                        "authoritative_trace_sha256": episode.get("action_trace_sha256"),
+                        "applied_action_sha256": None,
+                        "capture_role": (
+                            "same-run gate evidence"
+                            if gate_requested
+                            else "same-run diagnostic evidence"
+                        ),
                         "video": None,
                         "valid": episode["valid"],
                         "success": episode["success"],
@@ -1471,36 +1612,17 @@ class _NativeEpisodeMixin:
                         trace = episode.get("trace", [])
                         if not trace:
                             raise RuntimeError("episode produced no action trace to capture")
-                        replay_action_sha256 = applied_action_sequence_sha256(trace)
-                        trace_matches = episode["action_trace_sha256"] == expected_trace_sha256
-                        actions_match = replay_action_sha256 == expected_action_sha256
-                        if trace_matches:
-                            reproduction = "exact_trajectory_replay"
-                        elif actions_match:
-                            reproduction = "same_actions_environment_drift"
-                        else:
-                            reproduction = "policy_divergence"
+                        capture["applied_action_sha256"] = applied_action_sequence_sha256(trace)
+                        frames = capture_frames or []
                         capture.update(
-                            {
-                                "replay_applied_action_sha256": replay_action_sha256,
-                                "trace_matches": trace_matches,
-                                "applied_actions_match": actions_match,
-                                "reproduction": reproduction,
-                            }
-                        )
-                        video, video_metadata = _encode_h264_policy_video(
-                            capture_frames or [],
-                            Path("/tmp/airicraft-failure-replay") / filename,
-                        )
-                        prospective_total = total_capture_bytes + len(video)
-                        if prospective_total > NATIVE_FAILURE_REPLAY_MAX_TOTAL_BYTES:
-                            raise RuntimeError(
-                                "failure replay video payload exceeds the configured "
-                                f"{NATIVE_FAILURE_REPLAY_MAX_TOTAL_BYTES}-byte limit"
+                            capture_frame_sequence_evidence(
+                                [_frame_sha256(frame) for frame in frames],
+                                trace,
+                                episode.get("final", {}).get("frame_sha256"),
+                                episode.get("policy_steps", 0),
                             )
-                        total_capture_bytes = prospective_total
-                        capture_files[filename] = video
-                        capture["video"] = video_metadata
+                        )
+                        pending_capture_frames[episode_index] = frames
                     except Exception as error:
                         capture["capture_error"] = {
                             "type": type(error).__name__,
@@ -1511,6 +1633,63 @@ class _NativeEpisodeMixin:
                 if not episode["valid"]:
                     break
 
+        capture_phase_started = time.perf_counter() if capture_video else None
+        capture_wall_deadline = (
+            capture_phase_started + NATIVE_CAPTURE_WALL_BUDGET_SECONDS
+            if capture_phase_started is not None
+            else None
+        )
+        if capture_video:
+            assert capture_wall_deadline is not None
+            for capture in captures:
+                if "capture_error" in capture:
+                    continue
+                episode_index = int(capture["episode_index"])
+                filename = Path(str(capture["relative_path"])).name
+                try:
+                    encode_started = time.perf_counter()
+                    video, video_metadata = _encode_h264_policy_video(
+                        pending_capture_frames.pop(episode_index),
+                        Path("/tmp/airicraft-native-capture") / filename,
+                        capture_wall_deadline,
+                    )
+                    prospective_total = total_capture_bytes + len(video)
+                    if prospective_total > NATIVE_GATE_MAX_TOTAL_VIDEO_BYTES:
+                        raise RuntimeError(
+                            "native capture payload exceeds the configured "
+                            f"{NATIVE_GATE_MAX_TOTAL_VIDEO_BYTES}-byte limit"
+                        )
+                    total_capture_bytes = prospective_total
+                    capture_files[filename] = video
+                    capture["video"] = video_metadata
+                    capture["video_encode_seconds"] = time.perf_counter() - encode_started
+                except Exception as error:
+                    capture["capture_error"] = {
+                        "type": type(error).__name__,
+                        "message": str(error),
+                    }
+
+        capture_phase_seconds = (
+            time.perf_counter() - capture_phase_started
+            if capture_phase_started is not None
+            else 0.0
+        )
+        capture_checks = (
+            native_capture_acceptance_checks(
+                episode_indices,
+                episodes,
+                captures,
+                len(capture_files),
+                total_capture_bytes,
+            )
+            if capture_video
+            else {}
+        )
+        if capture_video:
+            capture_checks["capture_phase_within_budget"] = (
+                capture_phase_seconds <= NATIVE_CAPTURE_WALL_BUDGET_SECONDS
+            )
+        capture_integrity_passed = capture_video and all(capture_checks.values())
         completed = len(episodes) == len(episode_indices)
         valid_episodes = sum(bool(episode.get("valid")) for episode in episodes)
         successes = sum(
@@ -1523,6 +1702,10 @@ class _NativeEpisodeMixin:
         first_setup = episodes[0].get("setup", {}) if episodes else {}
         first_mission_fixture = first_setup.get("mission_fixture", {})
         fixture_voxel_oracle_valid = first_mission_fixture.get("runtime_query", {}).get("passed") is True
+        policy_view_settle_complete = (
+            first_mission_fixture.get("policy_view_settle", {}).get("noop_steps")
+            == NATIVE_POLICY_VIEW_SETTLE_STEPS
+        )
         infrastructure_checks = {
             "requested_gpu_present": GPU_TYPE.lower() in self.cuda_device_name.lower(),
             "torch_runtime_matches_pin": self.torch.__version__ == RUNTIME_PINS["torch"],
@@ -1532,8 +1715,14 @@ class _NativeEpisodeMixin:
             "pinned_task_source_ready": task_metadata["sha256"] == NATIVE_TASK_CONFIG_SHA256,
             "pinned_upstream_commands_ready": task_metadata["upstream_commands_sha256"]
             == NATIVE_UPSTREAM_TASK_COMMANDS_SHA256,
+            "pinned_environment_commands_ready": task_metadata["environment_commands_sha256"]
+            == NATIVE_ENVIRONMENT_COMMANDS_SHA256,
             "pinned_fixture_spec_ready": task_metadata["fixture_spec_sha256"]
             == NATIVE_FIXTURE_SPEC_SHA256,
+            "runtime_template_matches_pin": engine_metadata.get("runtime_template_sha256")
+            == NATIVE_RUNTIME_TEMPLATE_SHA256,
+            "runtime_tutorial_disabled": engine_metadata.get("runtime_tutorial_disabled") is True,
+            "policy_view_settle_complete": policy_view_settle_complete,
             "fixture_voxel_oracle_valid": fixture_voxel_oracle_valid,
             **conditioning_checks,
             "all_requested_episodes_completed": completed,
@@ -1543,47 +1732,65 @@ class _NativeEpisodeMixin:
             "suite_error_absent": suite_error is None,
         }
         infrastructure_passed = all(infrastructure_checks.values())
-        gate_requested = episode_indices == list(range(NATIVE_EPISODE_COUNT))
         outcome = native_suite_outcome(episodes, infrastructure_passed)
+        gate_acceptance = native_gate_acceptance(
+            outcome,
+            gate_requested,
+            capture_integrity_passed,
+        )
         gate_checks = {
             **infrastructure_checks,
             "exact_locked_episode_schedule": outcome["exact_locked_episode_schedule"],
             "ten_valid_episodes": outcome["complete_and_valid"],
             "successes_at_least_eight": outcome["successes"] >= NATIVE_REQUIRED_SUCCESSES,
+            "mandatory_same_run_capture_valid": (
+                capture_integrity_passed if gate_requested else True
+            ),
         }
-        if capture_replay:
-            kind = "model_native_failure_replay"
-        else:
-            kind = "model_native_episode_suite" if gate_requested else "model_native_episode"
+        kind = "model_native_episode_suite" if gate_requested else "model_native_episode"
         result = result_envelope(
             kind,
             {
                 "gate": NATIVE_GATE_NAME,
                 "gate_requested": gate_requested,
-                "gate_evaluated": outcome["evaluated"],
-                "task": DEFAULT_TASK,
+                "gate_evaluated": gate_acceptance["evaluated"],
+                "task": NATIVE_POLICY_PROMPT,
                 "task_label": task_label,
                 "episode_indices": episode_indices,
                 "protocol": {
                     "claim_scope": (
-                        "native MineStudio simple iron fixture with the locked Stage 2 continuity prompt; "
-                        "not upstream-prompt parity and not a visible-iron test"
+                        "native MineStudio simple iron fixture with the upstream prompt, released-GUI "
+                        "reset commands, startup-overlay suppression protocol, and released attack "
+                        "stabilization"
                     ),
                     "upstream_task_text": NATIVE_UPSTREAM_TASK_TEXT,
-                    "policy_prompt": DEFAULT_TASK,
+                    "policy_prompt": NATIVE_POLICY_PROMPT,
                     "policy_prompt_note": (
-                        "retained from Stages 1 and 2 for conditioning continuity; the upstream task "
-                        "text is recorded but is not the model input"
+                        "exact released task text; this is task-config parity, not an unreleased "
+                        "planner-subtask benchmark reproduction"
                     ),
+                    "seed_namespace": seed_namespace,
+                    "held_out_schedule": gate_requested,
+                    "environment_commands": list(NATIVE_ENVIRONMENT_COMMANDS),
+                    "environment_commands_sha256": NATIVE_ENVIRONMENT_COMMANDS_SHA256,
+                    "policy_view_settle_noop_steps": NATIVE_POLICY_VIEW_SETTLE_STEPS,
+                    "runtime_template_sha256": dict(NATIVE_RUNTIME_TEMPLATE_SHA256),
+                    "attack_stabilizer": {
+                        "source": "released Optimus-3 GUI postprocessor",
+                        "when": "attack is active",
+                        "zeroed_controls": ["jump", "left", "right", "sneak", "sprint"],
+                    },
                     "maximum_policy_steps_per_episode": NATIVE_MAX_STEPS,
                     "required_successes": NATIVE_REQUIRED_SUCCESSES,
                     "wall_budget_seconds": wall_budget_seconds,
                     "wall_budget_enforcement": (
                         "cooperative checks between blocking reset, inference, and simulator-step calls"
                     ),
-                    "outer_hard_timeout_seconds": 1800,
+                    "capture_wall_budget_seconds": NATIVE_CAPTURE_WALL_BUDGET_SECONDS,
+                    "outer_hard_timeout_seconds": NATIVE_MODAL_METHOD_TIMEOUT_SECONDS,
                     "outer_hard_timeout_note": (
-                        "the Modal function timeout is the hard stop if a blocking JVM or model call hangs"
+                        "the Modal hard stop leaves seven minutes beyond the maximum competence and "
+                        "capture budgets for result construction and return"
                     ),
                     "hard_reset_between_episodes": True,
                     "fresh_minecraft_process_per_episode": True,
@@ -1592,17 +1799,18 @@ class _NativeEpisodeMixin:
                     "policy_warmup_steps": 0,
                     "per_frame_stochastic_prior_preserved": True,
                     "fallback_enabled": False,
-                    "video_recording": capture_replay,
+                    "video_recording": capture_video,
                     "video_capture_timing": (
-                        "copy after scored timing; encode only after the episode and simulator close attempt"
-                        if capture_replay
+                        "copy after scored timing; encode only after all scored episodes and simulator "
+                        "close attempts"
+                        if capture_video
                         else None
                     ),
                     "setup_steps_are_unscored": True,
                     "fixture_runtime_proof": (
                         "every episode creates the upstream-equivalent 2x2x2 state with absolute "
-                        "setblock commands, settles two no-op ticks, and requires eight iron cells "
-                        "from the half-open VoxelAction query"
+                        "setblock commands, settles the fixture, drains the policy view for 220 no-op "
+                        "ticks, and requires eight iron cells from the half-open VoxelAction query"
                     ),
                     "privileged_fixture_observer_available_to_policy": False,
                     "oracle": "mine_block.iron_ore delta >= 1 and inventory iron_ore delta >= 1",
@@ -1631,6 +1839,10 @@ class _NativeEpisodeMixin:
                     "model_load_seconds": self.load_seconds,
                     "task_embedding_seconds": embedding_seconds,
                     "task_projection_seconds": projection_seconds,
+                    "video_encoding_seconds": sum(
+                        float(capture.get("video_encode_seconds", 0.0)) for capture in captures
+                    ),
+                    "capture_phase_seconds": capture_phase_seconds,
                     "method_seconds": time.perf_counter() - method_started,
                 },
                 "cuda": {
@@ -1645,90 +1857,39 @@ class _NativeEpisodeMixin:
                     "passed": infrastructure_passed,
                 },
                 "acceptance": {
-                    "evaluated": outcome["evaluated"],
+                    "evaluated": gate_acceptance["evaluated"],
                     "checks": gate_checks,
-                    "passed": outcome["passed"],
+                    "passed": gate_acceptance["passed"],
                 },
             },
         )
-        if capture_replay:
-            capture_checks = {
-                "exact_failed_episode_schedule": episode_indices == list(NATIVE_FAILURE_REPLAY_INDICES),
-                "all_replays_completed": len(episodes) == len(NATIVE_FAILURE_REPLAY_INDICES),
-                "all_capture_records_present": len(captures) == len(NATIVE_FAILURE_REPLAY_INDICES),
-                "capture_errors_absent": all("capture_error" not in capture for capture in captures),
-                "all_simulator_closes_succeeded": all(
-                    capture["simulator_close_succeeded"] for capture in captures
-                ),
-                "all_videos_encoded": (
-                    len(capture_files) == len(NATIVE_FAILURE_REPLAY_INDICES)
-                    and all(capture["video"] is not None for capture in captures)
-                ),
-                "all_frame_counts_match": all(
-                    capture["video"] is not None
-                    and capture["video"]["frame_count"] == capture["policy_steps"] + 1
-                    for capture in captures
-                ),
-                "all_video_metadata_valid": all(
-                    capture["video"] is not None
-                    and all(capture["video"]["checks"].values())
-                    for capture in captures
-                ),
-                "all_trajectories_match_source": all(capture["trace_matches"] for capture in captures),
-                "all_applied_actions_match_source": all(
-                    capture["applied_actions_match"] for capture in captures
-                ),
-                "all_replays_reproduce_timeout_failures": all(
-                    capture["valid"]
-                    and not capture["success"]
-                    and capture["failure_reason"] == "timeout_200_steps"
-                    for capture in captures
-                ),
-                "total_video_bytes_within_limit": (
-                    0 < total_capture_bytes <= NATIVE_FAILURE_REPLAY_MAX_TOTAL_BYTES
-                ),
-            }
+        if capture_video:
             result["payload"]["capture_protocol"] = {
-                "scope": "passive diagnostic replay; never rescored as the Stage 3 gate",
-                "source_result": NATIVE_FAILURE_REPLAY_SOURCE_RESULT,
-                "source_result_sha256": NATIVE_FAILURE_REPLAY_SOURCE_SHA256,
-                "episode_indices": list(NATIVE_FAILURE_REPLAY_INDICES),
+                "scope": (
+                    "same-run visual evidence for the scored v2 native gate"
+                    if gate_requested
+                    else "same-run visual evidence for a diagnostic v2 native episode"
+                ),
+                "episode_indices": episode_indices,
                 "frame_mapping": "frame 0 is pre-step 1; frame n is post-step n",
-                "clean_policy_view": True,
                 "overlays": False,
+                "startup_overlay_suppression_protocol_applied": True,
+                "visual_cleanliness_requires_post_run_inspection": True,
                 "frame_copy_after_scored_timing": True,
-                "encoding_after_episode_and_simulator_close_attempt": True,
+                "encoding_after_all_scored_episodes_and_close_attempts": True,
                 "simulator_close_outcome_recorded_per_capture": True,
-                "policy_or_environment_inputs_changed": False,
-                "maximum_total_video_bytes": NATIVE_FAILURE_REPLAY_MAX_TOTAL_BYTES,
+                "capture_is_same_run_as_score": True,
+                "ordered_source_frame_hashes_recorded": True,
+                "h264_is_lossy_diagnostic_rendition": True,
+                "capture_wall_budget_seconds": NATIVE_CAPTURE_WALL_BUDGET_SECONDS,
+                "maximum_total_video_bytes": NATIVE_GATE_MAX_TOTAL_VIDEO_BYTES,
             }
             result["payload"]["captures"] = captures
             result["payload"]["capture_acceptance"] = {
                 "checks": capture_checks,
-                "passed": all(capture_checks.values()),
-                "non_gating": True,
+                "passed": capture_integrity_passed,
+                "required_for_gate": gate_requested,
             }
-            result["payload"]["episodes"] = [
-                {
-                    key: episode[key]
-                    for key in (
-                        "episode_index",
-                        "world_seed",
-                        "policy_seed",
-                        "valid",
-                        "success",
-                        "failure_reason",
-                        "completion_step",
-                        "policy_steps",
-                        "final",
-                        "metrics",
-                        "action_evidence",
-                        "action_trace_sha256",
-                    )
-                    if key in episode
-                }
-                for episode in episodes
-            ]
             result["_capture_files"] = capture_files
         return result
 
@@ -1791,7 +1952,7 @@ def gpu_preflight() -> dict[str, Any]:
     cpu=4.0,
     memory=65_536,
     startup_timeout=15 * 60,
-    timeout=30 * 60,
+    timeout=NATIVE_MODAL_METHOD_TIMEOUT_SECONDS,
     retries=0,
     min_containers=0,
     max_containers=1,
@@ -1974,12 +2135,15 @@ class Optimus3Smoke(_NativeEpisodeMixin):
         self.torch.cuda.synchronize()
         policy_finished_ns = time.perf_counter_ns()
         raw_action = validate_complete_action(raw_action)
-        applied_action, forbidden_attempts = apply_pilot_safety_mask(raw_action)
+        pre_reflex_action, forbidden_attempts = apply_pilot_safety_mask(raw_action)
         safety_violations = [
             f"allowed action changed: {key}"
             for key in ALLOWED_ACTION_KEYS
-            if applied_action[key] != raw_action[key]
+            if pre_reflex_action[key] != raw_action[key]
         ]
+        applied_action, attack_reflex_clamped_keys = apply_official_attack_stabilizer(
+            pre_reflex_action
+        )
         active_applied = set(active_action_keys(applied_action))
         safety_violations.extend(
             f"forbidden action survived mask: {key}"
@@ -1992,7 +2156,10 @@ class Optimus3Smoke(_NativeEpisodeMixin):
             "safety_ms": (finished_ns - policy_finished_ns) / 1_000_000.0,
             "native_step_ms": (finished_ns - started_ns) / 1_000_000.0,
             "raw_action": raw_action,
+            "pre_reflex_action": pre_reflex_action,
             "applied_action": applied_action,
+            "attack_reflex_active": bool(pre_reflex_action["attack"]),
+            "attack_reflex_clamped_keys": attack_reflex_clamped_keys,
             "forbidden_attempts": forbidden_attempts,
             "safety_violations": safety_violations,
         }
@@ -2009,14 +2176,20 @@ class Optimus3Smoke(_NativeEpisodeMixin):
     @staticmethod
     def _action_evidence(records: list[dict[str, Any]]) -> dict[str, Any]:
         raw_active_counts = {key: 0 for key in ALL_ACTION_KEYS}
+        pre_reflex_active_counts = {key: 0 for key in ALL_ACTION_KEYS}
         applied_active_counts = {key: 0 for key in ALL_ACTION_KEYS}
         forbidden_attempt_counts = {key: 0 for key in FORBIDDEN_ACTION_KEYS}
+        attack_reflex_clamp_counts = {key: 0 for key in ALLOWED_ACTION_KEYS}
         safety_violations: list[dict[str, Any]] = []
         for index, record in enumerate(records):
             for key in active_action_keys(record["raw_action"]):
                 raw_active_counts[key] += 1
+            for key in active_action_keys(record["pre_reflex_action"]):
+                pre_reflex_active_counts[key] += 1
             for key in active_action_keys(record["applied_action"]):
                 applied_active_counts[key] += 1
+            for key in record["attack_reflex_clamped_keys"]:
+                attack_reflex_clamp_counts[key] += 1
             for key in record["forbidden_attempts"]:
                 forbidden_attempt_counts[key] += 1
             safety_violations.extend(
@@ -2029,7 +2202,9 @@ class Optimus3Smoke(_NativeEpisodeMixin):
             )
         return {
             "raw_active_counts": raw_active_counts,
+            "pre_reflex_active_counts": pre_reflex_active_counts,
             "applied_active_counts": applied_active_counts,
+            "attack_reflex_clamp_counts": attack_reflex_clamp_counts,
             "forbidden_attempt_counts": forbidden_attempt_counts,
             "safety_violations": safety_violations,
         }
@@ -2054,7 +2229,10 @@ class Optimus3Smoke(_NativeEpisodeMixin):
         self.torch.cuda.synchronize()
         action_seconds = time.perf_counter() - action_started
         raw_action = validate_complete_action(raw_action)
-        applied_action, forbidden_attempts = apply_pilot_safety_mask(raw_action)
+        pre_reflex_action, forbidden_attempts = apply_pilot_safety_mask(raw_action)
+        applied_action, attack_reflex_clamped_keys = apply_official_attack_stabilizer(
+            pre_reflex_action
+        )
 
         return result_envelope(
             "model_action_smoke",
@@ -2072,7 +2250,10 @@ class Optimus3Smoke(_NativeEpisodeMixin):
                     "finite": True,
                 },
                 "raw_action": raw_action,
+                "pre_reflex_action": pre_reflex_action,
                 "applied_action": applied_action,
+                "attack_reflex_active": bool(pre_reflex_action["attack"]),
+                "attack_reflex_clamped_keys": attack_reflex_clamped_keys,
                 "forbidden_attempts": forbidden_attempts,
                 "timing": {
                     "model_load_seconds": self.load_seconds,
@@ -2320,21 +2501,17 @@ class Optimus3Smoke(_NativeEpisodeMixin):
 
     @modal.method()
     def native_episode(self, episode_index: int = 0) -> dict[str, Any]:
-        return self._run_native([validate_episode_index(episode_index)])
+        return self._run_native([validate_episode_index(episode_index)], capture_video=True)
 
     @modal.method()
     def native_suite(self) -> dict[str, Any]:
-        return self._run_native(list(range(NATIVE_EPISODE_COUNT)))
-
-    @modal.method()
-    def native_failure_replay(self) -> dict[str, Any]:
-        return self._run_native(list(NATIVE_FAILURE_REPLAY_INDICES), capture_replay=True)
+        return self._run_native(list(range(NATIVE_EPISODE_COUNT)), capture_video=True)
 
 
 def _emit(result: dict[str, Any], output: str) -> None:
     capture_files = result.pop("_capture_files", {})
     if capture_files and not output:
-        raise ValueError("failure replay capture requires an output path")
+        raise ValueError("native policy capture requires an output path")
     video_paths: list[Path] = []
     staged_video_paths: list[tuple[Path, Path]] = []
     if capture_files:
@@ -2441,11 +2618,9 @@ def main(
         result = Optimus3Smoke().native_episode.remote(validate_episode_index(episode_index))
     elif mode == "episodes":
         result = Optimus3Smoke().native_suite.remote()
-    elif mode == "failure-replay":
-        result = Optimus3Smoke().native_failure_replay.remote()
     else:
         raise ValueError(
             "mode must be one of: preflight, cache, engine-cache, sim-preflight, smoke, bench, "
-            "episode, episodes, failure-replay"
+            "episode, episodes"
         )
     _emit(result, output)
