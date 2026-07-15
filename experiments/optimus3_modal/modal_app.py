@@ -40,6 +40,7 @@ from contract import (
     NATIVE_EXPECTED_LABEL,
     NATIVE_EXPECTED_PROJECTION_SHA256,
     NATIVE_FIXTURE_BLOCK_OFFSETS,
+    NATIVE_FIXTURE_MAX_MATERIALIZATION_PASSES,
     NATIVE_FIXTURE_METHOD,
     NATIVE_FIXTURE_SETTLE_STEPS,
     NATIVE_FIXTURE_SPEC_SHA256,
@@ -719,36 +720,65 @@ def _materialize_native_fixture(
     simulator: Any,
     expected_blocks: list[dict[str, Any]],
 ) -> tuple[Any, dict[str, Any], dict[str, Any]]:
+    if len(expected_blocks) != len(NATIVE_FIXTURE_BLOCK_OFFSETS):
+        raise RuntimeError("native fixture block coordinates do not match the locked offsets")
+
     command_outcomes: list[dict[str, Any]] = []
-    for block in expected_blocks:
-        command = f'/setblock {block["x"]} {block["y"]} {block["z"]} minecraft:iron_ore'
-        command_observation, reward, done, command_info = simulator.env.execute_cmd(command)
-        command_outcomes.append(
-            {
+    observation = None
+    info: dict[str, Any] = {}
+    runtime_query: dict[str, Any] = {}
+    pending = list(zip(NATIVE_FIXTURE_BLOCK_OFFSETS, expected_blocks, strict=True))
+    materialization_passes: list[dict[str, Any]] = []
+    for pass_index in range(1, NATIVE_FIXTURE_MAX_MATERIALIZATION_PASSES + 1):
+        pass_outcomes: list[dict[str, Any]] = []
+        for _offset, block in pending:
+            command = f'/setblock {block["x"]} {block["y"]} {block["z"]} minecraft:iron_ore'
+            command_observation, reward, done, command_info = simulator.env.execute_cmd(command)
+            outcome = {
                 "command": command,
                 "reward": float(reward),
                 "done": bool(done),
                 "observation_keys": sorted(command_observation or {}),
                 "info_keys": sorted(command_info or {}),
             }
+            pass_outcomes.append(outcome)
+            command_outcomes.append(outcome)
+            if done:
+                raise RuntimeError(f"native fixture command terminated the environment: {command}")
+
+        for _ in range(NATIVE_FIXTURE_SETTLE_STEPS):
+            observation, _reward, terminated, truncated, info = simulator.step(_simulator_noop(simulator))
+            if terminated or truncated:
+                raise RuntimeError("native fixture terminated while settling command effects")
+
+        observation, info, runtime_query = _query_native_voxels(
+            simulator,
+            NATIVE_FIXTURE_VOXEL_BOUNDS,
+            NATIVE_EXPECTED_IRON_BLOCKS,
         )
-        if done:
-            raise RuntimeError(f"native fixture command terminated the environment: {command}")
+        observed_offsets = {
+            (int(voxel["x"]), int(voxel["y"]), int(voxel["z"]))
+            for voxel in runtime_query["value"]
+            if isinstance(voxel, Mapping)
+            and str(voxel.get("type", "")).removeprefix("minecraft:") == "iron_ore"
+        }
+        materialization_passes.append(
+            {
+                "index": pass_index,
+                "requested_offsets": [list(offset) for offset, _block in pending],
+                "command_count": len(pass_outcomes),
+                "observed_iron_offsets": [list(offset) for offset in sorted(observed_offsets)],
+                "passed": runtime_query["passed"],
+            }
+        )
+        if runtime_query["passed"] is True:
+            break
+        pending = [
+            (offset, block)
+            for offset, block in zip(NATIVE_FIXTURE_BLOCK_OFFSETS, expected_blocks, strict=True)
+            if offset not in observed_offsets
+        ]
 
-    observation = None
-    info: dict[str, Any] = {}
-    terminated = False
-    truncated = False
-    for _ in range(NATIVE_FIXTURE_SETTLE_STEPS):
-        observation, _reward, terminated, truncated, info = simulator.step(_simulator_noop(simulator))
-        if terminated or truncated:
-            raise RuntimeError("native fixture terminated while settling command effects")
-
-    observation, info, runtime_query = _query_native_voxels(
-        simulator,
-        NATIVE_FIXTURE_VOXEL_BOUNDS,
-        NATIVE_EXPECTED_IRON_BLOCKS,
-    )
     evidence = {
         "upstream_commands_executed": False,
         "compatibility_reason": (
@@ -756,6 +786,8 @@ def _materialize_native_fixture(
             "selector-relative fill command"
         ),
         "materialization": "one absolute setblock command per expected block",
+        "maximum_materialization_passes": NATIVE_FIXTURE_MAX_MATERIALIZATION_PASSES,
+        "materialization_passes": materialization_passes,
         "command_outcomes": command_outcomes,
         "settle_noop_steps": NATIVE_FIXTURE_SETTLE_STEPS,
         "runtime_query": runtime_query,

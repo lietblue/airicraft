@@ -54,9 +54,10 @@ NATIVE_FIXTURE_BLOCK_OFFSETS = tuple(
     for y in (0, 1)
     for z in (2, 3)
 )
+NATIVE_FIXTURE_MAX_MATERIALIZATION_PASSES = 3
 NATIVE_FIXTURE_SETTLE_STEPS = 2
 NATIVE_FIXTURE_VOXEL_BOUNDS = (2, 4, 0, 2, 2, 4)
-NATIVE_FIXTURE_SPEC_SHA256 = "fd653cfed39a1fc7c0466c291073eaec0d5a4effc9c868bac32c4c30f0cb295b"
+NATIVE_FIXTURE_SPEC_SHA256 = "ed7c14283d42e4d1acaf94625ebd7473149664080e4237fb9a0a9b6631519e92"
 NATIVE_EXPECTED_IRON_BLOCKS = 8
 NATIVE_EMBEDDING_SEED = 7
 NATIVE_EXPECTED_LABEL = "<iron>"
@@ -72,6 +73,7 @@ def native_fixture_spec() -> dict[str, Any]:
         "expected_iron_blocks": NATIVE_EXPECTED_IRON_BLOCKS,
         "inventory": {"0": {"quantity": 1, "type": "stone_pickaxe"}},
         "materialization": "one absolute setblock command per expected block",
+        "maximum_materialization_passes": NATIVE_FIXTURE_MAX_MATERIALIZATION_PASSES,
         "placement": "discovery_location",
         "settle_noop_steps": NATIVE_FIXTURE_SETTLE_STEPS,
         "voxel_bounds_half_open": list(NATIVE_FIXTURE_VOXEL_BOUNDS),

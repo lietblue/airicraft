@@ -110,6 +110,7 @@ class ContractTest(unittest.TestCase):
         ).encode("utf-8")
         self.assertEqual(hashlib.sha256(fixture_bytes).hexdigest(), contract.NATIVE_FIXTURE_SPEC_SHA256)
         self.assertEqual(contract.NATIVE_FIXTURE_VOXEL_BOUNDS, (2, 4, 0, 2, 2, 4))
+        self.assertEqual(contract.NATIVE_FIXTURE_MAX_MATERIALIZATION_PASSES, 3)
         x0, x1, y0, y1, z0, z1 = contract.NATIVE_FIXTURE_VOXEL_BOUNDS
         self.assertEqual((x1 - x0) * (y1 - y0) * (z1 - z0), contract.NATIVE_EXPECTED_IRON_BLOCKS)
         self.assertEqual(
