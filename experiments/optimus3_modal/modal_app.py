@@ -629,17 +629,17 @@ def _configure_native_mission_fixture(
         def xml_template(self) -> str:
             x_min, x_max, y_min, y_max, z_min, z_max = NATIVE_GRID_BOUNDS
             return (
-                f'<ObservationFromGrid><Grid name="{self.name}">'
+                f'<ObservationFromGrid><Grid name="{self.name}" '
+                'absoluteCoords="false" projectDown="false" atSpawn="false">'
                 f'<min x="{x_min}" y="{y_min}" z="{z_min}"/>'
                 f'<max x="{x_max}" y="{y_max}" z="{z_max}"/>'
                 "</Grid></ObservationFromGrid>"
             )
 
-        def from_hero(self, info: Mapping[str, Any]) -> list[str]:
-            value = info.get(self.name, [])
-            return list(value) if isinstance(value, (list, tuple)) else []
+        def from_hero(self, info: Mapping[str, Any]) -> dict[str, Any]:
+            return {"present": self.name in info, "value": info.get(self.name)}
 
-        def from_universal(self, info: Mapping[str, Any]) -> list[str]:
+        def from_universal(self, info: Mapping[str, Any]) -> dict[str, Any]:
             return self.from_hero(info)
 
     def create_agent_start(_task: Any) -> list[Any]:
@@ -801,6 +801,14 @@ def _native_reset(simulator: Any, world_seed: int) -> tuple[Any, dict[str, Any],
 
     simulator.env.seed(world_seed)
     observation, info = simulator.reset()
+    rendered_mission = simulator.env.task.to_xml()
+    mission_fixture.update(
+        {
+            "rendered_mission_sha256": hashlib.sha256(rendered_mission.encode("utf-8")).hexdigest(),
+            "rendered_mission_contains_grid": "airicraft_native_iron_grid" in rendered_mission,
+            "rendered_mission_contains_drawing": "<DrawingDecorator>" in rendered_mission,
+        }
+    )
     frame = observation.get("image")
     validate_frame_shape(frame)
     grid_value = info.get("airicraft_native_iron_grid")
