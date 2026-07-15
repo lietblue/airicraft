@@ -98,12 +98,19 @@ class ContractTest(unittest.TestCase):
             ["attack", "camera", "forward", "hotbar.4", "inventory"],
         )
 
-        complete = {key: normalized[key] for key in contract.ALL_ACTION_KEYS}
+        complete = {key: normalized[key] for key in contract.POLICY_ACTION_KEYS}
         self.assertEqual(contract.validate_complete_action(complete), complete)
+        self.assertEqual(len(complete), 22)
+        policy_applied, _ = contract.apply_pilot_safety_mask(complete)
+        self.assertEqual(len(policy_applied), 24)
+        self.assertEqual(policy_applied["pickItem"], 0)
+        self.assertEqual(policy_applied["swapHands"], 0)
         with self.assertRaises(ValueError):
             contract.validate_complete_action({"forward": 1})
         with self.assertRaises(ValueError):
             contract.validate_complete_action({**complete, "unexpected": 1})
+        with self.assertRaises(ValueError):
+            contract.validate_complete_action({**complete, "pickItem": 0})
         with self.assertRaises(ValueError):
             contract.validate_complete_action({**complete, 1: 0})
         with self.assertRaises(ValueError):

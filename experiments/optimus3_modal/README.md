@@ -174,6 +174,12 @@ strictly fewer than 5% of steps exceed 50 ms, every raw action has the complete
 expected schema, and the safety mask has no violation. A forbidden policy
 attempt is retained as evidence and is not itself a mask failure.
 
+The pinned Optimus policy emits 22 controls: movement, camera, attack, use,
+inventory, drop, escape, and nine hotbar choices. `pickItem` and `swapHands` are
+Airicraft actuator controls, not Optimus outputs. Fail-closed validation requires
+the exact 22-key policy schema; normalization then adds those two actuator-only
+controls as zero before the safety mask produces the 24-key applied action.
+
 `native_step_ms` includes the stochastic prior, frame preprocessing and device
 transfer, classifier-free-guidance recurrent policy, action sampling and
 device-to-host mapping, fail-closed validation, normalization, and the safety

@@ -112,6 +112,11 @@ one-time MLLM embedding and projection, Minecraft capture, transport, tick
 scheduling, and actuator application. CUDA is synchronized around every timed
 step, and nearest-rank percentiles are used.
 
+The fail-closed policy schema contains the 22 controls actually emitted by the
+pinned VPT action transformer. `pickItem` and `swapHands` exist only in the
+Airicraft actuator schema; normalization adds them as zero before producing the
+24-key safety-masked action.
+
 Stage 2 passes only when the full run completes with at least 200 continuous
 measured steps, p95 native-step latency is at most 50 ms, strictly fewer than 5%
 of samples exceed 50 ms, every action schema is complete, and no safety-mask

@@ -81,6 +81,8 @@ FORBIDDEN_ACTION_KEYS = (
     "use",
 )
 ALL_ACTION_KEYS = ALLOWED_ACTION_KEYS + FORBIDDEN_ACTION_KEYS
+ACTUATOR_ONLY_ACTION_KEYS = ("pickItem", "swapHands")
+POLICY_ACTION_KEYS = tuple(key for key in ALL_ACTION_KEYS if key not in ACTUATOR_ONLY_ACTION_KEYS)
 ACTION_LABELS = (
     "<dirt>",
     "<tree>",
@@ -251,19 +253,20 @@ def validate_complete_action(action: Mapping[str, Any]) -> dict[str, Any]:
     if any(not isinstance(key, str) for key in action):
         raise ValueError("action keys must be strings")
     keys = set(action)
-    expected = set(ALL_ACTION_KEYS)
+    expected = set(POLICY_ACTION_KEYS)
     missing = sorted(expected - keys)
     unknown = sorted(keys - expected)
     if missing or unknown:
         raise ValueError(f"action schema mismatch: missing={missing}, unknown={unknown}")
     normalized = normalize_action(action)
-    for key, value in normalized.items():
+    policy_action = {key: normalized[key] for key in POLICY_ACTION_KEYS}
+    for key, value in policy_action.items():
         if key == "camera":
             if any(not math.isfinite(component) for component in value):
                 raise ValueError("camera action must contain finite values")
         elif type(value) not in (int, float) or not math.isfinite(float(value)) or value not in (0, 1):
             raise ValueError(f"discrete action {key} must be scalar 0 or 1")
-    return normalized
+    return policy_action
 
 
 def _is_active(value: Any) -> bool:
@@ -381,6 +384,8 @@ def pilot_manifest() -> dict[str, Any]:
         },
         "allowed_actions": list(ALLOWED_ACTION_KEYS),
         "forbidden_actions": list(FORBIDDEN_ACTION_KEYS),
+        "policy_output_actions": list(POLICY_ACTION_KEYS),
+        "actuator_only_actions": list(ACTUATOR_ONLY_ACTION_KEYS),
         "cost_controls": {
             "persistent_endpoint": False,
             "min_containers": 0,
