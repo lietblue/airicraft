@@ -585,6 +585,8 @@ def _configure_native_mission_fixture(
     include_ray_observation: bool = False,
 ) -> dict[str, Any]:
     _install_minestudio_namespace_shim()
+    import numpy as np
+
     from minestudio.simulator.minerl.herobraine.hero import spaces
     from minestudio.simulator.minerl.herobraine.hero.handlers.agent.start import AgentStartPlacement
     from minestudio.simulator.minerl.herobraine.hero.handlers.server.world import DrawingDecorator
@@ -627,7 +629,7 @@ def _configure_native_mission_fixture(
         name = "airicraft_fixture_ray"
 
         def __init__(self) -> None:
-            super().__init__(spaces.Text(1))
+            super().__init__(spaces.Text(shape=(1,)))
 
         def to_string(self) -> str:
             return self.name
@@ -635,10 +637,13 @@ def _configure_native_mission_fixture(
         def xml_template(self) -> str:
             return '<ObservationFromRay includeNBT="false"/>'
 
-        def from_hero(self, info: Mapping[str, Any]) -> str:
-            return json.dumps(to_jsonable(info.get("LineOfSight")), sort_keys=True, separators=(",", ":"))
+        def from_hero(self, info: Mapping[str, Any]) -> Any:
+            encoded = json.dumps(
+                to_jsonable(info.get("LineOfSight")), sort_keys=True, separators=(",", ":")
+            )
+            return np.asarray([encoded], dtype=np.str_)
 
-        def from_universal(self, info: Mapping[str, Any]) -> str:
+        def from_universal(self, info: Mapping[str, Any]) -> Any:
             return self.from_hero(info)
 
     def create_agent_start(_task: Any) -> list[Any]:
@@ -692,6 +697,10 @@ def _rendered_draw_blocks(rendered_mission: str) -> list[dict[str, Any]]:
 
 def _fixture_ray_value(info: Mapping[str, Any]) -> dict[str, Any] | None:
     value = info.get("airicraft_fixture_ray")
+    if hasattr(value, "tolist"):
+        value = value.tolist()
+    if isinstance(value, (list, tuple)) and len(value) == 1:
+        value = value[0]
     if isinstance(value, str):
         try:
             value = json.loads(value)
