@@ -56,7 +56,7 @@ NATIVE_FIXTURE_DRAW_OFFSETS = tuple(
 )
 NATIVE_FIXTURE_PROOF_TARGET_OFFSET = (2, 1, 2)
 NATIVE_FIXTURE_PROOF_MAX_ATTACK_STEPS = 60
-NATIVE_FIXTURE_SPEC_SHA256 = "1b4dacc81e12c021fa386885bc55f2482c21f079192140c8af8e9fe8f10c226c"
+NATIVE_FIXTURE_SPEC_SHA256 = "41b94b6c82d903a5e844712c24c73c07ffacb89765b2134212fb41cd9832c9fc"
 NATIVE_EXPECTED_IRON_BLOCKS = 8
 NATIVE_EMBEDDING_SEED = 7
 NATIVE_EXPECTED_LABEL = "<iron>"
@@ -72,7 +72,7 @@ def native_fixture_spec() -> dict[str, Any]:
         "placement": "discovery_location",
         "runtime_proof": {
             "max_attack_steps": NATIVE_FIXTURE_PROOF_MAX_ATTACK_STEPS,
-            "method": "unscored_overhead_attack_then_mine_stat",
+            "method": "unscored_adjacent_attack_then_mine_stat",
             "target_offset": list(NATIVE_FIXTURE_PROOF_TARGET_OFFSET),
         },
     }

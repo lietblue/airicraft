@@ -841,12 +841,17 @@ def _native_reset(
     }
 
     if verify_runtime_target:
+        proof_horizontal_distance = 2.0
+        proof_eye_y = discovery_location["ypos"] + 1.62
+        proof_target_center_y = proof_target["y"] + 0.5
         proof_placement = {
             "x": proof_target["x"] + 0.5,
-            "y": proof_target["y"] + 1.0,
-            "z": proof_target["z"] + 0.5,
+            "y": discovery_location["ypos"],
+            "z": proof_target["z"] - 1.5,
             "yaw": 0.0,
-            "pitch": 90.0,
+            "pitch": math.degrees(
+                math.atan2(proof_eye_y - proof_target_center_y, proof_horizontal_distance)
+            ),
         }
         proof_fixture = _configure_native_mission_fixture(
             simulator,
@@ -866,7 +871,6 @@ def _native_reset(
                 ("xpos", "x"),
                 ("ypos", "y"),
                 ("zpos", "z"),
-                ("pitch", "pitch"),
             )
         )
         mine_before = stat_count(proof_info.get("mine_block"), "iron_ore")
@@ -918,7 +922,7 @@ def _native_reset(
         runtime_proof = {
             "performed": True,
             "passed": proof_passed,
-            "method": "unscored_overhead_attack_then_mine_stat",
+            "method": "unscored_adjacent_attack_then_mine_stat",
             "target": proof_target,
             "placement": proof_placement,
             "observed_location": proof_location,
@@ -1451,7 +1455,7 @@ class _NativeEpisodeMixin:
                     "setup_steps_are_unscored": True,
                     "fixture_runtime_proof": (
                         "the first episode audits all eight DrawBlock declarations, then uses an "
-                        "unscored overhead attack-and-mine-stat canary before a hard reset"
+                        "unscored adjacent attack-and-mine-stat canary before a hard reset"
                     ),
                     "privileged_fixture_observer_available_to_policy": False,
                     "oracle": "mine_block.iron_ore delta >= 1 and inventory iron_ore delta >= 1",
