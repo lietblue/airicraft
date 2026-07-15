@@ -43,6 +43,7 @@ from contract import (
     NATIVE_FIXTURE_METHOD,
     NATIVE_FIXTURE_SPEC_SHA256,
     NATIVE_GATE_NAME,
+    NATIVE_GRID_BOUNDS,
     NATIVE_MAX_STEPS,
     NATIVE_REQUIRED_SUCCESSES,
     NATIVE_SUITE_WALL_BUDGET_SECONDS,
@@ -51,7 +52,6 @@ from contract import (
     NATIVE_UPSTREAM_TASK_COMMANDS,
     NATIVE_UPSTREAM_TASK_COMMANDS_SHA256,
     NATIVE_UPSTREAM_TASK_TEXT,
-    NATIVE_VOXEL_QUERY,
     OPTIMUS3_REPOSITORY,
     OPTIMUS3_REVISION,
     RUNTIME_PINS,
@@ -563,6 +563,7 @@ def _new_native_simulator(world_seed: int) -> Any:
     )
     task = simulator.env.task
     simulator.airicraft_original_create_agent_start = task.create_agent_start
+    simulator.airicraft_original_create_observables = task.create_observables
     simulator.airicraft_original_create_server_decorators = task.create_server_decorators
     return simulator
 
@@ -570,6 +571,7 @@ def _new_native_simulator(world_seed: int) -> Any:
 def _restore_native_mission(simulator: Any) -> None:
     task = simulator.env.task
     task.create_agent_start = simulator.airicraft_original_create_agent_start
+    task.create_observables = simulator.airicraft_original_create_observables
     task.create_server_decorators = simulator.airicraft_original_create_server_decorators
 
 
@@ -578,8 +580,10 @@ def _configure_native_mission_fixture(
     discovery_location: Mapping[str, float],
 ) -> dict[str, Any]:
     _install_minestudio_namespace_shim()
+    from minestudio.simulator.minerl.herobraine.hero import spaces
     from minestudio.simulator.minerl.herobraine.hero.handlers.agent.start import AgentStartPlacement
     from minestudio.simulator.minerl.herobraine.hero.handlers.server.world import DrawingDecorator
+    from minestudio.simulator.minerl.herobraine.hero.handlers.translation import TranslationHandler
 
     required_location_keys = {"xpos", "ypos", "zpos", "pitch", "yaw"}
     missing = sorted(required_location_keys - set(discovery_location))
@@ -610,16 +614,46 @@ def _configure_native_mission_fixture(
         "pitch": discovery_location["pitch"],
     }
     original_agent_start = simulator.airicraft_original_create_agent_start
+    original_observables = simulator.airicraft_original_create_observables
     original_server_decorators = simulator.airicraft_original_create_server_decorators
+
+    class NativeIronGridObservation(TranslationHandler):
+        name = "airicraft_native_iron_grid"
+
+        def __init__(self) -> None:
+            super().__init__(spaces.Text(shape=(NATIVE_EXPECTED_IRON_BLOCKS,)))
+
+        def to_string(self) -> str:
+            return self.name
+
+        def xml_template(self) -> str:
+            x_min, x_max, y_min, y_max, z_min, z_max = NATIVE_GRID_BOUNDS
+            return (
+                f'<ObservationFromGrid><Grid name="{self.name}">'
+                f'<min x="{x_min}" y="{y_min}" z="{z_min}"/>'
+                f'<max x="{x_max}" y="{y_max}" z="{z_max}"/>'
+                "</Grid></ObservationFromGrid>"
+            )
+
+        def from_hero(self, info: Mapping[str, Any]) -> list[str]:
+            value = info.get(self.name, [])
+            return list(value) if isinstance(value, (list, tuple)) else []
+
+        def from_universal(self, info: Mapping[str, Any]) -> list[str]:
+            return self.from_hero(info)
 
     def create_agent_start(_task: Any) -> list[Any]:
         return [*original_agent_start(), AgentStartPlacement(**placement)]
+
+    def create_observables(_task: Any) -> list[Any]:
+        return [*original_observables(), NativeIronGridObservation()]
 
     def create_server_decorators(_task: Any) -> list[Any]:
         return [*original_server_decorators(), DrawingDecorator(drawing_xml)]
 
     task = simulator.env.task
     task.create_agent_start = types.MethodType(create_agent_start, task)
+    task.create_observables = types.MethodType(create_observables, task)
     task.create_server_decorators = types.MethodType(create_server_decorators, task)
     return {
         "method": NATIVE_FIXTURE_METHOD,
@@ -630,6 +664,8 @@ def _configure_native_mission_fixture(
         "discovery_location": dict(discovery_location),
         "placement": placement,
         "draw_blocks": draw_blocks,
+        "grid_bounds": list(NATIVE_GRID_BOUNDS),
+        "grid_observation": NativeIronGridObservation.name,
         "drawing_xml_sha256": hashlib.sha256(drawing_xml.encode("utf-8")).hexdigest(),
     }
 
@@ -765,14 +801,10 @@ def _native_reset(simulator: Any, world_seed: int) -> tuple[Any, dict[str, Any],
 
     simulator.env.seed(world_seed)
     observation, info = simulator.reset()
-    query = _simulator_noop(simulator)
-    query["voxels"] = list(NATIVE_VOXEL_QUERY)
-    observation, _reward, terminated, truncated, info = simulator.step(query)
-    if terminated or truncated:
-        raise RuntimeError("MineStudio terminated during fixture validation")
     frame = observation.get("image")
     validate_frame_shape(frame)
-    iron_blocks = _count_voxel_type(info.get("voxels"), "iron_ore")
+    grid_value = info.get("airicraft_native_iron_grid")
+    iron_blocks = _count_voxel_type(grid_value, "iron_ore")
     mainhand = _mainhand_type(info)
     initial_iron = inventory_quantity(info.get("inventory"), "iron_ore")
     baseline = {
@@ -788,10 +820,10 @@ def _native_reset(simulator: Any, world_seed: int) -> tuple[Any, dict[str, Any],
         "location": _location(info),
         "baseline": baseline,
         "mission_fixture": mission_fixture,
-        "voxel_observation": {
-            "python_type": f"{type(info.get('voxels')).__module__}.{type(info.get('voxels')).__qualname__}",
-            "shape": list(getattr(info.get("voxels"), "shape", ())),
-            "value": to_jsonable(info.get("voxels")),
+        "grid_observation": {
+            "python_type": f"{type(grid_value).__module__}.{type(grid_value).__qualname__}",
+            "shape": list(getattr(grid_value, "shape", ())),
+            "value": to_jsonable(grid_value),
         },
     }
     fixture_errors: list[str] = []
