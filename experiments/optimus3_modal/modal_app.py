@@ -73,6 +73,7 @@ runtime_image = (
     .uv_pip_install(
         "accelerate==1.6.0",
         "attrs==25.3.0",
+        "datasets==3.6.0",
         "dm-tree==0.1.9",
         "einops==0.8.1",
         "ftfy==6.3.1",
@@ -82,11 +83,13 @@ runtime_image = (
         "numpy==1.26.4",
         "opencv-python-headless==4.11.0.86",
         "packaging==24.2",
+        "peft==0.15.2",
         "qwen-vl-utils==0.0.11",
         "safetensors==0.5.3",
         "sentencepiece==0.2.0",
         "tokenizers==0.21.1",
         "transformers==4.51.3",
+        "trl==0.9.6",
         "x-transformers==0.27.1",
     )
     .run_commands(
@@ -204,6 +207,9 @@ def _install_clip_tokenizer_shim() -> None:
     single_use_containers=True,
 )
 def gpu_preflight() -> dict[str, Any]:
+    import datasets
+    import peft
+    import trl
     import torch
     import transformers
     import qwen_vl_utils
@@ -222,6 +228,9 @@ def gpu_preflight() -> dict[str, Any]:
             "device_total_memory_bytes": properties.total_memory,
             "torch": torch.__version__,
             "transformers": transformers.__version__,
+            "datasets": datasets.__version__,
+            "peft": peft.__version__,
+            "trl": trl.__version__,
             "qwen_vl_utils": getattr(qwen_vl_utils, "__version__", "unknown"),
             "optimus3_model_class": Optimus3ForConditionalGeneration.__name__,
             "action_head_class": Optimus3ActionAgent.__name__,

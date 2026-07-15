@@ -32,6 +32,9 @@ RUNTIME_PINS = {
     "torchvision": "0.21.0+cu124",
     "transformers": "4.51.3",
     "tokenizers": "0.21.1",
+    "datasets": "3.6.0",
+    "peft": "0.15.2",
+    "trl": "0.9.6",
     "qwen_vl_utils": "0.0.11",
     "attention_implementation": "sdpa",
 }
