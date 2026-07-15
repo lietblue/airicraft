@@ -32,8 +32,9 @@ low-level controls only. It cannot complete, fail, replan, or transfer a task.
 2. GPU latency screen: preserve the released stochastic prior and recurrent
    policy while caching deterministic task conditioning, then require a warmed
    20 Hz action loop.
-3. Native reproduction: run ten locked MineStudio episodes and require at least
-   eight successes.
+3. Semantic-equivalent native fixture gate: run the exact locked ten-episode
+   MineStudio schedule, require all ten episodes and infrastructure/schema/safety
+   checks to be valid, then require at least eight successes.
 4. Airicraft shadow mode: send real 1.21.8 frames without applying actions and
    verify dimensions, recurrent resets, latency, and stale-result rejection.
 5. Matched live A/B: intercept only one action-graph-owned visible-iron mining
@@ -41,8 +42,10 @@ low-level controls only. It cannot complete, fail, replan, or transfer a task.
 6. Cancellation and fallback: inject cancellation and inference timeouts, then
    require input release within one tick and deterministic Baritone recovery.
 
-Stages 1 and 2 are implemented by the Modal pilot. They remain synthetic GPU
-gates and do not authorize a Minecraft actuator integration.
+Stages 1 through 3 are implemented by the Modal pilot. Stages 1 and 2 are
+synthetic GPU gates; Stage 3 is a native MineStudio gate. The evaluated Stage 3
+result failed competence and does not authorize a Minecraft actuator
+integration.
 
 ## Stage 1 Contract
 
@@ -123,6 +126,34 @@ of samples exceed 50 ms, every action schema is complete, and no safety-mask
 violation occurs. Passing this screen authorizes ten locked native MineStudio
 episodes; it is not evidence of task competence or live closed-loop latency.
 
+## Stage 3 Native Contract
+
+Stage 3 uses the pinned MineStudio simple iron task source and released
+simulator engine. The released engine drops the task's selector-relative `fill`
+command, so the harness creates the same relative 2x2x2 iron state with
+absolute `setblock` actions. It settles two no-op ticks, then queries half-open
+voxel bounds `(2, 4, 0, 2, 2, 4)` and requires all eight cells to contain iron
+before policy inference. Only missing cells are retried, for at most three
+passes. The stone pickaxe is supplied deterministically by the mission's
+starting inventory. This is semantic-equivalent fixture reproduction, not
+upstream-command parity.
+
+The locked schedule contains ten immutable world/policy seed pairs. Every
+episode starts a fresh Minecraft process, performs hard reset, resets recurrent
+policy state once, and allows at most 200 scored policy steps. There is no
+warm-up, fallback, video recording, or policy access to the fixture voxel
+oracle. The policy prompt is `collect one iron ore`, retained from Stages 1 and
+2 for conditioning continuity; the upstream task text is recorded but is not
+the model input. Initial line of sight and camera orientation are not fixed, so
+this is not a visible-iron test.
+
+Success requires both a positive `mine_block.iron_ore` delta and a positive
+inventory `iron_ore` delta. The gate is evaluated only when the exact ten
+records are present and valid and all pin, GPU, fixture, schema, and safety
+checks pass. `timeout_200_steps` is a valid competence failure. Setup, reset,
+schema, or close failures make the gate unevaluable. An evaluated pass requires
+at least eight successes.
+
 ## Verified Stage 1 Result
 
 The 2026-07-15 Modal run passed the Stage 1 correctness gate:
@@ -140,9 +171,9 @@ The 2026-07-15 Modal run passed the Stage 1 correctness gate:
 - peak allocated CUDA memory was 21,345,110,016 bytes.
 
 The local evidence is retained under `eval-output/optimus3-modal/` and remains
-ignored by Git. The 434 ms first action is not evidence of 20 Hz operation; the
-warmed native multi-step latency measurement in Stage 2 is the next gate,
-before native episodes or any Minecraft actuator work.
+ignored by Git. The 434 ms first action was not evidence of 20 Hz operation;
+the subsequent warmed native multi-step latency measurement was evaluated
+separately by Stage 2.
 
 ## Verified Stage 2 Result
 
@@ -166,8 +197,8 @@ The eight released-path calls were not warm-state matched. Their 7.92x
 reference-to-cached mean-latency ratio is diagnostic only and is not used by
 the acceptance gate. The result establishes substantial compute-loop headroom
 under the 50 ms budget, but excludes frame capture, transport, tick scheduling,
-and Minecraft action application. It authorizes Stage 3 locked MineStudio
-episodes; it does not establish mining competence, naturalness, or live 1.21.8
+and Minecraft action application. It authorized the Stage 3 run described
+below; it did not establish mining competence, naturalness, or live 1.21.8
 performance.
 
 An earlier attempt under `20260715T102647Z-bench` stopped fail-closed at its
@@ -176,9 +207,53 @@ actuator-only `pickItem` and `swapHands` controls from Optimus. No warm-up or
 measured samples ran in that attempt. Commit `05304ae` separated the pinned
 22-key policy schema from the 24-key actuator schema before the successful run.
 
+## Verified Stage 3 Result
+
+The native fixture was first proven on CPU under
+`20260715T131453Z-sim-preflight`: the released engine accepted absolute
+`setblock` actions, the half-open voxel oracle found all eight cells, the
+pickaxe and initial inventory were correct, and the action adapter passed. A
+single L40S episode under `20260715T131739Z-episode` then completed at step 114,
+proving that the released policy can solve at least one native instance.
+
+The first ten-episode attempt under `20260715T132001Z-episodes` reused one
+Minecraft JVM. It produced six valid records and two successes before the
+seventh reset timed out. That run is invalid and unevaluated; its partial `2/6`
+score is not a competence result. The harness was changed to create and close a
+fresh simulator process for each episode. The exact lifecycle seam then passed
+19 CPU checks across two processes under
+`20260715T133227Z-sim-preflight`.
+
+The definitive fresh-process L40S run under
+`20260715T133606Z-episodes` completed all ten locked records:
+
+- infrastructure acceptance passed, all ten records were valid, every fixture
+  proved exactly eight iron cells, and no privileged observer was present;
+- zero policy-schema failures and zero safety violations occurred;
+- 102 forbidden raw attempts were retained and masked, with none applied;
+- episodes 0, 4, 7, 8, and 9 succeeded at steps 120, 141, 105, 59, and 167;
+- episodes 1, 2, 3, 5, and 6 ended in valid `timeout_200_steps` failures;
+- episode 5 mined one iron block but did not acquire it, so the inventory side
+  of the completion oracle correctly remained false; and
+- the evaluated score was `5/10`, below the locked `8/10` requirement.
+
+The method took 822.982 seconds after a 17.599-second model load. Across 1,592
+native closed-loop steps, the pooled mean was 43.56 ms, but 319 steps (20.04%)
+exceeded 50 ms. Native timing was diagnostic rather than a Stage 3 acceptance
+condition, so the infrastructure pass does not establish stable 20 Hz
+end-to-end control. The result artifact declares fresh-process lifecycle
+settings but does not record process IDs as independent per-episode identity
+evidence.
+
+This is an evaluated model-competence failure, not an infrastructure failure.
+Stage 4 Airicraft shadow mode remains blocked. The next pilot should diagnose
+the five locked failure seeds, including the pickup-only failure, before any
+Fabric integration or live actuation work.
+
 ## Later Live-Pilot Gate
 
-The eventual visible-iron A/B proceeds only if native reproduction succeeds.
+The eventual visible-iron A/B remains blocked until a future native competence
+gate passes and Stage 4 shadow-mode checks succeed.
 The neural arm must achieve at least 80% success and remain within 10 percentage
 points of Baritone, have p95 closed-loop latency at or below 50 ms with fewer
 than 5% missed deadlines, apply no forbidden action, release control within one
