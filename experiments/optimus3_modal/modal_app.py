@@ -694,6 +694,18 @@ def _frame_sha256(frame: Any) -> str:
     return hashlib.sha256(frame.tobytes()).hexdigest()
 
 
+def _frame_png_base64(frame: Any) -> str:
+    import base64
+    import io
+
+    from PIL import Image
+
+    validate_frame_shape(frame)
+    output = io.BytesIO()
+    Image.fromarray(frame).save(output, format="PNG")
+    return base64.b64encode(output.getvalue()).decode("ascii")
+
+
 def _mainhand_type(info: Mapping[str, Any]) -> str:
     equipped = info.get("equipped_items", {})
     if isinstance(equipped, Mapping):
@@ -814,6 +826,7 @@ def _native_reset(
     np_module: Any,
     *,
     verify_runtime_target: bool,
+    strict_fixture: bool,
 ) -> tuple[Any, dict[str, Any], dict[str, Any]]:
     _restore_native_mission(simulator)
     simulator.env.seed(world_seed)
@@ -861,6 +874,8 @@ def _native_reset(
         simulator.env.seed(world_seed)
         proof_observation, proof_info = simulator.reset()
         validate_frame_shape(proof_observation.get("image"))
+        proof_frame_samples = [{"step": 0, "sha256": _frame_sha256(proof_observation["image"])}]
+        proof_initial_frame_png_base64 = _frame_png_base64(proof_observation["image"])
         proof_mission = simulator.env.task.to_xml()
         proof_declaration = _fixture_declaration_evidence(proof_mission, proof_fixture["draw_blocks"])
         proof_location = _location(proof_info)
@@ -892,6 +907,10 @@ def _native_reset(
                     simulator_action
                 )
                 attack_steps += 1
+                if attack_steps in (1, 5, 10, 20, 40, NATIVE_FIXTURE_PROOF_MAX_ATTACK_STEPS):
+                    proof_frame_samples.append(
+                        {"step": attack_steps, "sha256": _frame_sha256(proof_observation["image"])}
+                    )
                 mine_after = stat_count(proof_info.get("mine_block"), "iron_ore")
                 proof_terminated = bool(terminated or truncated)
                 if mine_after > mine_before:
@@ -935,6 +954,9 @@ def _native_reset(
             "terminated_or_truncated": proof_terminated,
             "sent_attack_action": proof_action_evidence,
             "sent_release_action": release_action_evidence,
+            "frame_samples": proof_frame_samples,
+            "initial_frame_png_base64": proof_initial_frame_png_base64,
+            "final_frame_png_base64": _frame_png_base64(proof_observation["image"]),
             "rendered_mission_sha256": hashlib.sha256(proof_mission.encode("utf-8")).hexdigest(),
             "declaration": proof_declaration,
         }
@@ -993,7 +1015,8 @@ def _native_reset(
         for key in ("xpos", "ypos", "zpos")
     ):
         fixture_errors.append("mission placement does not match the discovery location")
-    if fixture_errors:
+    setup["fixture_errors"] = fixture_errors
+    if fixture_errors and strict_fixture:
         diagnostics = json.dumps(setup, sort_keys=True, separators=(",", ":"))
         raise RuntimeError(f"native fixture mismatch: {'; '.join(fixture_errors)}; diagnostics={diagnostics}")
     return observation, info, setup
@@ -1030,6 +1053,7 @@ def simulator_preflight() -> dict[str, Any]:
             world_seed,
             np,
             verify_runtime_target=True,
+            strict_fixture=False,
         )
         masked_noop = {key: [0.0, 0.0] if key == "camera" else 0 for key in ALL_ACTION_KEYS}
         simulator_action, adapter_evidence = _native_simulator_action(simulator, masked_noop, np)
@@ -1049,6 +1073,7 @@ def simulator_preflight() -> dict[str, Any]:
             == NATIVE_EXPECTED_IRON_BLOCKS,
             "fixture_runtime_target_valid": setup["mission_fixture"]["runtime_proof"]["passed"]
             is True,
+            "fixture_errors_empty": not setup["fixture_errors"],
             "fixture_mainhand_valid": setup["mainhand"] == "stone_pickaxe",
             "fixture_initial_inventory_valid": setup["baseline"]["inventory_iron_ore"] == 0,
             "action_adapter_changed_no_controls": adapter_evidence["changed_keys"] == [],
@@ -1100,6 +1125,7 @@ class _NativeEpisodeMixin:
             world_seed,
             self.np,
             verify_runtime_target=verify_runtime_target,
+            strict_fixture=True,
         )
         baseline = setup["baseline"]
         self._reset_action_policy(policy_seed)
