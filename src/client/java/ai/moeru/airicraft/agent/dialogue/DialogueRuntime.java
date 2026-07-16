@@ -23,6 +23,8 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
 import java.util.List;
+import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 
 public final class DialogueRuntime {
@@ -36,6 +38,7 @@ public final class DialogueRuntime {
 	private DialogueState state = DialogueCore.initialState();
 	private int queuedTimeoutInjections;
 	private boolean pendingTimeoutVisibleReply;
+	private long userGuidanceRevision;
 
 	public DialogueRuntime(PlannerOrchestrator plannerOrchestrator, int maxRecentTurns) {
 		this(plannerOrchestrator, maxRecentTurns, Clock.systemDefaultZone());
@@ -152,6 +155,7 @@ public final class DialogueRuntime {
 		}
 
 		appendTurn(new DialogueTurn(senderName, plainTextMessage, tick, clock.millis()));
+		supersedePendingInternalTaskUpdates("planner_reset", tick, eventBuffer);
 		plannerOrchestrator.reset();
 		queuedTimeoutInjections = 0;
 		applyTransition(DialogueCore.onReset(state, senderName, tick), tick, eventBuffer);
@@ -281,6 +285,8 @@ public final class DialogueRuntime {
 			updateMessage,
 			tick,
 			timestampMs,
+			userGuidanceRevision,
+			missionId(activeTask, missionExecution),
 			sessionSnapshot == null ? SessionSnapshot.initial() : sessionSnapshot,
 			activeGoal.orElse(null),
 			activeTask,
@@ -358,7 +364,9 @@ public final class DialogueRuntime {
 		plannerOrchestrator.reset();
 		queuedTimeoutInjections = 0;
 		pendingTimeoutVisibleReply = false;
+		pendingInternalTaskUpdates.clear();
 		pendingVisibleReplies.clear();
+		userGuidanceRevision = 0L;
 		if (state.degraded()) {
 			applyEffects(List.of(DialogueEffect.appendSemanticEvent("planner.degraded_cleared", java.util.Map.of())), tick, eventBuffer);
 		}
@@ -372,6 +380,7 @@ public final class DialogueRuntime {
 		pendingInternalTaskUpdates.clear();
 		pendingVisibleReplies.clear();
 		recentTurns.clear();
+		userGuidanceRevision = 0L;
 		plannerOrchestrator.reset();
 	}
 
@@ -382,6 +391,7 @@ public final class DialogueRuntime {
 		pendingInternalTaskUpdates.clear();
 		pendingVisibleReplies.clear();
 		recentTurns.clear();
+		userGuidanceRevision = 0L;
 		plannerOrchestrator.shutdown();
 	}
 
@@ -393,11 +403,14 @@ public final class DialogueRuntime {
 		PlannerRequest request,
 		SemanticEventBuffer eventBuffer,
 		long timestampMs,
-		boolean timeoutVisibleReply
+		boolean directUserGuidance
 	) {
+		if (directUserGuidance) {
+			supersedePendingInternalTaskUpdates("new_user_guidance", request.tick(), eventBuffer);
+		}
 		if (state.degraded()) {
 			applyTransition(
-				DialogueCore.onPlannerDegradedBlocked(state, request.senderName(), timeoutVisibleReply, request.tick()),
+				DialogueCore.onPlannerDegradedBlocked(state, request.senderName(), directUserGuidance, request.tick()),
 				request.tick(),
 				eventBuffer
 			);
@@ -414,7 +427,7 @@ public final class DialogueRuntime {
 				request.activeGoal()
 			)
 		);
-		pendingTimeoutVisibleReply = timeoutVisibleReply;
+		pendingTimeoutVisibleReply = directUserGuidance;
 		plannerOrchestrator.submit(request);
 	}
 
@@ -435,13 +448,89 @@ public final class DialogueRuntime {
 		if (plannerOrchestrator.hasInFlight()) {
 			return false;
 		}
-		PendingInternalTaskUpdate pendingUpdate = pendingInternalTaskUpdates.removeFirst()
-			.withCurrentContext(sessionSnapshot, activeGoal, activeTask, missionExecution);
-		if (submitInternalTaskUpdate(pendingUpdate, eventBuffer)) {
-			return true;
+		while (!pendingInternalTaskUpdates.isEmpty()) {
+			PendingInternalTaskUpdate pendingUpdate = pendingInternalTaskUpdates.removeFirst();
+			String currentMissionId = missionId(activeTask, missionExecution);
+			if (pendingUpdate.userGuidanceRevision() != userGuidanceRevision) {
+				recordSupersededInternalTaskUpdate(
+					pendingUpdate,
+					"new_user_guidance",
+					currentMissionId,
+					pendingUpdate.tick(),
+					eventBuffer
+				);
+				continue;
+			}
+			if (
+				pendingUpdate.missionId() != null
+					&& currentMissionId != null
+					&& !Objects.equals(pendingUpdate.missionId(), currentMissionId)
+			) {
+				recordSupersededInternalTaskUpdate(
+					pendingUpdate,
+					"mission_changed",
+					currentMissionId,
+					pendingUpdate.tick(),
+					eventBuffer
+				);
+				continue;
+			}
+			pendingUpdate = pendingUpdate.withCurrentContext(sessionSnapshot, activeGoal, activeTask, missionExecution);
+			if (submitInternalTaskUpdate(pendingUpdate, eventBuffer)) {
+				return true;
+			}
+			pendingInternalTaskUpdates.addFirst(pendingUpdate);
+			return false;
 		}
-		pendingInternalTaskUpdates.addFirst(pendingUpdate);
 		return false;
+	}
+
+	private void supersedePendingInternalTaskUpdates(String reason, long tick, SemanticEventBuffer eventBuffer) {
+		userGuidanceRevision++;
+		while (!pendingInternalTaskUpdates.isEmpty()) {
+			recordSupersededInternalTaskUpdate(pendingInternalTaskUpdates.removeFirst(), reason, null, tick, eventBuffer);
+		}
+	}
+
+	private void recordSupersededInternalTaskUpdate(
+		PendingInternalTaskUpdate pendingUpdate,
+		String reason,
+		String currentMissionId,
+		long supersededAtTick,
+		SemanticEventBuffer eventBuffer
+	) {
+		if (pendingUpdate == null || eventBuffer == null) {
+			return;
+		}
+		eventBuffer.append(supersededAtTick, "planner.internal_task_update_superseded", Map.of(
+			"reason", reason,
+			"updateTick", pendingUpdate.tick(),
+			"supersededAtTick", supersededAtTick,
+			"updateGuidanceRevision", pendingUpdate.userGuidanceRevision(),
+			"currentGuidanceRevision", userGuidanceRevision,
+			"updateMissionId", pendingUpdate.missionId() == null ? "" : pendingUpdate.missionId(),
+			"currentMissionId", currentMissionId == null ? "" : currentMissionId
+		));
+	}
+
+	private static String missionId(TaskSnapshot activeTask, MissionExecutionSnapshot missionExecution) {
+		if (
+			activeTask != null
+				&& activeTask.mission() != null
+				&& activeTask.mission().missionId() != null
+				&& !activeTask.mission().missionId().isBlank()
+		) {
+			return activeTask.mission().missionId();
+		}
+		if (
+			missionExecution != null
+				&& missionExecution.mission() != null
+				&& missionExecution.mission().missionId() != null
+				&& !missionExecution.mission().missionId().isBlank()
+		) {
+			return missionExecution.mission().missionId();
+		}
+		return null;
 	}
 
 	private boolean submitInternalTaskUpdate(PendingInternalTaskUpdate pendingUpdate, SemanticEventBuffer eventBuffer) {
@@ -527,6 +616,8 @@ public final class DialogueRuntime {
 		String updateMessage,
 		long tick,
 		long timestampMs,
+		long userGuidanceRevision,
+		String missionId,
 		SessionSnapshot sessionSnapshot,
 		GoalSnapshot activeGoal,
 		TaskSnapshot activeTask,
@@ -542,6 +633,8 @@ public final class DialogueRuntime {
 				updateMessage,
 				tick,
 				timestampMs,
+				userGuidanceRevision,
+				missionId,
 				currentSessionSnapshot == null ? sessionSnapshot : currentSessionSnapshot,
 				currentActiveGoal == null ? activeGoal : currentActiveGoal.orElse(null),
 				currentActiveTask == null ? activeTask : currentActiveTask,
