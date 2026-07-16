@@ -1,7 +1,9 @@
 package ai.moeru.airicraft.agent;
 
 import net.minecraft.entity.Entity;
+import net.minecraft.entity.LivingEntity;
 import net.minecraft.entity.damage.DamageSource;
+import net.minecraft.entity.player.PlayerEntity;
 import net.minecraft.registry.Registries;
 
 import java.util.LinkedHashMap;
@@ -41,12 +43,16 @@ final class LocalDamageTracker {
 		if (damageSource == null) {
 			return;
 		}
+		Entity attacker = damageSource.getAttacker();
 		observeDamage(
 			tick,
 			damageTypeId(damageSource),
-			entityName(damageSource.getAttacker()),
-			entityTypeId(damageSource.getAttacker()),
-			entityTypeId(damageSource.getSource())
+			entityUuid(attacker),
+			entityName(attacker),
+			entityTypeId(attacker),
+			entityTypeId(damageSource.getSource()),
+			attacker instanceof LivingEntity,
+			attacker instanceof PlayerEntity
 		);
 	}
 
@@ -57,12 +63,28 @@ final class LocalDamageTracker {
 		String attackerEntityTypeId,
 		String directSourceEntityTypeId
 	) {
+		observeDamage(tick, damageTypeId, null, attackerName, attackerEntityTypeId, directSourceEntityTypeId, attackerEntityTypeId != null, false);
+	}
+
+	void observeDamage(
+		long tick,
+		String damageTypeId,
+		String attackerUuid,
+		String attackerName,
+		String attackerEntityTypeId,
+		String directSourceEntityTypeId,
+		boolean attackerLiving,
+		boolean attackerPlayer
+	) {
 		pendingObservation = new PendingDamageObservation(
 			tick,
 			blankToNull(damageTypeId),
+			blankToNull(attackerUuid),
 			blankToNull(attackerName),
 			blankToNull(attackerEntityTypeId),
-			blankToNull(directSourceEntityTypeId)
+			blankToNull(directSourceEntityTypeId),
+			attackerLiving,
+			attackerPlayer
 		);
 	}
 
@@ -83,9 +105,12 @@ final class LocalDamageTracker {
 			if (age >= 0L) {
 				if (age <= 1L) {
 					putIfPresent(payload, "damageTypeId", pendingObservation.damageTypeId());
+					putIfPresent(payload, "attackerUuid", pendingObservation.attackerUuid());
 					putIfPresent(payload, "attackerName", pendingObservation.attackerName());
 					putIfPresent(payload, "attackerEntityTypeId", pendingObservation.attackerEntityTypeId());
 					putIfPresent(payload, "directSourceEntityTypeId", pendingObservation.directSourceEntityTypeId());
+					payload.put("attackerLiving", pendingObservation.attackerLiving());
+					payload.put("attackerPlayer", pendingObservation.attackerPlayer());
 				}
 				pendingObservation = null;
 			}
@@ -131,6 +156,10 @@ final class LocalDamageTracker {
 		return blankToNull(entity.getName().getString());
 	}
 
+	private static String entityUuid(Entity entity) {
+		return entity == null ? null : blankToNull(entity.getUuidAsString());
+	}
+
 	private static String entityTypeId(Entity entity) {
 		if (entity == null || entity.getType() == null) {
 			return null;
@@ -155,9 +184,12 @@ final class LocalDamageTracker {
 	record PendingDamageObservation(
 		long captureTick,
 		String damageTypeId,
+		String attackerUuid,
 		String attackerName,
 		String attackerEntityTypeId,
-		String directSourceEntityTypeId
+		String directSourceEntityTypeId,
+		boolean attackerLiving,
+		boolean attackerPlayer
 	) {
 	}
 }

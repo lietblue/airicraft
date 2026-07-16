@@ -186,6 +186,17 @@ public final class ActionGraphExecutionRuntime {
 		return snapshot();
 	}
 
+	public synchronized ActionGraphExecutionSnapshot pauseForReflex(long tick) {
+		if (state == ActionGraphExecutionState.IDLE || terminal()) {
+			return snapshot();
+		}
+		if (state != ActionGraphExecutionState.BLOCKED || !"reflex".equals(failureCode)) {
+			block("reflex", "Actuation is paused by the survival reflex safety hold");
+			trace("reflex_pause", actionId(currentStep), alternativeId(currentStep), stepId(currentStep), Map.of("tick", tick));
+		}
+		return snapshot();
+	}
+
 	public synchronized void clear() {
 		state = ActionGraphExecutionState.IDLE;
 		executionId = "";

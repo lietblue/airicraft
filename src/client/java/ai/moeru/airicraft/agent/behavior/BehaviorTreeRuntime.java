@@ -12,6 +12,8 @@ import ai.moeru.airicraft.agent.session.SessionSnapshot;
 import ai.moeru.airicraft.agent.dialogue.DialogueRuntime;
 import ai.moeru.airicraft.agent.tasks.TaskExecutionSnapshot;
 import ai.moeru.airicraft.agent.tasks.TaskExecutionState;
+import ai.moeru.airicraft.agent.reflex.SurvivalReflexSnapshot;
+import ai.moeru.airicraft.agent.reflex.SurvivalReflexState;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.util.math.Vec3d;
 
@@ -108,6 +110,26 @@ public final class BehaviorTreeRuntime {
 		);
 	}
 
+	public void reflectSurvivalReflex(MinecraftClient client, SurvivalReflexSnapshot reflexSnapshot) {
+		if (reflexSnapshot == null || reflexSnapshot.state() == SurvivalReflexState.IDLE) {
+			return;
+		}
+		if (reflexSnapshot.state() == SurvivalReflexState.ACTIVE) {
+			snapshot = new BehaviorTreeSnapshot(
+				NodeStatus.RUNNING,
+				List.of("Root", "SurvivalReflex", reflexSnapshot.action() == null ? "UNKNOWN" : reflexSnapshot.action().name()),
+				movementController.snapshot()
+			);
+			return;
+		}
+		movementController.stop(client);
+		snapshot = new BehaviorTreeSnapshot(
+			NodeStatus.RUNNING,
+			List.of("Root", "AwaitingPlannerAfterReflex"),
+			movementController.snapshot()
+		);
+	}
+
 	public BehaviorTreeSnapshot snapshot() {
 		return snapshot;
 	}
@@ -125,6 +147,7 @@ public final class BehaviorTreeRuntime {
 		};
 		return switch (taskState) {
 			case PAUSED_BY_SESSION_GATE -> List.of("Root", subtree, "ActuationBlockedBySession");
+			case PAUSED_BY_REFLEX -> List.of("Root", subtree, "PausedBySurvivalReflex");
 			case RUNNING -> runningPathFor(activeGoal, followState, subtree);
 			case COMPLETED -> List.of("Root", subtree, "TaskCompleted");
 			case FAILED -> List.of("Root", subtree, "TaskFailed");

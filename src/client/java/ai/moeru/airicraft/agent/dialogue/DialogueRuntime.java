@@ -14,6 +14,7 @@ import ai.moeru.airicraft.agent.llm.PlannerResponse;
 import ai.moeru.airicraft.agent.llm.PlannerTrigger;
 import ai.moeru.airicraft.agent.llm.PlannerTriggerBatch;
 import ai.moeru.airicraft.agent.llm.PlannerTriggerType;
+import ai.moeru.airicraft.agent.llm.StalePlannerRejection;
 import ai.moeru.airicraft.agent.session.SessionSnapshot;
 import ai.moeru.airicraft.agent.tasks.MissionExecutionSnapshot;
 import ai.moeru.airicraft.agent.tasks.TaskSnapshot;
@@ -39,6 +40,9 @@ public final class DialogueRuntime {
 	private int queuedTimeoutInjections;
 	private boolean pendingTimeoutVisibleReply;
 	private long userGuidanceRevision;
+	private long safetyEpoch;
+	private String safetyHoldId;
+	private boolean reflexActive;
 
 	public DialogueRuntime(PlannerOrchestrator plannerOrchestrator, int maxRecentTurns) {
 		this(plannerOrchestrator, maxRecentTurns, Clock.systemDefaultZone());
@@ -106,6 +110,17 @@ public final class DialogueRuntime {
 
 	public List<String> plannerContextExcerpt() {
 		return plannerOrchestrator.contextExcerpt();
+	}
+
+	public void updateSafetyContext(long replacementSafetyEpoch, String replacementSafetyHoldId, boolean activeReflex) {
+		safetyEpoch = Math.max(safetyEpoch, Math.max(0L, replacementSafetyEpoch));
+		safetyHoldId = replacementSafetyHoldId;
+		reflexActive = activeReflex;
+		plannerOrchestrator.updateSafetyContext(safetyEpoch, safetyHoldId, reflexActive);
+	}
+
+	public List<StalePlannerRejection> drainStalePlannerRejections() {
+		return plannerOrchestrator.drainStalePlannerRejections();
 	}
 
 	public boolean startDebugCompaction() {
@@ -249,9 +264,7 @@ public final class DialogueRuntime {
 			),
 			plannerEventBuffer,
 			trigger.timestampMs(),
-			trigger.type() == PlannerTriggerType.CHAT
-				&& trigger.speaker() != null
-				&& !"system".equalsIgnoreCase(trigger.speaker())
+			trigger.maySupersedeLaunchedTurn()
 		);
 	}
 
@@ -362,6 +375,7 @@ public final class DialogueRuntime {
 
 	public void resetLlmState(long tick, SemanticEventBuffer eventBuffer) {
 		plannerOrchestrator.reset();
+		plannerOrchestrator.updateSafetyContext(safetyEpoch, safetyHoldId, reflexActive);
 		queuedTimeoutInjections = 0;
 		pendingTimeoutVisibleReply = false;
 		pendingInternalTaskUpdates.clear();
@@ -382,6 +396,7 @@ public final class DialogueRuntime {
 		recentTurns.clear();
 		userGuidanceRevision = 0L;
 		plannerOrchestrator.reset();
+		plannerOrchestrator.updateSafetyContext(safetyEpoch, safetyHoldId, reflexActive);
 	}
 
 	public void shutdown() {
@@ -405,6 +420,7 @@ public final class DialogueRuntime {
 		long timestampMs,
 		boolean directUserGuidance
 	) {
+		request = request.withSafetyContext(safetyEpoch, safetyHoldId);
 		if (directUserGuidance) {
 			supersedePendingInternalTaskUpdates("new_user_guidance", request.tick(), eventBuffer);
 		}
@@ -560,7 +576,7 @@ public final class DialogueRuntime {
 				PlannerTrigger.pending(PlannerTriggerType.SYSTEM, "runtime", pendingUpdate.updateMessage(), pendingUpdate.tick(), pendingUpdate.timestampMs())
 			)),
 			null
-		));
+		).withSafetyContext(safetyEpoch, safetyHoldId));
 		pendingTimeoutVisibleReply = false;
 		return true;
 	}
@@ -607,6 +623,7 @@ public final class DialogueRuntime {
 		}
 		return request.triggerBatch().triggers().stream().allMatch(trigger ->
 			trigger.type() == PlannerTriggerType.CHAT
+				&& trigger.maySupersedeLaunchedTurn()
 				&& trigger.speaker() != null
 				&& !"system".equalsIgnoreCase(trigger.speaker())
 		);

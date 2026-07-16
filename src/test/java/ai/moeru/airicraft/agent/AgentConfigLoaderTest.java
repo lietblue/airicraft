@@ -52,6 +52,23 @@ class AgentConfigLoaderTest {
 	}
 
 	@Test
+	void fromMapReadsAndNormalizesReflexFields() {
+		AgentConfig parsed = AgentConfigLoader.fromMap(Map.of(
+			"reflex", Map.of(
+				"enabled", false,
+				"lowAirTicks", -5,
+				"defendMinHealthRatio", 1.5,
+				"threatCooldownTicks", -2
+			)
+		), AgentConfig.defaults());
+
+		assertFalse(parsed.reflex().enabled());
+		assertEquals(0, parsed.reflex().lowAirTicks());
+		assertEquals(1.0D, parsed.reflex().defendMinHealthRatio());
+		assertEquals(0, parsed.reflex().threatCooldownTicks());
+	}
+
+	@Test
 	void fromMapReadsPlannerCoalesceFields() {
 		AgentConfig parsed = AgentConfigLoader.fromMap(Map.of(
 			"plannerPendingSemanticEventCap", 256,

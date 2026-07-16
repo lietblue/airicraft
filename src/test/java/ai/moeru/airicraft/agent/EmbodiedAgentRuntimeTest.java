@@ -20,6 +20,12 @@ import ai.moeru.airicraft.agent.job.ActiveJob;
 import ai.moeru.airicraft.agent.job.ActiveJobProposal;
 import ai.moeru.airicraft.agent.job.ActiveJobStatus;
 import ai.moeru.airicraft.agent.job.ActiveJobType;
+import ai.moeru.airicraft.agent.job.ActiveJobRuntime;
+import ai.moeru.airicraft.agent.reflex.SurvivalReflexAction;
+import ai.moeru.airicraft.agent.reflex.SurvivalReflexCause;
+import ai.moeru.airicraft.agent.reflex.SurvivalReflexRuntime;
+import ai.moeru.airicraft.agent.reflex.SurvivalReflexSnapshot;
+import ai.moeru.airicraft.agent.reflex.SurvivalReflexState;
 import ai.moeru.airicraft.agent.session.SessionMode;
 import ai.moeru.airicraft.agent.session.PlayerLifecycleState;
 import ai.moeru.airicraft.agent.session.SessionSnapshot;
@@ -72,6 +78,7 @@ import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Vec3d;
 import org.junit.jupiter.api.Test;
 
+import java.lang.reflect.Field;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -79,11 +86,79 @@ import java.util.concurrent.CompletableFuture;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 class EmbodiedAgentRuntimeTest {
+	@Test
+	void matchingSafetyHoldResumesSamePausedJob() throws Exception {
+		EmbodiedAgentRuntime runtime = EmbodiedAgentRuntime.createForTests(new FakeWorldTaskExecutor());
+		runtime.injectDialogueResponseForTests(new DialogueResponse(
+			"Mining dirt.",
+			new DialogueIntent(DialogueIntentType.JOB_UPDATE, ActiveJobProposal.mineBlocks(new GoalMineSpec(List.of("minecraft:dirt"), 3))),
+			1L
+		));
+		ActiveJobRuntime activeJobs = activeJobRuntime(runtime);
+		String jobId = activeJobs.current().jobId();
+		activeJobs.pauseForReflex(2L);
+		setReflexSnapshot(runtime, reflexSnapshot(SurvivalReflexState.AWAITING_PLANNER, "hold-1", jobId, null));
+
+		SurvivalReflexSnapshot resumed = runtime.resumeSafetyHold("hold-1", "test");
+
+		assertEquals(SurvivalReflexState.IDLE, resumed.state());
+		assertEquals(jobId, runtime.activeJob().jobId());
+		assertEquals(ActiveJobStatus.QUEUED, runtime.activeJob().status());
+		assertTrue(runtime.recentEvents(null).events().stream().anyMatch(event ->
+			"reflex.task_resumed".equals(event.type())
+		));
+	}
+
+	@Test
+	void resumeRejectsMissingActiveAndStaleSafetyHolds() throws Exception {
+		EmbodiedAgentRuntime runtime = EmbodiedAgentRuntime.createForTests(new FakeWorldTaskExecutor());
+
+		BridgeUnavailableException missing = assertThrows(BridgeUnavailableException.class,
+			() -> runtime.resumeSafetyHold("hold-1", "test"));
+		assertEquals("no_safety_hold", missing.code());
+
+		setReflexSnapshot(runtime, reflexSnapshot(SurvivalReflexState.ACTIVE, "hold-1", "job-1", null));
+		BridgeUnavailableException active = assertThrows(BridgeUnavailableException.class,
+			() -> runtime.resumeSafetyHold("hold-1", "test"));
+		assertEquals("reflex_active", active.code());
+
+		setReflexSnapshot(runtime, reflexSnapshot(SurvivalReflexState.AWAITING_PLANNER, "hold-1", "job-1", null));
+		BridgeUnavailableException stale = assertThrows(BridgeUnavailableException.class,
+			() -> runtime.resumeSafetyHold("old-hold", "test"));
+		assertEquals("stale_safety_hold", stale.code());
+	}
+
+	@Test
+	void replacementAndCancellationReleaseHeldActionGraph() throws Exception {
+		EmbodiedAgentRuntime runtime = EmbodiedAgentRuntime.createForTests(new FakeWorldTaskExecutor());
+		ActionGraphExecutionSnapshot first = runtime.startActionGoal(ActionGoal.inventoryItem("minecraft:bread", 1), "test");
+		setReflexSnapshot(runtime, reflexSnapshot(SurvivalReflexState.AWAITING_PLANNER, "hold-1", null, first.executionId()));
+
+		ActionGraphExecutionSnapshot replacement = runtime.startActionGoal(
+			ActionGoal.inventoryItem("minecraft:iron_pickaxe", 1),
+			"test"
+		);
+
+		assertNotEquals(first.executionId(), replacement.executionId());
+		assertEquals(SurvivalReflexState.IDLE, runtime.survivalReflexSnapshot().state());
+		assertTrue(runtime.recentEvents(null).events().stream().anyMatch(event ->
+			"reflex.hold_released".equals(event.type()) && "action_graph_replaced".equals(event.payload().get("reason"))
+		));
+
+		setReflexSnapshot(runtime, reflexSnapshot(
+			SurvivalReflexState.AWAITING_PLANNER, "hold-2", null, replacement.executionId()
+		));
+		ActionGraphExecutionSnapshot cancelled = runtime.cancelActionGoal("operator_cancelled");
+		assertEquals(ActionGraphExecutionState.CANCELLED, cancelled.state());
+		assertEquals(SurvivalReflexState.IDLE, runtime.survivalReflexSnapshot().state());
+	}
+
 	@Test
 	void suppressesRecentEchoOfAgentOwnPublicChat() {
 		assertTrue(EmbodiedAgentRuntime.isAgentChatEcho(
@@ -94,6 +169,33 @@ class EmbodiedAgentRuntimeTest {
 			120L,
 			100L
 		));
+	}
+
+	private static ActiveJobRuntime activeJobRuntime(EmbodiedAgentRuntime runtime) throws Exception {
+		Field field = EmbodiedAgentRuntime.class.getDeclaredField("activeJobRuntime");
+		field.setAccessible(true);
+		return (ActiveJobRuntime) field.get(runtime);
+	}
+
+	private static void setReflexSnapshot(EmbodiedAgentRuntime runtime, SurvivalReflexSnapshot snapshot) throws Exception {
+		Field runtimeField = EmbodiedAgentRuntime.class.getDeclaredField("survivalReflexRuntime");
+		runtimeField.setAccessible(true);
+		SurvivalReflexRuntime reflexRuntime = (SurvivalReflexRuntime) runtimeField.get(runtime);
+		Field snapshotField = SurvivalReflexRuntime.class.getDeclaredField("snapshot");
+		snapshotField.setAccessible(true);
+		snapshotField.set(reflexRuntime, snapshot);
+	}
+
+	private static SurvivalReflexSnapshot reflexSnapshot(
+		SurvivalReflexState state,
+		String holdId,
+		String jobId,
+		String actionExecutionId
+	) {
+		return new SurvivalReflexSnapshot(
+			state, SurvivalReflexCause.DROWNING, SurvivalReflexAction.SWIM_TO_AIR, 1L, holdId,
+			jobId, actionExecutionId, List.of(), 10.0F, 20.0F, 100, 300, 1L, 2L, 12, null
+		);
 	}
 
 	@Test

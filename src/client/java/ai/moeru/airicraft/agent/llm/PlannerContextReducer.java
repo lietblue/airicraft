@@ -50,6 +50,10 @@ final class PlannerContextReducer {
 
 	static PlannerContextState enqueueTrigger(PlannerContextState state, PlannerTrigger trigger) {
 		ArrayList<PlannerTrigger> queued = new ArrayList<>(state.queuedTriggers());
+		if (trigger.origin() == PlannerTriggerOrigin.AUTONOMOUS && trigger.coalescingKey() != null) {
+			queued.removeIf(existing -> existing.origin() == PlannerTriggerOrigin.AUTONOMOUS
+				&& trigger.coalescingKey().equals(existing.coalescingKey()));
+		}
 		queued.add(trigger);
 		return new PlannerContextState(
 			state.acceptedHistoryTape(),

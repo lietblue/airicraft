@@ -174,6 +174,22 @@ class PlannerToolCallInterfaceTest {
 	}
 
 	@Test
+	void exposesResumeTaskWithRequiredSafetyHoldId() {
+		JsonArray tools = JsonParser.parseString(gson().toJson(PlannerToolCatalog.openAiTools())).getAsJsonArray();
+		JsonObject parameters = toolSchema(tools, "resume_task");
+
+		assertTrue(toolNames(tools).contains("resume_task"));
+		assertEquals("holdId", parameters.getAsJsonArray("required").get(0).getAsString());
+		PlannerToolCall call = PlannerToolCatalog.parseToolCall(toolCall("resume_task", """
+			{"holdId":"hold-42"}
+			"""));
+		assertEquals("hold-42", call.arguments().get("holdId").getAsString());
+		assertThrows(com.google.gson.JsonParseException.class, () ->
+			PlannerToolCatalog.parseToolCall(toolCall("resume_task", "{}"))
+		);
+	}
+
+	@Test
 	void exposesAndParsesReturnToSurfaceTool() {
 		JsonArray tools = JsonParser.parseString(gson().toJson(PlannerToolCatalog.openAiTools())).getAsJsonArray();
 		JsonObject parameters = toolSchema(tools, "return_to_surface");

@@ -962,6 +962,95 @@ class PlannerOrchestratorTest {
 	}
 
 	@Test
+	void autonomousEventsQueueWithoutSupersedingOrStarvingActiveGeneration() {
+		RecordingBackend backend = new RecordingBackend();
+		PlannerOrchestrator orchestrator = newOrchestrator(
+			backend,
+			CurrentViewVisionTool.disabled(),
+			PlannerVisionMode.EXTERNAL_SUMMARY
+		);
+
+		orchestrator.submit(requestAt(10L, 1_000L, "Alice", "A"));
+		backend.awaitCalls(1, Duration.ofSeconds(1));
+		orchestrator.submit(autonomousRequestAt(11L, 1_100L, "damage B", "damage"));
+		orchestrator.submit(autonomousRequestAt(12L, 1_200L, "damage C", "damage"));
+		orchestrator.submit(autonomousRequestAt(13L, 1_300L, "surface restored", "survival-resolved"));
+
+		assertEquals(1, backend.callCount());
+		assertEquals(1L, orchestrator.debugSnapshot().activeGeneration());
+		assertEquals(0L, orchestrator.debugSnapshot().supersededCount());
+
+		backend.succeed(0, replyOnly("finished A"));
+		PlannerExecutionResult first = awaitResult(orchestrator);
+		assertEquals(1L, first.generation());
+		assertEquals("finished A", first.response().replyText());
+		assertEquals(0L, orchestrator.debugSnapshot().supersededCount());
+
+		orchestrator.recordAssistantTurn(new DialogueTurn("agent", first.response().replyText(), 14L, 1_400L));
+		orchestrator.onAcceptedReplyRecorded();
+		awaitBackendCallCount(orchestrator, backend, 2, Duration.ofSeconds(1));
+
+		LlmConversation queued = backend.conversation(1);
+		assertPromptContains(queued, "damage C", "surface restored");
+		assertFalse(conversationText(queued).contains("damage B"));
+		assertEquals(0L, orchestrator.debugSnapshot().supersededCount());
+
+		backend.succeed(1, replyOnly("handled safety episode"));
+		PlannerExecutionResult second = awaitResult(orchestrator);
+		assertEquals(2L, second.generation());
+		assertEquals(2, second.request().triggerBatch().size());
+	}
+
+	@Test
+	void reflexEpochRejectsOldPlannerToolsAndLaunchesConsolidatedSafeTurn() {
+		RecordingBackend backend = new RecordingBackend();
+		ArrayList<String> invokedTools = new ArrayList<>();
+		PlannerOrchestrator orchestrator = newOrchestrator(
+			backend,
+			CurrentViewVisionTool.disabled(),
+			CurrentInventoryTool.disabled(),
+			PlannerVisionMode.EXTERNAL_SUMMARY,
+			3,
+			10,
+			10,
+			100,
+			128,
+			Clock.systemUTC(),
+			toolCall -> {
+				invokedTools.add(toolCall.name());
+				return CompletableFuture.completedFuture("Tool result for " + toolCall.name() + ": ok");
+			},
+			PlannerToolNarrationSink.NO_OP
+		);
+
+		orchestrator.submit(requestAt(10L, 1_000L, "Alice", "continue mining").withSafetyContext(0L, null));
+		backend.awaitCalls(1, Duration.ofSeconds(1));
+		orchestrator.updateSafetyContext(1L, "hold-1", true);
+		backend.succeed(0, PlannerResponse.toolCalls(List.of(
+			new PlannerToolCall("old_cancel", PlannerToolCatalog.CANCEL_TASK, new JsonObject(), null, null)
+		), null));
+
+		List<StalePlannerRejection> rejections = awaitStaleRejections(orchestrator);
+		assertEquals(1, rejections.size());
+		assertEquals(0L, rejections.getFirst().requestSafetyEpoch());
+		assertEquals(1L, rejections.getFirst().currentSafetyEpoch());
+		assertTrue(invokedTools.isEmpty());
+		assertEquals(1, backend.callCount());
+
+		orchestrator.updateSafetyContext(1L, "hold-1", false);
+		orchestrator.submit(autonomousRequestAt(20L, 2_000L, "reflex resolved holdId=hold-1", "survival-resolved")
+			.withSafetyContext(1L, "hold-1"));
+		awaitBackendCallCount(orchestrator, backend, 2, Duration.ofSeconds(1));
+		assertPromptContains(backend.conversation(1), "continue mining", "reflex resolved holdId=hold-1");
+
+		backend.succeed(1, replyOnly("safe decision"));
+		PlannerExecutionResult result = awaitResult(orchestrator);
+		assertEquals(2L, result.generation());
+		assertEquals(1L, result.request().safetyEpoch());
+		assertEquals("hold-1", result.request().safetyHoldId());
+	}
+
+	@Test
 	void coalesceWindowResetsFromLatestTriggerAndBatchesQueuedTriggersOnce() {
 		RecordingBackend backend = new RecordingBackend();
 		MutableClock clock = new MutableClock(Instant.ofEpochMilli(1_000L), ZoneId.of("Asia/Taipei"));
@@ -2254,6 +2343,27 @@ class PlannerOrchestratorTest {
 		);
 	}
 
+	private static PlannerRequest autonomousRequestAt(
+		long tick,
+		long timestampMs,
+		String message,
+		String coalescingKey
+	) {
+		return new PlannerRequest(
+			tick,
+			timestampMs,
+			SessionMode.OUT_OF_WORLD,
+			"Alice",
+			null,
+			null,
+			null,
+			PlannerTriggerBatch.of(List.of(
+				PlannerTrigger.autonomous(PlannerTriggerType.SYSTEM, "survival_runtime", message, tick, timestampMs, coalescingKey)
+			)),
+			null
+		);
+	}
+
 	private static PlannerRequest inWorldRequestAt(long tick, long timestampMs, String sender, String message) {
 		return new PlannerRequest(
 			tick,
@@ -2554,6 +2664,25 @@ class PlannerOrchestratorTest {
 			}
 		}
 		throw new AssertionError("Timed out waiting for planner result");
+	}
+
+	private static List<StalePlannerRejection> awaitStaleRejections(PlannerOrchestrator orchestrator) {
+		Instant deadline = Instant.now().plus(Duration.ofSeconds(2));
+		while (Instant.now().isBefore(deadline)) {
+			orchestrator.poll();
+			List<StalePlannerRejection> rejections = orchestrator.drainStalePlannerRejections();
+			if (!rejections.isEmpty()) {
+				return rejections;
+			}
+			try {
+				Thread.sleep(10L);
+			}
+			catch (InterruptedException exception) {
+				Thread.currentThread().interrupt();
+				throw new AssertionError("Interrupted while waiting for stale planner rejection", exception);
+			}
+		}
+		throw new AssertionError("Timed out waiting for stale planner rejection");
 	}
 
 	private static void awaitVisionCaptureRequestCount(
