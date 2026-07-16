@@ -361,6 +361,11 @@ final class HttpBridgeTransport implements MinecraftTransport {
 	}
 
 	@Override
+	public Map<String, Object> resumeAgentTask(String holdId) {
+		return send("POST", "/v1/agent/tasks/resume", Map.of("holdId", holdId));
+	}
+
+	@Override
 	public Map<String, Object> getAgentTree() {
 		return get("/v1/agent/tree");
 	}

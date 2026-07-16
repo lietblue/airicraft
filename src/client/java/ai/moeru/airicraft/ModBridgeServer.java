@@ -151,6 +151,7 @@ public final class ModBridgeServer {
 			httpServer.createContext("/v1/agent/event-policy", exchange -> handleJson(exchange, this::createAgentEventPolicyResponse));
 			httpServer.createContext("/v1/agent/event-policy/clear", this::handleAgentEventPolicyClear);
 			httpServer.createContext("/v1/agent/tasks", this::handleAgentTasks);
+			httpServer.createContext("/v1/agent/tasks/resume", this::handleAgentTaskResume);
 			httpServer.createContext("/v1/agent/ledger", exchange -> handleJson(exchange, this::createAgentLedgerResponse));
 			httpServer.createContext("/v1/agent/evidence", exchange -> handleJson(exchange, this::createAgentEvidenceResponse));
 			httpServer.createContext("/v1/agent/step-execution", exchange -> handleJson(exchange, this::createAgentStepExecutionResponse));
@@ -733,6 +734,45 @@ public final class ModBridgeServer {
 		}
 	}
 
+	private void handleAgentTaskResume(HttpExchange exchange) throws IOException {
+		if (!authorize(exchange)) {
+			writeJson(exchange, 401, Map.of("error", "unauthorized", "message", "Invalid bridge token"));
+			return;
+		}
+		if (!"POST".equalsIgnoreCase(exchange.getRequestMethod())) {
+			writeJson(exchange, 405, Map.of("error", "method_not_allowed"));
+			return;
+		}
+		try (InputStreamReader reader = new InputStreamReader(exchange.getRequestBody(), StandardCharsets.UTF_8)) {
+			JsonObject request = GSON.fromJson(reader, JsonObject.class);
+			String holdId = request == null || !request.has("holdId") || request.get("holdId").isJsonNull()
+				? null
+				: request.get("holdId").getAsString();
+			if (holdId == null || holdId.isBlank()) {
+				throw new BridgeUnavailableException("invalid_request", "holdId is required");
+			}
+			Map<String, Object> response = onClientThread(() -> {
+				var reflex = agentRuntime().resumeSafetyHold(holdId, "bridge_cli");
+				Map<String, Object> payload = new LinkedHashMap<>();
+				payload.put("available", true);
+				payload.put("resumed", true);
+				payload.put("holdId", holdId);
+				payload.put("reflex", reflex);
+				payload.put("task", agentRuntime().taskSnapshot());
+				payload.put("taskExecution", agentRuntime().taskExecutionSnapshot());
+				payload.put("missionExecution", agentRuntime().missionExecutionSnapshot());
+				return payload;
+			});
+			writeJson(exchange, 200, response);
+		}
+		catch (JsonSyntaxException exception) {
+			writeJson(exchange, 400, Map.of("error", "invalid_json", "message", "Malformed request payload"));
+		}
+		catch (BridgeUnavailableException exception) {
+			writeJson(exchange, 503, Map.of("error", exception.code(), "message", exception.getMessage()));
+		}
+	}
+
 	private static boolean isMissionLedgerRequest(JsonObject request) {
 		return request.has("missionId") && request.has("missionType") && request.has("steps");
 	}
@@ -1097,6 +1137,7 @@ public final class ModBridgeServer {
 			response.put("task", snapshot.task());
 			response.put("taskExecution", snapshot.taskExecution());
 			response.put("missionExecution", snapshot.missionExecution());
+			response.put("reflex", snapshot.reflex());
 			response.put("activeJob", agentRuntime().activeJob());
 			response.put("llmAvailable", agentRuntime().llmAvailable());
 			response.put("visionAvailable", agentRuntime().visionAvailable());
@@ -1148,6 +1189,7 @@ public final class ModBridgeServer {
 			response.put("task", agentRuntime().taskSnapshot());
 			response.put("taskExecution", agentRuntime().taskExecutionSnapshot());
 			response.put("missionExecution", agentRuntime().missionExecutionSnapshot());
+			response.put("reflex", agentRuntime().survivalReflexSnapshot());
 			response.put("lastDialogueResponse", agentRuntime().lastDialogueResponse().orElse(null));
 			return response;
 		});
@@ -1158,6 +1200,7 @@ public final class ModBridgeServer {
 			Map<String, Object> response = new LinkedHashMap<>();
 			response.put("available", true);
 			response.put("tree", agentRuntime().behaviorTreeSnapshot());
+			response.put("reflex", agentRuntime().survivalReflexSnapshot());
 			return response;
 		});
 	}
@@ -1194,6 +1237,7 @@ public final class ModBridgeServer {
 			response.put("task", agentRuntime().taskSnapshot());
 			response.put("taskExecution", agentRuntime().taskExecutionSnapshot());
 			response.put("missionExecution", agentRuntime().missionExecutionSnapshot());
+			response.put("reflex", agentRuntime().survivalReflexSnapshot());
 			return response;
 		});
 	}
@@ -1262,6 +1306,7 @@ public final class ModBridgeServer {
 			response.put("task", agentRuntime().taskSnapshot());
 			response.put("taskExecution", agentRuntime().taskExecutionSnapshot());
 			response.put("missionExecution", agentRuntime().missionExecutionSnapshot());
+			response.put("reflex", agentRuntime().survivalReflexSnapshot());
 			return response;
 		});
 	}
