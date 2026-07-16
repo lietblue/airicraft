@@ -5,6 +5,7 @@ import net.minecraft.client.MinecraftClient;
 import net.minecraft.entity.Entity;
 import net.minecraft.entity.EntityType;
 import net.minecraft.entity.EquipmentSlot;
+import net.minecraft.entity.attribute.EntityAttributes;
 import net.minecraft.entity.mob.ZombieEntity;
 import net.minecraft.item.ItemStack;
 import net.minecraft.item.Items;
@@ -118,11 +119,15 @@ final class SurvivalSmokeFixtureService {
 		teleport(player, world, center.getX() + 0.5, center.getY(), center.getZ() + 0.5);
 		player.setVelocity(Vec3d.ZERO);
 		player.setAir(player.getMaxAir());
-		player.setHealth(defend ? player.getMaxHealth() : Math.min(6.0F, player.getMaxHealth() * 0.3F));
+		player.setHealth(defend ? player.getMaxHealth() : player.getMaxHealth() * 0.5F);
 
 		ZombieEntity zombie = new ZombieEntity(EntityType.ZOMBIE, world);
 		zombie.refreshPositionAndAngles(center.getX() + 2.5, center.getY(), center.getZ() + 0.5, 90.0F, 0.0F);
 		zombie.equipStack(EquipmentSlot.HEAD, new ItemStack(Items.IRON_HELMET));
+		var attackDamage = zombie.getAttributeInstance(EntityAttributes.ATTACK_DAMAGE);
+		if (attackDamage != null) {
+			attackDamage.setBaseValue(0.5D);
+		}
 		zombie.setPersistent();
 		zombie.setTarget(player);
 		if (!world.spawnEntity(zombie)) {
