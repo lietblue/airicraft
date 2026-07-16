@@ -3,7 +3,8 @@
 This experiment establishes the GPU-side prerequisite for an Airicraft learned
 motor pilot, screens its recurrent action latency, and measures closed-loop
 competence in an isolated native MineStudio simulator. It does not connect a
-neural controller to Airicraft's Fabric 1.21.8 actuator path yet.
+neural controller to Airicraft's Fabric 1.21.8 actuator path: Stage 4 is a
+read-only shadow integration whose proposed controls are evidence only.
 
 The Stage 1 paid smoke proves, in order:
 
@@ -27,9 +28,10 @@ fixture and episode harness. In the production design, Airicraft retains the
 planner, action graph, semantic completion, session gate, cancellation, safety
 mask, and Baritone fallback. The model cannot declare a graph action complete.
 
-No public web endpoint is created. Every invocation is an authenticated,
-ephemeral `modal run`; this experiment must not be run with `--detach` or
-`modal deploy`.
+Stages 1 through 3 remain authenticated, ephemeral `modal run` invocations.
+Stage 4 adds an explicitly deployed HTTPS Web Function, protected by Modal
+proxy authentication. It accepts only the frozen iron-mining prompt and strict
+session/step schema, and every response asserts `actuationAuthorized: false`.
 
 Automatic source inclusion is disabled. Modal explicitly mounts only
 `modal_app.py` and `contract.py`; it does not mount the Airicraft repository or
@@ -136,6 +138,80 @@ scripts/optimus3-modal episode --episode-index 6
 scripts/optimus3-modal episodes
 ```
 
+## Stage 4 Airicraft Shadow Service
+
+Stage 4 reuses the cached model Volume and deploys one proxy-authenticated L40S
+service. Create a Modal Web Function Proxy Token in the workspace dashboard;
+keep its `wk-...` ID and `ws-...` secret out of Git. For a temporary endpoint:
+
+```sh
+scripts/optimus3-modal shadow-serve
+```
+
+The Airicraft client and `shadow-warm` command bind these proxy headers to
+`https://*.modal.run` hosts (with loopback allowed only for tests). The warm
+command feeds headers to curl over configuration input, so token values are not
+placed in curl's process arguments.
+
+After verifying the printed `optimus3-shadow` URL, deploy it persistently:
+
+```sh
+scripts/optimus3-modal shadow-deploy
+```
+
+Before starting a bounded graph identity, warm the scaled-to-zero container and
+prove that model loading plus one excluded synthetic action-head step completed:
+
+```sh
+AIRICRAFT_MODAL_KEY="wk-REDACTED" \
+AIRICRAFT_MODAL_SECRET="ws-REDACTED" \
+scripts/optimus3-modal shadow-warm "https://YOUR-OPTIMUS3-SHADOW.modal.run"
+```
+
+The response must report `status: ready`, `activeSession: false`, and
+`actuationAuthorized: false`. Session creation resets the policy and RNG after
+this warm-up, so the synthetic action is never retained as pilot evidence. If
+the App scales to zero before a run, warm it again.
+
+Set the generated HTTPS root URL and proxy-token pair in the local
+`run/config/airicraft/agent.yml` (or the active instance's equivalent):
+
+```yaml
+motor:
+  optimus3Shadow:
+    enabled: true
+    baseUrl: "https://YOUR-OPTIMUS3-SHADOW.modal.run"
+    apiKey: ""
+    modalKey: "wk-REDACTED"
+    modalSecret: "ws-REDACTED"
+    sessionTimeoutMillis: 180000
+    requestTimeoutMillis: 250
+    closeTimeoutMillis: 5000
+    policySeed: 7
+```
+
+Then use `airicraft reload`. Only an action-graph-owned `mine_block` step for
+`minecraft:raw_iron` in first-person perspective is eligible. Switching to a
+third-person camera stops the shadow session rather than scoring a domain-shifted
+frame. The existing executor remains the sole
+actuator; the shadow runtime has no keybinding, camera, attack, task-terminal,
+or graph-completion API.
+
+At evaluation finish, Airicraft retires the recurrent identity immediately and
+continues recording asynchronously until the remote close succeeds or reaches
+its five-second timeout. `motor-shadow-cleanup-final.json` is written only for
+that terminal state and records `cleanupComplete: true`; `events.jsonl` retains
+the matching `session_closed` event and any close failure. A subsequent
+evaluation is rejected while this post-finish evidence is still pending.
+
+The service permits one recurrent session per container. Session creation
+resets the action policy exactly once, steps are strictly monotonic, and a
+repeat is idempotent only when every frame identity field and hash matches. A
+gap, changed repeat, pin mismatch, malformed action, non-`128x128` frame, or
+decoded-pixel hash mismatch quarantines the session. Airicraft performs its own
+forbidden-control mask and attack stabilization for evidence and never applies
+the result.
+
 `episode` and `sim-preflight` are deliberately restricted to the already-seen
 v1 seed namespace. Only `episodes` may consume the preregistered held-out v2
 schedule, and the frozen code must be committed before that command is run.
@@ -179,6 +255,12 @@ minutes; and post-score capture has a separate three-minute total budget.
 These cooperative budgets are checked between blocking model, simulator, and
 encoder calls. The hard timeout leaves seven minutes beyond the maximum
 suite-plus-capture budgets for result construction and return.
+
+The Stage 4 deployment also uses at most one L40S container, zero minimum or
+buffer containers, no configured retries, and a five-minute idle scale-down
+window. The first session after scale-to-zero pays full model-load latency;
+only warmed step latency belongs in the 20 Hz shadow measurement. Stop or delete
+the deployed App when the shadow campaign is over.
 
 `cache` and `engine-cache` use CPU rather than an L40S and allow two hours for
 large immutable downloads. `sim-preflight` uses four CPU cores, Mesa/Xvfb, and

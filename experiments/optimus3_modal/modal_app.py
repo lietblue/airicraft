@@ -68,7 +68,15 @@ from contract import (
     NATIVE_UPSTREAM_TASK_TEXT,
     OPTIMUS3_REPOSITORY,
     OPTIMUS3_REVISION,
+    POLICY_ACTION_KEYS,
     RUNTIME_PINS,
+    SHADOW_CLOSE_RESPONSE_FIELDS,
+    SHADOW_COMMON_FIELDS,
+    SHADOW_CONTRACT_VERSION,
+    SHADOW_MODE,
+    SHADOW_STEP_RESPONSE_FIELDS,
+    ShadowContractError,
+    ShadowStepSequencer,
     SIMULATOR_ENGINE_EXPECTED_BYTES,
     SIMULATOR_ENGINE_FILENAME,
     SIMULATOR_ENGINE_JAR,
@@ -104,6 +112,9 @@ from contract import (
     validate_episode_index,
     validate_frame_shape,
     validate_seed,
+    validate_shadow_close_request,
+    validate_shadow_common,
+    validate_shadow_step_request,
     validate_simulator_motor_membership,
     validate_task,
 )
@@ -189,6 +200,7 @@ runtime_base_image = (
         "datasets==3.6.0",
         "dm-tree==0.1.9",
         "einops==0.8.1",
+        "fastapi==0.115.12",
         "ftfy==6.3.1",
         "gym==0.26.2",
         "gym3==0.3.3",
@@ -2506,6 +2518,383 @@ class Optimus3Smoke(_NativeEpisodeMixin):
     @modal.method()
     def native_suite(self) -> dict[str, Any]:
         return self._run_native(list(range(NATIVE_EPISODE_COUNT)), capture_video=True)
+
+
+@app.cls(
+    image=runtime_image,
+    gpu=GPU_TYPE,
+    volumes={str(MODEL_ROOT): _read_only_volume(model_volume)},
+    cpu=4.0,
+    memory=65_536,
+    startup_timeout=15 * 60,
+    timeout=10 * 60,
+    retries=0,
+    min_containers=0,
+    max_containers=1,
+    buffer_containers=0,
+    scaledown_window=5 * 60,
+    single_use_containers=False,
+)
+class Optimus3ShadowService:
+    """Proxy-authenticated, single-session Stage 4 shadow policy service."""
+
+    @modal.enter()
+    def load(self) -> None:
+        import threading
+
+        import numpy as np
+        import torch
+        from transformers import AutoProcessor
+
+        for spec in MODEL_SPECS:
+            if not _ready(spec):
+                raise RuntimeError(
+                    f"missing pinned {spec.key} checkpoint in {MODEL_ROOT}; run cache mode first"
+                )
+
+        _install_minestudio_namespace_shim()
+        _install_clip_tokenizer_shim()
+        from minecraftoptimus.model.optimus3.modeling_optimus3 import Optimus3ForConditionalGeneration
+        from minecraftoptimus.model.steve1.agent import Optimus3ActionAgent
+
+        if not torch.cuda.is_available():
+            raise RuntimeError("CUDA is not available")
+        self.np = np
+        self.torch = torch
+        self.device = torch.device("cuda")
+        self.model = Optimus3ForConditionalGeneration.from_pretrained(
+            str(_model_path("mllm")),
+            attn_implementation=RUNTIME_PINS["attention_implementation"],
+            torch_dtype=torch.bfloat16,
+            local_files_only=True,
+        ).eval()
+        self.model.to(self.device)
+        self.processor = AutoProcessor.from_pretrained(str(_model_path("mllm")), local_files_only=True)
+        self.action_head = Optimus3ActionAgent.from_pretrained(str(_model_path("action_head")))
+        action_modules = {
+            "mineclip": self.action_head.mineclip,
+            "prior": self.action_head.prior,
+            "policy": self.action_head.agent.policy,
+            "mllm_embed_linear": self.action_head.mllm_embed_linear,
+        }
+        misplaced: list[str] = []
+        for module_name, module in action_modules.items():
+            module.eval()
+            for tensor_kind, named_tensors in (
+                ("parameter", module.named_parameters()),
+                ("buffer", module.named_buffers()),
+            ):
+                misplaced.extend(
+                    f"{module_name}.{tensor_kind}.{name}"
+                    for name, tensor in named_tensors
+                    if tensor.device.type != self.device.type
+                )
+
+        def check_state(path: str, value: Any) -> None:
+            if self.torch.is_tensor(value):
+                if value.device.type != self.device.type:
+                    misplaced.append(path)
+            elif isinstance(value, dict):
+                for key, item in value.items():
+                    check_state(f"{path}.{key}", item)
+            elif isinstance(value, (list, tuple)):
+                for index, item in enumerate(value):
+                    check_state(f"{path}.{index}", item)
+
+        check_state("agent._dummy_first", self.action_head.agent._dummy_first)
+        check_state("agent.hidden_state", self.action_head.agent.hidden_state)
+        for owner_name, owner_device in (
+            ("action_head.device", self.action_head.device),
+            ("agent.device", self.action_head.agent.device),
+        ):
+            if self.torch.device(owner_device).type != self.device.type:
+                misplaced.append(owner_name)
+        if misplaced:
+            raise RuntimeError(f"action-head modules are not on CUDA: {misplaced}")
+
+        # Conditioning is frozen across every live graph-step session. Compute
+        # and prove it once per container, then reset only the recurrent policy
+        # when a new session is accepted.
+        self._set_seed(NATIVE_EMBEDDING_SEED)
+        embedding, label = self._task_embedding(NATIVE_POLICY_PROMPT)
+        self.torch.cuda.synchronize()
+        with self.torch.inference_mode():
+            projected = self._project_task_embedding(embedding)
+        self.torch.cuda.synchronize()
+        embedding_sha = hashlib.sha256(embedding.detach().cpu().numpy().tobytes()).hexdigest()
+        projected_sha = hashlib.sha256(projected.detach().cpu().numpy().tobytes()).hexdigest()
+        if label != NATIVE_EXPECTED_LABEL:
+            raise RuntimeError(f"shadow conditioning label mismatch: {label!r}")
+        if embedding_sha != NATIVE_EXPECTED_EMBEDDING_SHA256:
+            raise RuntimeError("shadow task embedding digest does not match the held-out gate")
+        if projected_sha != NATIVE_EXPECTED_PROJECTION_SHA256:
+            raise RuntimeError("shadow projected embedding digest does not match the held-out gate")
+        self.shadow_projected = projected
+
+        # Pay one action-head initialization step before the first live frame. A
+        # session create resets recurrent state and RNG again, so this synthetic
+        # action is never part of session evidence.
+        action_warmup_started_ns = time.perf_counter_ns()
+        self._reset_action_policy(NATIVE_EMBEDDING_SEED)
+        neutral_frame = self.np.full(FRAME_SHAPE, 127, dtype=self.np.uint8)
+        with self.torch.inference_mode():
+            warm_action = self._cached_equivalent_action(self.shadow_projected, neutral_frame)
+        self.torch.cuda.synchronize()
+        validate_complete_action(warm_action)
+        self.shadow_action_warmup_ms = (
+            time.perf_counter_ns() - action_warmup_started_ns
+        ) / 1_000_000.0
+        self.shadow_lock = threading.Lock()
+        self.shadow_session: dict[str, Any] | None = None
+
+    @modal.asgi_app(label="optimus3-shadow", requires_proxy_auth=True)
+    def web(self):
+        from fastapi import FastAPI, HTTPException
+
+        api = FastAPI(title="Airicraft Optimus-3 Shadow Policy", docs_url=None, redoc_url=None)
+
+        def translate(error: ShadowContractError) -> None:
+            raise HTTPException(
+                status_code=error.status_code,
+                detail={"code": error.code, "message": str(error)},
+            ) from None
+
+        @api.post("/v1/policy/sessions")
+        def create_session(payload: dict[str, Any]) -> dict[str, Any]:
+            try:
+                return self._create_session(payload)
+            except ShadowContractError as error:
+                translate(error)
+
+        @api.post("/v1/policy/sessions/{session_id}/steps")
+        def step(session_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+            try:
+                return self._step(session_id, payload)
+            except ShadowContractError as error:
+                translate(error)
+
+        @api.post("/v1/policy/sessions/{session_id}/close")
+        def close_session(session_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+            try:
+                return self._close_session(session_id, payload)
+            except ShadowContractError as error:
+                translate(error)
+
+        @api.get("/healthz")
+        def healthz() -> dict[str, Any]:
+            with self.shadow_lock:
+                active_session = self.shadow_session is not None
+            return {
+                "status": "ready",
+                "mode": SHADOW_MODE,
+                "modelId": model_spec("mllm").repo_id,
+                "modelRevision": model_spec("mllm").revision,
+                "actionHeadId": model_spec("action_head").repo_id,
+                "actionHeadRevision": model_spec("action_head").revision,
+                "frameShape": list(FRAME_SHAPE),
+                "actionWarmupMs": self.shadow_action_warmup_ms,
+                "activeSession": active_session,
+                "actuationAuthorized": False,
+            }
+
+        return api
+
+    def _create_session(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        common = validate_shadow_common(payload)
+        with self.shadow_lock:
+            if self.shadow_session is not None:
+                if self.shadow_session["common"] == common:
+                    return self._session_response(common)
+                raise ShadowContractError(
+                    "session_conflict",
+                    "another recurrent shadow session is already active",
+                    409,
+                )
+            self._reset_action_policy(int(common["seed"]))
+            self.shadow_session = {
+                "common": common,
+                "sequencer": ShadowStepSequencer(),
+                "lastResponse": None,
+                "faulted": False,
+                "recurrentResetCount": 1,
+            }
+            return self._session_response(common)
+
+    def _step(self, session_id: str, payload: Mapping[str, Any]) -> dict[str, Any]:
+        request_started_ns = time.perf_counter_ns()
+        with self.shadow_lock:
+            lock_acquired_ns = time.perf_counter_ns()
+            session = self.shadow_session
+            if session is None:
+                raise ShadowContractError("session_not_found", "shadow session is not active", 404)
+            if session_id != session["common"]["sessionId"]:
+                raise ShadowContractError("session_not_found", "shadow session is not active", 404)
+            if session["faulted"]:
+                raise ShadowContractError("session_faulted", "shadow session is quarantined", 409)
+            try:
+                validated, png_bytes = validate_shadow_step_request(payload, session["common"])
+                step_index = int(validated["stepIndex"])
+                signature = (
+                    step_index,
+                    validated["minecraftTick"],
+                    validated["frameId"],
+                    validated["capturedAtMs"],
+                    validated["encodedFrameSha256"],
+                    validated["decodedPixelsSha256"],
+                )
+                sequence_disposition = session["sequencer"].classify(step_index, signature)
+                if sequence_disposition == "cached":
+                    if session["lastResponse"] is None:
+                        raise ShadowContractError("internal_contract_error", "cached response is missing", 500)
+                    return dict(session["lastResponse"])
+
+                frame = self._decode_policy_frame(png_bytes, validated["decodedPixelsSha256"])
+                self.torch.cuda.synchronize()
+                inference_started_ns = time.perf_counter_ns()
+                with self.torch.inference_mode():
+                    raw_action = self._cached_equivalent_action(self.shadow_projected, frame)
+                self.torch.cuda.synchronize()
+                inference_finished_ns = time.perf_counter_ns()
+                action = validate_complete_action(raw_action)
+            except ShadowContractError:
+                session["faulted"] = True
+                raise
+            except Exception as error:
+                session["faulted"] = True
+                raise ShadowContractError(
+                    "inference_failed",
+                    f"shadow inference failed: {type(error).__name__}",
+                    500,
+                ) from None
+
+            finished_ns = time.perf_counter_ns()
+            response = {
+                **{field: validated[field] for field in SHADOW_COMMON_FIELDS},
+                "stepIndex": validated["stepIndex"],
+                "minecraftTick": validated["minecraftTick"],
+                "frameId": validated["frameId"],
+                "capturedAtMs": validated["capturedAtMs"],
+                "encodedFrameSha256": validated["encodedFrameSha256"],
+                "decodedPixelsSha256": validated["decodedPixelsSha256"],
+                "serviceTiming": {
+                    "queueMs": (lock_acquired_ns - request_started_ns) / 1_000_000.0,
+                    "inferenceMs": (inference_finished_ns - inference_started_ns) / 1_000_000.0,
+                    "totalMs": (finished_ns - request_started_ns) / 1_000_000.0,
+                },
+                "action": action,
+            }
+            if set(response) != set(SHADOW_STEP_RESPONSE_FIELDS):
+                session["faulted"] = True
+                raise ShadowContractError("internal_contract_error", "step response schema drifted", 500)
+            session["sequencer"].commit(signature)
+            session["lastResponse"] = dict(response)
+            return response
+
+    def _close_session(self, session_id: str, payload: Mapping[str, Any]) -> dict[str, Any]:
+        # Close is idempotent so an Airicraft create timeout can clean up a
+        # server-side session even when its create response was lost.
+        common = validate_shadow_common(payload)
+        if session_id != common["sessionId"]:
+            raise ShadowContractError("session_mismatch", "path and body session IDs differ", 409)
+        with self.shadow_lock:
+            session = self.shadow_session
+            if session is not None and session["common"]["sessionId"] == session_id:
+                validate_shadow_close_request(common, session["common"])
+                self.shadow_session = None
+            response = {**common, "closed": True}
+            if set(response) != set(SHADOW_CLOSE_RESPONSE_FIELDS):
+                raise ShadowContractError("internal_contract_error", "close response schema drifted", 500)
+            return response
+
+    @staticmethod
+    def _session_response(common: Mapping[str, Any]) -> dict[str, Any]:
+        response = {field: common[field] for field in SHADOW_COMMON_FIELDS}
+        response["recurrentResetCount"] = 1
+        return response
+
+    def _decode_policy_frame(self, png_bytes: bytes, expected_pixels_sha256: str) -> Any:
+        import cv2
+
+        encoded = self.np.frombuffer(png_bytes, dtype=self.np.uint8)
+        bgr = cv2.imdecode(encoded, cv2.IMREAD_COLOR)
+        if bgr is None:
+            raise ShadowContractError("invalid_frame", "PNG could not be decoded")
+        rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+        if tuple(rgb.shape) != FRAME_SHAPE or rgb.dtype != self.np.uint8:
+            raise ShadowContractError("invalid_frame", f"decoded frame must have shape {FRAME_SHAPE} and uint8 pixels")
+        actual_digest = hashlib.sha256(rgb.tobytes(order="C")).hexdigest()
+        if actual_digest != expected_pixels_sha256:
+            raise ShadowContractError("frame_hash_mismatch", "decoded pixel SHA-256 mismatch")
+        return rgb
+
+    def _task_embedding(self, task: str) -> tuple[Any, str]:
+        from qwen_vl_utils import process_vision_info
+        from minecraftoptimus.utils import TASK2LABEL
+
+        system_prompt = (
+            "You are an expert in Minecraft, capable of performing task planning, visual question answering, "
+            "reflection, grounding and executing low-level actions."
+        )
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": [{"type": "text", "text": task}]},
+        ]
+        text = self.processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+        images, videos = process_vision_info(messages)
+        batch = self.processor(text=[text], images=images, videos=videos, padding=True, return_tensors="pt")
+        batch["tasks"] = self.torch.tensor([TASK2LABEL["action"]])
+        batch = batch.to(self.device)
+        with self.torch.inference_mode():
+            generated = self.model.generate(**batch, max_new_tokens=16, do_sample=False)
+        trimmed = [output[len(input_ids) :] for input_ids, output in zip(batch.input_ids, generated)]
+        raw_label = self.processor.batch_decode(
+            trimmed,
+            skip_special_tokens=False,
+            clean_up_tokenization_spaces=False,
+        )[0]
+        if not raw_label.endswith("<|im_end|>"):
+            raise RuntimeError(f"unexpected action routing output: {raw_label!r}")
+        task_label = raw_label[:-10]
+        if task_label not in ACTION_LABELS:
+            raise RuntimeError(f"unknown action label: {task_label!r}")
+
+        messages.append({"role": "assistant", "content": task_label})
+        text = self.processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=False)
+        images, videos = process_vision_info(messages)
+        batch = self.processor(text=[text], images=images, videos=videos, padding=True, return_tensors="pt")
+        batch["tasks"] = self.torch.tensor([TASK2LABEL["action"]])
+        batch["labels"] = batch["input_ids"].clone()
+        batch["labels"][(batch["labels"] < 151665) | (batch["labels"] > 151674)] = -100
+        batch = batch.to(self.device)
+        with self.torch.inference_mode():
+            embedding = self.model.get_action_embedding(**batch).float()
+        if tuple(embedding.shape) != (1, 1, 3584) or not self.torch.isfinite(embedding).all():
+            raise RuntimeError("unexpected or non-finite action embedding")
+        return embedding, task_label
+
+    def _set_seed(self, seed: int) -> None:
+        random.seed(seed)
+        self.torch.manual_seed(seed)
+        self.torch.cuda.manual_seed_all(seed)
+        self.np.random.seed(seed)
+
+    def _reset_action_policy(self, seed: int) -> None:
+        self._set_seed(seed)
+        self.action_head.agent.reset(self.action_head.text_cond_scale)
+
+    def _project_task_embedding(self, embedding: Any) -> Any:
+        projected = self.action_head.mllm_embed_linear(embedding).reshape(embedding.shape[0], -1).contiguous()
+        if tuple(projected.shape) != (1, 512) or not self.torch.isfinite(projected).all():
+            raise RuntimeError("unexpected or non-finite projected task embedding")
+        return projected
+
+    def _cached_equivalent_action(self, projected: Any, frame: Any) -> Mapping[str, Any]:
+        goal = self.action_head.prior(projected, deterministic=False)
+        minerl_action, _ = self.action_head.agent.get_action({"pov": frame}, goal)
+        for key, value in minerl_action.items():
+            minerl_action[key] = self.np.array(value.tolist()[0])
+        minerl_action["ESC"] = self.np.array(0)
+        return minerl_action
 
 
 def _emit(result: dict[str, Any], output: str) -> None:

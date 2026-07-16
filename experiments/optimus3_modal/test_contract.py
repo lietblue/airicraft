@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import re
@@ -43,6 +44,36 @@ class PredicateSpace:
 
 
 class ContractTest(unittest.TestCase):
+    # Keep this helper wire-identical to HttpMotorPolicyClient.commonJson.
+    @staticmethod
+    def shadow_common():
+        return {
+            "contractVersion": contract.SHADOW_CONTRACT_VERSION,
+            "mode": contract.SHADOW_MODE,
+            "sessionId": "session-1",
+            "generation": 1,
+            "executionId": "execution-1",
+            "graphActionId": "action-1",
+            "graphStepId": "step-1",
+            "graphPrimitive": "mine_block",
+            "stepAttempt": 0,
+            "taskId": "task-1",
+            "taskType": "MINE",
+            "prompt": contract.NATIVE_POLICY_PROMPT,
+            "seed": 7,
+            "frameShape": list(contract.FRAME_SHAPE),
+            "policyActionKeys": list(contract.POLICY_ACTION_KEYS),
+            "modelId": contract.model_spec("mllm").repo_id,
+            "modelRevision": contract.model_spec("mllm").revision,
+            "actionHeadId": contract.model_spec("action_head").repo_id,
+            "actionHeadRevision": contract.model_spec("action_head").revision,
+            "policyContract": contract.SHADOW_POLICY_CONTRACT,
+            "expectedLabel": contract.NATIVE_EXPECTED_LABEL,
+            "taskEmbeddingSha256": contract.NATIVE_EXPECTED_EMBEDDING_SHA256,
+            "projectedEmbeddingSha256": contract.NATIVE_EXPECTED_PROJECTION_SHA256,
+            "actuationAuthorized": False,
+        }
+
     def test_manifest_pins_immutable_revisions_without_secrets(self):
         manifest = contract.pilot_manifest()
         revisions = [
@@ -119,6 +150,51 @@ class ContractTest(unittest.TestCase):
                 contract.validate_seed(seed)
         with self.assertRaises(TypeError):
             contract.validate_seed(True)
+
+    def test_shadow_common_contract_is_exact_and_actuation_is_never_authorized(self):
+        common = self.shadow_common()
+        self.assertEqual(contract.validate_shadow_common(common), common)
+
+        with self.assertRaisesRegex(contract.ShadowContractError, "fields do not match"):
+            contract.validate_shadow_common({**common, "unknown": True})
+        with self.assertRaisesRegex(contract.ShadowContractError, "actuationAuthorized"):
+            contract.validate_shadow_common({**common, "actuationAuthorized": True})
+        with self.assertRaisesRegex(contract.ShadowContractError, "policyActionKeys"):
+            contract.validate_shadow_common({**common, "policyActionKeys": list(reversed(contract.POLICY_ACTION_KEYS))})
+
+    def test_shadow_step_binds_png_and_both_frame_hashes(self):
+        common = self.shadow_common()
+        png = b"\x89PNG\r\n\x1a\ntrace-bound-test-frame"
+        step = {
+            **common,
+            "stepIndex": 0,
+            "minecraftTick": 42,
+            "frameId": 1,
+            "capturedAtMs": 1234,
+            "encodedFrameSha256": hashlib.sha256(png).hexdigest(),
+            "decodedPixelsSha256": "b" * 64,
+            "framePngBase64": base64.b64encode(png).decode("ascii"),
+        }
+
+        validated, decoded = contract.validate_shadow_step_request(step, common)
+        self.assertEqual(validated, step)
+        self.assertEqual(decoded, png)
+
+        with self.assertRaisesRegex(contract.ShadowContractError, "encoded frame SHA-256 mismatch"):
+            contract.validate_shadow_step_request({**step, "encodedFrameSha256": "a" * 64}, common)
+        with self.assertRaisesRegex(contract.ShadowContractError, "active recurrent session"):
+            contract.validate_shadow_step_request(step, {**common, "sessionId": "session-2"})
+
+    def test_shadow_step_sequence_is_monotonic_and_idempotent_only_for_same_frame(self):
+        sequence = contract.ShadowStepSequencer()
+        first = (0, 42, 1, "a" * 64, "b" * 64)
+        self.assertEqual("new", sequence.classify(0, first))
+        sequence.commit(first)
+        self.assertEqual("cached", sequence.classify(0, first))
+        with self.assertRaisesRegex(contract.ShadowContractError, "different frame identity"):
+            sequence.classify(0, (*first[:-1], "c" * 64))
+        with self.assertRaisesRegex(contract.ShadowContractError, "expected stepIndex 1"):
+            sequence.classify(2, (2,))
 
     def test_benchmark_step_validation_is_bounded(self):
         self.assertEqual(contract.validate_benchmark_steps(8, 32, 256), (8, 32, 256))

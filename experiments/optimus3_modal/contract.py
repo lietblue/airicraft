@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import binascii
 import hashlib
 import json
 import math
@@ -238,6 +240,50 @@ FORBIDDEN_ACTION_KEYS = (
 ALL_ACTION_KEYS = ALLOWED_ACTION_KEYS + FORBIDDEN_ACTION_KEYS
 ACTUATOR_ONLY_ACTION_KEYS = ("pickItem", "swapHands")
 POLICY_ACTION_KEYS = tuple(key for key in ALL_ACTION_KEYS if key not in ACTUATOR_ONLY_ACTION_KEYS)
+SHADOW_CONTRACT_VERSION = "airicraft.optimus3.shadow.v1"
+SHADOW_MODE = "shadow"
+SHADOW_POLICY_CONTRACT = "optimus3.policy-action-22.v1"
+SHADOW_SESSION_ID_PATTERN = re.compile(r"[A-Za-z0-9._-]{1,128}")
+SHADOW_MAX_FRAME_PNG_BYTES = 256 * 1024
+SHADOW_COMMON_FIELDS = (
+    "contractVersion",
+    "mode",
+    "sessionId",
+    "generation",
+    "executionId",
+    "graphActionId",
+    "graphStepId",
+    "graphPrimitive",
+    "stepAttempt",
+    "taskId",
+    "taskType",
+    "prompt",
+    "seed",
+    "frameShape",
+    "policyActionKeys",
+    "modelId",
+    "modelRevision",
+    "actionHeadId",
+    "actionHeadRevision",
+    "policyContract",
+    "expectedLabel",
+    "taskEmbeddingSha256",
+    "projectedEmbeddingSha256",
+    "actuationAuthorized",
+)
+SHADOW_STEP_REQUEST_FIELDS = SHADOW_COMMON_FIELDS + (
+    "stepIndex",
+    "minecraftTick",
+    "frameId",
+    "capturedAtMs",
+    "encodedFrameSha256",
+    "decodedPixelsSha256",
+    "framePngBase64",
+)
+SHADOW_STEP_RESPONSE_FIELDS = tuple(
+    field for field in SHADOW_STEP_REQUEST_FIELDS if field != "framePngBase64"
+) + ("serviceTiming", "action")
+SHADOW_CLOSE_RESPONSE_FIELDS = SHADOW_COMMON_FIELDS + ("closed",)
 ACTION_LABELS = (
     "<dirt>",
     "<tree>",
@@ -304,6 +350,164 @@ def model_spec(key: str) -> ModelSpec:
         if spec.key == key:
             return spec
     raise KeyError(f"unknown model key: {key}")
+
+
+class ShadowContractError(ValueError):
+    """A client-visible Stage 4 protocol violation with a stable error code."""
+
+    def __init__(self, code: str, message: str, status_code: int = 400):
+        super().__init__(message)
+        self.code = code
+        self.status_code = status_code
+
+
+def validate_shadow_common(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """Validate and copy the exact common Java/Modal shadow envelope."""
+    if not isinstance(payload, Mapping):
+        raise ShadowContractError("invalid_request", "request body must be a JSON object")
+    _require_exact_shadow_fields(payload, SHADOW_COMMON_FIELDS, "session request")
+
+    expected_strings = {
+        "contractVersion": SHADOW_CONTRACT_VERSION,
+        "mode": SHADOW_MODE,
+        "prompt": NATIVE_POLICY_PROMPT,
+        "modelId": model_spec("mllm").repo_id,
+        "modelRevision": model_spec("mllm").revision,
+        "actionHeadId": model_spec("action_head").repo_id,
+        "actionHeadRevision": model_spec("action_head").revision,
+        "policyContract": SHADOW_POLICY_CONTRACT,
+        "expectedLabel": NATIVE_EXPECTED_LABEL,
+        "taskEmbeddingSha256": NATIVE_EXPECTED_EMBEDDING_SHA256,
+        "projectedEmbeddingSha256": NATIVE_EXPECTED_PROJECTION_SHA256,
+    }
+    for field, expected in expected_strings.items():
+        if payload.get(field) != expected:
+            raise ShadowContractError("contract_mismatch", f"request contract mismatch: {field}")
+
+    session_id = payload.get("sessionId")
+    if not isinstance(session_id, str) or not SHADOW_SESSION_ID_PATTERN.fullmatch(session_id):
+        raise ShadowContractError("invalid_request", "sessionId must be a safe 1-128 character identifier")
+    for field in (
+        "executionId",
+        "graphActionId",
+        "graphStepId",
+        "graphPrimitive",
+        "taskId",
+        "taskType",
+    ):
+        value = payload.get(field)
+        if not isinstance(value, str) or not value.strip():
+            raise ShadowContractError("invalid_request", f"{field} must be a non-empty string")
+    for field in ("generation", "stepAttempt", "seed"):
+        _require_nonnegative_shadow_integer(payload, field)
+    if payload["seed"] > 2**32 - 1:
+        raise ShadowContractError("invalid_request", "seed must be between 0 and 2^32 - 1")
+    if payload.get("frameShape") != list(FRAME_SHAPE):
+        raise ShadowContractError("contract_mismatch", "request contract mismatch: frameShape")
+    if payload.get("policyActionKeys") != list(POLICY_ACTION_KEYS):
+        raise ShadowContractError("contract_mismatch", "request contract mismatch: policyActionKeys")
+    if payload.get("actuationAuthorized") is not False:
+        raise ShadowContractError("actuation_forbidden", "actuationAuthorized must be false")
+    return dict(payload)
+
+
+def validate_shadow_step_request(
+    payload: Mapping[str, Any],
+    session_common: Mapping[str, Any],
+) -> tuple[dict[str, Any], bytes]:
+    """Validate a strict, trace-bound step and return its PNG bytes."""
+    if not isinstance(payload, Mapping):
+        raise ShadowContractError("invalid_request", "request body must be a JSON object")
+    _require_exact_shadow_fields(payload, SHADOW_STEP_REQUEST_FIELDS, "step request")
+    common = validate_shadow_common({field: payload.get(field) for field in SHADOW_COMMON_FIELDS})
+    if common != dict(session_common):
+        raise ShadowContractError("session_mismatch", "step does not match the active recurrent session", 409)
+    for field in ("stepIndex", "minecraftTick", "capturedAtMs"):
+        _require_nonnegative_shadow_integer(payload, field)
+    frame_id = _require_nonnegative_shadow_integer(payload, "frameId")
+    if frame_id <= 0:
+        raise ShadowContractError("invalid_request", "frameId must be positive")
+    for field in ("encodedFrameSha256", "decodedPixelsSha256"):
+        value = payload.get(field)
+        if not isinstance(value, str) or not _SHA256_PATTERN.fullmatch(value):
+            raise ShadowContractError("invalid_request", f"{field} must be a lowercase SHA-256 digest")
+    encoded = payload.get("framePngBase64")
+    if not isinstance(encoded, str) or not encoded or len(encoded) > ((SHADOW_MAX_FRAME_PNG_BYTES * 4) // 3 + 8):
+        raise ShadowContractError("invalid_frame", "framePngBase64 size is invalid")
+    try:
+        png_bytes = base64.b64decode(encoded, validate=True)
+    except (binascii.Error, ValueError):
+        raise ShadowContractError("invalid_frame", "framePngBase64 is not canonical base64") from None
+    if not png_bytes or len(png_bytes) > SHADOW_MAX_FRAME_PNG_BYTES:
+        raise ShadowContractError("invalid_frame", "decoded PNG size is invalid")
+    if not png_bytes.startswith(b"\x89PNG\r\n\x1a\n"):
+        raise ShadowContractError("invalid_frame", "frame payload must be a PNG")
+    if hashlib.sha256(png_bytes).hexdigest() != payload["encodedFrameSha256"]:
+        raise ShadowContractError("frame_hash_mismatch", "encoded frame SHA-256 mismatch")
+    return dict(payload), png_bytes
+
+
+def validate_shadow_close_request(
+    payload: Mapping[str, Any],
+    session_common: Mapping[str, Any],
+) -> dict[str, Any]:
+    common = validate_shadow_common(payload)
+    if common != dict(session_common):
+        raise ShadowContractError("session_mismatch", "close does not match the active recurrent session", 409)
+    return common
+
+
+@dataclass
+class ShadowStepSequencer:
+    """Pure recurrent-step ordering with one idempotent replay slot."""
+
+    next_step_index: int = 0
+    last_signature: tuple[Any, ...] | None = None
+
+    def classify(self, step_index: int, signature: tuple[Any, ...]) -> str:
+        if isinstance(step_index, bool) or not isinstance(step_index, int) or step_index < 0:
+            raise ShadowContractError("invalid_request", "stepIndex must be a non-negative integer")
+        if step_index == self.next_step_index - 1:
+            if signature == self.last_signature:
+                return "cached"
+            raise ShadowContractError(
+                "step_conflict",
+                "repeated step index has different frame identity",
+                409,
+            )
+        if step_index != self.next_step_index:
+            raise ShadowContractError(
+                "step_sequence_error",
+                f"expected stepIndex {self.next_step_index}, got {step_index}",
+                409,
+            )
+        return "new"
+
+    def commit(self, signature: tuple[Any, ...]) -> None:
+        self.last_signature = signature
+        self.next_step_index += 1
+
+
+def _require_exact_shadow_fields(
+    payload: Mapping[str, Any],
+    expected_fields: Sequence[str],
+    label: str,
+) -> None:
+    expected = set(expected_fields)
+    actual = set(payload)
+    if actual != expected:
+        raise ShadowContractError(
+            "schema_mismatch",
+            f"{label} fields do not match the frozen contract: "
+            f"missing={sorted(expected - actual)}, unknown={sorted(actual - expected)}",
+        )
+
+
+def _require_nonnegative_shadow_integer(payload: Mapping[str, Any], field: str) -> int:
+    value = payload.get(field)
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ShadowContractError("invalid_request", f"{field} must be a non-negative integer")
+    return value
 
 
 def validate_task(task: str) -> str:

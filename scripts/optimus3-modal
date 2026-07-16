@@ -23,6 +23,9 @@ commands:
   bench [Modal args]    benchmark the warmed recurrent action loop on one L40S
   episode [Modal args]  run one fixed-seed native MineStudio episode on one L40S
   episodes              run and capture the locked ten-episode v2 native competence gate
+  shadow-serve          serve the proxy-authenticated Stage 4 endpoint for development
+  shadow-deploy         deploy the proxy-authenticated Stage 4 endpoint persistently
+  shadow-warm <URL>     load and action-warm the endpoint before a scored graph identity
 EOF
 }
 
@@ -52,6 +55,35 @@ run_remote() {
 	modal run "$experiment_dir/modal_app.py" --mode "$mode" --output "$run_dir/result.json" "$@"
 }
 
+validate_shadow_url() {
+	python3 - "$1" <<'PY'
+import ipaddress
+import sys
+from urllib.parse import urlsplit, urlunsplit
+
+value = sys.argv[1].rstrip("/")
+parsed = urlsplit(value)
+host = parsed.hostname or ""
+if not host or parsed.username is not None or parsed.password is not None or parsed.query or parsed.fragment:
+    raise SystemExit("error: shadow URL must be an absolute credential-free endpoint")
+try:
+    loopback = ipaddress.ip_address(host).is_loopback
+except ValueError:
+    loopback = host.lower() == "localhost"
+modal_host = host.lower().endswith(".modal.run")
+if not ((parsed.scheme == "https" and modal_host) or (parsed.scheme in {"http", "https"} and loopback)):
+    raise SystemExit("error: shadow URL must use https://*.modal.run or a loopback test endpoint")
+print(urlunsplit((parsed.scheme, parsed.netloc, parsed.path.rstrip("/"), "", "")))
+PY
+}
+
+curl_config_escape() {
+	local value="$1"
+	value="${value//\\/\\\\}"
+	value="${value//\"/\\\"}"
+	printf '%s' "$value"
+}
+
 case "$command" in
 	self-test)
 		cd "$repo_root"
@@ -67,6 +99,58 @@ case "$command" in
 	preflight | cache | engine-cache | sim-preflight | smoke | bench | episode | episodes)
 		require_modal
 		run_remote "$command" "$@"
+		;;
+	shadow-serve)
+		require_modal
+		modal serve "$experiment_dir/modal_app.py" "$@"
+		;;
+	shadow-deploy)
+		require_modal
+		modal deploy "$experiment_dir/modal_app.py" "$@"
+		;;
+	shadow-warm)
+		if [[ $# -ne 1 ]]; then
+			printf 'error: shadow-warm requires exactly one endpoint URL\n' >&2
+			exit 2
+		fi
+		: "${AIRICRAFT_MODAL_KEY:?AIRICRAFT_MODAL_KEY is required}"
+		: "${AIRICRAFT_MODAL_SECRET:?AIRICRAFT_MODAL_SECRET is required}"
+		if [[ "$AIRICRAFT_MODAL_KEY" == *$'\n'* || "$AIRICRAFT_MODAL_KEY" == *$'\r'* \
+			|| "$AIRICRAFT_MODAL_SECRET" == *$'\n'* || "$AIRICRAFT_MODAL_SECRET" == *$'\r'* ]]; then
+			printf 'error: Modal proxy credentials must not contain line breaks\n' >&2
+			exit 2
+		fi
+		shadow_url="$(validate_shadow_url "$1")"
+		modal_key="$(curl_config_escape "$AIRICRAFT_MODAL_KEY")"
+		modal_secret="$(curl_config_escape "$AIRICRAFT_MODAL_SECRET")"
+		response="$(
+			printf 'fail\nsilent\nshow-error\nheader = "Modal-Key: %s"\nheader = "Modal-Secret: %s"\n' \
+				"$modal_key" "$modal_secret" \
+				| env -u AIRICRAFT_MODAL_KEY -u AIRICRAFT_MODAL_SECRET \
+					curl --config - --url "$shadow_url/healthz"
+		)"
+		SHADOW_WARM_RESPONSE="$response" python3 -c '
+import json, math, os
+payload = json.loads(os.environ["SHADOW_WARM_RESPONSE"])
+expected = {
+    "status": "ready",
+    "mode": "shadow",
+    "modelId": "iLearn-Lab/Optimus-3",
+    "modelRevision": "6168839d8a44c3fab45a31354e683874d14601f3",
+    "actionHeadId": "MinecraftOptimus/Optimus-3-ActionHead",
+    "actionHeadRevision": "455e01e30c8e830f420179c93e64f54ce3b30ecc",
+    "frameShape": [128, 128, 3],
+    "activeSession": False,
+    "actuationAuthorized": False,
+}
+for key, value in expected.items():
+    if payload.get(key) != value:
+        raise SystemExit(f"shadow warm contract mismatch: {key}")
+warmup = payload.get("actionWarmupMs")
+if not isinstance(warmup, (int, float)) or isinstance(warmup, bool) or not math.isfinite(warmup) or warmup < 0:
+    raise SystemExit("shadow warm contract mismatch: actionWarmupMs")
+print(json.dumps(payload, sort_keys=True))
+'
 		;;
 	help | -h | --help)
 		usage
