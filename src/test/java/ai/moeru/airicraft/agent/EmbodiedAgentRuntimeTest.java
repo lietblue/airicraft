@@ -1,6 +1,7 @@
 package ai.moeru.airicraft.agent;
 
 import ai.moeru.airicraft.AiricraftConfig;
+import ai.moeru.airicraft.BridgeUnavailableException;
 import ai.moeru.airicraft.FirstPersonScreenshotService;
 import ai.moeru.airicraft.agent.actions.ActionGoal;
 import ai.moeru.airicraft.agent.actions.ActionGraphExecutionSnapshot;
@@ -20,6 +21,7 @@ import ai.moeru.airicraft.agent.job.ActiveJobProposal;
 import ai.moeru.airicraft.agent.job.ActiveJobStatus;
 import ai.moeru.airicraft.agent.job.ActiveJobType;
 import ai.moeru.airicraft.agent.session.SessionMode;
+import ai.moeru.airicraft.agent.session.PlayerLifecycleState;
 import ai.moeru.airicraft.agent.session.SessionSnapshot;
 import ai.moeru.airicraft.agent.tasks.WorldTaskRequest;
 import ai.moeru.airicraft.agent.tasks.BlockPlacementStepArgs;
@@ -79,6 +81,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 class EmbodiedAgentRuntimeTest {
 	@Test
@@ -2238,11 +2241,55 @@ class EmbodiedAgentRuntimeTest {
 		assertEquals("planner_response", event.payload().get("source"));
 	}
 
+	@Test
+	void deathIsAHardCancellationBoundaryAndRejectsNewActions() {
+		FakeWorldTaskExecutor executor = new FakeWorldTaskExecutor();
+		EmbodiedAgentRuntime runtime = EmbodiedAgentRuntime.createForTests(executor);
+		runtime.overrideSessionSnapshotForTests(loadedRemoteSession());
+		runtime.submitTask(new TaskSpec(TaskType.COLLECT_RESOURCE, TaskResourceKind.WOOD_LOGS, 2), "test");
+		runtime.onClientTick(null);
+
+		runtime.overrideSessionSnapshotForTests(deadRemoteSession());
+		runtime.onClientTick(null);
+
+		assertEquals(TaskState.CANCELLED, runtime.taskSnapshot().state());
+		assertEquals(1, executor.onWorldLeaveCalls);
+		assertEquals(List.of("Root", "WaitForRespawn"), runtime.behaviorTreeSnapshot().activeNodePath());
+		assertTrue(runtime.recentEvents(null).events().stream().anyMatch(event -> "player.actions_cancelled".equals(event.type())));
+
+		BridgeUnavailableException exception = assertThrows(
+			BridgeUnavailableException.class,
+			() -> runtime.submitTask(new TaskSpec(TaskType.COLLECT_RESOURCE, TaskResourceKind.WOOD_LOGS, 1), "test")
+		);
+		assertEquals("player_dead", exception.code());
+	}
+
+	@Test
+	void fatalHealthPacketClosesActuationGateBeforeNextTick() {
+		FakeWorldTaskExecutor executor = new FakeWorldTaskExecutor();
+		EmbodiedAgentRuntime runtime = EmbodiedAgentRuntime.createForTests(executor);
+		runtime.overrideSessionSnapshotForTests(loadedRemoteSession());
+		runtime.submitTask(new TaskSpec(TaskType.COLLECT_RESOURCE, TaskResourceKind.WOOD_LOGS, 2), "test");
+
+		runtime.onPlayerHealthUpdated(true, 10.0F, 0.0F);
+
+		assertTrue(runtime.sessionSnapshot().requiresRespawn());
+		assertFalse(runtime.sessionSnapshot().companionActuationAllowed());
+		assertEquals(TaskState.CANCELLED, runtime.taskSnapshot().state());
+		assertEquals(1, executor.onWorldLeaveCalls);
+		assertTrue(runtime.recentEvents(null).events().stream().anyMatch(event -> "player.died".equals(event.type())));
+		assertThrows(
+			BridgeUnavailableException.class,
+			() -> runtime.submitTask(new TaskSpec(TaskType.COLLECT_RESOURCE, TaskResourceKind.WOOD_LOGS, 1), "test")
+		);
+	}
+
 	private static final class FakeWorldTaskExecutor implements WorldTaskExecutor {
 		private TaskExecutionSnapshot snapshot = TaskExecutionSnapshot.idle();
 		private TaskExecutionSnapshot forcedSnapshot;
 		private Optional<TaskTerminalEvent> nextTerminalEvent = Optional.empty();
 		private Optional<WorldTaskRequest> lastActiveTask = Optional.empty();
+		private int onWorldLeaveCalls;
 
 		@Override
 		public Optional<TaskTerminalEvent> tick(SessionSnapshot sessionSnapshot, Optional<WorldTaskRequest> activeTask) {
@@ -2297,6 +2344,7 @@ class EmbodiedAgentRuntimeTest {
 
 		@Override
 		public void onWorldLeave() {
+			onWorldLeaveCalls++;
 			snapshot = TaskExecutionSnapshot.idle();
 		}
 
@@ -2387,6 +2435,19 @@ class EmbodiedAgentRuntimeTest {
 			false,
 			0,
 			0L
+		);
+	}
+
+	private static SessionSnapshot deadRemoteSession() {
+		return new SessionSnapshot(
+			SessionMode.REMOTE_MULTIPLAYER,
+			true,
+			true,
+			"minecraft:overworld",
+			false,
+			0,
+			0L,
+			PlayerLifecycleState.DEAD
 		);
 	}
 }

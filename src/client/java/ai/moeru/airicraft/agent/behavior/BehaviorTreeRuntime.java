@@ -48,6 +48,11 @@ public final class BehaviorTreeRuntime {
 		TaskExecutionSnapshot taskExecutionSnapshot,
 		long tick
 	) {
+		if (sessionSnapshot.requiresRespawn()) {
+			movementController.stop(client);
+			snapshot = new BehaviorTreeSnapshot(NodeStatus.RUNNING, List.of("Root", "WaitForRespawn"), movementController.snapshot());
+			return;
+		}
 		if (client == null || !sessionSnapshot.worldLoaded() || client.player == null) {
 			movementController.stop(client);
 			snapshot = new BehaviorTreeSnapshot(NodeStatus.RUNNING, List.of("Root", "WaitForSession"), movementController.snapshot());

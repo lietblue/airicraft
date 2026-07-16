@@ -129,7 +129,7 @@ public final class DropItemsTaskExecutor implements WorldTaskExecutor {
 	}
 
 	static boolean itemDropActuationAllowed(SessionSnapshot sessionSnapshot) {
-		return sessionSnapshot != null && sessionSnapshot.worldLoaded();
+		return sessionSnapshot != null && sessionSnapshot.companionActuationAllowed();
 	}
 
 	static boolean shouldWaitForBusyScreen(int busyScreenTicks) {

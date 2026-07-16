@@ -96,6 +96,7 @@ import ai.moeru.airicraft.agent.motor.Optimus3MotorShadowCoordinator;
 import ai.moeru.airicraft.agent.motor.Optimus3MotorShadowEligibility;
 import ai.moeru.airicraft.agent.session.AutoLanOpenState;
 import ai.moeru.airicraft.agent.session.LanHostingService;
+import ai.moeru.airicraft.agent.session.PlayerLifecycleState;
 import ai.moeru.airicraft.agent.session.SessionSnapshot;
 import ai.moeru.airicraft.agent.session.SessionRuntime;
 import ai.moeru.airicraft.agent.shell.PlannerShellComponents;
@@ -180,6 +181,7 @@ public final class EmbodiedAgentRuntime {
 	static final int CRAFT_TOOL_RESULT_TIMEOUT_TICKS = 40;
 	static final int BLOCK_MODIFICATION_TOOL_RESULT_TIMEOUT_TICKS = 40;
 	private static final long SMELTING_OUTPUT_READY_POLL_INTERVAL_TICKS = 20L;
+	private static final long RESPAWN_RETRY_TICKS = 20L;
 	private static final List<String> KNOWN_NON_BLOCK_MINE_ITEM_IDS = List.of(
 		"minecraft:raw_iron",
 		"minecraft:iron_ingot"
@@ -237,6 +239,8 @@ public final class EmbodiedAgentRuntime {
 	private long lastSystemChatTick = -1L;
 	private String lastSystemChatText;
 	private Float lastKnownPlayerHealth;
+	private boolean deathBoundaryApplied;
+	private long lastRespawnRequestTick = -1L;
 	private long lastSmeltingOutputReadyPollTick = Long.MIN_VALUE;
 	private final Map<UUID, String> seenPlayerNames = new LinkedHashMap<>();
 	private volatile PendingCraftToolResult pendingCraftToolResult;
@@ -492,6 +496,8 @@ public final class EmbodiedAgentRuntime {
 		lastSystemChatTick = -1L;
 		lastSystemChatText = null;
 		lastKnownPlayerHealth = null;
+		deathBoundaryApplied = false;
+		lastRespawnRequestTick = -1L;
 		seenPlayerNames.clear();
 	}
 
@@ -504,9 +510,26 @@ public final class EmbodiedAgentRuntime {
 		sessionSnapshot = sessionSnapshotOverrideForTests != null
 			? sessionSnapshotOverrideForTests.withTickCount(tickCount)
 			: sessionRuntime.poll(client, tickCount, eventBuffer);
+		enforcePlayerLifecycle(client);
 		if (!wasWorldLoaded && sessionSnapshot.worldLoaded()) {
 			worldLoadTick = tickCount;
 			localDamageTracker.onLifecycleReset(tickCount);
+		}
+		if (sessionSnapshot.requiresRespawn()) {
+			behaviorTreeRuntime.tick(
+				client,
+				sessionSnapshot,
+				dialogueRuntime,
+				chatService,
+				debugRecorder,
+				Optional.empty(),
+				FollowState.idle(),
+				TaskExecutionSnapshot.idle(),
+				tickCount
+			);
+			drainEventPipeline();
+			lastKnownPlayerHealth = currentPlayerHealth(client);
+			return;
 		}
 		openLanIfSingleplayerLocal(client);
 		surfaceMemory.tick(client, tickCount);
@@ -637,6 +660,84 @@ public final class EmbodiedAgentRuntime {
 		lastKnownPlayerHealth = currentPlayerHealth(client);
 	}
 
+	private void enforcePlayerLifecycle(MinecraftClient client) {
+		if (!sessionSnapshot.requiresRespawn()) {
+			deathBoundaryApplied = false;
+			lastRespawnRequestTick = -1L;
+			return;
+		}
+
+		if (!deathBoundaryApplied) {
+			cancelActionsForPlayerDeath(client);
+			deathBoundaryApplied = true;
+		}
+
+		if (
+			client == null
+				|| client.player == null
+				|| (lastRespawnRequestTick >= 0L && tickCount - lastRespawnRequestTick < RESPAWN_RETRY_TICKS)
+		) {
+			return;
+		}
+
+		lastRespawnRequestTick = tickCount;
+		try {
+			client.player.requestRespawn();
+			eventBuffer.append(tickCount, "player.respawn_requested", Map.of(
+				"attemptTick", tickCount
+			));
+		}
+		catch (RuntimeException exception) {
+			eventBuffer.append(tickCount, "player.respawn_request_failed", Map.of(
+				"attemptTick", tickCount,
+				"message", exception.getMessage() == null ? exception.getClass().getSimpleName() : exception.getMessage()
+			));
+		}
+	}
+
+	private void cancelActionsForPlayerDeath(MinecraftClient client) {
+		ActionGraphExecutionSnapshot graphSnapshot = actionGraphRuntime.snapshot();
+		ActiveJob activeJob = activeJobRuntime.current();
+		boolean graphCancelled = actionGraphRuntime.active();
+		boolean jobCancelled = !activeJob.isIdle() && !activeJob.status().terminal();
+
+		worldTaskExecutor.onWorldLeave();
+		behaviorTreeRuntime.stop(client);
+		followCapability.clear();
+		followState = FollowState.idle();
+		if (graphCancelled) {
+			actionGraphRuntime.cancel("player_died", tickCount);
+		}
+		pendingActionGraphTerminalEvent = null;
+		if (jobCancelled) {
+			TaskSnapshot previousTaskSnapshot = taskSnapshot;
+			activeJobRuntime.cancel("player_died", tickCount);
+			taskSnapshot = activeJobRuntime.taskSnapshot();
+			missionExecutionSnapshot = activeJobRuntime.missionExecutionSnapshot();
+			debugRecorder.recordCollectResourceProbe(activeJobRuntime.collectResourceDebugSnapshot());
+			recordSemanticTaskTransition(previousTaskSnapshot, taskSnapshot);
+		}
+		dialogueRuntime.clear();
+		chatService.clear();
+		taskExecutionSnapshot = TaskExecutionSnapshot.idle();
+		completePendingCraftToolResult("Tool result for craft_recipe: cancelled reason=player_died");
+		completePendingBlockModificationToolResult("Tool result: cancelled reason=player_died");
+		idleIdeaScheduler.reset();
+
+		LinkedHashMap<String, Object> payload = new LinkedHashMap<>();
+		payload.put("reason", "player_died");
+		payload.put("actionGraphCancelled", graphCancelled);
+		payload.put("jobCancelled", jobCancelled);
+		if (graphCancelled && graphSnapshot.executionId() != null && !graphSnapshot.executionId().isBlank()) {
+			payload.put("executionId", graphSnapshot.executionId());
+		}
+		if (jobCancelled) {
+			payload.put("jobId", activeJob.jobId());
+			payload.put("jobType", activeJob.type().name());
+		}
+		eventBuffer.append(tickCount, "player.actions_cancelled", payload);
+	}
+
 	private void openLanIfSingleplayerLocal(MinecraftClient client) {
 		if (!autoLanOpenState.shouldAttempt(sessionSnapshot)) {
 			return;
@@ -692,6 +793,8 @@ public final class EmbodiedAgentRuntime {
 		lastSystemChatTick = -1L;
 		lastSystemChatText = null;
 		lastKnownPlayerHealth = null;
+		deathBoundaryApplied = false;
+		lastRespawnRequestTick = -1L;
 		seenPlayerNames.clear();
 		sessionSnapshot = SessionSnapshot.initial();
 	}
@@ -752,6 +855,7 @@ public final class EmbodiedAgentRuntime {
 
 	public ActionGraphExecutionSnapshot startActionGoal(ActionGoal goal, String source) {
 		Objects.requireNonNull(goal, "goal");
+		requireLivingPlayerForAction();
 		ActionGraphExecutionSnapshot activeSnapshot = actionGraphRuntime.snapshot();
 		if (actionGraphRuntime.active()) {
 			eventBuffer.append(tickCount, "action_graph.goal_reused", Map.of(
@@ -1145,17 +1249,47 @@ public final class EmbodiedAgentRuntime {
 		float effectiveHealthBefore = resolveEffectiveHealthBefore(healthBefore, healthAfter);
 		Map<String, Object> payload = localDamageTracker.consumeDamage(healthInitialized, tickCount, effectiveHealthBefore, healthAfter);
 		lastKnownPlayerHealth = healthAfter;
-		if (payload == null) {
+		if (payload != null) {
+			eventBuffer.append(tickCount, "combat.damage_taken", payload);
+		}
+		boolean fatal = Float.isFinite(healthAfter) && healthAfter <= 0.0F;
+		if (fatal) {
+			if (sessionSnapshotOverrideForTests != null) {
+				sessionSnapshotOverrideForTests = sessionSnapshotOverrideForTests.withPlayerLifecycleState(PlayerLifecycleState.DEAD);
+				sessionSnapshot = sessionSnapshotOverrideForTests.withTickCount(tickCount);
+				eventBuffer.append(tickCount, "player.died", Map.of(
+					"mode", sessionSnapshot.mode().name(),
+					"dimensionId", sessionSnapshot.dimensionId()
+				));
+			}
+			else {
+				sessionSnapshot = sessionRuntime.onPlayerDied(tickCount, eventBuffer);
+			}
+			enforcePlayerLifecycle(MinecraftClient.getInstance());
+		}
+		if (payload == null && !fatal) {
 			return;
 		}
-
-		eventBuffer.append(tickCount, "combat.damage_taken", payload);
 		drainEventPipeline();
 	}
 
 	public void onPlayerRespawned() {
 		localDamageTracker.onLifecycleReset(tickCount);
 		lastKnownPlayerHealth = null;
+		if (sessionSnapshotOverrideForTests != null && sessionSnapshot.requiresRespawn()) {
+			sessionSnapshotOverrideForTests = sessionSnapshotOverrideForTests.withPlayerLifecycleState(PlayerLifecycleState.ALIVE);
+			sessionSnapshot = sessionSnapshotOverrideForTests.withTickCount(tickCount);
+			eventBuffer.append(tickCount, "player.respawned", Map.of(
+				"mode", sessionSnapshot.mode().name(),
+				"dimensionId", sessionSnapshot.dimensionId()
+			));
+		}
+		else {
+			sessionSnapshot = sessionRuntime.onPlayerRespawned(tickCount, eventBuffer);
+		}
+		deathBoundaryApplied = false;
+		lastRespawnRequestTick = -1L;
+		drainEventPipeline();
 	}
 
 	public void onPlayerJoinedGame(UUID playerUuid, String playerName) {
@@ -1220,6 +1354,7 @@ public final class EmbodiedAgentRuntime {
 
 	public TaskSnapshot submitTask(TaskSpec spec, String source) {
 		Objects.requireNonNull(spec, "spec");
+		requireLivingPlayerForAction();
 		activeJobRuntime.submitTask(
 			spec,
 			currentTaskResourceCount(MinecraftClient.getInstance(), spec),
@@ -1240,6 +1375,7 @@ public final class EmbodiedAgentRuntime {
 
 	public TaskSnapshot submitMissionLedger(TaskLedger ledger, String source) {
 		Objects.requireNonNull(ledger, "ledger");
+		requireLivingPlayerForAction();
 		activeJobRuntime.submitMissionLedger(
 			ledger,
 			currentWorldEvidence(MinecraftClient.getInstance()).inventoryCounts().getOrDefault(TaskResourceKind.WOOD_LOGS, 0),
@@ -1278,6 +1414,7 @@ public final class EmbodiedAgentRuntime {
 
 	private TaskSnapshot submitActiveJobProposal(ActiveJobProposal proposal, String source, Map<String, Object> submittedPayload) {
 		Objects.requireNonNull(proposal, "proposal");
+		requireLivingPlayerForAction();
 		WorldEvidence worldEvidence = currentWorldEvidence(MinecraftClient.getInstance());
 		int currentResourceCount = currentResourceCountForProposal(worldEvidence, proposal);
 		activeJobRuntime.applyPlannerResponse(
@@ -1520,6 +1657,9 @@ public final class EmbodiedAgentRuntime {
 
 	private CompletableFuture<String> executePlannerToolCall(PlannerToolCall toolCall) {
 		try {
+			if (toolCall != null && plannerToolRequiresLivingPlayer(toolCall.name()) && sessionSnapshot.requiresRespawn()) {
+				return CompletableFuture.completedFuture(playerDeadToolError(toolCall.name()));
+			}
 			if (toolCall != null && PlannerToolCatalog.CRAFT_RECIPE.equals(PlannerToolCatalog.normalizeName(toolCall.name()))) {
 				return executeCraftRecipePlannerTool(toolCall.arguments());
 			}
@@ -1532,6 +1672,42 @@ public final class EmbodiedAgentRuntime {
 			String name = toolCall == null ? "unknown" : toolCall.name();
 			return CompletableFuture.completedFuture("TOOL_ERROR: " + name + " " + safeToolError(exception));
 		}
+	}
+
+	private static boolean plannerToolRequiresLivingPlayer(String toolName) {
+		String normalized = PlannerToolCatalog.normalizeName(toolName);
+		if (PlannerToolCatalog.isReadTool(normalized)) {
+			return false;
+		}
+		return switch (normalized) {
+			case PlannerToolCatalog.CANCEL_ACTION_GOAL,
+				PlannerToolCatalog.CANCEL_TASK,
+				PlannerToolCatalog.CLEAR_GOAL,
+				PlannerToolCatalog.CANCEL_SMELTING,
+				PlannerToolCatalog.UPDATE_EVENT_POLICY -> false;
+			default -> true;
+		};
+	}
+
+	private static String playerDeadToolError(String toolName) {
+		return "TOOL_ERROR: " + PlannerToolCatalog.normalizeName(toolName)
+			+ " player_dead. The controlled player died; the runtime cancelled all actions and is requesting respawn.";
+	}
+
+	private void requireLivingPlayerForAction() {
+		if (sessionSnapshot.requiresRespawn()) {
+			throw new BridgeUnavailableException(
+				"player_dead",
+				"The controlled player is dead; actions are disabled until respawn"
+			);
+		}
+	}
+
+	private static boolean intentRequiresLivingPlayer(DialogueIntentType type) {
+		return switch (type) {
+			case SET_GOAL, JOB_UPDATE, MISSION_UPDATE, SUBMIT_TASK -> true;
+			case CLEAR_GOAL, CANCEL_TASK, REPLY_ONLY, ASK_CLARIFICATION, ACKNOWLEDGE_FAILURE, NONE -> false;
+		};
 	}
 
 	private static boolean blockModificationToolWaitsForTerminalResult(String normalizedToolName) {
@@ -2158,6 +2334,7 @@ public final class EmbodiedAgentRuntime {
 	}
 
 	private void applyPlannerJobTool(ActiveJobProposal proposal) {
+		requireLivingPlayerForAction();
 		Optional<GoalSnapshot> previousGoal = activeGoal();
 		DialogueResponse response = new DialogueResponse(
 			"",
@@ -2227,6 +2404,14 @@ public final class EmbodiedAgentRuntime {
 
 	private void applyTaskIntent(DialogueResponse response, WorldEvidence worldEvidence, String source) {
 		if (response == null || response.intent() == null || response.intent().type() == null) {
+			return;
+		}
+		if (sessionSnapshot.requiresRespawn() && intentRequiresLivingPlayer(response.intent().type())) {
+			eventBuffer.append(tickCount, "player.action_rejected", Map.of(
+				"reason", "player_dead",
+				"intentType", response.intent().type().name(),
+				"source", source == null || source.isBlank() ? "planner_response" : source
+			));
 			return;
 		}
 		int currentResourceCount = currentResourceCountForIntent(worldEvidence, response.intent());
@@ -2851,6 +3036,9 @@ public final class EmbodiedAgentRuntime {
 		if (response == null || response.intent() == null || response.intent().type() == null) {
 			return;
 		}
+		if (sessionSnapshot.requiresRespawn() && intentRequiresLivingPlayer(response.intent().type())) {
+			return;
+		}
 
 		java.util.LinkedHashMap<String, Object> payload = new java.util.LinkedHashMap<>();
 		payload.put("intentType", response.intent().type().name());
@@ -3287,6 +3475,12 @@ public final class EmbodiedAgentRuntime {
 		profiles.put("crafting.item_crafted", new EventRoutingProfile("crafting.item_crafted", true, PlannerTriggerType.CRAFT, false));
 		profiles.put("smelting.output_ready", new EventRoutingProfile("smelting.output_ready", true, PlannerTriggerType.SYSTEM, true));
 		profiles.put("combat.damage_taken", new EventRoutingProfile("combat.damage_taken", true, PlannerTriggerType.DAMAGE, false));
+		profiles.put("player.died", new EventRoutingProfile("player.died", true, null, true));
+		profiles.put("player.actions_cancelled", new EventRoutingProfile("player.actions_cancelled", true, null, true));
+		profiles.put("player.action_rejected", new EventRoutingProfile("player.action_rejected", true, null, true));
+		profiles.put("player.respawn_requested", new EventRoutingProfile("player.respawn_requested", true, null, true));
+		profiles.put("player.respawn_request_failed", new EventRoutingProfile("player.respawn_request_failed", true, null, true));
+		profiles.put("player.respawned", new EventRoutingProfile("player.respawned", true, null, true));
 		profiles.put("session.world_loaded", new EventRoutingProfile("session.world_loaded", true, null, false));
 		profiles.put("session.world_unloaded", new EventRoutingProfile("session.world_unloaded", true, null, false));
 		profiles.put("session.connection_lost", new EventRoutingProfile("session.connection_lost", true, null, false));

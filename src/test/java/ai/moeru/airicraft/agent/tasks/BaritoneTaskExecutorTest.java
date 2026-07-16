@@ -6,6 +6,7 @@ import ai.moeru.airicraft.agent.goals.GoalPosition;
 import ai.moeru.airicraft.agent.goals.GoalSnapshot;
 import ai.moeru.airicraft.agent.goals.GoalType;
 import ai.moeru.airicraft.agent.session.SessionMode;
+import ai.moeru.airicraft.agent.session.PlayerLifecycleState;
 import ai.moeru.airicraft.agent.session.SessionSnapshot;
 import org.junit.jupiter.api.Test;
 
@@ -37,6 +38,27 @@ class BaritoneTaskExecutorTest {
 		assertEquals(1, facade.applySettingsCalls);
 		assertEquals(1, facade.navigateCalls.size());
 		assertEquals(TaskExecutionState.RUNNING, executor.snapshot().state());
+	}
+
+	@Test
+	void deathGateCancelsActiveBaritoneProcess() {
+		FakeBaritoneFacade facade = new FakeBaritoneFacade();
+		BaritoneTaskExecutor executor = new BaritoneTaskExecutor(facade);
+		GoalSnapshot goal = new GoalSnapshot(
+			GoalType.NAVIGATE_TO,
+			null,
+			new GoalPosition(10, 64, 20, true),
+			null,
+			20L,
+			"planner_response"
+		);
+		WorldTaskRequest request = request("nav-task", goal);
+
+		executor.tick(multiplayer(), Optional.of(request));
+		executor.tick(deadMultiplayer(), Optional.of(request));
+
+		assertEquals(1, facade.cancelCalls);
+		assertEquals(TaskExecutionState.PAUSED_BY_SESSION_GATE, executor.snapshot().state());
 	}
 
 	@Test
@@ -322,6 +344,19 @@ class BaritoneTaskExecutorTest {
 
 	private static SessionSnapshot singleplayerLocal() {
 		return new SessionSnapshot(SessionMode.SINGLEPLAYER_LOCAL, true, true, "minecraft:overworld", false, 0, 30L);
+	}
+
+	private static SessionSnapshot deadMultiplayer() {
+		return new SessionSnapshot(
+			SessionMode.REMOTE_MULTIPLAYER,
+			true,
+			true,
+			"minecraft:overworld",
+			false,
+			0,
+			30L,
+			PlayerLifecycleState.DEAD
+		);
 	}
 
 	private static final class FakeBaritoneFacade implements BaritoneFacade {
