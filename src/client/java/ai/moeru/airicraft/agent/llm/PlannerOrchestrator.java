@@ -1347,7 +1347,12 @@ public final class PlannerOrchestrator {
 		if (snapshot == null) {
 			return null;
 		}
-		if (isStaleSafetyRequest(snapshot.request())) {
+		boolean safetyContextChanged = isStaleSafetyRequest(snapshot.request());
+		boolean toolMayReleaseHold = toolExecution.toolCalls().stream().anyMatch(PlannerOrchestrator::isSideEffectTool);
+		boolean sameEpochHoldRelease = safetyContextChanged
+			&& snapshot.request().safetyEpoch() == minimumSafetyEpoch
+			&& toolMayReleaseHold;
+		if (safetyContextChanged && !sameEpochHoldRelease) {
 			recordStalePlannerRejection(toolExecution.generation(), snapshot.request(), "TOOL_WAIT");
 			sessionCoordinator.finishGeneration(toolExecution.generation(), true);
 			turnJournal.markSuperseded(toolExecution.generation());
@@ -1358,7 +1363,9 @@ public final class PlannerOrchestrator {
 			return null;
 		}
 
-		PlannerRequest followUpRequest = snapshot.request().withToolResult(toolOutcome.toolResultText());
+		PlannerRequest followUpRequest = snapshot.request()
+			.withToolResult(toolOutcome.toolResultText())
+			.withSafetyContext(minimumSafetyEpoch, currentSafetyHoldId);
 		PlannerContextSnapshot followUpSnapshot = withRecordedToolExchanges(
 			snapshot,
 			recordedToolExchanges(toolExecution.generation())
@@ -1667,7 +1674,11 @@ public final class PlannerOrchestrator {
 	}
 
 	private boolean isStaleSafetyRequest(PlannerRequest request) {
-		return request != null && request.safetyEpoch() < minimumSafetyEpoch;
+		return request != null && (
+			request.safetyEpoch() < minimumSafetyEpoch
+				|| request.safetyEpoch() == minimumSafetyEpoch
+				&& !Objects.equals(request.safetyHoldId(), currentSafetyHoldId)
+		);
 	}
 
 	private void rejectStalePlannerResult(PlannerExecutionResult result) {

@@ -38,6 +38,7 @@ import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -1048,6 +1049,70 @@ class PlannerOrchestratorTest {
 		assertEquals(2L, result.generation());
 		assertEquals(1L, result.request().safetyEpoch());
 		assertEquals("hold-1", result.request().safetyHoldId());
+	}
+
+	@Test
+	void operatorHoldReleaseRejectsInFlightPlannerReplyFromThatHold() {
+		RecordingBackend backend = new RecordingBackend();
+		PlannerOrchestrator orchestrator = newOrchestrator(
+			backend,
+			CurrentViewVisionTool.disabled(),
+			PlannerVisionMode.EXTERNAL_SUMMARY
+		);
+
+		orchestrator.updateSafetyContext(1L, "hold-1", false);
+		orchestrator.submit(autonomousRequestAt(20L, 2_000L, "reflex resolved holdId=hold-1", "survival-resolved")
+			.withSafetyContext(1L, "hold-1"));
+		backend.awaitCalls(1, Duration.ofSeconds(1));
+
+		orchestrator.updateSafetyContext(1L, null, false);
+		backend.succeed(0, replyOnly("cancel the interrupted task"));
+
+		List<StalePlannerRejection> rejections = awaitStaleRejections(orchestrator);
+		assertEquals(1, rejections.size());
+		assertEquals("hold-1", rejections.getFirst().requestHoldId());
+		assertNull(rejections.getFirst().currentHoldId());
+		assertEquals(0L, orchestrator.debugSnapshot().supersededCount());
+	}
+
+	@Test
+	void plannerToolThatReleasesCurrentHoldRebasesItsFollowUp() {
+		RecordingBackend backend = new RecordingBackend();
+		AtomicReference<PlannerOrchestrator> orchestratorRef = new AtomicReference<>();
+		PlannerOrchestrator orchestrator = newOrchestrator(
+			backend,
+			CurrentViewVisionTool.disabled(),
+			CurrentInventoryTool.disabled(),
+			PlannerVisionMode.EXTERNAL_SUMMARY,
+			3,
+			10,
+			10,
+			100,
+			128,
+			Clock.systemUTC(),
+			toolCall -> {
+				orchestratorRef.get().updateSafetyContext(1L, null, false);
+				return CompletableFuture.completedFuture("Tool result for cancel_task: ok");
+			},
+			PlannerToolNarrationSink.NO_OP
+		);
+		orchestratorRef.set(orchestrator);
+		orchestrator.updateSafetyContext(1L, "hold-1", false);
+		orchestrator.submit(autonomousRequestAt(20L, 2_000L, "reflex resolved holdId=hold-1", "survival-resolved")
+			.withSafetyContext(1L, "hold-1"));
+		backend.awaitCalls(1, Duration.ofSeconds(1));
+
+		backend.succeed(0, PlannerResponse.toolCalls(List.of(
+			new PlannerToolCall("cancel", PlannerToolCatalog.CANCEL_TASK, new JsonObject(), null, null)
+		), null));
+		awaitBackendCallCount(orchestrator, backend, 2, Duration.ofSeconds(1));
+
+		backend.succeed(1, replyOnly("Cancelled after the safety episode."));
+		PlannerExecutionResult result = awaitResult(orchestrator);
+		assertEquals(1L, result.request().safetyEpoch());
+		assertNull(result.request().safetyHoldId());
+		assertEquals("Cancelled after the safety episode.", result.response().replyText());
+		assertTrue(orchestrator.drainStalePlannerRejections().isEmpty());
 	}
 
 	@Test
