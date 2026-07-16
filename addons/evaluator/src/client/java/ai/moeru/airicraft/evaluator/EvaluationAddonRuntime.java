@@ -42,12 +42,23 @@ public final class EvaluationAddonRuntime {
 
 	private EvaluationScenario scenario;
 	private boolean waypointsSeeded;
+	private RunState runState = RunState.IDLE;
+	private EmbodiedAgentRuntime acceptedRuntime;
+	private EmbodiedAgentRuntime cleanupRuntime;
+	private boolean cleanupRecording;
 
 	public EvaluationWorldFixtureService fixtures() {
 		return fixtures;
 	}
 
 	public void onClientTick(MinecraftClient client) {
+		if (runState == RunState.CLEANUP) {
+			continueCleanup();
+			return;
+		}
+		if (runState != RunState.RUNNING) {
+			return;
+		}
 		EvaluationScenario activeScenario = scenario;
 		if (activeScenario == null) {
 			return;
@@ -62,9 +73,7 @@ public final class EvaluationAddonRuntime {
 				runner.failSetup(exception.getMessage(), runtime.tickCount());
 				var report = runner.report(runtime.tickCount());
 				recorder.recordTick(activeScenario, report, runtime, this::evidencePayload);
-				scenario = null;
-				waypointsSeeded = false;
-				runtime.finishEvaluation();
+				beginCleanup(runtime, true);
 				return;
 			}
 		}
@@ -72,9 +81,7 @@ public final class EvaluationAddonRuntime {
 		var report = runner.report(runtime.tickCount());
 		recorder.recordTick(activeScenario, report, runtime, this::evidencePayload);
 		if (runner.terminal()) {
-			scenario = null;
-			waypointsSeeded = false;
-			runtime.finishEvaluation();
+			beginCleanup(runtime, true);
 		}
 	}
 
@@ -137,20 +144,28 @@ public final class EvaluationAddonRuntime {
 		if (request == null || request.scenario() == null || request.scenario().isBlank()) {
 			throw new BridgeUnavailableException("invalid_request", "Missing scenario");
 		}
+		boolean startReserved = false;
 		try {
 			EvaluationScenario nextScenario = fixtures.repository().require(request.scenario());
 			if (nextScenario.prompt() == null || nextScenario.prompt().isBlank()) {
 				throw new BridgeUnavailableException("invalid_scenario", "Scenario prompt is empty: " + nextScenario.id());
 			}
+			context.onClientThread(this::reserveRunStart);
+			startReserved = true;
 			var restoredWorld = fixtures.restoreScenarioWorld(nextScenario);
 			Path outputDir = outputDir(request.outputDir(), nextScenario);
 			Map<String, Object> payload = context.onClientThread(() -> {
+				if (runState != RunState.STARTING) {
+					throw new BridgeUnavailableException("evaluation_start_cancelled", "Evaluation start reservation was lost");
+				}
 				EmbodiedAgentRuntime runtime = AiricraftClient.runtimeController().agentRuntime();
+				acceptedRuntime = runtime;
 				runtime.prepareForEvaluation();
 				scenario = nextScenario;
 				waypointsSeeded = false;
 				runner.start(nextScenario, runtime.tickCount(), System.currentTimeMillis());
 				recorder.start(nextScenario, outputDir, restoredWorld);
+				runState = RunState.RUNNING;
 				return acceptedRunPayload(nextScenario, restoredWorld, outputDir, runner.report(runtime.tickCount()));
 			});
 			try {
@@ -175,6 +190,11 @@ public final class EvaluationAddonRuntime {
 		catch (SingleplayerWorldService.SingleplayerWorldException exception) {
 			throw new BridgeUnavailableException(exception.code(), exception.getMessage());
 		}
+		finally {
+			if (startReserved) {
+				context.onClientThread(this::cancelRunStart);
+			}
+		}
 	}
 
 	private Map<String, Object> acceptedRunPayload(
@@ -194,12 +214,68 @@ public final class EvaluationAddonRuntime {
 	}
 
 	private Void rollbackAcceptedRun() {
+		EmbodiedAgentRuntime runtime = acceptedRuntime == null
+			? AiricraftClient.runtimeController().agentRuntime()
+			: acceptedRuntime;
 		scenario = null;
 		waypointsSeeded = false;
 		runner.reset();
 		recorder.reset();
-		AiricraftClient.runtimeController().agentRuntime().finishEvaluation();
+		beginCleanup(runtime, false);
 		return null;
+	}
+
+	private Void reserveRunStart() {
+		if (runState == RunState.CLEANUP) {
+			throw new BridgeUnavailableException(
+				"evaluation_cleanup_in_progress",
+				"The previous evaluation is still recording motor-shadow cleanup"
+			);
+		}
+		if (runState != RunState.IDLE) {
+			throw new BridgeUnavailableException("evaluation_in_progress", "An evaluation is already starting or running");
+		}
+		runState = RunState.STARTING;
+		return null;
+	}
+
+	private Void cancelRunStart() {
+		if (runState == RunState.STARTING) {
+			acceptedRuntime = null;
+			runState = RunState.IDLE;
+		}
+		return null;
+	}
+
+	private void beginCleanup(EmbodiedAgentRuntime runtime, boolean recordTerminalEvidence) {
+		scenario = null;
+		waypointsSeeded = false;
+		cleanupRuntime = runtime;
+		acceptedRuntime = null;
+		cleanupRecording = recordTerminalEvidence;
+		runState = RunState.CLEANUP;
+		runtime.finishEvaluation();
+		continueCleanup();
+	}
+
+	private void continueCleanup() {
+		EmbodiedAgentRuntime runtime = cleanupRuntime;
+		if (runtime == null) {
+			clearCleanup();
+			return;
+		}
+		boolean complete = cleanupRecording
+			? recorder.recordPostFinish(runtime)
+			: runtime.motorShadowCleanupComplete();
+		if (complete) {
+			clearCleanup();
+		}
+	}
+
+	private void clearCleanup() {
+		cleanupRuntime = null;
+		cleanupRecording = false;
+		runState = RunState.IDLE;
 	}
 
 	private Map<String, Object> statusPayload() {
@@ -212,6 +288,8 @@ public final class EvaluationAddonRuntime {
 		response.put("scenarioRoot", fixtures.repository().root().toString());
 		response.put("report", runner.report(runtime.tickCount()));
 		response.put("recording", recorder.statusPayload());
+		response.put("runState", runState.name());
+		response.put("postFinishCleanupPending", runState == RunState.CLEANUP);
 		return response;
 	}
 
@@ -259,6 +337,7 @@ public final class EvaluationAddonRuntime {
 		var settings = currentScenario == null ? ai.moeru.airicraft.agent.evaluation.EvaluationEvidenceSettings.defaults() : currentScenario.evidence();
 		evidence.put("report", runner.report(runtime.tickCount()));
 		evidence.put("session", runtime.sessionSnapshot());
+		evidence.put("motorShadow", runtime.motorShadowSnapshot());
 		if (settings.includeTaskState()) {
 			evidence.put("activeGoal", runtime.activeGoal().orElse(null));
 			evidence.put("task", runtime.taskSnapshot());
@@ -423,5 +502,12 @@ public final class EvaluationAddonRuntime {
 	}
 
 	private record EvaluationRunRequest(String scenario, String outputDir) {
+	}
+
+	private enum RunState {
+		IDLE,
+		STARTING,
+		RUNNING,
+		CLEANUP
 	}
 }

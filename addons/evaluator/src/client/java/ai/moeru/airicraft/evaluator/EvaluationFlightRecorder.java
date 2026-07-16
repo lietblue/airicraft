@@ -114,6 +114,34 @@ public final class EvaluationFlightRecorder {
 		return payload;
 	}
 
+	public boolean recordPostFinish(EmbodiedAgentRuntime runtime) {
+		if (outputDir == null || runtime == null || !terminalWritten) {
+			return false;
+		}
+		try {
+			boolean cleanupComplete = runtime.motorShadowCleanupComplete();
+			String collectedAt = now();
+			drainEvents(runtime, collectedAt);
+			drainTimeline(runtime, collectedAt);
+			drainLlmCalls(runtime, collectedAt);
+			if (!cleanupComplete) {
+				return false;
+			}
+			Map<String, Object> cleanup = new LinkedHashMap<>();
+			cleanup.put("collectedAt", collectedAt);
+			cleanup.put("cleanupComplete", true);
+			cleanup.put("latestEventSeqNo", latestEventSeqNo);
+			cleanup.put("eventsTruncated", eventsTruncated);
+			cleanup.put("motorShadow", runtime.motorShadowSnapshot());
+			writeJson(outputDir.resolve("motor-shadow-cleanup-final.json"), cleanup);
+			return true;
+		}
+		catch (IOException exception) {
+			Airicraft.LOGGER.warn("Failed to record post-evaluation cleanup", exception);
+			return false;
+		}
+	}
+
 	public void reset() {
 		outputDir = null;
 		scenario = null;
@@ -193,6 +221,7 @@ public final class EvaluationFlightRecorder {
 			"taskExecution", runtime.taskExecutionSnapshot(),
 			"missionExecution", runtime.missionExecutionSnapshot(),
 			"activeJob", runtime.activeJob(),
+			"motorShadow", runtime.motorShadowSnapshot(),
 			"degraded", runtime.isDegraded()
 		));
 		writeJson(outputDir.resolve("agent-events-final.json"), runtime.recentEvents(null));
