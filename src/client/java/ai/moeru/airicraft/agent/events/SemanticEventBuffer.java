@@ -45,7 +45,7 @@ public final class SemanticEventBuffer {
 
 	public SemanticEventQueryResult query(Long sinceSeqNo) {
 		long oldestSeqNo = events.isEmpty() ? nextSeqNo : events.get(0).seqNo();
-		long latestSeqNo = events.isEmpty() ? 0L : events.get(events.size() - 1).seqNo();
+		long latestSeqNo = events.isEmpty() ? nextSeqNo - 1L : events.get(events.size() - 1).seqNo();
 		long effectiveSince = sinceSeqNo == null ? 0L : sinceSeqNo.longValue();
 
 		List<SemanticEvent> matches = new ArrayList<>();
@@ -55,12 +55,12 @@ public final class SemanticEventBuffer {
 			}
 		}
 
-		boolean truncated = sinceSeqNo != null && oldestSeqNo > 0L && sinceSeqNo < oldestSeqNo;
+		boolean truncated = sinceSeqNo != null && oldestSeqNo > 1L && sinceSeqNo < oldestSeqNo - 1L;
 		return new SemanticEventQueryResult(oldestSeqNo, latestSeqNo, truncated, List.copyOf(matches));
 	}
 
 	public long latestSeqNo() {
-		return events.isEmpty() ? 0L : events.get(events.size() - 1).seqNo();
+		return events.isEmpty() ? nextSeqNo - 1L : events.get(events.size() - 1).seqNo();
 	}
 
 	public boolean containsType(String type) {
@@ -121,6 +121,12 @@ public final class SemanticEventBuffer {
 		events.clear();
 		droppedCount = 0L;
 		nextSeqNo = 1L;
+	}
+
+	/** Clears retained payloads without reusing sequence numbers. */
+	public void clearPreservingSequence() {
+		events.clear();
+		droppedCount = 0L;
 	}
 
 	public int size() {

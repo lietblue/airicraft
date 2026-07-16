@@ -8,6 +8,11 @@ import ai.moeru.airicraft.agent.baritone.LiveBaritoneFacade;
 import ai.moeru.airicraft.agent.control.CameraController;
 import ai.moeru.airicraft.agent.idle.IdleIdeasConfig;
 import ai.moeru.airicraft.agent.idle.IdleIdeasLoader;
+import ai.moeru.airicraft.agent.motor.HttpMotorPolicyClient;
+import ai.moeru.airicraft.agent.motor.MotorFrameCaptureService;
+import ai.moeru.airicraft.agent.motor.MotorPolicyContract;
+import ai.moeru.airicraft.agent.motor.MotorShadowRuntime;
+import ai.moeru.airicraft.agent.motor.Optimus3MotorShadowCoordinator;
 import ai.moeru.airicraft.agent.tasks.BaritoneTaskExecutor;
 import ai.moeru.airicraft.agent.tasks.BlockBreakTaskExecutor;
 import ai.moeru.airicraft.agent.tasks.BlockInteractionTaskExecutor;
@@ -29,11 +34,14 @@ import net.minecraft.entity.damage.DamageSource;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.UUID;
+import java.net.URI;
+import java.time.Duration;
 
 public final class ClientRuntimeController {
 	private volatile AiricraftConfig config;
 	private final HighlightManager highlightManager = new HighlightManager();
 	private final FirstPersonScreenshotService screenshotService = new FirstPersonScreenshotService();
+	private final MotorFrameCaptureService motorFrameCaptureService = new MotorFrameCaptureService();
 	private final BaritoneFacade baritoneFacade = new LiveBaritoneFacade();
 	private final CameraController cameraController;
 	private volatile EmbodiedAgentRuntime agentRuntime;
@@ -162,6 +170,7 @@ public final class ClientRuntimeController {
 		MinecraftClient client = MinecraftClient.getInstance();
 		if (client != null) {
 			screenshotService.onWorldRendered(client);
+			motorFrameCaptureService.onBeforeHandRender(client);
 		}
 	}
 
@@ -220,7 +229,48 @@ public final class ClientRuntimeController {
 			new BlockInteractionTaskExecutor(airicraftConfig.blockInteractionDelayTicks(), cameraController, baritoneFacade),
 			new BlockBreakTaskExecutor()
 		);
-		return new EmbodiedAgentRuntime(airicraftConfig, agentConfig, screenshotService, worldTaskExecutor, smeltingProcessManager, cameraController);
+		Optimus3MotorShadowCoordinator motorShadowCoordinator = createMotorShadowCoordinator(agentConfig);
+		return new EmbodiedAgentRuntime(
+			airicraftConfig,
+			agentConfig,
+			screenshotService,
+			worldTaskExecutor,
+			smeltingProcessManager,
+			cameraController,
+			motorShadowCoordinator
+		);
+	}
+
+	private Optimus3MotorShadowCoordinator createMotorShadowCoordinator(AgentConfig agentConfig) {
+		AgentConfig.Optimus3ShadowConfig shadow = agentConfig.motor().optimus3Shadow();
+		if (!shadow.enabled()) {
+			return Optimus3MotorShadowCoordinator.disabled(motorFrameCaptureService);
+		}
+		Duration sessionTimeout = Duration.ofMillis(shadow.sessionTimeoutMillis());
+		Duration stepTimeout = Duration.ofMillis(shadow.requestTimeoutMillis());
+		Duration closeTimeout = Duration.ofMillis(shadow.closeTimeoutMillis());
+		HttpMotorPolicyClient client = new HttpMotorPolicyClient(
+			URI.create(shadow.baseUrl()),
+			Duration.ofSeconds(10),
+			sessionTimeout,
+			stepTimeout,
+			closeTimeout,
+			shadow.apiKey(),
+			shadow.modalKey(),
+			shadow.modalSecret()
+		);
+		MotorShadowRuntime runtime = MotorShadowRuntime.enabled(
+			client,
+			sessionTimeout,
+			stepTimeout,
+			closeTimeout,
+			shadow.policySeed()
+		);
+		return new Optimus3MotorShadowCoordinator(
+			motorFrameCaptureService,
+			runtime,
+			Duration.ofMillis(MotorPolicyContract.CONTROL_DEADLINE_MILLIS)
+		);
 	}
 
 	public record ReloadResult(
@@ -240,9 +290,11 @@ public final class ClientRuntimeController {
 			payload.put("llmConfigured", agentConfig.llm().isConfigured());
 			payload.put("visionConfigured", agentConfig.llm().visionConfigured());
 			payload.put("observabilityEnabled", agentConfig.observability().enabled());
+			payload.put("motorShadowEnabled", agentConfig.motor().optimus3Shadow().enabled());
 			payload.put("config", configPayload());
 			payload.put("llm", llmPayload());
 			payload.put("observability", observabilityPayload());
+			payload.put("motor", motorPayload());
 			payload.put("idleIdeas", idleIdeasPayload());
 			return payload;
 		}
@@ -295,6 +347,23 @@ public final class ClientRuntimeController {
 			payload.put("captureInputs", agentConfig.observability().captureInputs());
 			payload.put("captureOutputs", agentConfig.observability().captureOutputs());
 			payload.put("captureImages", agentConfig.observability().captureImages());
+			return payload;
+		}
+
+		private Map<String, Object> motorPayload() {
+			AgentConfig.Optimus3ShadowConfig shadow = agentConfig.motor().optimus3Shadow();
+			LinkedHashMap<String, Object> payload = new LinkedHashMap<>();
+			payload.put("mode", "shadow");
+			payload.put("enabled", shadow.enabled());
+			payload.put("configured", shadow.configured());
+			payload.put("baseUrl", shadow.baseUrl());
+			payload.put("sessionTimeoutMillis", shadow.sessionTimeoutMillis());
+			payload.put("requestTimeoutMillis", shadow.requestTimeoutMillis());
+			payload.put("closeTimeoutMillis", shadow.closeTimeoutMillis());
+			payload.put("policySeed", shadow.policySeed());
+			payload.put("bearerAuthenticationConfigured", !shadow.apiKey().isBlank());
+			payload.put("modalProxyAuthenticationConfigured", !shadow.modalKey().isBlank());
+			payload.put("actuationAuthorized", false);
 			return payload;
 		}
 

@@ -6,6 +6,7 @@ import java.util.Map;
 import java.util.concurrent.atomic.AtomicLong;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class SemanticEventBufferTest {
@@ -18,13 +19,14 @@ class SemanticEventBufferTest {
 		buffer.append(3L, "c", Map.of("value", 3));
 		buffer.append(4L, "d", Map.of("value", 4));
 
-		SemanticEventQueryResult result = buffer.query(1L);
+		SemanticEventQueryResult result = buffer.query(0L);
 		assertEquals(2L, result.oldestSeqNo());
 		assertEquals(4L, result.latestSeqNo());
 		assertTrue(result.truncated());
 		assertEquals(3, result.events().size());
 		assertEquals("b", result.events().get(0).type());
 		assertEquals("d", result.events().get(2).type());
+		assertFalse(buffer.query(1L).truncated(), "a cursor immediately before the oldest event has no gap");
 	}
 
 	@Test
@@ -54,5 +56,22 @@ class SemanticEventBufferTest {
 		assertEquals(2, buffer.countTypeSince(1L, "social.player_spoke"));
 		assertTrue(buffer.containsTypeForPlayerSince(1L, "social.player_spoke", "Alice"));
 		assertEquals(1, buffer.countTypeForPlayerSince(1L, "social.player_spoke", "Alice"));
+	}
+
+	@Test
+	void shutdownClearCanPreserveSequenceForLateTerminalEvidence() {
+		SemanticEventBuffer buffer = new SemanticEventBuffer(8, () -> 4_000L);
+		buffer.append(1L, "motor.optimus3_shadow.session_stopped", Map.of());
+		long recorderCursor = buffer.latestSeqNo();
+
+		buffer.clearPreservingSequence();
+		assertEquals(recorderCursor, buffer.latestSeqNo());
+		assertFalse(buffer.query(recorderCursor).truncated());
+		buffer.append(2L, "motor.optimus3_shadow.session_closed", Map.of());
+
+		SemanticEventQueryResult result = buffer.query(recorderCursor);
+		assertEquals(2L, result.latestSeqNo());
+		assertEquals(1, result.events().size());
+		assertEquals("motor.optimus3_shadow.session_closed", result.events().getFirst().type());
 	}
 }

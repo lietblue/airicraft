@@ -120,7 +120,23 @@ public final class AgentConfigLoader {
 			readBoolean(observabilityRoot, "captureOutputs", defaults.observability().captureOutputs(), strict),
 			readBoolean(observabilityRoot, "captureImages", defaults.observability().captureImages(), strict)
 		);
-		return new AgentConfig(defaults.verificationEnabled(), defaults.verificationAutoRunAll(), llm, idle, observability);
+		warnIfMalformedObject(root, "motor", strict);
+		Map<String, Object> motorRoot = readObjectMap(root, "motor", strict);
+		warnIfMalformedObject(motorRoot, "optimus3Shadow", strict);
+		Map<String, Object> optimus3ShadowRoot = readObjectMap(motorRoot, "optimus3Shadow", strict);
+		AgentConfig.Optimus3ShadowConfig optimus3Shadow = new AgentConfig.Optimus3ShadowConfig(
+			readBoolean(optimus3ShadowRoot, "enabled", defaults.motor().optimus3Shadow().enabled(), strict),
+			readString(optimus3ShadowRoot, "baseUrl", defaults.motor().optimus3Shadow().baseUrl(), strict),
+			readString(optimus3ShadowRoot, "apiKey", defaults.motor().optimus3Shadow().apiKey(), strict),
+			readString(optimus3ShadowRoot, "modalKey", defaults.motor().optimus3Shadow().modalKey(), strict),
+			readString(optimus3ShadowRoot, "modalSecret", defaults.motor().optimus3Shadow().modalSecret(), strict),
+			readInt(optimus3ShadowRoot, "sessionTimeoutMillis", defaults.motor().optimus3Shadow().sessionTimeoutMillis()),
+			readInt(optimus3ShadowRoot, "requestTimeoutMillis", defaults.motor().optimus3Shadow().requestTimeoutMillis()),
+			readInt(optimus3ShadowRoot, "closeTimeoutMillis", defaults.motor().optimus3Shadow().closeTimeoutMillis()),
+			readLong(optimus3ShadowRoot, "policySeed", defaults.motor().optimus3Shadow().policySeed())
+		);
+		AgentConfig.MotorConfig motor = new AgentConfig.MotorConfig(optimus3Shadow);
+		return new AgentConfig(defaults.verificationEnabled(), defaults.verificationAutoRunAll(), llm, idle, observability, motor);
 	}
 
 	private static void ensureFile(Path path) throws IOException {
@@ -194,6 +210,19 @@ public final class AgentConfigLoader {
 			"captureOutputs", defaults.observability().captureOutputs(),
 			"captureImages", defaults.observability().captureImages()
 		));
+		yamlData.put("motor", Map.of(
+			"optimus3Shadow", Map.of(
+				"enabled", defaults.motor().optimus3Shadow().enabled(),
+				"baseUrl", defaults.motor().optimus3Shadow().baseUrl(),
+				"apiKey", defaults.motor().optimus3Shadow().apiKey(),
+				"modalKey", defaults.motor().optimus3Shadow().modalKey(),
+				"modalSecret", defaults.motor().optimus3Shadow().modalSecret(),
+				"sessionTimeoutMillis", defaults.motor().optimus3Shadow().sessionTimeoutMillis(),
+				"requestTimeoutMillis", defaults.motor().optimus3Shadow().requestTimeoutMillis(),
+				"closeTimeoutMillis", defaults.motor().optimus3Shadow().closeTimeoutMillis(),
+				"policySeed", defaults.motor().optimus3Shadow().policySeed()
+			)
+		));
 		Files.writeString(yamlConfigPath, dumpYaml(yamlData), StandardCharsets.UTF_8);
 	}
 
@@ -266,6 +295,17 @@ public final class AgentConfigLoader {
 			return number.intValue();
 		}
 		return Integer.parseInt(String.valueOf(value));
+	}
+
+	private static long readLong(Map<String, Object> root, String fieldName, long fallback) {
+		if (root == null || !root.containsKey(fieldName) || root.get(fieldName) == null) {
+			return fallback;
+		}
+		Object value = root.get(fieldName);
+		if (value instanceof Number number) {
+			return number.longValue();
+		}
+		return Long.parseLong(String.valueOf(value));
 	}
 
 	private static boolean readBoolean(Map<String, Object> root, String fieldName, boolean fallback, boolean strict) {

@@ -1102,6 +1102,7 @@ public final class ModBridgeServer {
 			response.put("visionAvailable", agentRuntime().visionAvailable());
 			response.put("plannerVisionMode", plannerSnapshot.plannerVisionMode());
 			response.put("observability", agentRuntime().observabilityDebugSnapshot());
+			response.put("motorShadow", agentRuntime().motorShadowSnapshot());
 			response.put("degraded", agentRuntime().isDegraded());
 			response.put("plannerJournal", agentRuntime().plannerShellJournal());
 			response.put("eventPolicy", eventPolicySummaryPayload());

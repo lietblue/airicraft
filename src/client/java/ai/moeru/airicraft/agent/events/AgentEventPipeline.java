@@ -69,6 +69,18 @@ public final class AgentEventPipeline {
 		recordBufferState();
 	}
 
+	/**
+	 * Clears shutdown state while preserving raw sequence monotonicity for
+	 * asynchronous terminal evidence emitted by the retiring runtime.
+	 */
+	public void clearForShutdown() {
+		rawEventBuffer.clearPreservingSequence();
+		plannerEventBuffer.clear();
+		policyState.clear();
+		lastProcessedRawSeqNo = 0L;
+		recordBufferState();
+	}
+
 	public void clearPlannerFeed() {
 		plannerEventBuffer.clear();
 		lastProcessedRawSeqNo = rawEventBuffer.latestSeqNo();

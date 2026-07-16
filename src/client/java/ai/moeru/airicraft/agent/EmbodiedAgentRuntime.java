@@ -89,6 +89,11 @@ import ai.moeru.airicraft.agent.llm.PlannerTrigger;
 import ai.moeru.airicraft.agent.llm.PlannerTriggerType;
 import ai.moeru.airicraft.agent.llm.VisionDescription;
 import ai.moeru.airicraft.agent.llm.WorldReadLedger;
+import ai.moeru.airicraft.agent.motor.MotorFrameCaptureService;
+import ai.moeru.airicraft.agent.motor.MotorShadowEligibilityDecision;
+import ai.moeru.airicraft.agent.motor.MotorShadowEvent;
+import ai.moeru.airicraft.agent.motor.Optimus3MotorShadowCoordinator;
+import ai.moeru.airicraft.agent.motor.Optimus3MotorShadowEligibility;
 import ai.moeru.airicraft.agent.session.AutoLanOpenState;
 import ai.moeru.airicraft.agent.session.LanHostingService;
 import ai.moeru.airicraft.agent.session.SessionSnapshot;
@@ -145,6 +150,7 @@ import ai.moeru.airicraft.agent.tasks.SurfaceMemory;
 import ai.moeru.airicraft.agent.tasks.WorldTaskType;
 import net.minecraft.block.BlockState;
 import net.minecraft.client.MinecraftClient;
+import net.minecraft.client.option.Perspective;
 import net.minecraft.entity.damage.DamageSource;
 import net.minecraft.registry.Registries;
 import net.minecraft.state.property.Property;
@@ -214,6 +220,7 @@ public final class EmbodiedAgentRuntime {
 	private final WorldReadLedger worldReadLedger = new WorldReadLedger();
 	private final CurrentWorldQueryService guardedWorldQueryService = new CurrentWorldQueryService(MinecraftClient::getInstance);
 	private final ActionGraphExecutionRuntime actionGraphRuntime;
+	private final Optimus3MotorShadowCoordinator motorShadowCoordinator;
 	private final PersistentActionFactStore persistentActionFactStore = PersistentActionFactStore.defaults();
 
 	private boolean initialized;
@@ -276,9 +283,47 @@ public final class EmbodiedAgentRuntime {
 		AgentConfig config,
 		FirstPersonScreenshotService screenshotService,
 		WorldTaskExecutor worldTaskExecutor,
+		SmeltingProcessManager smeltingProcessManager,
+		CameraController cameraController,
+		Optimus3MotorShadowCoordinator motorShadowCoordinator
+	) {
+		this(airicraftConfig, config, screenshotService, worldTaskExecutor,
+			AgentObservability.create(config == null ? null : config.observability()),
+			smeltingProcessManager,
+			cameraController,
+			motorShadowCoordinator);
+	}
+
+	public EmbodiedAgentRuntime(
+		AiricraftConfig airicraftConfig,
+		AgentConfig config,
+		FirstPersonScreenshotService screenshotService,
+		WorldTaskExecutor worldTaskExecutor,
 		AgentObservability observability,
 		SmeltingProcessManager smeltingProcessManager,
 		CameraController cameraController
+	) {
+		this(
+			airicraftConfig,
+			config,
+			screenshotService,
+			worldTaskExecutor,
+			observability,
+			smeltingProcessManager,
+			cameraController,
+			Optimus3MotorShadowCoordinator.disabled(new MotorFrameCaptureService())
+		);
+	}
+
+	public EmbodiedAgentRuntime(
+		AiricraftConfig airicraftConfig,
+		AgentConfig config,
+		FirstPersonScreenshotService screenshotService,
+		WorldTaskExecutor worldTaskExecutor,
+		AgentObservability observability,
+		SmeltingProcessManager smeltingProcessManager,
+		CameraController cameraController,
+		Optimus3MotorShadowCoordinator motorShadowCoordinator
 	) {
 		this.airicraftConfig = Objects.requireNonNull(airicraftConfig, "airicraftConfig");
 		this.config = Objects.requireNonNull(config, "config");
@@ -286,6 +331,7 @@ public final class EmbodiedAgentRuntime {
 		this.observability = new FlightRecordingObservability(Objects.requireNonNull(observability, "observability"), llmFlightRecorder);
 		this.smeltingProcessManager = Objects.requireNonNull(smeltingProcessManager, "smeltingProcessManager");
 		this.actionGraphRuntime = new ActionGraphExecutionRuntime(ActionsetLibraryPaths.defaultRoot(), this::dispatchActionGraphPrimitive);
+		this.motorShadowCoordinator = Objects.requireNonNull(motorShadowCoordinator, "motorShadowCoordinator");
 		CameraController effectiveCameraController = Objects.requireNonNull(cameraController, "cameraController");
 		this.behaviorTreeRuntime = new BehaviorTreeRuntime(effectiveCameraController);
 		this.nearbyPlayerTracker = new NearbyPlayerTracker(resolveNearbyPlayerTrackingRadius(airicraftConfig));
@@ -369,6 +415,22 @@ public final class EmbodiedAgentRuntime {
 		);
 	}
 
+	static EmbodiedAgentRuntime createForTests(
+		WorldTaskExecutor worldTaskExecutor,
+		Optimus3MotorShadowCoordinator motorShadowCoordinator
+	) {
+		AiricraftConfig airicraftConfig = AiricraftConfig.defaults();
+		return new EmbodiedAgentRuntime(
+			airicraftConfig,
+			AgentConfig.defaults(),
+			new FirstPersonScreenshotService(),
+			worldTaskExecutor,
+			new SmeltingProcessManager(),
+			new CameraController(airicraftConfig.cameraLerpDefaultTicks()),
+			motorShadowCoordinator
+		);
+	}
+
 	public AgentConfig config() {
 		return config;
 	}
@@ -398,6 +460,8 @@ public final class EmbodiedAgentRuntime {
 	}
 
 	public void onWorldLeave() {
+		motorShadowCoordinator.reset("world_left");
+		drainMotorShadowEvents();
 		sessionRuntime.onWorldLeave(tickCount, eventBuffer);
 		sessionSnapshot = sessionRuntime.snapshot();
 		autoLanOpenState.clear();
@@ -502,11 +566,32 @@ public final class EmbodiedAgentRuntime {
 			eventBuffer
 		);
 		TaskExecutionSnapshot previousTaskExecutionSnapshot = taskExecutionSnapshot;
+		MotorShadowEligibilityDecision motorEligibility = config.motor().optimus3Shadow().enabled()
+			? Optimus3MotorShadowEligibility.evaluate(
+				sessionSnapshot,
+					taskSnapshot,
+					actionGraphRuntime.snapshot(),
+					activeTaskRequest,
+					client != null
+						&& client.options != null
+						&& client.options.getPerspective() == Perspective.FIRST_PERSON
+				)
+			: MotorShadowEligibilityDecision.ineligible("disabled_by_config");
+		motorShadowCoordinator.tick(motorEligibility, tickCount);
+		drainMotorShadowEvents();
 		Optional<TaskTerminalEvent> terminalTaskEvent = worldTaskExecutor.tick(sessionSnapshot, activeTaskRequest);
 		taskExecutionSnapshot = worldTaskExecutor.snapshot();
 		boolean semanticTaskContext = hasSemanticTaskContext(previousTaskSnapshot, taskSnapshot);
 		recordTaskStateTransition(previousTaskExecutionSnapshot, taskExecutionSnapshot, semanticTaskContext);
 		terminalTaskEvent.ifPresent(event -> {
+			if (
+				motorEligibility.eligible()
+					&& motorEligibility.identity() != null
+					&& Objects.equals(motorEligibility.identity().taskId(), event.taskId())
+			) {
+				motorShadowCoordinator.reset("task_terminal_" + event.terminalState().name().toLowerCase(Locale.ROOT));
+				drainMotorShadowEvents();
+			}
 			ActiveJobRuntime.TerminalTaskReport report = activeJobRuntime.reportTerminalTaskEvent(event, activeTaskRequest);
 			report.warning().ifPresent(this::handleInternalTaskWarning);
 			report.event().ifPresent(this::completePendingCraftToolResult);
@@ -576,6 +661,7 @@ public final class EmbodiedAgentRuntime {
 	}
 
 	public void shutdown() {
+		motorShadowCoordinator.close();
 		initialized = false;
 		tickCount = 0L;
 		worldLoadTick = -1L;
@@ -583,7 +669,7 @@ public final class EmbodiedAgentRuntime {
 		autoLanOpenState.clear();
 		localDamageTracker.clear();
 		nearbyPlayerTracker.clear(tickCount, eventBuffer);
-		eventPipeline.clear();
+		eventPipeline.clearForShutdown();
 		primaryInteractionResolver.clear();
 		completePendingCraftToolResult("Tool result for craft_recipe: cancelled reason=runtime_shutdown");
 		dialogueRuntime.shutdown();
@@ -612,6 +698,17 @@ public final class EmbodiedAgentRuntime {
 
 	public SessionSnapshot sessionSnapshot() {
 		return sessionSnapshot.withTickCount(tickCount);
+	}
+
+	public Map<String, Object> motorShadowSnapshot() {
+		return motorShadowCoordinator.snapshotPayload();
+	}
+
+	/** Polls motor cleanup and makes any terminal close evidence recorder-visible. */
+	public boolean motorShadowCleanupComplete() {
+		boolean complete = motorShadowCoordinator.cleanupComplete();
+		drainMotorShadowEvents();
+		return complete;
 	}
 
 	public long tickCount() {
@@ -687,6 +784,8 @@ public final class EmbodiedAgentRuntime {
 	public ActionGraphExecutionSnapshot cancelActionGoal(String reason) {
 		ActionGraphExecutionSnapshot previous = actionGraphRuntime.snapshot();
 		ActionGraphExecutionSnapshot snapshot = actionGraphRuntime.cancel(reason, tickCount);
+		motorShadowCoordinator.reset(reason == null || reason.isBlank() ? "action_graph_cancelled" : reason);
+		drainMotorShadowEvents();
 		pendingActionGraphTerminalEvent = null;
 		if (!previous.activeTaskId().isBlank()) {
 			cancelTask(reason == null || reason.isBlank() ? "action_graph_cancelled" : reason);
@@ -843,6 +942,8 @@ public final class EmbodiedAgentRuntime {
 	}
 
 	public void finishEvaluation() {
+		motorShadowCoordinator.reset("evaluation_finished");
+		drainMotorShadowEvents();
 		evaluationPlannerSuppressed = true;
 		eventPipeline.clearPlannerFeed();
 		completePendingCraftToolResult("Tool result for craft_recipe: cancelled reason=evaluation_finished");
@@ -3205,7 +3306,19 @@ public final class EmbodiedAgentRuntime {
 		profiles.put("task.blocked", new EventRoutingProfile("task.blocked", true, PlannerTriggerType.SYSTEM, true));
 		profiles.put("policy.event_intervened", EventRoutingProfile.rawOnly("policy.event_intervened"));
 		profiles.put("policy.rule_rejected", EventRoutingProfile.rawOnly("policy.rule_rejected"));
+		profiles.put("motor.optimus3_shadow.session_started", EventRoutingProfile.rawOnly("motor.optimus3_shadow.session_started"));
+		profiles.put("motor.optimus3_shadow.step", EventRoutingProfile.rawOnly("motor.optimus3_shadow.step"));
+		profiles.put("motor.optimus3_shadow.skipped", EventRoutingProfile.rawOnly("motor.optimus3_shadow.skipped"));
+		profiles.put("motor.optimus3_shadow.failed", EventRoutingProfile.rawOnly("motor.optimus3_shadow.failed"));
+		profiles.put("motor.optimus3_shadow.session_stopped", EventRoutingProfile.rawOnly("motor.optimus3_shadow.session_stopped"));
+		profiles.put("motor.optimus3_shadow.session_closed", EventRoutingProfile.rawOnly("motor.optimus3_shadow.session_closed"));
 		return Map.copyOf(profiles);
+	}
+
+	private void drainMotorShadowEvents() {
+		for (MotorShadowEvent event : motorShadowCoordinator.drainEvents()) {
+			eventBuffer.append(tickCount, event.type(), event.payload());
+		}
 	}
 
 	private boolean suppressPlannerTriggersForCollectResourceProgress() {
