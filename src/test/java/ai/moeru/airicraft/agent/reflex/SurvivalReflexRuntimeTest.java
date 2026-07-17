@@ -38,6 +38,15 @@ class SurvivalReflexRuntimeTest {
 	}
 
 	@Test
+	void proactiveDetectionRequiresCloseVisibleLivingHostile() {
+		assertTrue(SurvivalReflexRuntime.shouldDetectProactiveThreat(true, true, 8.0D, true));
+		assertFalse(SurvivalReflexRuntime.shouldDetectProactiveThreat(true, true, 8.01D, true));
+		assertFalse(SurvivalReflexRuntime.shouldDetectProactiveThreat(true, true, 4.0D, false));
+		assertFalse(SurvivalReflexRuntime.shouldDetectProactiveThreat(false, true, 4.0D, true));
+		assertFalse(SurvivalReflexRuntime.shouldDetectProactiveThreat(true, false, 4.0D, true));
+	}
+
+	@Test
 	void threatResolutionHonorsDamageCooldown() {
 		assertFalse(SurvivalReflexRuntime.mobThreatsResolved(1, 200, 100, 60));
 		assertFalse(SurvivalReflexRuntime.mobThreatsResolved(0, 159, 100, 60));

@@ -9,7 +9,9 @@ import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.network.ClientPlayerEntity;
 import net.minecraft.entity.Entity;
 import net.minecraft.entity.LivingEntity;
+import net.minecraft.entity.mob.HostileEntity;
 import net.minecraft.entity.player.PlayerEntity;
+import net.minecraft.registry.Registries;
 import net.minecraft.util.Hand;
 import net.minecraft.util.math.Vec3d;
 
@@ -24,6 +26,7 @@ public final class SurvivalReflexRuntime {
 	static final int BREATHABLE_STABLE_TICKS = 12;
 	static final double THREAT_CLEAR_DISTANCE = 12.0D;
 	static final double DEFEND_DISTANCE = 4.5D;
+	static final double PROACTIVE_THREAT_DISTANCE = 8.0D;
 	private static final float ATTACK_READY_THRESHOLD = 0.92F;
 	private static final int ESCAPE_PHASE_TICKS = 20;
 
@@ -91,6 +94,7 @@ public final class SurvivalReflexRuntime {
 		}
 
 		boolean drowningDanger = drowningDanger(player, config.lowAirTicks(), drowningDamageObserved);
+		detectProactiveThreats(client, player, tick);
 		List<ResolvedThreat> threats = resolveThreats(client, player);
 		boolean mobDanger = !threats.isEmpty() || recentlyDamagedByMob(tick, lastMobDamageTick, config.threatCooldownTicks());
 		if (shouldBeginReflex(snapshot.state(), drowningDanger || mobDanger)) {
@@ -464,6 +468,10 @@ public final class SurvivalReflexRuntime {
 		return healthRatio > minHealthRatio && threatCount == 1 && distance <= DEFEND_DISTANCE && lineOfSight;
 	}
 
+	static boolean shouldDetectProactiveThreat(boolean hostile, boolean alive, double distance, boolean lineOfSight) {
+		return hostile && alive && distance <= PROACTIVE_THREAT_DISTANCE && lineOfSight;
+	}
+
 	public static boolean recentlyDamagedByMob(long tick, long lastDamageTick, int cooldownTicks) {
 		return lastDamageTick != Long.MIN_VALUE && tick - lastDamageTick < Math.max(0, cooldownTicks);
 	}
@@ -497,6 +505,43 @@ public final class SurvivalReflexRuntime {
 
 	private static double healthRatio(ClientPlayerEntity player) {
 		return player == null || player.getMaxHealth() <= 0.0F ? 0.0D : player.getHealth() / player.getMaxHealth();
+	}
+
+	private void detectProactiveThreats(MinecraftClient client, ClientPlayerEntity player, long tick) {
+		if (client == null || client.world == null || player == null) {
+			return;
+		}
+		for (HostileEntity hostile : client.world.getEntitiesByClass(
+			HostileEntity.class,
+			player.getBoundingBox().expand(PROACTIVE_THREAT_DISTANCE),
+			Entity::isAlive
+		)) {
+			double distance = player.distanceTo(hostile);
+			boolean lineOfSight = player.canSee(hostile);
+			if (!shouldDetectProactiveThreat(true, hostile.isAlive(), distance, lineOfSight)) {
+				continue;
+			}
+			String uuid = hostile.getUuidAsString();
+			if (observedThreats.containsKey(uuid)) {
+				continue;
+			}
+			ObservedThreat observed = new ObservedThreat(
+				uuid,
+				hostile.getName().getString(),
+				Registries.ENTITY_TYPE.getId(hostile.getType()).toString(),
+				tick
+			);
+			observedThreats.put(uuid, observed);
+			pendingEvents.add(new SurvivalReflexEvent("reflex.threat_detected", mapOfNullable(
+				"source", "hostile_proximity",
+				"uuid", uuid,
+				"name", observed.name(),
+				"entityTypeId", observed.entityTypeId(),
+				"distance", distance,
+				"lineOfSight", true,
+				"tick", tick
+			)));
+		}
 	}
 
 	private List<ResolvedThreat> resolveThreats(MinecraftClient client, ClientPlayerEntity player) {

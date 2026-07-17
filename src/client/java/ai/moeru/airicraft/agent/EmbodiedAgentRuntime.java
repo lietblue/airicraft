@@ -3742,6 +3742,7 @@ public final class EmbodiedAgentRuntime {
 		profiles.put("crafting.item_crafted", new EventRoutingProfile("crafting.item_crafted", true, PlannerTriggerType.CRAFT, false));
 		profiles.put("smelting.output_ready", new EventRoutingProfile("smelting.output_ready", true, PlannerTriggerType.SYSTEM, true));
 		profiles.put("combat.damage_taken", new EventRoutingProfile("combat.damage_taken", true, PlannerTriggerType.DAMAGE, false));
+		profiles.put("reflex.threat_detected", new EventRoutingProfile("reflex.threat_detected", true, null, true));
 		profiles.put("reflex.started", new EventRoutingProfile("reflex.started", true, null, true));
 		profiles.put("reflex.action_changed", new EventRoutingProfile("reflex.action_changed", true, null, true));
 		profiles.put("reflex.resolved", new EventRoutingProfile("reflex.resolved", true, PlannerTriggerType.SYSTEM, true));
