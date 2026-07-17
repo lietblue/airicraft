@@ -41,6 +41,7 @@ public final class SurvivalReflexRuntime {
 	private long lastMobDamageTick = Long.MIN_VALUE;
 	private int lastAir = Integer.MIN_VALUE;
 	private int stuckTicks;
+	private boolean safetyHoldActuating;
 
 	public SurvivalReflexRuntime(AgentConfig.ReflexConfig config) {
 		this(config, new MovementController(), new CameraController());
@@ -104,6 +105,7 @@ public final class SurvivalReflexRuntime {
 		}
 
 		if (snapshot.state() != SurvivalReflexState.ACTIVE) {
+			maintainDrowningSafetyHold(client, player, tick);
 			refreshSnapshot(player, threats, snapshot.lastDangerTick(), snapshot.breathableTicks(), snapshot.lastActuatorFailure());
 			return snapshot;
 		}
@@ -175,6 +177,7 @@ public final class SurvivalReflexRuntime {
 		lastMobDamageTick = Long.MIN_VALUE;
 		lastAir = Integer.MIN_VALUE;
 		stuckTicks = 0;
+		safetyHoldActuating = false;
 		long epoch = snapshot.safetyEpoch();
 		snapshot = new SurvivalReflexSnapshot(
 			SurvivalReflexState.IDLE, null, null, epoch, null, null, null, List.of(),
@@ -449,6 +452,16 @@ public final class SurvivalReflexRuntime {
 		return dangerPresent && state != SurvivalReflexState.ACTIVE;
 	}
 
+	static boolean shouldMaintainDrowningSafetyHold(
+		SurvivalReflexState state,
+		SurvivalReflexCause cause,
+		boolean touchingWater
+	) {
+		return state == SurvivalReflexState.AWAITING_PLANNER
+			&& cause == SurvivalReflexCause.DROWNING
+			&& touchingWater;
+	}
+
 	static boolean mobThreatsResolved(int relevantThreatCount, long tick, long lastDamageTick, int cooldownTicks) {
 		return relevantThreatCount == 0 && !recentlyDamagedByMob(tick, lastDamageTick, cooldownTicks);
 	}
@@ -541,6 +554,26 @@ public final class SurvivalReflexRuntime {
 				"lineOfSight", true,
 				"tick", tick
 			)));
+		}
+	}
+
+	private void maintainDrowningSafetyHold(MinecraftClient client, ClientPlayerEntity player, long tick) {
+		boolean shouldActuate = shouldMaintainDrowningSafetyHold(
+			snapshot.state(), snapshot.cause(), player.isTouchingWater()
+		);
+		if (!shouldActuate) {
+			if (safetyHoldActuating) {
+				movementController.stop(client);
+				safetyHoldActuating = false;
+			}
+			return;
+		}
+		try {
+			movementController.swimUp(client, false, false, tick);
+			safetyHoldActuating = true;
+		}
+		catch (RuntimeException exception) {
+			recordActuatorFailure("maintain_drowning_safety_hold", exception, tick);
 		}
 	}
 

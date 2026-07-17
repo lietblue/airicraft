@@ -62,6 +62,18 @@ class SurvivalReflexRuntimeTest {
 	}
 
 	@Test
+	void resolvedDrowningHoldTreadsWaterUntilPlannerDecision() {
+		assertTrue(SurvivalReflexRuntime.shouldMaintainDrowningSafetyHold(
+			SurvivalReflexState.AWAITING_PLANNER, SurvivalReflexCause.DROWNING, true));
+		assertFalse(SurvivalReflexRuntime.shouldMaintainDrowningSafetyHold(
+			SurvivalReflexState.AWAITING_PLANNER, SurvivalReflexCause.DROWNING, false));
+		assertFalse(SurvivalReflexRuntime.shouldMaintainDrowningSafetyHold(
+			SurvivalReflexState.ACTIVE, SurvivalReflexCause.DROWNING, true));
+		assertFalse(SurvivalReflexRuntime.shouldMaintainDrowningSafetyHold(
+			SurvivalReflexState.AWAITING_PLANNER, SurvivalReflexCause.MOB_ATTACK, true));
+	}
+
+	@Test
 	void fleeRecoveryAlternatesStrafeAndBackstep() {
 		SurvivalReflexRuntime.EscapeKeys normal = SurvivalReflexRuntime.escapeKeys(false, 0);
 		SurvivalReflexRuntime.EscapeKeys left = SurvivalReflexRuntime.escapeKeys(true, 0);
@@ -91,13 +103,13 @@ class SurvivalReflexRuntimeTest {
 	}
 
 	@Test
-	void activeAndAwaitingStatesBothHoldNormalWorkButOnlyActiveOwnsActuation() {
+	void activeAndDrowningHoldOwnActuationWhileBothHoldNormalWork() {
 		SurvivalReflexSnapshot active = snapshot(SurvivalReflexState.ACTIVE, "hold-1");
 		SurvivalReflexSnapshot awaiting = snapshot(SurvivalReflexState.AWAITING_PLANNER, "hold-1");
 
 		assertTrue(active.ownsActuation());
 		assertTrue(active.holdsNormalTasks());
-		assertFalse(awaiting.ownsActuation());
+		assertTrue(awaiting.ownsActuation());
 		assertTrue(awaiting.holdsNormalTasks());
 	}
 

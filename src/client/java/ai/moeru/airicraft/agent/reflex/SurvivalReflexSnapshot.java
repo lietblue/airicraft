@@ -33,7 +33,8 @@ public record SurvivalReflexSnapshot(
 	}
 
 	public boolean ownsActuation() {
-		return state == SurvivalReflexState.ACTIVE;
+		return state == SurvivalReflexState.ACTIVE
+			|| (state == SurvivalReflexState.AWAITING_PLANNER && cause == SurvivalReflexCause.DROWNING);
 	}
 
 	public boolean holdsNormalTasks() {
