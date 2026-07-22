@@ -1,0 +1,29 @@
+id: underground
+name: Return to surface
+metadata:
+  minecraftVersion: 1.21.8
+  airicraftVersion: dev
+worldArchive: world.zip
+frozen: true
+prompt: >-
+  You are underground. Your only objective is to get to the open surface as
+  quickly as possible. Immediately call return_to_surface with
+  useTowering=true and fillerBlockIds set to minecraft:dirt and
+  minecraft:cobblestone. Build a vertical pillar directly beneath yourself
+  while jumping; do not dig or navigate a staircase, explore, mine unrelated
+  blocks, or use any other tool. Stop when the return task reports that the
+  surface has been reached.
+budget:
+  maxPlannerTurns: 4
+  maxElapsedTicks: 1200
+  maxElapsedMillis: 0
+  heartbeatIntervalTicks: 80
+checks:
+  - type: task_execution_state
+    state: COMPLETED
+evidence:
+  includePlannerJournal: true
+  includeDebugTimeline: true
+  includeRecentEvents: true
+  includeTaskState: true
+  includeWorldSnapshot: true
