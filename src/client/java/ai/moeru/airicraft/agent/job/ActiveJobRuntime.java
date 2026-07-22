@@ -371,10 +371,10 @@ public final class ActiveJobRuntime {
 
 		activeJob = switch (activeJob.type()) {
 			case COLLECT_RESOURCE -> tickCollectResource(activeJob, lastPrimitiveExecution, lastEvidence, actuationAllowed, nearbyResourceTargetAvailable, tick);
-			case CRAFT_RECIPE -> tickPrimitiveJob(activeJob, lastPrimitiveExecution, actuationAllowed, tick);
-			case DROP_ITEMS -> tickPrimitiveJob(activeJob, lastPrimitiveExecution, true, tick);
-			case SMELT_ITEMS, COLLECT_SMELTED_ITEMS, RETURN_TO_SURFACE, PLACE_BLOCK, USE_BLOCK, BREAK_BLOCKS -> tickPrimitiveJob(activeJob, lastPrimitiveExecution, actuationAllowed, tick);
-			case ATTACK_ENTITY, USE_ENTITY -> tickPrimitiveJob(activeJob, lastPrimitiveExecution, actuationAllowed, tick);
+			case CRAFT_RECIPE -> tickPrimitiveJob(activeJob, desiredPrimitiveTask, lastPrimitiveExecution, actuationAllowed, tick);
+			case DROP_ITEMS -> tickPrimitiveJob(activeJob, desiredPrimitiveTask, lastPrimitiveExecution, true, tick);
+			case SMELT_ITEMS, COLLECT_SMELTED_ITEMS, RETURN_TO_SURFACE, PLACE_BLOCK, USE_BLOCK, BREAK_BLOCKS -> tickPrimitiveJob(activeJob, desiredPrimitiveTask, lastPrimitiveExecution, actuationAllowed, tick);
+			case ATTACK_ENTITY, USE_ENTITY -> tickPrimitiveJob(activeJob, desiredPrimitiveTask, lastPrimitiveExecution, actuationAllowed, tick);
 			case ASK_USER -> tickAskUser(activeJob, tick);
 			case MINE_BLOCKS -> tickMineBlocks(activeJob, lastPrimitiveExecution, actuationAllowed, tick);
 			case ENSURE_BLOCKS_IN_INVENTORY -> tickEnsureBlocksInInventory(activeJob, lastPrimitiveExecution, lastEvidence, actuationAllowed, tick);
@@ -668,12 +668,19 @@ public final class ActiveJobRuntime {
 
 	private static ActiveJob tickPrimitiveJob(
 		ActiveJob job,
+		WorldTaskRequest desiredPrimitiveTask,
 		TaskExecutionSnapshot primitiveExecution,
 		boolean actuationAllowed,
 		long tick
 	) {
-		if (!actuationAllowed || primitiveExecution.state() == TaskExecutionState.PAUSED_BY_SESSION_GATE || primitiveExecution.state() == TaskExecutionState.PAUSED_BY_REFLEX) {
+		if (!actuationAllowed) {
 			return updated(job, ActiveJobStatus.BLOCKED, "session_gate", null, job.collectedCount(), tick);
+		}
+		if (primitiveExecution.state() == TaskExecutionState.IDLE) {
+			return updated(job, ActiveJobStatus.RUNNING, null, null, job.collectedCount(), tick);
+		}
+		if (!primitiveExecutionMatches(desiredPrimitiveTask, primitiveExecution)) {
+			return job;
 		}
 		return switch (primitiveExecution.state()) {
 			case RUNNING, IDLE -> updated(job, ActiveJobStatus.RUNNING, null, null, job.collectedCount(), tick);
@@ -683,6 +690,12 @@ public final class ActiveJobRuntime {
 			case PAUSED_BY_SESSION_GATE -> updated(job, ActiveJobStatus.BLOCKED, "session_gate", null, job.collectedCount(), tick);
 			case PAUSED_BY_REFLEX -> updated(job, ActiveJobStatus.BLOCKED, "reflex", null, job.collectedCount(), tick);
 		};
+	}
+
+	private static boolean primitiveExecutionMatches(WorldTaskRequest desiredPrimitiveTask, TaskExecutionSnapshot primitiveExecution) {
+		return desiredPrimitiveTask != null
+			&& primitiveExecution != null
+			&& Objects.equals(desiredPrimitiveTask.taskId(), primitiveExecution.taskId());
 	}
 
 	private static String primitiveFailureFallback(ActiveJobType type) {

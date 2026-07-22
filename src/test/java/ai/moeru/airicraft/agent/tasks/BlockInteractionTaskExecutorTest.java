@@ -4,6 +4,9 @@ import ai.moeru.airicraft.agent.goals.GoalPosition;
 import ai.moeru.airicraft.agent.session.SessionMode;
 import ai.moeru.airicraft.agent.session.SessionSnapshot;
 import net.minecraft.util.math.BlockPos;
+import net.minecraft.util.math.Box;
+import net.minecraft.util.math.Direction;
+import net.minecraft.util.math.Vec3d;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -99,6 +102,28 @@ class BlockInteractionTaskExecutorTest {
 	}
 
 	@Test
+	void reachedNavigationEventsRetryInteractionWhenBaritoneConfirmsGoal() {
+		for (String event : List.of("AT_GOAL", "CANCELED", "cancelled")) {
+			assertEquals(
+				BlockInteractionTaskExecutor.BlockInteractionNavigationOutcome.RETRY_INTERACTION,
+				BlockInteractionTaskExecutor.blockInteractionNavigationOutcome(Optional.of(event), 12, true)
+			);
+		}
+	}
+
+	@Test
+	void reachedNavigationRequiresBaritoneGoalConfirmation() {
+		assertEquals(
+			BlockInteractionTaskExecutor.BlockInteractionNavigationOutcome.FAILED,
+			BlockInteractionTaskExecutor.blockInteractionNavigationOutcome(Optional.of("CANCELED"), 12, false)
+		);
+		assertEquals(
+			BlockInteractionTaskExecutor.BlockInteractionNavigationOutcome.FAILED,
+			BlockInteractionTaskExecutor.blockInteractionNavigationOutcome(Optional.of("CALC_FAILED"), 12, true)
+		);
+	}
+
+	@Test
 	void directInteractionApproachHandlesNearbyOutOfReachTargets() {
 		assertTrue(BlockInteractionTaskExecutor.shouldUseDirectInteractionApproach(81.0D, false));
 		assertTrue(BlockInteractionTaskExecutor.shouldUseDirectInteractionApproach(100.0D, false));
@@ -115,6 +140,11 @@ class BlockInteractionTaskExecutorTest {
 	void directInteractionApproachDefersWhenTargetIsNotVisible() {
 		assertFalse(BlockInteractionTaskExecutor.allowsDirectInteractionApproach("target_not_visible supportPos=1,64,1"));
 		assertFalse(BlockInteractionTaskExecutor.allowsDirectInteractionApproach("target_not_visible supportPos=1,64,1 navigationEvent=CANCELED"));
+	}
+
+	@Test
+	void directInteractionApproachDefersWhenPlayerOverlapsPlacementTarget() {
+		assertFalse(BlockInteractionTaskExecutor.allowsDirectInteractionApproach("player_hitbox_overlaps_target supportPos=1,64,1"));
 	}
 
 	@Test
@@ -157,6 +187,44 @@ class BlockInteractionTaskExecutorTest {
 				new BlockPos(10, 64, 10)
 			)
 		);
+	}
+
+	@Test
+	void placementStandCandidatesKeepOneBlockClearOfTarget() {
+		BlockPos target = new BlockPos(10, 65, 10);
+		List<BlockPos> candidates = BlockInteractionTaskExecutor.placementStandCandidates(
+			target,
+			new BlockPos(10, 64, 10)
+		);
+
+		assertTrue(candidates.contains(new BlockPos(10, 65, 8)));
+		assertTrue(candidates.contains(new BlockPos(12, 65, 10)));
+		assertFalse(candidates.contains(target.north()));
+		assertFalse(candidates.contains(target.east()));
+	}
+
+	@Test
+	void placementTargetDetectsOnlyActualPlayerHitboxOverlap() {
+		BlockPos target = new BlockPos(77, 68, -79);
+		assertTrue(BlockInteractionTaskExecutor.playerIntersectsPlacementTarget(
+			new Box(77.7D, 68.0D, -78.8D, 78.3D, 69.8D, -78.2D),
+			target
+		));
+		assertFalse(BlockInteractionTaskExecutor.playerIntersectsPlacementTarget(
+			new Box(78.0D, 68.0D, -78.8D, 78.6D, 69.8D, -78.2D),
+			target
+		));
+	}
+
+	@Test
+	void supportRaycastEndpointsMoveInsideEveryClickedFace() {
+		Vec3d surface = new Vec3d(1.5D, 2.5D, 3.5D);
+		assertEquals(new Vec3d(1.5D, 2.49D, 3.5D), BlockInteractionTaskExecutor.supportRaycastEndpoint(surface, Direction.UP));
+		assertEquals(new Vec3d(1.5D, 2.51D, 3.5D), BlockInteractionTaskExecutor.supportRaycastEndpoint(surface, Direction.DOWN));
+		assertEquals(new Vec3d(1.5D, 2.5D, 3.51D), BlockInteractionTaskExecutor.supportRaycastEndpoint(surface, Direction.NORTH));
+		assertEquals(new Vec3d(1.5D, 2.5D, 3.49D), BlockInteractionTaskExecutor.supportRaycastEndpoint(surface, Direction.SOUTH));
+		assertEquals(new Vec3d(1.51D, 2.5D, 3.5D), BlockInteractionTaskExecutor.supportRaycastEndpoint(surface, Direction.WEST));
+		assertEquals(new Vec3d(1.49D, 2.5D, 3.5D), BlockInteractionTaskExecutor.supportRaycastEndpoint(surface, Direction.EAST));
 	}
 
 	@Test
