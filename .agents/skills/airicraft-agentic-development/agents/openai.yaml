@@ -1,0 +1,4 @@
+interface:
+  display_name: "Airicraft Agentic Development"
+  short_description: "Human-led parallel Airicraft development"
+  default_prompt: "Use $airicraft-agentic-development to ground, specify, implement, verify, and review this Airicraft task."
