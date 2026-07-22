@@ -43,6 +43,7 @@ public final class BlockInteractionTaskExecutor implements WorldTaskExecutor {
 	private static final int INTERACTION_NAVIGATION_RADIUS_BLOCKS = 3;
 	private static final long INTERACTION_NAVIGATION_TIMEOUT_TICKS = 160L;
 	private static final double DIRECT_INTERACTION_APPROACH_RANGE_SQUARED = 100.0D;
+	private static final double SUPPORT_RAYCAST_INSET_BLOCKS = 0.01D;
 	private static final long PLACEMENT_CONFIRMATION_TIMEOUT_TICKS = 20L;
 	private static final List<Direction> DEFAULT_SUPPORT_ORDER = List.of(
 		Direction.DOWN,
@@ -780,8 +781,19 @@ public final class BlockInteractionTaskExecutor implements WorldTaskExecutor {
 			client,
 			player,
 			hitTarget.supportPos(),
-			hitTarget.hitVec(),
+			supportRaycastEndpoint(hitTarget.hitVec(), hitTarget.face()),
 			RaycastContext.FluidHandling.NONE
+		);
+	}
+
+	static Vec3d supportRaycastEndpoint(Vec3d surfacePoint, Direction outwardFace) {
+		if (surfacePoint == null || outwardFace == null) {
+			return surfacePoint;
+		}
+		return surfacePoint.add(
+			-outwardFace.getOffsetX() * SUPPORT_RAYCAST_INSET_BLOCKS,
+			-outwardFace.getOffsetY() * SUPPORT_RAYCAST_INSET_BLOCKS,
+			-outwardFace.getOffsetZ() * SUPPORT_RAYCAST_INSET_BLOCKS
 		);
 	}
 

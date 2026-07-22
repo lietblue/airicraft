@@ -5,6 +5,8 @@ import ai.moeru.airicraft.agent.session.SessionMode;
 import ai.moeru.airicraft.agent.session.SessionSnapshot;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Box;
+import net.minecraft.util.math.Direction;
+import net.minecraft.util.math.Vec3d;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -212,6 +214,17 @@ class BlockInteractionTaskExecutorTest {
 			new Box(78.0D, 68.0D, -78.8D, 78.6D, 69.8D, -78.2D),
 			target
 		));
+	}
+
+	@Test
+	void supportRaycastEndpointsMoveInsideEveryClickedFace() {
+		Vec3d surface = new Vec3d(1.5D, 2.5D, 3.5D);
+		assertEquals(new Vec3d(1.5D, 2.49D, 3.5D), BlockInteractionTaskExecutor.supportRaycastEndpoint(surface, Direction.UP));
+		assertEquals(new Vec3d(1.5D, 2.51D, 3.5D), BlockInteractionTaskExecutor.supportRaycastEndpoint(surface, Direction.DOWN));
+		assertEquals(new Vec3d(1.5D, 2.5D, 3.51D), BlockInteractionTaskExecutor.supportRaycastEndpoint(surface, Direction.NORTH));
+		assertEquals(new Vec3d(1.5D, 2.5D, 3.49D), BlockInteractionTaskExecutor.supportRaycastEndpoint(surface, Direction.SOUTH));
+		assertEquals(new Vec3d(1.51D, 2.5D, 3.5D), BlockInteractionTaskExecutor.supportRaycastEndpoint(surface, Direction.WEST));
+		assertEquals(new Vec3d(1.49D, 2.5D, 3.5D), BlockInteractionTaskExecutor.supportRaycastEndpoint(surface, Direction.EAST));
 	}
 
 	@Test
