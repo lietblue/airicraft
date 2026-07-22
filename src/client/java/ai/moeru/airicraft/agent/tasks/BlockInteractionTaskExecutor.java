@@ -700,6 +700,8 @@ public final class BlockInteractionTaskExecutor implements WorldTaskExecutor {
 	}
 
 	static List<BlockPos> placementStandCandidates(BlockPos target, BlockPos support) {
+		// TODO: Replace this conservative fixed-offset stance list with Baritone's placement process
+		// once that integration can preserve Airicraft's no-break and target-verification semantics.
 		return List.of(
 			target.north(2),
 			target.north(2).up(),
