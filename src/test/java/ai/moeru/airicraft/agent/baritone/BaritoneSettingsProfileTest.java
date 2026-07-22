@@ -17,7 +17,8 @@ class BaritoneSettingsProfileTest {
 		assertFalse(target.prefixControl);
 		assertFalse(target.allowInventory);
 		assertTrue(target.allowPlace);
-		assertFalse(target.allowParkour);
+		assertTrue(target.allowParkour);
+		assertFalse(target.allowDownward);
 		assertFalse(target.allowWaterBucketFall);
 		assertTrue(target.allowBreak);
 		assertTrue(target.autoTool);
@@ -30,6 +31,7 @@ class BaritoneSettingsProfileTest {
 		private boolean allowInventory = true;
 		private boolean allowPlace = true;
 		private boolean allowParkour = true;
+		private boolean allowDownward = true;
 		private boolean allowWaterBucketFall = true;
 		private boolean allowBreak = false;
 		private boolean autoTool = false;
@@ -62,6 +64,11 @@ class BaritoneSettingsProfileTest {
 		@Override
 		public void allowParkour(boolean value) {
 			allowParkour = value;
+		}
+
+		@Override
+		public void allowDownward(boolean value) {
+			allowDownward = value;
 		}
 
 		@Override
