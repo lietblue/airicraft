@@ -70,7 +70,7 @@ public final class BaritoneSettingsProfile {
 		settings.chatControlAnyway(false);
 		settings.prefixControl(false);
 		settings.allowInventory(false);
-		settings.allowPlace(false);
+		settings.allowPlace(true);
 		settings.allowParkour(false);
 		settings.allowWaterBucketFall(false);
 

@@ -16,7 +16,7 @@ class BaritoneSettingsProfileTest {
 		assertFalse(target.chatControlAnyway);
 		assertFalse(target.prefixControl);
 		assertFalse(target.allowInventory);
-		assertFalse(target.allowPlace);
+		assertTrue(target.allowPlace);
 		assertFalse(target.allowParkour);
 		assertFalse(target.allowWaterBucketFall);
 		assertTrue(target.allowBreak);
