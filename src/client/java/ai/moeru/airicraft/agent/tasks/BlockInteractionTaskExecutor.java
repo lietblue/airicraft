@@ -457,14 +457,21 @@ public final class BlockInteractionTaskExecutor implements WorldTaskExecutor {
 			return Optional.empty();
 		}
 		Optional<String> pathEvent = baritoneFacade.pollPathEvent();
-		if (navigationGoalReached(pathEvent)) {
+		BlockInteractionNavigationOutcome outcome = blockInteractionNavigationOutcome(
+			pathEvent,
+			tick - navigationStartTick,
+			navigationGoalReached(pathEvent)
+		);
+		if (outcome == BlockInteractionNavigationOutcome.RETRY_INTERACTION) {
+			String reachedGoal = compactGoal(navigationGoal);
+			clearNavigation();
 			snapshot = snapshot(TaskExecutionState.RUNNING, request, "interaction_navigation_goal_reached targetIndex=" + targetIndex
 				+ " targetPos=" + compactPos(target)
-				+ " navigationGoal=" + compactGoal(navigationGoal)
-				+ " navigationEvent=" + pathEvent.orElse("reached"));
+				+ " navigationGoal=" + reachedGoal
+				+ " navigationEvent=" + pathEvent.orElse("reached")
+				+ " retryingInteraction=true");
 			return Optional.empty();
 		}
-		BlockInteractionNavigationOutcome outcome = blockInteractionNavigationOutcome(pathEvent, tick - navigationStartTick);
 		if (shouldFallbackToDirectApproachAfterNavigationFailure(pathEvent, player.squaredDistanceTo(hitTarget.hitVec()), movementController.snapshot().stuck())
 			&& startOrContinueDirectApproach(tick, client, player, request, target, hitTarget.hitVec(), outOfRangeReason + " navigationEvent=" + pathEvent.orElse(""))) {
 			return Optional.empty();
@@ -510,14 +517,21 @@ public final class BlockInteractionTaskExecutor implements WorldTaskExecutor {
 			return Optional.empty();
 		}
 		Optional<String> pathEvent = baritoneFacade.pollPathEvent();
-		if (navigationGoalReached(pathEvent)) {
+		BlockInteractionNavigationOutcome outcome = blockInteractionNavigationOutcome(
+			pathEvent,
+			tick - navigationStartTick,
+			navigationGoalReached(pathEvent)
+		);
+		if (outcome == BlockInteractionNavigationOutcome.RETRY_INTERACTION) {
+			String reachedGoal = compactGoal(navigationGoal);
+			clearNavigation();
 			snapshot = snapshot(TaskExecutionState.RUNNING, request, "interaction_navigation_goal_reached targetIndex=" + targetIndex
 				+ " targetPos=" + compactPos(target)
-				+ " navigationGoal=" + compactGoal(navigationGoal)
-				+ " navigationEvent=" + pathEvent.orElse("reached"));
+				+ " navigationGoal=" + reachedGoal
+				+ " navigationEvent=" + pathEvent.orElse("reached")
+				+ " retryingInteraction=true");
 			return Optional.empty();
 		}
-		BlockInteractionNavigationOutcome outcome = blockInteractionNavigationOutcome(pathEvent, tick - navigationStartTick);
 		if (shouldFallbackToDirectApproachAfterNavigationFailure(pathEvent, player.squaredDistanceTo(Vec3d.ofCenter(target)), movementController.snapshot().stuck())
 			&& startOrContinueDirectApproach(tick, client, player, request, target, Vec3d.ofCenter(target), outOfRangeReason + " navigationEvent=" + pathEvent.orElse(""))) {
 			return Optional.empty();
@@ -641,8 +655,19 @@ public final class BlockInteractionTaskExecutor implements WorldTaskExecutor {
 	}
 
 	static BlockInteractionNavigationOutcome blockInteractionNavigationOutcome(Optional<String> pathEvent, long elapsedTicks) {
+		return blockInteractionNavigationOutcome(pathEvent, elapsedTicks, false);
+	}
+
+	static BlockInteractionNavigationOutcome blockInteractionNavigationOutcome(
+		Optional<String> pathEvent,
+		long elapsedTicks,
+		boolean navigationGoalReached
+	) {
 		if (pathEvent.isPresent()) {
 			String normalized = pathEvent.get().trim().toUpperCase(Locale.ROOT);
+			if (navigationGoalReached && ("AT_GOAL".equals(normalized) || "CANCELED".equals(normalized) || "CANCELLED".equals(normalized))) {
+				return BlockInteractionNavigationOutcome.RETRY_INTERACTION;
+			}
 			if ("AT_GOAL".equals(normalized)) {
 				return BlockInteractionNavigationOutcome.AT_GOAL_BUT_STILL_OUT_OF_RANGE;
 			}
@@ -1139,6 +1164,7 @@ public final class BlockInteractionTaskExecutor implements WorldTaskExecutor {
 
 	enum BlockInteractionNavigationOutcome {
 		WAIT,
+		RETRY_INTERACTION,
 		AT_GOAL_BUT_STILL_OUT_OF_RANGE,
 		FAILED
 	}

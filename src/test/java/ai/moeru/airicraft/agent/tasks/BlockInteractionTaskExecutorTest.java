@@ -99,6 +99,28 @@ class BlockInteractionTaskExecutorTest {
 	}
 
 	@Test
+	void reachedNavigationEventsRetryInteractionWhenBaritoneConfirmsGoal() {
+		for (String event : List.of("AT_GOAL", "CANCELED", "cancelled")) {
+			assertEquals(
+				BlockInteractionTaskExecutor.BlockInteractionNavigationOutcome.RETRY_INTERACTION,
+				BlockInteractionTaskExecutor.blockInteractionNavigationOutcome(Optional.of(event), 12, true)
+			);
+		}
+	}
+
+	@Test
+	void reachedNavigationRequiresBaritoneGoalConfirmation() {
+		assertEquals(
+			BlockInteractionTaskExecutor.BlockInteractionNavigationOutcome.FAILED,
+			BlockInteractionTaskExecutor.blockInteractionNavigationOutcome(Optional.of("CANCELED"), 12, false)
+		);
+		assertEquals(
+			BlockInteractionTaskExecutor.BlockInteractionNavigationOutcome.FAILED,
+			BlockInteractionTaskExecutor.blockInteractionNavigationOutcome(Optional.of("CALC_FAILED"), 12, true)
+		);
+	}
+
+	@Test
 	void directInteractionApproachHandlesNearbyOutOfReachTargets() {
 		assertTrue(BlockInteractionTaskExecutor.shouldUseDirectInteractionApproach(81.0D, false));
 		assertTrue(BlockInteractionTaskExecutor.shouldUseDirectInteractionApproach(100.0D, false));
