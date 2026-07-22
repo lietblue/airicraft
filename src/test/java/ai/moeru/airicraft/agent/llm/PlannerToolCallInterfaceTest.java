@@ -174,6 +174,25 @@ class PlannerToolCallInterfaceTest {
 	}
 
 	@Test
+	void exposesAndParsesConfigurePathfindWithAllRuntimeSettings() {
+		JsonArray tools = JsonParser.parseString(gson().toJson(PlannerToolCatalog.openAiTools())).getAsJsonArray();
+		JsonObject parameters = toolSchema(tools, "configure_pathfind");
+		JsonObject settings = parameters.getAsJsonObject("properties").getAsJsonObject("settings");
+		JsonObject settingProperties = settings.getAsJsonObject("properties");
+
+		assertTrue(toolNames(tools).contains("configure_pathfind"));
+		assertTrue(settingProperties.has("allowDownward"));
+		assertTrue(settingProperties.has("allowParkour"));
+		assertTrue(settingProperties.getAsJsonObject("allowDownward").get("description").getAsString().contains("staircases"));
+		assertEquals("configure_pathfind", PlannerToolCatalog.parseToolCall(toolCall("configure_pathfind", """
+			{"settings":{"allowDownward":true,"allowParkour":false}}
+			""")).name());
+		assertThrows(com.google.gson.JsonParseException.class, () ->
+			PlannerToolCatalog.parseToolCall(toolCall("configure_pathfind", "{\"settings\":{}}"))
+		);
+	}
+
+	@Test
 	void exposesResumeTaskWithRequiredSafetyHoldId() {
 		JsonArray tools = JsonParser.parseString(gson().toJson(PlannerToolCatalog.openAiTools())).getAsJsonArray();
 		JsonObject parameters = toolSchema(tools, "resume_task");

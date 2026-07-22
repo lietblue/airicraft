@@ -47,6 +47,11 @@ public final class BaritoneSettingsProfile {
 			}
 
 			@Override
+			public void allowDownward(boolean value) {
+				settings.allowDownward.value = value;
+			}
+
+			@Override
 			public void allowWaterBucketFall(boolean value) {
 				settings.allowWaterBucketFall.value = value;
 			}
@@ -71,7 +76,8 @@ public final class BaritoneSettingsProfile {
 		settings.prefixControl(false);
 		settings.allowInventory(false);
 		settings.allowPlace(true);
-		settings.allowParkour(false);
+		settings.allowParkour(true);
+		settings.allowDownward(false);
 		settings.allowWaterBucketFall(false);
 
 		settings.allowBreak(true);
@@ -90,6 +96,8 @@ public final class BaritoneSettingsProfile {
 		void allowPlace(boolean value);
 
 		void allowParkour(boolean value);
+
+		void allowDownward(boolean value);
 
 		void allowWaterBucketFall(boolean value);
 

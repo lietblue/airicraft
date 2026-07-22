@@ -1,6 +1,7 @@
 package ai.moeru.airicraft.agent.llm;
 
 import ai.moeru.airicraft.agent.tasks.EntityAttackMode;
+import ai.moeru.airicraft.agent.baritone.BaritonePathfindSettings;
 import ai.moeru.airicraft.agent.tasks.ResourceGatheringCatalog;
 import ai.moeru.airicraft.agent.tasks.ReturnToSurfaceStepArgs;
 import ai.moeru.airicraft.agent.tasks.SmeltingFuelMode;
@@ -53,6 +54,7 @@ public final class PlannerToolCatalog {
 	public static final String RESUME_TASK = "resume_task";
 	public static final String CLEAR_GOAL = "clear_goal";
 	public static final String UPDATE_EVENT_POLICY = "update_event_policy";
+	public static final String CONFIGURE_PATHFIND = "configure_pathfind";
 
 	private static final Consumer<JsonObject> NO_ARGUMENT_VALIDATION = arguments -> {
 	};
@@ -279,7 +281,11 @@ public final class PlannerToolCatalog {
 				prop("clearAll", bool("Clear all active planner policy rules.")),
 				prop("removeRuleIds", stringArray("Rule ids to remove.")),
 				prop("upserts", array("Policy rule upserts.", policyUpsertSchema()))
-			), List.of()), PlannerToolCatalog::validatePolicyArguments)
+			), List.of()), PlannerToolCatalog::validatePolicyArguments),
+		builtInTool(CONFIGURE_PATHFIND, false, tool(CONFIGURE_PATHFIND, "Atomically update runtime Baritone pathfinding settings. Use this only when the current route needs a deliberate capability or risk trade-off; settings reset to Airicraft defaults on client restart.", properties(
+				prop("narration", optionalString("Optional visible narration before using the tool. Omit this field when no narration is needed.")),
+				prop("settings", BaritonePathfindSettings.plannerSettingsSchema())
+			), List.of("settings")), PlannerToolCatalog::validateConfigurePathfindArguments)
 	);
 	private static final Map<String, BuiltInTool> BUILT_IN_TOOLS_BY_NAME = builtInToolsByName();
 
@@ -868,6 +874,13 @@ public final class PlannerToolCatalog {
 				throw new JsonParseException("upsert match must be an object");
 			}
 			requireString(upsert.getAsJsonObject("match"), "eventType");
+		}
+	}
+
+	private static void validateConfigurePathfindArguments(JsonObject arguments) {
+		if (arguments == null || !arguments.has("settings") || !arguments.get("settings").isJsonObject()
+			|| arguments.getAsJsonObject("settings").isEmpty()) {
+			throw new JsonParseException("settings must be a non-empty object");
 		}
 	}
 

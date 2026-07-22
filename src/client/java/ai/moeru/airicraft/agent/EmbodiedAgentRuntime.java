@@ -6,6 +6,7 @@ import ai.moeru.airicraft.BridgeUnavailableException;
 import ai.moeru.airicraft.FirstPersonScreenshotService;
 import ai.moeru.airicraft.SingleplayerWorldService;
 import ai.moeru.airicraft.agent.behavior.BehaviorTreeRuntime;
+import ai.moeru.airicraft.agent.baritone.BaritonePathfindSettings;
 import ai.moeru.airicraft.agent.control.CameraController;
 import ai.moeru.airicraft.agent.behavior.BehaviorTreeSnapshot;
 import ai.moeru.airicraft.agent.chat.ChatService;
@@ -1866,7 +1867,8 @@ public final class EmbodiedAgentRuntime {
 				PlannerToolCatalog.CANCEL_TASK,
 				PlannerToolCatalog.CLEAR_GOAL,
 				PlannerToolCatalog.CANCEL_SMELTING,
-				PlannerToolCatalog.UPDATE_EVENT_POLICY -> false;
+				PlannerToolCatalog.UPDATE_EVENT_POLICY,
+				PlannerToolCatalog.CONFIGURE_PATHFIND -> false;
 			default -> true;
 		};
 	}
@@ -2215,6 +2217,16 @@ public final class EmbodiedAgentRuntime {
 				yield "Tool result for update_event_policy: applied clearAll=" + changes.clearAll()
 					+ " removeRuleIds=" + changes.removeRuleIds().size()
 					+ " upserts=" + changes.upserts().size();
+			}
+			case PlannerToolCatalog.CONFIGURE_PATHFIND -> {
+				BaritonePathfindSettings.ApplyResult result = BaritonePathfindSettings.apply(
+					args != null && args.has("settings") && args.get("settings").isJsonObject()
+						? args.getAsJsonObject("settings")
+						: null
+				);
+				yield result.accepted()
+					? "Tool result for configure_pathfind: applied " + String.join(", ", result.changed())
+					: "TOOL_ERROR: configure_pathfind " + result.error();
 			}
 			default -> "TOOL_ERROR: unknown_tool " + toolCall.name();
 		};
