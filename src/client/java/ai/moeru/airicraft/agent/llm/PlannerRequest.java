@@ -16,8 +16,23 @@ public record PlannerRequest(
 	TaskSnapshot activeTask,
 	MissionExecutionSnapshot missionExecution,
 	PlannerTriggerBatch triggerBatch,
-	String toolResult
+	String toolResult,
+	long safetyEpoch,
+	String safetyHoldId
 ) {
+	public PlannerRequest(
+		long tick,
+		long timestampMs,
+		SessionMode sessionMode,
+		String primaryInteractionPlayer,
+		GoalSnapshot activeGoal,
+		TaskSnapshot activeTask,
+		MissionExecutionSnapshot missionExecution,
+		PlannerTriggerBatch triggerBatch,
+		String toolResult
+	) {
+		this(tick, timestampMs, sessionMode, primaryInteractionPlayer, activeGoal, activeTask, missionExecution, triggerBatch, toolResult, 0L, null);
+	}
 	public PlannerRequest(
 		long tick,
 		long timestampMs,
@@ -97,11 +112,18 @@ public record PlannerRequest(
 	}
 
 	public PlannerRequest withTriggerBatch(PlannerTriggerBatch replacementBatch) {
-		return new PlannerRequest(tick, timestampMs, sessionMode, primaryInteractionPlayer, activeGoal, activeTask, missionExecution, replacementBatch, toolResult);
+		return new PlannerRequest(tick, timestampMs, sessionMode, primaryInteractionPlayer, activeGoal, activeTask, missionExecution, replacementBatch, toolResult, safetyEpoch, safetyHoldId);
 	}
 
 	public PlannerRequest withToolResult(String replacementToolResult) {
-		return new PlannerRequest(tick, timestampMs, sessionMode, primaryInteractionPlayer, activeGoal, activeTask, missionExecution, triggerBatch, replacementToolResult);
+		return new PlannerRequest(tick, timestampMs, sessionMode, primaryInteractionPlayer, activeGoal, activeTask, missionExecution, triggerBatch, replacementToolResult, safetyEpoch, safetyHoldId);
+	}
+
+	public PlannerRequest withSafetyContext(long replacementSafetyEpoch, String replacementSafetyHoldId) {
+		return new PlannerRequest(
+			tick, timestampMs, sessionMode, primaryInteractionPlayer, activeGoal, activeTask, missionExecution,
+			triggerBatch, toolResult, Math.max(0L, replacementSafetyEpoch), replacementSafetyHoldId
+		);
 	}
 
 	public String senderName() {

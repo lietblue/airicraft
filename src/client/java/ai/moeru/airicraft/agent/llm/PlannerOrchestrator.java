@@ -19,6 +19,7 @@ import io.opentelemetry.context.Scope;
 
 import java.time.Clock;
 import java.util.ArrayList;
+import java.util.ArrayDeque;
 import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
@@ -79,6 +80,10 @@ public final class PlannerOrchestrator {
 	private PlannerContextSnapshot coalesceSupersededSnapshot;
 	private Context turnContext;
 	private boolean inventoryBootstrapPending = true;
+	private final ArrayDeque<StalePlannerRejection> stalePlannerRejections = new ArrayDeque<>();
+	private long minimumSafetyEpoch;
+	private String currentSafetyHoldId;
+	private boolean safetyLaunchBlocked;
 
 	public PlannerOrchestrator(
 		PlannerExecutor plannerExecutor,
@@ -661,6 +666,21 @@ public final class PlannerOrchestrator {
 		return contextAggregator.lastObservedEventSeqNo();
 	}
 
+	public void updateSafetyContext(long safetyEpoch, String holdId, boolean activeReflex) {
+		minimumSafetyEpoch = Math.max(minimumSafetyEpoch, Math.max(0L, safetyEpoch));
+		currentSafetyHoldId = holdId;
+		safetyLaunchBlocked = activeReflex;
+	}
+
+	public List<StalePlannerRejection> drainStalePlannerRejections() {
+		if (stalePlannerRejections.isEmpty()) {
+			return List.of();
+		}
+		ArrayList<StalePlannerRejection> drained = new ArrayList<>(stalePlannerRejections);
+		stalePlannerRejections.clear();
+		return List.copyOf(drained);
+	}
+
 	public boolean submit(PlannerRequest request) {
 		Objects.requireNonNull(request, "request");
 		if (request.triggerBatch() == null || request.triggerBatch().isEmpty()) {
@@ -684,7 +704,7 @@ public final class PlannerOrchestrator {
 		if (pendingSideEffectToolExecution()) {
 			return true;
 		}
-		if (sessionCoordinator.hasReplaceableActiveSession()) {
+		if (sessionCoordinator.hasReplaceableActiveSession() && request.triggerBatch().maySupersedeLaunchedTurn()) {
 			if (sessionCoordinator.hasReadyResultForActiveSession()) {
 				return true;
 			}
@@ -717,6 +737,10 @@ public final class PlannerOrchestrator {
 		PlannerExecutionResult plannerResult = sessionCoordinator.poll();
 		if (plannerResult == null) {
 			pollCoalescedQueue();
+			return null;
+		}
+		if (isStaleSafetyRequest(plannerResult.request())) {
+			rejectStalePlannerResult(plannerResult);
 			return null;
 		}
 		if (!plannerResult.succeeded()) {
@@ -1104,6 +1128,10 @@ public final class PlannerOrchestrator {
 		awaitingAcceptedReplyRecord = false;
 		pendingAcceptedAssistantRawContent = null;
 		inventoryBootstrapPending = true;
+		stalePlannerRejections.clear();
+		minimumSafetyEpoch = 0L;
+		currentSafetyHoldId = null;
+		safetyLaunchBlocked = false;
 		recordConversationSources();
 		clearCoalesceState();
 		endTurnSpan();
@@ -1111,6 +1139,9 @@ public final class PlannerOrchestrator {
 	}
 
 	private boolean startQueuedWorkIfPossible() {
+		if (safetyLaunchBlocked) {
+			return true;
+		}
 		boolean hasRealTrigger = pendingSubmitRequest != null && contextAggregator.hasQueuedTriggers();
 		boolean hasOverflowFlush = contextAggregator.hasPendingOverflowFlush();
 		if (!hasRealTrigger && !hasOverflowFlush) {
@@ -1316,8 +1347,25 @@ public final class PlannerOrchestrator {
 		if (snapshot == null) {
 			return null;
 		}
+		boolean safetyContextChanged = isStaleSafetyRequest(snapshot.request());
+		boolean toolMayReleaseHold = toolExecution.toolCalls().stream().anyMatch(PlannerOrchestrator::isSideEffectTool);
+		boolean sameEpochHoldRelease = safetyContextChanged
+			&& snapshot.request().safetyEpoch() == minimumSafetyEpoch
+			&& toolMayReleaseHold;
+		if (safetyContextChanged && !sameEpochHoldRelease) {
+			recordStalePlannerRejection(toolExecution.generation(), snapshot.request(), "TOOL_WAIT");
+			sessionCoordinator.finishGeneration(toolExecution.generation(), true);
+			turnJournal.markSuperseded(toolExecution.generation());
+			endTurnSpan();
+			if (!safetyLaunchBlocked) {
+				startQueuedWorkIfPossible();
+			}
+			return null;
+		}
 
-		PlannerRequest followUpRequest = snapshot.request().withToolResult(toolOutcome.toolResultText());
+		PlannerRequest followUpRequest = snapshot.request()
+			.withToolResult(toolOutcome.toolResultText())
+			.withSafetyContext(minimumSafetyEpoch, currentSafetyHoldId);
 		PlannerContextSnapshot followUpSnapshot = withRecordedToolExchanges(
 			snapshot,
 			recordedToolExchanges(toolExecution.generation())
@@ -1623,6 +1671,39 @@ public final class PlannerOrchestrator {
 		coalesceReadyAtMs = -1L;
 		coalesceWindowMs = 0L;
 		coalesceSupersededSnapshot = null;
+	}
+
+	private boolean isStaleSafetyRequest(PlannerRequest request) {
+		return request != null && (
+			request.safetyEpoch() < minimumSafetyEpoch
+				|| request.safetyEpoch() == minimumSafetyEpoch
+				&& !Objects.equals(request.safetyHoldId(), currentSafetyHoldId)
+		);
+	}
+
+	private void rejectStalePlannerResult(PlannerExecutionResult result) {
+		recordStalePlannerRejection(
+			result.generation(),
+			result.request(),
+			result.phase() == null ? "UNKNOWN" : result.phase().name()
+		);
+		turnJournal.markSuperseded(result.generation());
+		sessionCoordinator.finishGeneration(result.generation(), true);
+		endTurnSpan();
+		if (!safetyLaunchBlocked) {
+			startQueuedWorkIfPossible();
+		}
+	}
+
+	private void recordStalePlannerRejection(long generation, PlannerRequest request, String phase) {
+		stalePlannerRejections.addLast(new StalePlannerRejection(
+			generation,
+			request == null ? 0L : request.safetyEpoch(),
+			minimumSafetyEpoch,
+			request == null ? null : request.safetyHoldId(),
+			currentSafetyHoldId,
+			phase
+		));
 	}
 
 	private static String mimeType(FirstPersonScreenshotService.CapturedScreenshot capture) {

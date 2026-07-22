@@ -37,6 +37,7 @@ public final class SessionRuntime {
 
 		snapshot = snapshot
 			.withWorldLoaded(false)
+			.withPlayerLifecycleState(PlayerLifecycleState.UNAVAILABLE)
 			.withMode(SessionMode.OUT_OF_WORLD)
 			.withDimensionId(null)
 			.withLanPublished(false)
@@ -45,6 +46,34 @@ public final class SessionRuntime {
 	}
 
 	public SessionSnapshot snapshot() {
+		return snapshot;
+	}
+
+	public SessionSnapshot onPlayerDied(long tick, SemanticEventBuffer eventBuffer) {
+		if (!snapshot.worldLoaded() || snapshot.requiresRespawn()) {
+			return snapshot;
+		}
+		snapshot = snapshot
+			.withPlayerLifecycleState(PlayerLifecycleState.DEAD)
+			.withTickCount(tick);
+		eventBuffer.append(tick, "player.died", Map.of(
+			"mode", snapshot.mode().name(),
+			"dimensionId", snapshot.dimensionId()
+		));
+		return snapshot;
+	}
+
+	public SessionSnapshot onPlayerRespawned(long tick, SemanticEventBuffer eventBuffer) {
+		if (!snapshot.requiresRespawn()) {
+			return snapshot;
+		}
+		snapshot = snapshot
+			.withPlayerLifecycleState(PlayerLifecycleState.ALIVE)
+			.withTickCount(tick);
+		eventBuffer.append(tick, "player.respawned", Map.of(
+			"mode", snapshot.mode().name(),
+			"dimensionId", snapshot.dimensionId()
+		));
 		return snapshot;
 	}
 
@@ -72,7 +101,10 @@ public final class SessionRuntime {
 			mode = SessionMode.SINGLEPLAYER_LOCAL;
 		}
 
-		return new SessionSnapshot(mode, true, worldLoaded, dimensionId, lanPublished, lanPort, tick);
+		PlayerLifecycleState playerLifecycleState = worldLoaded && (client.player.isDead() || client.player.getHealth() <= 0.0F)
+			? PlayerLifecycleState.DEAD
+			: worldLoaded ? PlayerLifecycleState.ALIVE : PlayerLifecycleState.UNAVAILABLE;
+		return new SessionSnapshot(mode, true, worldLoaded, dimensionId, lanPublished, lanPort, tick, playerLifecycleState);
 	}
 
 	private static void emitTransitions(
@@ -97,6 +129,20 @@ public final class SessionRuntime {
 		if (!previousSnapshot.lanPublished() && nextSnapshot.lanPublished()) {
 			eventBuffer.append(tick, "session.lan_opened", Map.of(
 				"port", nextSnapshot.lanPort()
+			));
+		}
+
+		if (!previousSnapshot.requiresRespawn() && nextSnapshot.requiresRespawn()) {
+			eventBuffer.append(tick, "player.died", Map.of(
+				"mode", nextSnapshot.mode().name(),
+				"dimensionId", nextSnapshot.dimensionId()
+			));
+		}
+
+		if (previousSnapshot.requiresRespawn() && nextSnapshot.playerLifecycleState() == PlayerLifecycleState.ALIVE) {
+			eventBuffer.append(tick, "player.respawned", Map.of(
+				"mode", nextSnapshot.mode().name(),
+				"dimensionId", nextSnapshot.dimensionId()
 			));
 		}
 	}

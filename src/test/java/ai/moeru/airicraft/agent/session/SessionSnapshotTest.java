@@ -14,6 +14,40 @@ class SessionSnapshotTest {
 		assertTrue(snapshot(SessionMode.REMOTE_MULTIPLAYER).companionActuationAllowed());
 	}
 
+	@Test
+	void deadPlayerCannotActEvenInSharedSession() {
+		SessionSnapshot dead = new SessionSnapshot(
+			SessionMode.REMOTE_MULTIPLAYER,
+			true,
+			true,
+			"minecraft:overworld",
+			false,
+			0,
+			10L,
+			PlayerLifecycleState.DEAD
+		);
+
+		assertTrue(dead.requiresRespawn());
+		assertFalse(dead.companionActuationAllowed());
+	}
+
+	@Test
+	void lifecycleCannotRemainDeadWithoutALoadedWorld() {
+		SessionSnapshot snapshot = new SessionSnapshot(
+			SessionMode.OUT_OF_WORLD,
+			true,
+			false,
+			null,
+			false,
+			0,
+			10L,
+			PlayerLifecycleState.DEAD
+		);
+
+		assertFalse(snapshot.requiresRespawn());
+		assertTrue(snapshot.playerLifecycleState() == PlayerLifecycleState.UNAVAILABLE);
+	}
+
 	private static SessionSnapshot snapshot(SessionMode mode) {
 		return new SessionSnapshot(
 			mode,

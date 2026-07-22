@@ -5,12 +5,14 @@ public record AgentConfig(
 	boolean verificationAutoRunAll,
 	LlmConfig llm,
 	IdleConfig idle,
+	ReflexConfig reflex,
 	ObservabilityConfig observability,
 	MotorConfig motor
 ) {
 	public AgentConfig {
 		llm = llm == null ? LlmConfig.defaults() : llm;
 		idle = idle == null ? IdleConfig.defaults() : idle;
+		reflex = reflex == null ? ReflexConfig.defaults() : reflex;
 		observability = observability == null ? ObservabilityConfig.defaults() : observability;
 		motor = motor == null ? MotorConfig.defaults() : motor;
 	}
@@ -22,7 +24,15 @@ public record AgentConfig(
 		IdleConfig idle,
 		ObservabilityConfig observability
 	) {
-		this(verificationEnabled, verificationAutoRunAll, llm, idle, observability, MotorConfig.defaults());
+		this(
+			verificationEnabled,
+			verificationAutoRunAll,
+			llm,
+			idle,
+			ReflexConfig.defaults(),
+			observability,
+			MotorConfig.defaults()
+		);
 	}
 
 	public static AgentConfig defaults() {
@@ -31,6 +41,7 @@ public record AgentConfig(
 			false,
 			LlmConfig.defaults(),
 			IdleConfig.defaults(),
+			ReflexConfig.defaults(),
 			ObservabilityConfig.defaults(),
 			MotorConfig.defaults()
 		);
@@ -194,6 +205,23 @@ public record AgentConfig(
 
 		public boolean automaticEnabled() {
 			return initialDelaySeconds > 0 && cooldownSeconds > 0;
+		}
+	}
+
+	public record ReflexConfig(
+		boolean enabled,
+		int lowAirTicks,
+		double defendMinHealthRatio,
+		int threatCooldownTicks
+	) {
+		public ReflexConfig {
+			lowAirTicks = Math.max(0, lowAirTicks);
+			defendMinHealthRatio = Math.max(0.0D, Math.min(1.0D, defendMinHealthRatio));
+			threatCooldownTicks = Math.max(0, threatCooldownTicks);
+		}
+
+		public static ReflexConfig defaults() {
+			return new ReflexConfig(true, 100, 0.5D, 60);
 		}
 	}
 

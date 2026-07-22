@@ -106,6 +106,14 @@ public final class AgentConfigLoader {
 			readInt(root, "idleInitialDelaySeconds", defaults.idle().initialDelaySeconds()),
 			readInt(root, "idleCooldownSeconds", defaults.idle().cooldownSeconds())
 		);
+		warnIfMalformedObject(root, "reflex", strict);
+		Map<String, Object> reflexRoot = readObjectMap(root, "reflex", strict);
+		AgentConfig.ReflexConfig reflex = new AgentConfig.ReflexConfig(
+			readBoolean(reflexRoot, "enabled", defaults.reflex().enabled(), strict),
+			readInt(reflexRoot, "lowAirTicks", defaults.reflex().lowAirTicks()),
+			readDouble(reflexRoot, "defendMinHealthRatio", defaults.reflex().defendMinHealthRatio()),
+			readInt(reflexRoot, "threatCooldownTicks", defaults.reflex().threatCooldownTicks())
+		);
 		warnIfMalformedObject(root, "observability", strict);
 		Map<String, Object> observabilityRoot = readObjectMap(root, "observability", strict);
 		AgentConfig.ObservabilityConfig observability = new AgentConfig.ObservabilityConfig(
@@ -136,7 +144,7 @@ public final class AgentConfigLoader {
 			readLong(optimus3ShadowRoot, "policySeed", defaults.motor().optimus3Shadow().policySeed())
 		);
 		AgentConfig.MotorConfig motor = new AgentConfig.MotorConfig(optimus3Shadow);
-		return new AgentConfig(defaults.verificationEnabled(), defaults.verificationAutoRunAll(), llm, idle, observability, motor);
+		return new AgentConfig(defaults.verificationEnabled(), defaults.verificationAutoRunAll(), llm, idle, reflex, observability, motor);
 	}
 
 	private static void ensureFile(Path path) throws IOException {
@@ -192,6 +200,12 @@ public final class AgentConfigLoader {
 		yamlData.put("plannerSessionCoalesceMaxMillis", readInt(root, "plannerSessionCoalesceMaxMillis", defaults.llm().plannerSessionCoalesceMaxMillis()));
 		yamlData.put("idleInitialDelaySeconds", defaults.idle().initialDelaySeconds());
 		yamlData.put("idleCooldownSeconds", defaults.idle().cooldownSeconds());
+		yamlData.put("reflex", Map.of(
+			"enabled", defaults.reflex().enabled(),
+			"lowAirTicks", defaults.reflex().lowAirTicks(),
+			"defendMinHealthRatio", defaults.reflex().defendMinHealthRatio(),
+			"threatCooldownTicks", defaults.reflex().threatCooldownTicks()
+		));
 		yamlData.put("visionImageDetail", readString(root, "visionImageDetail", defaults.llm().visionImageDetail(), false));
 		yamlData.put("plannerNativeVisionEnabled", readBoolean(root, "plannerNativeVisionEnabled", defaults.llm().plannerNativeVisionEnabled(), false));
 		yamlData.put(
@@ -306,6 +320,17 @@ public final class AgentConfigLoader {
 			return number.longValue();
 		}
 		return Long.parseLong(String.valueOf(value));
+	}
+
+	private static double readDouble(Map<String, Object> root, String fieldName, double fallback) {
+		if (root == null || !root.containsKey(fieldName) || root.get(fieldName) == null) {
+			return fallback;
+		}
+		Object value = root.get(fieldName);
+		if (value instanceof Number number) {
+			return number.doubleValue();
+		}
+		return Double.parseDouble(String.valueOf(value));
 	}
 
 	private static boolean readBoolean(Map<String, Object> root, String fieldName, boolean fallback, boolean strict) {

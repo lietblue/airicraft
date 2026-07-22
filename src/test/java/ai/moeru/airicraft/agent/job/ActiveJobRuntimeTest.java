@@ -29,6 +29,7 @@ import ai.moeru.airicraft.agent.tasks.TaskExecutionSnapshot;
 import ai.moeru.airicraft.agent.tasks.TaskExecutionState;
 import ai.moeru.airicraft.agent.tasks.TaskResourceKind;
 import ai.moeru.airicraft.agent.tasks.TaskSpec;
+import ai.moeru.airicraft.agent.tasks.TaskState;
 import ai.moeru.airicraft.agent.tasks.TaskTerminalEvent;
 import ai.moeru.airicraft.agent.tasks.TaskTerminationCause;
 import ai.moeru.airicraft.agent.tasks.TaskType;
@@ -45,6 +46,39 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class ActiveJobRuntimeTest {
+	@Test
+	void reflexPausePreservesJobIdentityAndProgressUntilExplicitResume() {
+		ActiveJobRuntime runtime = new ActiveJobRuntime();
+		runtime.applyPlannerResponse(
+			new DialogueResponse(
+				"Mining dirt.",
+				new DialogueIntent(DialogueIntentType.JOB_UPDATE, ActiveJobProposal.mineBlocks(new GoalMineSpec(List.of("minecraft:dirt"), 3))),
+				1L
+			),
+			0,
+			"test",
+			1L
+		);
+		runtime.recordMinedBlock("minecraft:dirt", 2L);
+		String jobId = runtime.current().jobId();
+
+		runtime.pauseForReflex(3L);
+
+		assertEquals(jobId, runtime.current().jobId());
+		assertEquals(1, runtime.current().collectedCount());
+		assertEquals(ActiveJobStatus.BLOCKED, runtime.current().status());
+		assertEquals("reflex", runtime.current().blockedReason());
+		assertEquals(TaskState.PAUSED_BY_REFLEX, runtime.taskSnapshot().state());
+		assertEquals(TaskExecutionState.PAUSED_BY_REFLEX, runtime.missionExecutionSnapshot().primitiveExecution().state());
+
+		runtime.resumeAfterReflex(4L);
+
+		assertEquals(jobId, runtime.current().jobId());
+		assertEquals(1, runtime.current().collectedCount());
+		assertEquals(ActiveJobStatus.QUEUED, runtime.current().status());
+		assertNull(runtime.current().blockedReason());
+	}
+
 	@Test
 	void minedBlockEventWithoutActiveMineJobIsIgnored() {
 		ActiveJobRuntime runtime = new ActiveJobRuntime();

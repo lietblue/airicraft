@@ -50,6 +50,7 @@ public final class PlannerToolCatalog {
 	public static final String USE_BLOCK = "use_block";
 	public static final String BREAK_BLOCKS = "break_blocks";
 	public static final String CANCEL_TASK = "cancel_task";
+	public static final String RESUME_TASK = "resume_task";
 	public static final String CLEAR_GOAL = "clear_goal";
 	public static final String UPDATE_EVENT_POLICY = "update_event_policy";
 
@@ -262,6 +263,10 @@ public final class PlannerToolCatalog {
 				prop("narration", optionalString("Optional visible narration before using the tool. Omit this field when no narration is needed.")),
 				prop("targets", array("Ordered target blocks to break. Maximum 16.", breakBlockTargetSchema()))
 			), List.of("targets")), PlannerToolCatalog::validateBreakBlocksArguments),
+		builtInTool(RESUME_TASK, false, tool(RESUME_TASK, "Resume the exact task paused by a resolved survival reflex. The holdId must match the current safety hold.", properties(
+			prop("narration", optionalString("Optional visible narration before resuming the task.")),
+			prop("holdId", string("Exact holdId from the survival update."))
+		), List.of("holdId")), arguments -> requireString(arguments, "holdId")),
 		builtInTool(CANCEL_TASK, false, tool(CANCEL_TASK, "Cancel the current task or job.", properties(
 				prop("narration", optionalString("Optional visible narration before using the tool. Omit this field when no narration is needed.")),
 				prop("reason", string("Optional cancellation reason."))

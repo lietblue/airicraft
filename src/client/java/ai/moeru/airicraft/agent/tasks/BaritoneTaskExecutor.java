@@ -63,6 +63,11 @@ public final class BaritoneTaskExecutor implements WorldTaskExecutor {
 		}
 
 		if (!sessionSnapshot.companionActuationAllowed()) {
+			if (sessionSnapshot.requiresRespawn() && appliedTask != null) {
+				pendingInternalCancelTaskId = appliedTask.taskId();
+				facade.cancel();
+				appliedTask = null;
+			}
 			clearTerminalEvent(activeTask.get());
 			snapshot = new TaskExecutionSnapshot(
 				TaskExecutionState.PAUSED_BY_SESSION_GATE,

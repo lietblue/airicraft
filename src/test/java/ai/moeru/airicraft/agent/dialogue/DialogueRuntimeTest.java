@@ -445,10 +445,60 @@ class DialogueRuntimeTest {
 	}
 
 	@Test
-	void queuedInternalTaskUpdateUsesCurrentTaskContextWhenReplayed() {
+	void directPlayerGuidanceSupersedesQueuedInternalTaskUpdate() {
 		BlockingLlmBackend backend = new BlockingLlmBackend();
 		CompletableFuture<PlannerResponse> firstResponse = backend.enqueueResponse();
-		backend.enqueueResponse();
+		CompletableFuture<PlannerResponse> latestResponse = backend.enqueueResponse();
+		DialogueRuntime runtime = newDialogueRuntime(backend);
+		SemanticEventBuffer eventBuffer = new SemanticEventBuffer(32);
+
+		runtime.onPlannerTrigger(
+			PlannerTrigger.pending(PlannerTriggerType.CHAT, "Alice", "@agent gather wood", 10L, 1000L),
+			SessionSnapshot.initial(),
+			"Alice",
+			Optional.empty(),
+			TaskSnapshot.idle(),
+			MissionExecutionSnapshot.idle(),
+			eventBuffer
+		);
+		backend.awaitConversationCount(1);
+		runtime.onInternalTaskUpdate(
+			"TASK UPDATE: state=COMPLETED missionId=old-mission",
+			11L,
+			SessionSnapshot.initial(),
+			Optional.empty(),
+			activeTask("old-mission", MissionType.COLLECT_RESOURCE, "Gather wood", "collect", LedgerStepKind.COLLECT_RESOURCE),
+			MissionExecutionSnapshot.idle(),
+			eventBuffer
+		);
+		runtime.onPlannerTrigger(
+			PlannerTrigger.pending(PlannerTriggerType.CHAT, "Alice", "@agent stop, come back", 12L, 1200L),
+			SessionSnapshot.initial(),
+			"Alice",
+			Optional.empty(),
+			TaskSnapshot.idle(),
+			MissionExecutionSnapshot.idle(),
+			eventBuffer
+		);
+
+		assertTrue(eventBuffer.containsType("planner.internal_task_update_superseded"));
+		latestResponse.complete(new PlannerResponse("Coming back.", new PlannerIntent("reply_only", null, null)));
+		firstResponse.complete(new PlannerResponse("Gathering wood.", new PlannerIntent("reply_only", null, null)));
+
+		assertEquals("Coming back.", awaitResponse(runtime, eventBuffer, Duration.ofSeconds(1)).text());
+		backend.awaitConversationCount(2);
+		String latestPrompt = backend.conversation(1).messages().stream()
+			.map(message -> message.content() == null ? "" : message.content())
+			.reduce("", (left, right) -> left + "\n" + right);
+		assertTrue(latestPrompt.contains("@agent stop, come back"));
+		assertFalse(latestPrompt.contains("TASK UPDATE: state=COMPLETED missionId=old-mission"));
+		runtime.shutdown();
+	}
+
+	@Test
+	void queuedInternalTaskUpdateIsDroppedWhenMissionChangedBeforeReplay() {
+		BlockingLlmBackend backend = new BlockingLlmBackend();
+		CompletableFuture<PlannerResponse> firstResponse = backend.enqueueResponse();
 		DialogueRuntime runtime = newDialogueRuntime(backend);
 		SemanticEventBuffer eventBuffer = new SemanticEventBuffer(32);
 		TaskSnapshot staleTask = activeTask("stale-mission", MissionType.CRAFT_ITEM, "Stale craft planks", "stale-step", LedgerStepKind.CRAFT_RECIPE);
@@ -489,15 +539,13 @@ class DialogueRuntimeTest {
 				currentExecution
 			).text()
 		);
-		backend.awaitConversationCount(2);
-		String replayedPrompt = backend.conversation(1).messages().stream()
-			.map(message -> message.content() == null ? "" : message.content())
-			.reduce("", (left, right) -> left + "\n" + right);
-
-		assertTrue(replayedPrompt.contains("Fresh mine stone"));
-		assertTrue(replayedPrompt.contains("current-step"));
-		assertFalse(replayedPrompt.contains("Stale craft planks"));
-		assertFalse(replayedPrompt.contains("stale-step"));
+		backend.assertConversationCountRemains(1, Duration.ofMillis(100));
+		assertTrue(eventBuffer.query(null).events().stream().anyMatch(event ->
+			"planner.internal_task_update_superseded".equals(event.type())
+				&& "mission_changed".equals(event.payload().get("reason"))
+				&& "stale-mission".equals(event.payload().get("updateMissionId"))
+				&& "current-mission".equals(event.payload().get("currentMissionId"))
+		));
 		runtime.shutdown();
 	}
 
@@ -924,6 +972,16 @@ class DialogueRuntimeTest {
 				sleepBriefly();
 			}
 			throw new AssertionError("Timed out waiting for conversation count " + expectedCount + ", got " + conversationCount());
+		}
+
+		private void assertConversationCountRemains(int expectedCount, Duration duration) {
+			long deadlineNanos = System.nanoTime() + duration.toNanos();
+			while (System.nanoTime() < deadlineNanos) {
+				if (conversationCount() != expectedCount) {
+					throw new AssertionError("Expected conversation count to remain " + expectedCount + ", got " + conversationCount());
+				}
+				sleepBriefly();
+			}
 		}
 	}
 }

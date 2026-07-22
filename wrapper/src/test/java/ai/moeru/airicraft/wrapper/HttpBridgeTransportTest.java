@@ -317,6 +317,25 @@ class HttpBridgeTransportTest {
 	}
 
 	@Test
+	void resumeAgentTaskPostsExactSafetyHoldId(@TempDir Path tempDir) throws Exception {
+		try (TestBridgeServer server = TestBridgeServer.start()) {
+			server.respondJson("/v1/agent/tasks/resume", 0, 200, """
+				{"available":true,"resumed":true,"holdId":"hold-42","reflex":{"state":"IDLE"}}
+				""");
+			writeBridgeState(tempDir, server.port());
+			System.setProperty("user.home", tempDir.toString());
+
+			HttpBridgeTransport transport = new HttpBridgeTransport();
+			Map<String, Object> payload = transport.resumeAgentTask("hold-42");
+
+			assertEquals(true, payload.get("resumed"));
+			assertEquals("hold-42", payload.get("holdId"));
+			assertEquals("POST", server.lastMethod("/v1/agent/tasks/resume"));
+			assertEquals("{\"holdId\":\"hold-42\"}", server.lastRequestBody("/v1/agent/tasks/resume"));
+		}
+	}
+
+	@Test
 	void getAgentLedgerReadsPayload(@TempDir Path tempDir) throws Exception {
 		try (TestBridgeServer server = TestBridgeServer.start()) {
 			server.respondJson("/v1/agent/ledger", 0, 200, """

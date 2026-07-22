@@ -39,6 +39,7 @@ public final class EvaluationAddonRuntime {
 	private final ScenarioEvaluationRunner runner = new ScenarioEvaluationRunner();
 	private final EvaluationFlightRecorder recorder = new EvaluationFlightRecorder();
 	private final EvaluationWaypointSeeder waypointSeeder = new EvaluationWaypointSeeder();
+	private final SurvivalSmokeFixtureService survivalFixtures = new SurvivalSmokeFixtureService();
 
 	private EvaluationScenario scenario;
 	private boolean waypointsSeeded;
@@ -52,6 +53,7 @@ public final class EvaluationAddonRuntime {
 	}
 
 	public void onClientTick(MinecraftClient client) {
+		survivalFixtures.onClientTick(client);
 		if (runState == RunState.CLEANUP) {
 			continueCleanup();
 			return;
@@ -194,6 +196,20 @@ public final class EvaluationAddonRuntime {
 			if (startReserved) {
 				context.onClientThread(this::cancelRunStart);
 			}
+		}
+	}
+
+	public void handleSurvivalFixture(BridgeRouteContext context) throws Exception {
+		if (!context.isMethod("POST")) {
+			context.writeJson(405, Map.of("error", "method_not_allowed"));
+			return;
+		}
+		SurvivalSmokeFixtureService.Request request = context.readJson(SurvivalSmokeFixtureService.Request.class);
+		try {
+			context.writeJson(200, context.onClientThread(() -> survivalFixtures.apply(request)));
+		}
+		catch (SurvivalSmokeFixtureService.FixtureException exception) {
+			throw new BridgeUnavailableException(exception.code(), exception.getMessage());
 		}
 	}
 

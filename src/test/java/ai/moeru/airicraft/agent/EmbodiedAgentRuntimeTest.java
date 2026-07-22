@@ -1,6 +1,7 @@
 package ai.moeru.airicraft.agent;
 
 import ai.moeru.airicraft.AiricraftConfig;
+import ai.moeru.airicraft.BridgeUnavailableException;
 import ai.moeru.airicraft.FirstPersonScreenshotService;
 import ai.moeru.airicraft.agent.actions.ActionGoal;
 import ai.moeru.airicraft.agent.actions.ActionGraphExecutionSnapshot;
@@ -19,7 +20,14 @@ import ai.moeru.airicraft.agent.job.ActiveJob;
 import ai.moeru.airicraft.agent.job.ActiveJobProposal;
 import ai.moeru.airicraft.agent.job.ActiveJobStatus;
 import ai.moeru.airicraft.agent.job.ActiveJobType;
+import ai.moeru.airicraft.agent.job.ActiveJobRuntime;
+import ai.moeru.airicraft.agent.reflex.SurvivalReflexAction;
+import ai.moeru.airicraft.agent.reflex.SurvivalReflexCause;
+import ai.moeru.airicraft.agent.reflex.SurvivalReflexRuntime;
+import ai.moeru.airicraft.agent.reflex.SurvivalReflexSnapshot;
+import ai.moeru.airicraft.agent.reflex.SurvivalReflexState;
 import ai.moeru.airicraft.agent.session.SessionMode;
+import ai.moeru.airicraft.agent.session.PlayerLifecycleState;
 import ai.moeru.airicraft.agent.session.SessionSnapshot;
 import ai.moeru.airicraft.agent.tasks.WorldTaskRequest;
 import ai.moeru.airicraft.agent.tasks.BlockPlacementStepArgs;
@@ -70,6 +78,7 @@ import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Vec3d;
 import org.junit.jupiter.api.Test;
 
+import java.lang.reflect.Field;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -77,10 +86,79 @@ import java.util.concurrent.CompletableFuture;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 class EmbodiedAgentRuntimeTest {
+	@Test
+	void matchingSafetyHoldResumesSamePausedJob() throws Exception {
+		EmbodiedAgentRuntime runtime = EmbodiedAgentRuntime.createForTests(new FakeWorldTaskExecutor());
+		runtime.injectDialogueResponseForTests(new DialogueResponse(
+			"Mining dirt.",
+			new DialogueIntent(DialogueIntentType.JOB_UPDATE, ActiveJobProposal.mineBlocks(new GoalMineSpec(List.of("minecraft:dirt"), 3))),
+			1L
+		));
+		ActiveJobRuntime activeJobs = activeJobRuntime(runtime);
+		String jobId = activeJobs.current().jobId();
+		activeJobs.pauseForReflex(2L);
+		setReflexSnapshot(runtime, reflexSnapshot(SurvivalReflexState.AWAITING_PLANNER, "hold-1", jobId, null));
+
+		SurvivalReflexSnapshot resumed = runtime.resumeSafetyHold("hold-1", "test");
+
+		assertEquals(SurvivalReflexState.IDLE, resumed.state());
+		assertEquals(jobId, runtime.activeJob().jobId());
+		assertEquals(ActiveJobStatus.QUEUED, runtime.activeJob().status());
+		assertTrue(runtime.recentEvents(null).events().stream().anyMatch(event ->
+			"reflex.task_resumed".equals(event.type())
+		));
+	}
+
+	@Test
+	void resumeRejectsMissingActiveAndStaleSafetyHolds() throws Exception {
+		EmbodiedAgentRuntime runtime = EmbodiedAgentRuntime.createForTests(new FakeWorldTaskExecutor());
+
+		BridgeUnavailableException missing = assertThrows(BridgeUnavailableException.class,
+			() -> runtime.resumeSafetyHold("hold-1", "test"));
+		assertEquals("no_safety_hold", missing.code());
+
+		setReflexSnapshot(runtime, reflexSnapshot(SurvivalReflexState.ACTIVE, "hold-1", "job-1", null));
+		BridgeUnavailableException active = assertThrows(BridgeUnavailableException.class,
+			() -> runtime.resumeSafetyHold("hold-1", "test"));
+		assertEquals("reflex_active", active.code());
+
+		setReflexSnapshot(runtime, reflexSnapshot(SurvivalReflexState.AWAITING_PLANNER, "hold-1", "job-1", null));
+		BridgeUnavailableException stale = assertThrows(BridgeUnavailableException.class,
+			() -> runtime.resumeSafetyHold("old-hold", "test"));
+		assertEquals("stale_safety_hold", stale.code());
+	}
+
+	@Test
+	void replacementAndCancellationReleaseHeldActionGraph() throws Exception {
+		EmbodiedAgentRuntime runtime = EmbodiedAgentRuntime.createForTests(new FakeWorldTaskExecutor());
+		ActionGraphExecutionSnapshot first = runtime.startActionGoal(ActionGoal.inventoryItem("minecraft:bread", 1), "test");
+		setReflexSnapshot(runtime, reflexSnapshot(SurvivalReflexState.AWAITING_PLANNER, "hold-1", null, first.executionId()));
+
+		ActionGraphExecutionSnapshot replacement = runtime.startActionGoal(
+			ActionGoal.inventoryItem("minecraft:iron_pickaxe", 1),
+			"test"
+		);
+
+		assertNotEquals(first.executionId(), replacement.executionId());
+		assertEquals(SurvivalReflexState.IDLE, runtime.survivalReflexSnapshot().state());
+		assertTrue(runtime.recentEvents(null).events().stream().anyMatch(event ->
+			"reflex.hold_released".equals(event.type()) && "action_graph_replaced".equals(event.payload().get("reason"))
+		));
+
+		setReflexSnapshot(runtime, reflexSnapshot(
+			SurvivalReflexState.AWAITING_PLANNER, "hold-2", null, replacement.executionId()
+		));
+		ActionGraphExecutionSnapshot cancelled = runtime.cancelActionGoal("operator_cancelled");
+		assertEquals(ActionGraphExecutionState.CANCELLED, cancelled.state());
+		assertEquals(SurvivalReflexState.IDLE, runtime.survivalReflexSnapshot().state());
+	}
+
 	@Test
 	void suppressesRecentEchoOfAgentOwnPublicChat() {
 		assertTrue(EmbodiedAgentRuntime.isAgentChatEcho(
@@ -91,6 +169,33 @@ class EmbodiedAgentRuntimeTest {
 			120L,
 			100L
 		));
+	}
+
+	private static ActiveJobRuntime activeJobRuntime(EmbodiedAgentRuntime runtime) throws Exception {
+		Field field = EmbodiedAgentRuntime.class.getDeclaredField("activeJobRuntime");
+		field.setAccessible(true);
+		return (ActiveJobRuntime) field.get(runtime);
+	}
+
+	private static void setReflexSnapshot(EmbodiedAgentRuntime runtime, SurvivalReflexSnapshot snapshot) throws Exception {
+		Field runtimeField = EmbodiedAgentRuntime.class.getDeclaredField("survivalReflexRuntime");
+		runtimeField.setAccessible(true);
+		SurvivalReflexRuntime reflexRuntime = (SurvivalReflexRuntime) runtimeField.get(runtime);
+		Field snapshotField = SurvivalReflexRuntime.class.getDeclaredField("snapshot");
+		snapshotField.setAccessible(true);
+		snapshotField.set(reflexRuntime, snapshot);
+	}
+
+	private static SurvivalReflexSnapshot reflexSnapshot(
+		SurvivalReflexState state,
+		String holdId,
+		String jobId,
+		String actionExecutionId
+	) {
+		return new SurvivalReflexSnapshot(
+			state, SurvivalReflexCause.DROWNING, SurvivalReflexAction.SWIM_TO_AIR, 1L, holdId,
+			jobId, actionExecutionId, List.of(), 10.0F, 20.0F, 100, 300, 1L, 2L, 12, null
+		);
 	}
 
 	@Test
@@ -2238,11 +2343,55 @@ class EmbodiedAgentRuntimeTest {
 		assertEquals("planner_response", event.payload().get("source"));
 	}
 
+	@Test
+	void deathIsAHardCancellationBoundaryAndRejectsNewActions() {
+		FakeWorldTaskExecutor executor = new FakeWorldTaskExecutor();
+		EmbodiedAgentRuntime runtime = EmbodiedAgentRuntime.createForTests(executor);
+		runtime.overrideSessionSnapshotForTests(loadedRemoteSession());
+		runtime.submitTask(new TaskSpec(TaskType.COLLECT_RESOURCE, TaskResourceKind.WOOD_LOGS, 2), "test");
+		runtime.onClientTick(null);
+
+		runtime.overrideSessionSnapshotForTests(deadRemoteSession());
+		runtime.onClientTick(null);
+
+		assertEquals(TaskState.CANCELLED, runtime.taskSnapshot().state());
+		assertEquals(1, executor.onWorldLeaveCalls);
+		assertEquals(List.of("Root", "WaitForRespawn"), runtime.behaviorTreeSnapshot().activeNodePath());
+		assertTrue(runtime.recentEvents(null).events().stream().anyMatch(event -> "player.actions_cancelled".equals(event.type())));
+
+		BridgeUnavailableException exception = assertThrows(
+			BridgeUnavailableException.class,
+			() -> runtime.submitTask(new TaskSpec(TaskType.COLLECT_RESOURCE, TaskResourceKind.WOOD_LOGS, 1), "test")
+		);
+		assertEquals("player_dead", exception.code());
+	}
+
+	@Test
+	void fatalHealthPacketClosesActuationGateBeforeNextTick() {
+		FakeWorldTaskExecutor executor = new FakeWorldTaskExecutor();
+		EmbodiedAgentRuntime runtime = EmbodiedAgentRuntime.createForTests(executor);
+		runtime.overrideSessionSnapshotForTests(loadedRemoteSession());
+		runtime.submitTask(new TaskSpec(TaskType.COLLECT_RESOURCE, TaskResourceKind.WOOD_LOGS, 2), "test");
+
+		runtime.onPlayerHealthUpdated(true, 10.0F, 0.0F);
+
+		assertTrue(runtime.sessionSnapshot().requiresRespawn());
+		assertFalse(runtime.sessionSnapshot().companionActuationAllowed());
+		assertEquals(TaskState.CANCELLED, runtime.taskSnapshot().state());
+		assertEquals(1, executor.onWorldLeaveCalls);
+		assertTrue(runtime.recentEvents(null).events().stream().anyMatch(event -> "player.died".equals(event.type())));
+		assertThrows(
+			BridgeUnavailableException.class,
+			() -> runtime.submitTask(new TaskSpec(TaskType.COLLECT_RESOURCE, TaskResourceKind.WOOD_LOGS, 1), "test")
+		);
+	}
+
 	private static final class FakeWorldTaskExecutor implements WorldTaskExecutor {
 		private TaskExecutionSnapshot snapshot = TaskExecutionSnapshot.idle();
 		private TaskExecutionSnapshot forcedSnapshot;
 		private Optional<TaskTerminalEvent> nextTerminalEvent = Optional.empty();
 		private Optional<WorldTaskRequest> lastActiveTask = Optional.empty();
+		private int onWorldLeaveCalls;
 
 		@Override
 		public Optional<TaskTerminalEvent> tick(SessionSnapshot sessionSnapshot, Optional<WorldTaskRequest> activeTask) {
@@ -2297,6 +2446,7 @@ class EmbodiedAgentRuntimeTest {
 
 		@Override
 		public void onWorldLeave() {
+			onWorldLeaveCalls++;
 			snapshot = TaskExecutionSnapshot.idle();
 		}
 
@@ -2387,6 +2537,19 @@ class EmbodiedAgentRuntimeTest {
 			false,
 			0,
 			0L
+		);
+	}
+
+	private static SessionSnapshot deadRemoteSession() {
+		return new SessionSnapshot(
+			SessionMode.REMOTE_MULTIPLAYER,
+			true,
+			true,
+			"minecraft:overworld",
+			false,
+			0,
+			0L,
+			PlayerLifecycleState.DEAD
 		);
 	}
 }

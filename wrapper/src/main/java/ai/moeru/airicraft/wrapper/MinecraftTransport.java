@@ -95,6 +95,8 @@ interface MinecraftTransport {
 
 	Map<String, Object> cancelAgentTask();
 
+	Map<String, Object> resumeAgentTask(String holdId);
+
 	Map<String, Object> getAgentTree();
 
 	Map<String, Object> getAgentDialogue();

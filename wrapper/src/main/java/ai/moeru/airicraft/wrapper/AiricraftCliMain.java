@@ -85,6 +85,7 @@ public final class AiricraftCliMain {
 		CommandLine agentTasks = agent.getSubcommands().get("tasks");
 		agentTasks.addSubcommand(new AgentTasksSubmitCommand(context));
 		agentTasks.addSubcommand(new AgentTasksCancelCommand(context));
+		agentTasks.addSubcommand(new AgentTasksResumeCommand(context));
 		agent.addSubcommand(new AgentTreeCommand(context));
 		agent.addSubcommand(new AgentDialogueCommand(context));
 		agent.addSubcommand("debug", new UsageCommand(out, "airicraft agent debug", "Agent debug commands"));
@@ -553,6 +554,21 @@ public final class AiricraftCliMain {
 		@Override
 		Map<String, Object> runCommand() {
 			return PayloadViews.agentTasks(transport().cancelAgentTask(), verbose());
+		}
+	}
+
+	@Command(name = "resume", mixinStandardHelpOptions = true, description = "Resume the exact task paused by a resolved survival reflex.")
+	private static final class AgentTasksResumeCommand extends BaseCommand {
+		@Option(names = "--hold-id", required = true, description = "Exact safety hold id from agent status.")
+		private String holdId;
+
+		private AgentTasksResumeCommand(CliContext context) {
+			super(context, "agent tasks resume");
+		}
+
+		@Override
+		Map<String, Object> runCommand() {
+			return PayloadViews.agentTasks(transport().resumeAgentTask(holdId), verbose());
 		}
 	}
 
@@ -1595,6 +1611,9 @@ public final class AiricraftCliMain {
 			if (payload.containsKey("task")) {
 				view.put("task", payload.get("task"));
 			}
+			if (payload.containsKey("reflex")) {
+				view.put("reflex", payload.get("reflex"));
+			}
 			if (payload.containsKey("motorShadow")) {
 				view.put("motorShadow", payload.get("motorShadow"));
 			}
@@ -1626,7 +1645,7 @@ public final class AiricraftCliMain {
 
 		private static Map<String, Object> agentTasks(Map<String, Object> payload, boolean verbose) {
 			LinkedHashMap<String, Object> view = new LinkedHashMap<>();
-			copy(view, payload, "available", "cancelled", "task", "taskExecution", "missionExecution");
+			copy(view, payload, "available", "cancelled", "resumed", "holdId", "reflex", "task", "taskExecution", "missionExecution");
 			if (!verbose && payload.containsKey("task")) {
 				Map<String, Object> task = map(payload.get("task"));
 				LinkedHashMap<String, Object> compactTask = new LinkedHashMap<>();

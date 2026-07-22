@@ -47,8 +47,8 @@ class DropItemsTaskExecutorTest {
 	}
 
 	@Test
-	void permitsDropActuationInAnyLoadedWorld() {
-		assertTrue(DropItemsTaskExecutor.itemDropActuationAllowed(snapshot(SessionMode.SINGLEPLAYER_LOCAL, true)));
+	void permitsDropActuationOnlyWhenTheCompanionSessionCanAct() {
+		assertFalse(DropItemsTaskExecutor.itemDropActuationAllowed(snapshot(SessionMode.SINGLEPLAYER_LOCAL, true)));
 		assertTrue(DropItemsTaskExecutor.itemDropActuationAllowed(snapshot(SessionMode.SINGLEPLAYER_LAN_HOST, true)));
 		assertTrue(DropItemsTaskExecutor.itemDropActuationAllowed(snapshot(SessionMode.REMOTE_MULTIPLAYER, true)));
 

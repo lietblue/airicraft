@@ -120,6 +120,47 @@ class ActionGraphExecutionRuntimeTest {
 	}
 
 	@Test
+	void reflexPausePreservesActionGraphIdentityAndResumesSamePrimitive() {
+		RecordingDispatcher dispatcher = new RecordingDispatcher();
+		ActionGraphExecutionRuntime runtime = new ActionGraphExecutionRuntime(defaultIndex(), dispatcher);
+		ActionGraphExecutionSnapshot started = runtime.submit(
+			ActionGoal.inventoryItem("minecraft:bread", 1),
+			Map.of("minecraft:wheat", 3),
+			CONTEXT,
+			100
+		);
+		ActionGraphExecutionSnapshot dispatched = runtime.tick(input(Map.of("minecraft:wheat", 3), null, 101));
+
+		ActionGraphExecutionSnapshot paused = runtime.pauseForReflex(102);
+
+		assertEquals(started.executionId(), paused.executionId());
+		assertEquals(dispatched.activeTaskId(), paused.activeTaskId());
+		assertEquals(ActionGraphExecutionState.BLOCKED, paused.state());
+		assertEquals("reflex", paused.failureCode());
+		assertTrace(paused.trace(), "reflex_pause");
+
+		ActionGraphExecutionSnapshot stillPaused = runtime.tick(new ActionGraphExecutionInput(
+			new ActionResolverContext("world-a", "bot", "minecraft:overworld", 103),
+			Map.of("minecraft:wheat", 3),
+			true,
+			false,
+			null
+		));
+		assertEquals(ActionGraphExecutionState.BLOCKED, stillPaused.state());
+
+		ActionGraphExecutionSnapshot resumed = runtime.tick(new ActionGraphExecutionInput(
+			new ActionResolverContext("world-a", "bot", "minecraft:overworld", 104),
+			Map.of("minecraft:wheat", 3),
+			true,
+			true,
+			null
+		));
+		assertEquals(started.executionId(), resumed.executionId());
+		assertEquals(dispatched.activeTaskId(), resumed.activeTaskId());
+		assertEquals(ActionGraphExecutionState.WAITING_PRIMITIVE, resumed.state());
+	}
+
+	@Test
 	void zeroStepRouteSucceedsOnlyAfterGoalFactIsObserved() {
 		RecordingDispatcher dispatcher = new RecordingDispatcher();
 		ActionGraphExecutionRuntime runtime = new ActionGraphExecutionRuntime(defaultIndex(), dispatcher);

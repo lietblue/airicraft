@@ -21,6 +21,10 @@ public record PlannerTriggerBatch(
 		return triggers.size();
 	}
 
+	public boolean maySupersedeLaunchedTurn() {
+		return triggers.stream().anyMatch(PlannerTrigger::maySupersedeLaunchedTurn);
+	}
+
 	public long endSeqNo() {
 		return triggers.isEmpty() ? 0L : triggers.get(triggers.size() - 1).seqNo();
 	}

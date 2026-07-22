@@ -55,6 +55,19 @@ public final class MovementController {
 	}
 
 	public void swimUp(MinecraftClient client, boolean forward, boolean sprint, boolean left, boolean right, boolean back, long tick) {
+		moveDirectional(client, forward, back, left, right, sprint, true, tick);
+	}
+
+	public void moveDirectional(
+		MinecraftClient client,
+		boolean forward,
+		boolean back,
+		boolean left,
+		boolean right,
+		boolean sprint,
+		boolean jump,
+		long tick
+	) {
 		if (client == null) {
 			return;
 		}
@@ -75,7 +88,7 @@ public final class MovementController {
 		boolean effectiveSprint = effectiveForward && sprint;
 		movingForward = effectiveForward;
 		sprinting = effectiveSprint;
-		jumping = true;
+		jumping = jump;
 		enableAutoJump(client);
 
 		client.options.forwardKey.setPressed(effectiveForward);
@@ -83,7 +96,7 @@ public final class MovementController {
 		client.options.leftKey.setPressed(left && !right);
 		client.options.rightKey.setPressed(right && !left);
 		client.options.sprintKey.setPressed(effectiveSprint);
-		client.options.jumpKey.setPressed(true);
+		client.options.jumpKey.setPressed(jump);
 		player.setSprinting(effectiveSprint);
 
 		updateStuckState(player, tick);

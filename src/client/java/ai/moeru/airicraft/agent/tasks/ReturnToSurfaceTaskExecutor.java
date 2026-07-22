@@ -370,7 +370,7 @@ public final class ReturnToSurfaceTaskExecutor implements WorldTaskExecutor {
 		return player != null && !player.isSubmergedInWater() && player.getAir() >= player.getMaxAir();
 	}
 
-	static RecoveryMovement recoveryMovement(boolean underwater, boolean targetAvailable, double horizontalDistanceSquared, boolean stuck) {
+	public static RecoveryMovement recoveryMovement(boolean underwater, boolean targetAvailable, double horizontalDistanceSquared, boolean stuck) {
 		if (!underwater) {
 			return RecoveryMovement.BREATHABLE;
 		}
@@ -390,7 +390,7 @@ public final class ReturnToSurfaceTaskExecutor implements WorldTaskExecutor {
 		return occupied && !replaceable && !hasFluid;
 	}
 
-	static UnderwaterRecoveryKeys underwaterRecoveryKeys(RecoveryMovement recoveryMovement, int stuckTicks) {
+	public static UnderwaterRecoveryKeys underwaterRecoveryKeys(RecoveryMovement recoveryMovement, int stuckTicks) {
 		if (recoveryMovement == RecoveryMovement.TOWARD_TARGET) {
 			return new UnderwaterRecoveryKeys(true, true, false, false, false);
 		}
@@ -659,7 +659,7 @@ public final class ReturnToSurfaceTaskExecutor implements WorldTaskExecutor {
 	private record HeadroomClearance(String event, boolean failed) {
 	}
 
-	record UnderwaterRecoveryKeys(boolean forward, boolean sprint, boolean left, boolean right, boolean back) {
+	public record UnderwaterRecoveryKeys(boolean forward, boolean sprint, boolean left, boolean right, boolean back) {
 	}
 
 	enum SurfaceTargetOutcome {
@@ -668,7 +668,7 @@ public final class ReturnToSurfaceTaskExecutor implements WorldTaskExecutor {
 		FAIL
 	}
 
-	enum RecoveryMovement {
+	public enum RecoveryMovement {
 		ASCENDING,
 		TOWARD_TARGET,
 		BREATHABLE,

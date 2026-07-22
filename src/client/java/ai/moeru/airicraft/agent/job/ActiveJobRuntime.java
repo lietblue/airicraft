@@ -313,6 +313,36 @@ public final class ActiveJobRuntime {
 		refreshDesiredTask(tick);
 	}
 
+	public void pauseForReflex(long tick) {
+		if (activeJob.isIdle() || activeJob.status().terminal()) {
+			return;
+		}
+		activeJob = updated(activeJob, ActiveJobStatus.BLOCKED, "reflex", null, activeJob.collectedCount(), tick);
+		lastPrimitiveExecution = pausedPrimitive(lastPrimitiveExecution);
+	}
+
+	public void resumeAfterReflex(long tick) {
+		if (activeJob.status() != ActiveJobStatus.BLOCKED || !"reflex".equals(activeJob.blockedReason())) {
+			return;
+		}
+		activeJob = updated(activeJob, ActiveJobStatus.QUEUED, null, null, activeJob.collectedCount(), tick);
+		lastPrimitiveExecution = TaskExecutionSnapshot.idle();
+		refreshDesiredTask(tick);
+	}
+
+	private static TaskExecutionSnapshot pausedPrimitive(TaskExecutionSnapshot snapshot) {
+		TaskExecutionSnapshot source = snapshot == null ? TaskExecutionSnapshot.idle() : snapshot;
+		return new TaskExecutionSnapshot(
+			TaskExecutionState.PAUSED_BY_REFLEX,
+			source.taskId(),
+			source.activeGoal(),
+			source.processName(),
+			"reflex",
+			source.estimatedTicksToGoal(),
+			source.terminationCause()
+		);
+	}
+
 	public void clearFollowTarget(String targetPlayer) {
 		if (activeJob.type() != ActiveJobType.FOLLOW_PLAYER || activeJob.directGoal() == null) {
 			return;
@@ -579,7 +609,7 @@ public final class ActiveJobRuntime {
 			collectResourceDebugSnapshot = collectResourceProbe(completed, currentCount, nearbyResourceTargetAvailable, primitiveExecution.state(), "inventory_delta_reached", tick);
 			return completed;
 		}
-		if (!actuationAllowed || primitiveExecution.state() == TaskExecutionState.PAUSED_BY_SESSION_GATE) {
+		if (!actuationAllowed || primitiveExecution.state() == TaskExecutionState.PAUSED_BY_SESSION_GATE || primitiveExecution.state() == TaskExecutionState.PAUSED_BY_REFLEX) {
 			ActiveJob blocked = updated(job, ActiveJobStatus.BLOCKED, "session_gate", null, collected, tick);
 			collectResourceDebugSnapshot = collectResourceProbe(blocked, currentCount, nearbyResourceTargetAvailable, primitiveExecution.state(), null, tick);
 			return blocked;
@@ -623,7 +653,7 @@ public final class ActiveJobRuntime {
 		if (currentItemCount >= spec.quantity()) {
 			return updated(job, ActiveJobStatus.COMPLETED, null, null, job.collectedCount(), tick);
 		}
-		if (!actuationAllowed || primitiveExecution.state() == TaskExecutionState.PAUSED_BY_SESSION_GATE) {
+		if (!actuationAllowed || primitiveExecution.state() == TaskExecutionState.PAUSED_BY_SESSION_GATE || primitiveExecution.state() == TaskExecutionState.PAUSED_BY_REFLEX) {
 			return updated(job, ActiveJobStatus.BLOCKED, "session_gate", null, job.collectedCount(), tick);
 		}
 		return switch (primitiveExecution.state()) {
@@ -632,6 +662,7 @@ public final class ActiveJobRuntime {
 			case FAILED -> updated(job, ActiveJobStatus.FAILED, null, nonEmpty(primitiveExecution.lastPathEvent(), "task_failed"), job.collectedCount(), tick);
 			case CANCELLED -> updated(job, ActiveJobStatus.CANCELLED, null, nonEmpty(primitiveExecution.lastPathEvent(), "task_cancelled"), job.collectedCount(), tick);
 			case PAUSED_BY_SESSION_GATE -> updated(job, ActiveJobStatus.BLOCKED, "session_gate", null, job.collectedCount(), tick);
+			case PAUSED_BY_REFLEX -> updated(job, ActiveJobStatus.BLOCKED, "reflex", null, job.collectedCount(), tick);
 		};
 	}
 
@@ -641,7 +672,7 @@ public final class ActiveJobRuntime {
 		boolean actuationAllowed,
 		long tick
 	) {
-		if (!actuationAllowed || primitiveExecution.state() == TaskExecutionState.PAUSED_BY_SESSION_GATE) {
+		if (!actuationAllowed || primitiveExecution.state() == TaskExecutionState.PAUSED_BY_SESSION_GATE || primitiveExecution.state() == TaskExecutionState.PAUSED_BY_REFLEX) {
 			return updated(job, ActiveJobStatus.BLOCKED, "session_gate", null, job.collectedCount(), tick);
 		}
 		return switch (primitiveExecution.state()) {
@@ -650,6 +681,7 @@ public final class ActiveJobRuntime {
 			case FAILED -> updated(job, ActiveJobStatus.FAILED, null, nonEmpty(primitiveExecution.lastPathEvent(), primitiveFailureFallback(job.type())), job.collectedCount(), tick);
 			case CANCELLED -> updated(job, ActiveJobStatus.CANCELLED, null, nonEmpty(primitiveExecution.lastPathEvent(), primitiveCancelledFallback(job.type())), job.collectedCount(), tick);
 			case PAUSED_BY_SESSION_GATE -> updated(job, ActiveJobStatus.BLOCKED, "session_gate", null, job.collectedCount(), tick);
+			case PAUSED_BY_REFLEX -> updated(job, ActiveJobStatus.BLOCKED, "reflex", null, job.collectedCount(), tick);
 		};
 	}
 
@@ -694,7 +726,7 @@ public final class ActiveJobRuntime {
 		if (job.collectedCount() >= spec.quantity()) {
 			return updated(job, ActiveJobStatus.COMPLETED, null, null, job.collectedCount(), tick);
 		}
-		if (!actuationAllowed || primitiveExecution.state() == TaskExecutionState.PAUSED_BY_SESSION_GATE) {
+		if (!actuationAllowed || primitiveExecution.state() == TaskExecutionState.PAUSED_BY_SESSION_GATE || primitiveExecution.state() == TaskExecutionState.PAUSED_BY_REFLEX) {
 			return updated(job, ActiveJobStatus.BLOCKED, "session_gate", null, job.collectedCount(), tick);
 		}
 		return switch (primitiveExecution.state()) {
@@ -703,6 +735,7 @@ public final class ActiveJobRuntime {
 			case FAILED -> updated(job, ActiveJobStatus.FAILED, null, nonEmpty(primitiveExecution.lastPathEvent(), "task_failed"), job.collectedCount(), tick);
 			case CANCELLED -> updated(job, ActiveJobStatus.CANCELLED, null, nonEmpty(primitiveExecution.lastPathEvent(), "task_cancelled"), job.collectedCount(), tick);
 			case IDLE, PAUSED_BY_SESSION_GATE -> updated(job, ActiveJobStatus.QUEUED, null, null, job.collectedCount(), tick);
+			case PAUSED_BY_REFLEX -> updated(job, ActiveJobStatus.BLOCKED, "reflex", null, job.collectedCount(), tick);
 		};
 	}
 
@@ -712,7 +745,7 @@ public final class ActiveJobRuntime {
 		boolean actuationAllowed,
 		long tick
 	) {
-		if (!actuationAllowed || primitiveExecution.state() == TaskExecutionState.PAUSED_BY_SESSION_GATE) {
+		if (!actuationAllowed || primitiveExecution.state() == TaskExecutionState.PAUSED_BY_SESSION_GATE || primitiveExecution.state() == TaskExecutionState.PAUSED_BY_REFLEX) {
 			return updated(job, ActiveJobStatus.BLOCKED, "session_gate", null, job.collectedCount(), tick);
 		}
 		return switch (primitiveExecution.state()) {
@@ -721,6 +754,7 @@ public final class ActiveJobRuntime {
 			case FAILED -> updated(job, ActiveJobStatus.FAILED, null, nonEmpty(primitiveExecution.lastPathEvent(), "task_failed"), job.collectedCount(), tick);
 			case CANCELLED -> updated(job, ActiveJobStatus.CANCELLED, null, nonEmpty(primitiveExecution.lastPathEvent(), "task_cancelled"), job.collectedCount(), tick);
 			case IDLE, PAUSED_BY_SESSION_GATE -> updated(job, ActiveJobStatus.QUEUED, null, null, job.collectedCount(), tick);
+			case PAUSED_BY_REFLEX -> updated(job, ActiveJobStatus.BLOCKED, "reflex", null, job.collectedCount(), tick);
 		};
 	}
 
@@ -1337,7 +1371,11 @@ public final class ActiveJobRuntime {
 			case IDLE -> TaskState.IDLE;
 			case QUEUED -> TaskState.QUEUED;
 			case RUNNING -> TaskState.RUNNING;
-			case BLOCKED -> "session_gate".equals(job.blockedReason()) ? TaskState.PAUSED_BY_SESSION_GATE : TaskState.WAITING_FOR_PICKUP;
+			case BLOCKED -> switch (job.blockedReason() == null ? "" : job.blockedReason()) {
+				case "session_gate" -> TaskState.PAUSED_BY_SESSION_GATE;
+				case "reflex" -> TaskState.PAUSED_BY_REFLEX;
+				default -> TaskState.WAITING_FOR_PICKUP;
+			};
 			case COMPLETED -> TaskState.COMPLETED;
 			case FAILED -> TaskState.FAILED;
 			case CANCELLED -> TaskState.CANCELLED;

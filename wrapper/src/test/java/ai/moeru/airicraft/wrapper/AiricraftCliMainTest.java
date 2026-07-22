@@ -347,6 +347,7 @@ class AiricraftCliMainTest {
 			"llmAvailable", true,
 			"visionAvailable", false,
 			"plannerVisionMode", "native_tool_image",
+			"reflex", linkedMap("state", "AWAITING_PLANNER", "holdId", "hold-42"),
 			"degraded", false
 		);
 
@@ -355,6 +356,8 @@ class AiricraftCliMainTest {
 		assertEquals(0, result.exitCode());
 		assertTrue(result.output().contains("command: agent status\n"));
 		assertTrue(result.output().contains("plannerVisionMode: native_tool_image\n"));
+		assertTrue(result.output().contains("state: AWAITING_PLANNER\n"));
+		assertTrue(result.output().contains("holdId: hold-42\n"));
 	}
 
 	@Test
@@ -520,6 +523,25 @@ class AiricraftCliMainTest {
 		assertEquals("WOOD_LOGS", transport.lastSubmittedTask.get("resourceKind"));
 		assertEquals(4, transport.lastSubmittedTask.get("quantity"));
 		assertTrue(result.output().contains("command: agent tasks submit\n"));
+	}
+
+	@Test
+	void agentTasksResumePassesSafetyHoldId() {
+		TestTransport transport = new TestTransport();
+		transport.agentTaskResumePayload = linkedMap(
+			"available", true,
+			"resumed", true,
+			"holdId", "hold-42",
+			"reflex", linkedMap("state", "IDLE")
+		);
+
+		CliResult result = execute(transport, "agent", "tasks", "resume", "--hold-id", "hold-42");
+
+		assertEquals(0, result.exitCode());
+		assertEquals("hold-42", transport.lastResumeHoldId);
+		assertTrue(result.output().contains("command: agent tasks resume\n"));
+		assertTrue(result.output().contains("resumed: true\n"));
+		assertTrue(result.output().contains("holdId: hold-42\n"));
 	}
 
 	@Test
@@ -1350,6 +1372,7 @@ class AiricraftCliMainTest {
 		private Map<String, Object> agentActionFactsPayload = Map.of("facts", List.of());
 		private Map<String, Object> agentActionFactsClearPayload = Map.of();
 		private Map<String, Object> agentTaskSubmitPayload = Map.of();
+		private Map<String, Object> agentTaskResumePayload = Map.of();
 		private Map<String, Object> agentMissionSubmitPayload = Map.of();
 		private Map<String, Object> agentEventsPayload = Map.of("events", List.of());
 		private Map<String, Object> agentCompactPayload = Map.of("started", true);
@@ -1388,6 +1411,7 @@ class AiricraftCliMainTest {
 		private boolean agentEventPolicyCleared;
 		private boolean reloadCalled;
 		private Map<String, Object> lastSubmittedTask;
+		private String lastResumeHoldId;
 		private Map<String, Object> lastSubmittedMission;
 		private Map<String, Object> lastActionGoalPayload;
 		private String lastActionFactWorldId;
@@ -1625,6 +1649,12 @@ class AiricraftCliMainTest {
 		public Map<String, Object> submitAgentTask(Map<String, Object> taskPayload) {
 			lastSubmittedTask = taskPayload;
 			return agentTaskSubmitPayload;
+		}
+
+		@Override
+		public Map<String, Object> resumeAgentTask(String holdId) {
+			lastResumeHoldId = holdId;
+			return agentTaskResumePayload;
 		}
 
 		@Override

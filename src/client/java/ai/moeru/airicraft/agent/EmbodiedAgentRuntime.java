@@ -96,8 +96,13 @@ import ai.moeru.airicraft.agent.motor.Optimus3MotorShadowCoordinator;
 import ai.moeru.airicraft.agent.motor.Optimus3MotorShadowEligibility;
 import ai.moeru.airicraft.agent.session.AutoLanOpenState;
 import ai.moeru.airicraft.agent.session.LanHostingService;
+import ai.moeru.airicraft.agent.session.PlayerLifecycleState;
 import ai.moeru.airicraft.agent.session.SessionSnapshot;
 import ai.moeru.airicraft.agent.session.SessionRuntime;
+import ai.moeru.airicraft.agent.reflex.SurvivalReflexEvent;
+import ai.moeru.airicraft.agent.reflex.SurvivalReflexRuntime;
+import ai.moeru.airicraft.agent.reflex.SurvivalReflexSnapshot;
+import ai.moeru.airicraft.agent.reflex.SurvivalReflexState;
 import ai.moeru.airicraft.agent.shell.PlannerShellComponents;
 import ai.moeru.airicraft.agent.shell.PlannerShellEvent;
 import ai.moeru.airicraft.agent.shell.PlannerShellFactory;
@@ -180,6 +185,7 @@ public final class EmbodiedAgentRuntime {
 	static final int CRAFT_TOOL_RESULT_TIMEOUT_TICKS = 40;
 	static final int BLOCK_MODIFICATION_TOOL_RESULT_TIMEOUT_TICKS = 40;
 	private static final long SMELTING_OUTPUT_READY_POLL_INTERVAL_TICKS = 20L;
+	private static final long RESPAWN_RETRY_TICKS = 20L;
 	private static final List<String> KNOWN_NON_BLOCK_MINE_ITEM_IDS = List.of(
 		"minecraft:raw_iron",
 		"minecraft:iron_ingot"
@@ -221,6 +227,7 @@ public final class EmbodiedAgentRuntime {
 	private final CurrentWorldQueryService guardedWorldQueryService = new CurrentWorldQueryService(MinecraftClient::getInstance);
 	private final ActionGraphExecutionRuntime actionGraphRuntime;
 	private final Optimus3MotorShadowCoordinator motorShadowCoordinator;
+	private final SurvivalReflexRuntime survivalReflexRuntime;
 	private final PersistentActionFactStore persistentActionFactStore = PersistentActionFactStore.defaults();
 
 	private boolean initialized;
@@ -237,6 +244,8 @@ public final class EmbodiedAgentRuntime {
 	private long lastSystemChatTick = -1L;
 	private String lastSystemChatText;
 	private Float lastKnownPlayerHealth;
+	private boolean deathBoundaryApplied;
+	private long lastRespawnRequestTick = -1L;
 	private long lastSmeltingOutputReadyPollTick = Long.MIN_VALUE;
 	private final Map<UUID, String> seenPlayerNames = new LinkedHashMap<>();
 	private volatile PendingCraftToolResult pendingCraftToolResult;
@@ -327,6 +336,7 @@ public final class EmbodiedAgentRuntime {
 	) {
 		this.airicraftConfig = Objects.requireNonNull(airicraftConfig, "airicraftConfig");
 		this.config = Objects.requireNonNull(config, "config");
+		this.survivalReflexRuntime = new SurvivalReflexRuntime(this.config.reflex());
 		this.worldTaskExecutor = Objects.requireNonNull(worldTaskExecutor, "worldTaskExecutor");
 		this.observability = new FlightRecordingObservability(Objects.requireNonNull(observability, "observability"), llmFlightRecorder);
 		this.smeltingProcessManager = Objects.requireNonNull(smeltingProcessManager, "smeltingProcessManager");
@@ -492,6 +502,9 @@ public final class EmbodiedAgentRuntime {
 		lastSystemChatTick = -1L;
 		lastSystemChatText = null;
 		lastKnownPlayerHealth = null;
+		deathBoundaryApplied = false;
+		lastRespawnRequestTick = -1L;
+		survivalReflexRuntime.reset(MinecraftClient.getInstance());
 		seenPlayerNames.clear();
 	}
 
@@ -504,12 +517,31 @@ public final class EmbodiedAgentRuntime {
 		sessionSnapshot = sessionSnapshotOverrideForTests != null
 			? sessionSnapshotOverrideForTests.withTickCount(tickCount)
 			: sessionRuntime.poll(client, tickCount, eventBuffer);
+		enforcePlayerLifecycle(client);
 		if (!wasWorldLoaded && sessionSnapshot.worldLoaded()) {
 			worldLoadTick = tickCount;
 			localDamageTracker.onLifecycleReset(tickCount);
 		}
+		if (sessionSnapshot.requiresRespawn()) {
+			behaviorTreeRuntime.tick(
+				client,
+				sessionSnapshot,
+				dialogueRuntime,
+				chatService,
+				debugRecorder,
+				Optional.empty(),
+				FollowState.idle(),
+				TaskExecutionSnapshot.idle(),
+				tickCount
+			);
+			drainEventPipeline();
+			lastKnownPlayerHealth = currentPlayerHealth(client);
+			return;
+		}
 		openLanIfSingleplayerLocal(client);
 		surfaceMemory.tick(client, tickCount);
+		tickSurvivalReflex(client);
+		drainEventPipeline();
 
 		nearbyPlayerTracker.poll(client, tickCount, eventBuffer);
 		primaryInteractionResolver.current().ifPresent(current ->
@@ -528,6 +560,7 @@ public final class EmbodiedAgentRuntime {
 			taskSnapshot,
 			missionExecutionSnapshot
 		);
+		recordStalePlannerRejections();
 		if (completedDialogueResponse != null) {
 			Optional<GoalSnapshot> previousGoal = activeGoal();
 			applyPlannerEventPolicyChanges(completedDialogueResponse.eventPolicyChanges());
@@ -536,6 +569,12 @@ public final class EmbodiedAgentRuntime {
 			drainEventPipeline();
 		}
 		debugRecorder.recordDialogueState(dialogueRuntime.snapshot());
+		if (survivalReflexRuntime.snapshot().holdsNormalTasks()) {
+			pauseNormalWorkForReflex(client);
+			drainEventPipeline();
+			lastKnownPlayerHealth = currentPlayerHealth(client);
+			return;
+		}
 
 		TaskSnapshot previousTaskSnapshot = taskSnapshot;
 		tickActionGraph(worldEvidence);
@@ -637,6 +676,167 @@ public final class EmbodiedAgentRuntime {
 		lastKnownPlayerHealth = currentPlayerHealth(client);
 	}
 
+	private void tickSurvivalReflex(MinecraftClient client) {
+		ActiveJob activeJob = activeJobRuntime.current();
+		ActionGraphExecutionSnapshot graph = actionGraphRuntime.snapshot();
+		SurvivalReflexRuntime.InterruptedWork interruptedWork = new SurvivalReflexRuntime.InterruptedWork(
+			activeJob == null || activeJob.isIdle() || activeJob.status().terminal() ? null : activeJob.jobId(),
+			actionGraphRuntime.active() ? graph.executionId() : null
+		);
+		GoalPosition surfaceTarget = surfaceMemory.bestTarget()
+			.map(SurfaceMemory.SurfaceTarget::position)
+			.orElse(null);
+		survivalReflexRuntime.tick(
+			client,
+			surfaceTarget,
+			interruptedWork,
+			tickCount,
+			() -> releaseNormalActuatorsForReflex(client)
+		);
+		processSurvivalReflexEvents();
+	}
+
+	private void releaseNormalActuatorsForReflex(MinecraftClient client) {
+		worldTaskExecutor.onWorldLeave();
+		behaviorTreeRuntime.stop(client);
+		followCapability.clear();
+		followState = FollowState.idle();
+		completePendingCraftToolResult("Tool result for craft_recipe: cancelled reason=survival_reflex");
+		completePendingBlockModificationToolResult("Tool result: cancelled reason=survival_reflex");
+	}
+
+	private void pauseNormalWorkForReflex(MinecraftClient client) {
+		TaskSnapshot previousTask = taskSnapshot;
+		TaskExecutionSnapshot previousExecution = taskExecutionSnapshot;
+		activeJobRuntime.pauseForReflex(tickCount);
+		actionGraphRuntime.pauseForReflex(tickCount);
+		taskSnapshot = activeJobRuntime.taskSnapshot();
+		missionExecutionSnapshot = activeJobRuntime.missionExecutionSnapshot();
+		Optional<WorldTaskRequest> activeRequest = activeJobRuntime.activeTaskRequest();
+		String taskId = activeRequest.map(WorldTaskRequest::taskId).orElse(previousExecution.taskId());
+		GoalSnapshot goal = activeRequest.map(WorldTaskRequest::goal).orElse(previousExecution.activeGoal());
+		taskExecutionSnapshot = new TaskExecutionSnapshot(
+			TaskExecutionState.PAUSED_BY_REFLEX,
+			taskId,
+			goal,
+			previousExecution.processName(),
+			"reflex",
+			previousExecution.estimatedTicksToGoal(),
+			previousExecution.terminationCause()
+		);
+		recordSemanticTaskTransition(previousTask, taskSnapshot);
+		recordTaskStateTransition(previousExecution, taskExecutionSnapshot, hasSemanticTaskContext(previousTask, taskSnapshot));
+		behaviorTreeRuntime.reflectSurvivalReflex(client, survivalReflexRuntime.snapshot());
+	}
+
+	private void processSurvivalReflexEvents() {
+		List<SurvivalReflexEvent> events = survivalReflexRuntime.drainEvents();
+		for (SurvivalReflexEvent event : events) {
+			eventBuffer.append(tickCount, event.type(), event.payload());
+		}
+		SurvivalReflexSnapshot reflex = survivalReflexRuntime.snapshot();
+		dialogueRuntime.updateSafetyContext(
+			reflex.safetyEpoch(),
+			reflex.holdId(),
+			reflex.state() == SurvivalReflexState.ACTIVE
+		);
+	}
+
+	private void recordStalePlannerRejections() {
+		dialogueRuntime.drainStalePlannerRejections().forEach(rejection -> eventBuffer.append(
+			tickCount,
+			"planner.stale_response_rejected",
+			mapOfNullable(
+				"generation", rejection.generation(),
+				"requestSafetyEpoch", rejection.requestSafetyEpoch(),
+				"currentSafetyEpoch", rejection.currentSafetyEpoch(),
+				"requestHoldId", rejection.requestHoldId(),
+				"currentHoldId", rejection.currentHoldId(),
+				"phase", rejection.phase()
+			)
+		));
+	}
+
+	private void enforcePlayerLifecycle(MinecraftClient client) {
+		if (!sessionSnapshot.requiresRespawn()) {
+			deathBoundaryApplied = false;
+			lastRespawnRequestTick = -1L;
+			return;
+		}
+
+		if (!deathBoundaryApplied) {
+			cancelActionsForPlayerDeath(client);
+			deathBoundaryApplied = true;
+		}
+
+		if (
+			client == null
+				|| client.player == null
+				|| (lastRespawnRequestTick >= 0L && tickCount - lastRespawnRequestTick < RESPAWN_RETRY_TICKS)
+		) {
+			return;
+		}
+
+		lastRespawnRequestTick = tickCount;
+		try {
+			client.player.requestRespawn();
+			eventBuffer.append(tickCount, "player.respawn_requested", Map.of(
+				"attemptTick", tickCount
+			));
+		}
+		catch (RuntimeException exception) {
+			eventBuffer.append(tickCount, "player.respawn_request_failed", Map.of(
+				"attemptTick", tickCount,
+				"message", exception.getMessage() == null ? exception.getClass().getSimpleName() : exception.getMessage()
+			));
+		}
+	}
+
+	private void cancelActionsForPlayerDeath(MinecraftClient client) {
+		ActionGraphExecutionSnapshot graphSnapshot = actionGraphRuntime.snapshot();
+		ActiveJob activeJob = activeJobRuntime.current();
+		boolean graphCancelled = actionGraphRuntime.active();
+		boolean jobCancelled = !activeJob.isIdle() && !activeJob.status().terminal();
+
+		survivalReflexRuntime.reset(client);
+		worldTaskExecutor.onWorldLeave();
+		behaviorTreeRuntime.stop(client);
+		followCapability.clear();
+		followState = FollowState.idle();
+		if (graphCancelled) {
+			actionGraphRuntime.cancel("player_died", tickCount);
+		}
+		pendingActionGraphTerminalEvent = null;
+		if (jobCancelled) {
+			TaskSnapshot previousTaskSnapshot = taskSnapshot;
+			activeJobRuntime.cancel("player_died", tickCount);
+			taskSnapshot = activeJobRuntime.taskSnapshot();
+			missionExecutionSnapshot = activeJobRuntime.missionExecutionSnapshot();
+			debugRecorder.recordCollectResourceProbe(activeJobRuntime.collectResourceDebugSnapshot());
+			recordSemanticTaskTransition(previousTaskSnapshot, taskSnapshot);
+		}
+		dialogueRuntime.clear();
+		dialogueRuntime.updateSafetyContext(survivalReflexRuntime.snapshot().safetyEpoch(), null, false);
+		chatService.clear();
+		taskExecutionSnapshot = TaskExecutionSnapshot.idle();
+		completePendingCraftToolResult("Tool result for craft_recipe: cancelled reason=player_died");
+		completePendingBlockModificationToolResult("Tool result: cancelled reason=player_died");
+		idleIdeaScheduler.reset();
+
+		LinkedHashMap<String, Object> payload = new LinkedHashMap<>();
+		payload.put("reason", "player_died");
+		payload.put("actionGraphCancelled", graphCancelled);
+		payload.put("jobCancelled", jobCancelled);
+		if (graphCancelled && graphSnapshot.executionId() != null && !graphSnapshot.executionId().isBlank()) {
+			payload.put("executionId", graphSnapshot.executionId());
+		}
+		if (jobCancelled) {
+			payload.put("jobId", activeJob.jobId());
+			payload.put("jobType", activeJob.type().name());
+		}
+		eventBuffer.append(tickCount, "player.actions_cancelled", payload);
+	}
+
 	private void openLanIfSingleplayerLocal(MinecraftClient client) {
 		if (!autoLanOpenState.shouldAttempt(sessionSnapshot)) {
 			return;
@@ -692,6 +892,9 @@ public final class EmbodiedAgentRuntime {
 		lastSystemChatTick = -1L;
 		lastSystemChatText = null;
 		lastKnownPlayerHealth = null;
+		deathBoundaryApplied = false;
+		lastRespawnRequestTick = -1L;
+		survivalReflexRuntime.reset(MinecraftClient.getInstance());
 		seenPlayerNames.clear();
 		sessionSnapshot = SessionSnapshot.initial();
 	}
@@ -722,8 +925,59 @@ public final class EmbodiedAgentRuntime {
 			sessionSnapshot(),
 			taskSnapshot,
 			taskExecutionSnapshot,
-			missionExecutionSnapshot
+			missionExecutionSnapshot,
+			survivalReflexRuntime.snapshot()
 		);
+	}
+
+	public SurvivalReflexSnapshot survivalReflexSnapshot() {
+		return survivalReflexRuntime.snapshot();
+	}
+
+	public SurvivalReflexSnapshot resumeSafetyHold(String holdId, String source) {
+		SurvivalReflexRuntime.ResumeResult result = survivalReflexRuntime.resume(holdId, tickCount);
+		switch (result) {
+			case REFLEX_ACTIVE -> throw new BridgeUnavailableException("reflex_active", "The survival reflex is still active");
+			case NO_SAFETY_HOLD -> throw new BridgeUnavailableException("no_safety_hold", "There is no resolved survival hold to resume");
+			case STALE_SAFETY_HOLD -> throw new BridgeUnavailableException("stale_safety_hold", "The supplied hold id does not match the current survival hold");
+			case RESUMED -> {
+				activeJobRuntime.resumeAfterReflex(tickCount);
+				taskSnapshot = activeJobRuntime.taskSnapshot();
+				missionExecutionSnapshot = activeJobRuntime.missionExecutionSnapshot();
+				processSurvivalReflexEvents();
+				eventBuffer.append(tickCount, "reflex.task_resumed", Map.of(
+					"source", source == null || source.isBlank() ? "unknown" : source,
+					"safetyEpoch", survivalReflexRuntime.snapshot().safetyEpoch()
+				));
+				drainEventPipeline();
+			}
+		}
+		return survivalReflexRuntime.snapshot();
+	}
+
+	private void releaseSafetyHoldForReplacement(String reason) {
+		if (survivalReflexRuntime.snapshot().state() != SurvivalReflexState.AWAITING_PLANNER) {
+			return;
+		}
+		TaskSnapshot previousTask = taskSnapshot;
+		TaskExecutionSnapshot previousExecution = taskExecutionSnapshot;
+		if (actionGraphRuntime.active()) {
+			actionGraphRuntime.cancel(reason, tickCount);
+			pendingActionGraphTerminalEvent = null;
+		}
+		ActiveJob interruptedJob = activeJobRuntime.current();
+		if (interruptedJob != null
+			&& interruptedJob.status() == ActiveJobStatus.BLOCKED
+			&& "reflex".equals(interruptedJob.blockedReason())) {
+			activeJobRuntime.cancel(reason, tickCount);
+			taskSnapshot = activeJobRuntime.taskSnapshot();
+			missionExecutionSnapshot = activeJobRuntime.missionExecutionSnapshot();
+			taskExecutionSnapshot = TaskExecutionSnapshot.idle();
+			recordSemanticTaskTransition(previousTask, taskSnapshot);
+			recordTaskStateTransition(previousExecution, taskExecutionSnapshot, hasSemanticTaskContext(previousTask, taskSnapshot));
+		}
+		survivalReflexRuntime.releaseHold(reason, tickCount);
+		processSurvivalReflexEvents();
 	}
 
 	public Optional<GoalSnapshot> activeGoal() {
@@ -752,6 +1006,8 @@ public final class EmbodiedAgentRuntime {
 
 	public ActionGraphExecutionSnapshot startActionGoal(ActionGoal goal, String source) {
 		Objects.requireNonNull(goal, "goal");
+		requireLivingPlayerForAction();
+		releaseSafetyHoldForReplacement("action_graph_replaced");
 		ActionGraphExecutionSnapshot activeSnapshot = actionGraphRuntime.snapshot();
 		if (actionGraphRuntime.active()) {
 			eventBuffer.append(tickCount, "action_graph.goal_reused", Map.of(
@@ -789,6 +1045,10 @@ public final class EmbodiedAgentRuntime {
 		pendingActionGraphTerminalEvent = null;
 		if (!previous.activeTaskId().isBlank()) {
 			cancelTask(reason == null || reason.isBlank() ? "action_graph_cancelled" : reason);
+		}
+		else {
+			survivalReflexRuntime.discardHold("action_graph_cancelled", tickCount);
+			processSurvivalReflexEvents();
 		}
 		eventBuffer.append(tickCount, "action_graph.goal_cancelled", Map.of(
 			"executionId", previous.executionId(),
@@ -1145,17 +1405,57 @@ public final class EmbodiedAgentRuntime {
 		float effectiveHealthBefore = resolveEffectiveHealthBefore(healthBefore, healthAfter);
 		Map<String, Object> payload = localDamageTracker.consumeDamage(healthInitialized, tickCount, effectiveHealthBefore, healthAfter);
 		lastKnownPlayerHealth = healthAfter;
-		if (payload == null) {
+		if (payload != null) {
+			eventBuffer.append(tickCount, "combat.damage_taken", payload);
+			survivalReflexRuntime.observeDamage(new SurvivalReflexRuntime.DamageObservation(
+				tickCount,
+				stringPayloadValue(payload, "damageTypeId"),
+				stringPayloadValue(payload, "attackerUuid"),
+				stringPayloadValue(payload, "attackerName"),
+				stringPayloadValue(payload, "attackerEntityTypeId"),
+				booleanPayloadValue(payload, "attackerLiving"),
+				booleanPayloadValue(payload, "attackerPlayer")
+			));
+			tickSurvivalReflex(MinecraftClient.getInstance());
+		}
+		boolean fatal = Float.isFinite(healthAfter) && healthAfter <= 0.0F;
+		if (fatal) {
+			if (sessionSnapshotOverrideForTests != null) {
+				sessionSnapshotOverrideForTests = sessionSnapshotOverrideForTests.withPlayerLifecycleState(PlayerLifecycleState.DEAD);
+				sessionSnapshot = sessionSnapshotOverrideForTests.withTickCount(tickCount);
+				eventBuffer.append(tickCount, "player.died", Map.of(
+					"mode", sessionSnapshot.mode().name(),
+					"dimensionId", sessionSnapshot.dimensionId()
+				));
+			}
+			else {
+				sessionSnapshot = sessionRuntime.onPlayerDied(tickCount, eventBuffer);
+			}
+			enforcePlayerLifecycle(MinecraftClient.getInstance());
+		}
+		if (payload == null && !fatal) {
 			return;
 		}
-
-		eventBuffer.append(tickCount, "combat.damage_taken", payload);
 		drainEventPipeline();
 	}
 
 	public void onPlayerRespawned() {
 		localDamageTracker.onLifecycleReset(tickCount);
 		lastKnownPlayerHealth = null;
+		if (sessionSnapshotOverrideForTests != null && sessionSnapshot.requiresRespawn()) {
+			sessionSnapshotOverrideForTests = sessionSnapshotOverrideForTests.withPlayerLifecycleState(PlayerLifecycleState.ALIVE);
+			sessionSnapshot = sessionSnapshotOverrideForTests.withTickCount(tickCount);
+			eventBuffer.append(tickCount, "player.respawned", Map.of(
+				"mode", sessionSnapshot.mode().name(),
+				"dimensionId", sessionSnapshot.dimensionId()
+			));
+		}
+		else {
+			sessionSnapshot = sessionRuntime.onPlayerRespawned(tickCount, eventBuffer);
+		}
+		deathBoundaryApplied = false;
+		lastRespawnRequestTick = -1L;
+		drainEventPipeline();
 	}
 
 	public void onPlayerJoinedGame(UUID playerUuid, String playerName) {
@@ -1220,6 +1520,8 @@ public final class EmbodiedAgentRuntime {
 
 	public TaskSnapshot submitTask(TaskSpec spec, String source) {
 		Objects.requireNonNull(spec, "spec");
+		requireLivingPlayerForAction();
+		releaseSafetyHoldForReplacement("task_replaced");
 		activeJobRuntime.submitTask(
 			spec,
 			currentTaskResourceCount(MinecraftClient.getInstance(), spec),
@@ -1240,6 +1542,8 @@ public final class EmbodiedAgentRuntime {
 
 	public TaskSnapshot submitMissionLedger(TaskLedger ledger, String source) {
 		Objects.requireNonNull(ledger, "ledger");
+		requireLivingPlayerForAction();
+		releaseSafetyHoldForReplacement("mission_replaced");
 		activeJobRuntime.submitMissionLedger(
 			ledger,
 			currentWorldEvidence(MinecraftClient.getInstance()).inventoryCounts().getOrDefault(TaskResourceKind.WOOD_LOGS, 0),
@@ -1267,6 +1571,12 @@ public final class EmbodiedAgentRuntime {
 	}
 
 	public TaskSnapshot cancelTask(String reason) {
+		if (actionGraphRuntime.active()) {
+			actionGraphRuntime.cancel(reason == null || reason.isBlank() ? "cancelled" : reason, tickCount);
+			pendingActionGraphTerminalEvent = null;
+		}
+		survivalReflexRuntime.discardHold("task_cancelled", tickCount);
+		processSurvivalReflexEvents();
 		TaskSnapshot previousTaskSnapshot = taskSnapshot;
 		activeJobRuntime.cancel(reason == null || reason.isBlank() ? "cancelled" : reason, tickCount);
 		taskSnapshot = activeJobRuntime.taskSnapshot();
@@ -1278,6 +1588,8 @@ public final class EmbodiedAgentRuntime {
 
 	private TaskSnapshot submitActiveJobProposal(ActiveJobProposal proposal, String source, Map<String, Object> submittedPayload) {
 		Objects.requireNonNull(proposal, "proposal");
+		requireLivingPlayerForAction();
+		releaseSafetyHoldForReplacement("task_replaced");
 		WorldEvidence worldEvidence = currentWorldEvidence(MinecraftClient.getInstance());
 		int currentResourceCount = currentResourceCountForProposal(worldEvidence, proposal);
 		activeJobRuntime.applyPlannerResponse(
@@ -1520,6 +1832,16 @@ public final class EmbodiedAgentRuntime {
 
 	private CompletableFuture<String> executePlannerToolCall(PlannerToolCall toolCall) {
 		try {
+			if (toolCall != null && survivalReflexRuntime.snapshot().state() == SurvivalReflexState.ACTIVE
+				&& !plannerToolAllowedDuringActiveReflex(toolCall.name())) {
+				return CompletableFuture.completedFuture(
+					"TOOL_ERROR: " + PlannerToolCatalog.normalizeName(toolCall.name())
+						+ " reflex_active. Only read and cancel/clear controls are allowed during an active survival reflex."
+				);
+			}
+			if (toolCall != null && plannerToolRequiresLivingPlayer(toolCall.name()) && sessionSnapshot.requiresRespawn()) {
+				return CompletableFuture.completedFuture(playerDeadToolError(toolCall.name()));
+			}
 			if (toolCall != null && PlannerToolCatalog.CRAFT_RECIPE.equals(PlannerToolCatalog.normalizeName(toolCall.name()))) {
 				return executeCraftRecipePlannerTool(toolCall.arguments());
 			}
@@ -1532,6 +1854,54 @@ public final class EmbodiedAgentRuntime {
 			String name = toolCall == null ? "unknown" : toolCall.name();
 			return CompletableFuture.completedFuture("TOOL_ERROR: " + name + " " + safeToolError(exception));
 		}
+	}
+
+	private static boolean plannerToolRequiresLivingPlayer(String toolName) {
+		String normalized = PlannerToolCatalog.normalizeName(toolName);
+		if (PlannerToolCatalog.isReadTool(normalized)) {
+			return false;
+		}
+		return switch (normalized) {
+			case PlannerToolCatalog.CANCEL_ACTION_GOAL,
+				PlannerToolCatalog.CANCEL_TASK,
+				PlannerToolCatalog.CLEAR_GOAL,
+				PlannerToolCatalog.CANCEL_SMELTING,
+				PlannerToolCatalog.UPDATE_EVENT_POLICY -> false;
+			default -> true;
+		};
+	}
+
+	private static boolean plannerToolAllowedDuringActiveReflex(String toolName) {
+		String normalized = PlannerToolCatalog.normalizeName(toolName);
+		return PlannerToolCatalog.isReadTool(normalized)
+			|| PlannerToolCatalog.CANCEL_ACTION_GOAL.equals(normalized)
+			|| PlannerToolCatalog.CANCEL_TASK.equals(normalized)
+			|| PlannerToolCatalog.CLEAR_GOAL.equals(normalized)
+			|| PlannerToolCatalog.CANCEL_SMELTING.equals(normalized);
+	}
+
+	private static String playerDeadToolError(String toolName) {
+		return "TOOL_ERROR: " + PlannerToolCatalog.normalizeName(toolName)
+			+ " player_dead. The controlled player died; the runtime cancelled all actions and is requesting respawn.";
+	}
+
+	private void requireLivingPlayerForAction() {
+		if (sessionSnapshot.requiresRespawn()) {
+			throw new BridgeUnavailableException(
+				"player_dead",
+				"The controlled player is dead; actions are disabled until respawn"
+			);
+		}
+		if (survivalReflexRuntime.snapshot().state() == SurvivalReflexState.ACTIVE) {
+			throw new BridgeUnavailableException("reflex_active", "A survival reflex currently owns player actuation");
+		}
+	}
+
+	private static boolean intentRequiresLivingPlayer(DialogueIntentType type) {
+		return switch (type) {
+			case SET_GOAL, JOB_UPDATE, MISSION_UPDATE, SUBMIT_TASK -> true;
+			case CLEAR_GOAL, CANCEL_TASK, REPLY_ONLY, ASK_CLARIFICATION, ACKNOWLEDGE_FAILURE, NONE -> false;
+		};
 	}
 
 	private static boolean blockModificationToolWaitsForTerminalResult(String normalizedToolName) {
@@ -1553,6 +1923,13 @@ public final class EmbodiedAgentRuntime {
 			return plannerActiveTaskPreemptionError(toolCall);
 		}
 		return switch (normalizedToolName) {
+			case PlannerToolCatalog.RESUME_TASK -> {
+				String holdId = stringArg(args, "holdId").orElseThrow(() -> new IllegalArgumentException("holdId is required"));
+				SurvivalReflexSnapshot reflex = resumeSafetyHold(holdId, "planner_tool");
+				yield "Tool result for resume_task: accepted holdId=" + holdId
+					+ " safetyEpoch=" + reflex.safetyEpoch()
+					+ " taskState=" + taskSnapshot.state().name();
+			}
 			case PlannerToolCatalog.START_ACTION_GOAL -> {
 				ActionGraphExecutionSnapshot snapshot = startActionGoal(parseActionGoalArgs(args), "planner_tool");
 				yield actionGraphToolResult("start_action_goal", snapshot, false);
@@ -1844,6 +2221,9 @@ public final class EmbodiedAgentRuntime {
 	}
 
 	private boolean plannerToolWouldPreemptActiveTask(PlannerToolCall toolCall) {
+		if (survivalReflexRuntime.snapshot().state() == SurvivalReflexState.AWAITING_PLANNER) {
+			return false;
+		}
 		if (!activeTaskInProgress()) {
 			return false;
 		}
@@ -1870,6 +2250,9 @@ public final class EmbodiedAgentRuntime {
 
 	private boolean plannerToolWouldPreemptActiveGraph(String normalizedToolName) {
 		if (!actionGraphRuntime.active()) {
+			return false;
+		}
+		if (survivalReflexRuntime.snapshot().state() == SurvivalReflexState.AWAITING_PLANNER) {
 			return false;
 		}
 		return legacyActionToolWouldPreemptGraph(normalizedToolName)
@@ -2158,6 +2541,7 @@ public final class EmbodiedAgentRuntime {
 	}
 
 	private void applyPlannerJobTool(ActiveJobProposal proposal) {
+		requireLivingPlayerForAction();
 		Optional<GoalSnapshot> previousGoal = activeGoal();
 		DialogueResponse response = new DialogueResponse(
 			"",
@@ -2210,6 +2594,12 @@ public final class EmbodiedAgentRuntime {
 	}
 
 	private void applyPlannerClearGoalTool() {
+		if (actionGraphRuntime.active()) {
+			actionGraphRuntime.cancel("planner_tool_cleared", tickCount);
+			pendingActionGraphTerminalEvent = null;
+		}
+		survivalReflexRuntime.discardHold("goal_cleared", tickCount);
+		processSurvivalReflexEvents();
 		Optional<GoalSnapshot> previousGoal = activeGoal();
 		DialogueResponse response = new DialogueResponse(
 			"",
@@ -2229,8 +2619,39 @@ public final class EmbodiedAgentRuntime {
 		if (response == null || response.intent() == null || response.intent().type() == null) {
 			return;
 		}
+		if (sessionSnapshot.requiresRespawn() && intentRequiresLivingPlayer(response.intent().type())) {
+			eventBuffer.append(tickCount, "player.action_rejected", Map.of(
+				"reason", "player_dead",
+				"intentType", response.intent().type().name(),
+				"source", source == null || source.isBlank() ? "planner_response" : source
+			));
+			return;
+		}
+		if (survivalReflexRuntime.snapshot().state() == SurvivalReflexState.ACTIVE
+			&& intentRequiresLivingPlayer(response.intent().type())) {
+			eventBuffer.append(tickCount, "player.action_rejected", Map.of(
+				"reason", "reflex_active",
+				"intentType", response.intent().type().name(),
+				"source", source == null || source.isBlank() ? "planner_response" : source
+			));
+			return;
+		}
+		boolean releasedForReplacement = false;
+		if (survivalReflexRuntime.snapshot().state() == SurvivalReflexState.AWAITING_PLANNER
+			&& intentRequiresLivingPlayer(response.intent().type())) {
+			releaseSafetyHoldForReplacement("planner_replaced_task");
+			releasedForReplacement = true;
+		}
+		if (response.intent().type() == DialogueIntentType.CANCEL_TASK || response.intent().type() == DialogueIntentType.CLEAR_GOAL) {
+			if (actionGraphRuntime.active()) {
+				actionGraphRuntime.cancel("planner_cancelled", tickCount);
+				pendingActionGraphTerminalEvent = null;
+			}
+			survivalReflexRuntime.discardHold("planner_cancelled", tickCount);
+			processSurvivalReflexEvents();
+		}
 		int currentResourceCount = currentResourceCountForIntent(worldEvidence, response.intent());
-		if (directPlannerIntentWouldPreemptActiveTask(response.intent())) {
+		if (!releasedForReplacement && directPlannerIntentWouldPreemptActiveTask(response.intent())) {
 			return;
 		}
 		activeJobRuntime.applyPlannerResponse(response, currentResourceCount, source == null || source.isBlank() ? "planner_response" : source, response.tick());
@@ -2851,6 +3272,9 @@ public final class EmbodiedAgentRuntime {
 		if (response == null || response.intent() == null || response.intent().type() == null) {
 			return;
 		}
+		if (sessionSnapshot.requiresRespawn() && intentRequiresLivingPlayer(response.intent().type())) {
+			return;
+		}
 
 		java.util.LinkedHashMap<String, Object> payload = new java.util.LinkedHashMap<>();
 		payload.put("intentType", response.intent().type().name());
@@ -2976,6 +3400,7 @@ public final class EmbodiedAgentRuntime {
 			case "pickup.item_picked_up" -> createPickupTrigger(event);
 			case "crafting.item_crafted" -> createCraftTrigger(event);
 			case "combat.damage_taken" -> createDamageTrigger(event);
+			case "reflex.resolved" -> createReflexResolvedTrigger(event);
 			case "smelting.output_ready" -> createSmeltingOutputReadyTrigger(event);
 			case "task.blocked" -> createTaskBlockedTrigger(event);
 			default -> null;
@@ -3011,7 +3436,7 @@ public final class EmbodiedAgentRuntime {
 		if (!proactiveSocialModeEnabled() || !playerChatWithinConfiguredDistance(player)) {
 			return null;
 		}
-		return ai.moeru.airicraft.agent.llm.PlannerTrigger.pending(PlannerTriggerType.CHAT, player, message, event.tick(), event.timestampMs());
+		return PlannerTrigger.autonomous(PlannerTriggerType.CHAT, player, message, event.tick(), event.timestampMs(), "ambient_player_chat");
 	}
 
 	private ai.moeru.airicraft.agent.llm.PlannerTrigger createAddressedChatTrigger(SemanticEvent event) {
@@ -3023,7 +3448,7 @@ public final class EmbodiedAgentRuntime {
 		if (DialogueRuntime.isResetCommand(message) || !playerChatWithinConfiguredDistance(player)) {
 			return null;
 		}
-		return ai.moeru.airicraft.agent.llm.PlannerTrigger.pending(PlannerTriggerType.CHAT, player, message, event.tick(), event.timestampMs());
+		return PlannerTrigger.direct(PlannerTriggerType.CHAT, player, message, event.tick(), event.timestampMs());
 	}
 
 	private ai.moeru.airicraft.agent.llm.PlannerTrigger createLocalControllerTrigger(SemanticEvent event) {
@@ -3031,7 +3456,7 @@ public final class EmbodiedAgentRuntime {
 		if (message == null || DialogueRuntime.isResetCommand(message)) {
 			return null;
 		}
-		return ai.moeru.airicraft.agent.llm.PlannerTrigger.pending(
+		return PlannerTrigger.direct(
 			PlannerTriggerType.CHAT,
 			DialogueSpeakerLabels.SAME_CLIENT_ADMIN,
 			message,
@@ -3045,7 +3470,7 @@ public final class EmbodiedAgentRuntime {
 		if (message == null || !proactiveSocialModeEnabled()) {
 			return null;
 		}
-		return ai.moeru.airicraft.agent.llm.PlannerTrigger.pending(PlannerTriggerType.SYSTEM, "server", message, event.tick(), event.timestampMs());
+		return PlannerTrigger.autonomous(PlannerTriggerType.SYSTEM, "server", message, event.tick(), event.timestampMs(), "system_message");
 	}
 
 	private ai.moeru.airicraft.agent.llm.PlannerTrigger createPickupTrigger(SemanticEvent event) {
@@ -3057,12 +3482,13 @@ public final class EmbodiedAgentRuntime {
 		if (itemId == null || count == null) {
 			return null;
 		}
-		return ai.moeru.airicraft.agent.llm.PlannerTrigger.pending(
+		return PlannerTrigger.autonomous(
 			PlannerTriggerType.PICKUP,
 			"self",
 			"Picked up " + formatDecimal(count) + "x " + itemId + ".",
 			event.tick(),
-			event.timestampMs()
+			event.timestampMs(),
+			"pickup:" + itemId
 		);
 	}
 
@@ -3075,16 +3501,20 @@ public final class EmbodiedAgentRuntime {
 		if (itemId == null || count == null) {
 			return null;
 		}
-		return ai.moeru.airicraft.agent.llm.PlannerTrigger.pending(
+		return PlannerTrigger.autonomous(
 			PlannerTriggerType.CRAFT,
 			"self",
 			"I crafted " + formatDecimal(count) + "x " + itemId + ".",
 			event.tick(),
-			event.timestampMs()
+			event.timestampMs(),
+			"craft:" + itemId
 		);
 	}
 
 	private ai.moeru.airicraft.agent.llm.PlannerTrigger createDamageTrigger(SemanticEvent event) {
+		if (survivalReflexRuntime.snapshot().ownsActuation()) {
+			return null;
+		}
 		Map<String, Object> payload = event.payload();
 		String damageTypeId = stringPayloadValue(payload, "damageTypeId");
 		String attackerName = stringPayloadValue(payload, "attackerName");
@@ -3107,12 +3537,35 @@ public final class EmbodiedAgentRuntime {
 			message.append(" and dropped to ").append(formatDecimal(resultingHealth)).append(" health");
 		}
 		message.append('.');
-		return ai.moeru.airicraft.agent.llm.PlannerTrigger.pending(
+		return PlannerTrigger.autonomous(
 			PlannerTriggerType.DAMAGE,
 			"self",
 			message.toString(),
 			event.tick(),
-			event.timestampMs()
+			event.timestampMs(),
+			"damage"
+		);
+	}
+
+	private PlannerTrigger createReflexResolvedTrigger(SemanticEvent event) {
+		String holdId = stringPayloadValue(event.payload(), "holdId");
+		String cause = stringPayloadValue(event.payload(), "cause");
+		String reason = stringPayloadValue(event.payload(), "reason");
+		String nextState = stringPayloadValue(event.payload(), "nextState");
+		String message = "SURVIVAL UPDATE: reflex resolved cause=" + (cause == null ? "unknown" : cause)
+			+ " reason=" + (reason == null ? "safe" : reason)
+			+ " state=" + (nextState == null ? survivalReflexRuntime.snapshot().state().name() : nextState)
+			+ " holdId=" + (holdId == null ? "none" : holdId)
+			+ (holdId == null
+				? ". Review the consolidated safety episode; no interrupted task requires resumption."
+				: ". Review the consolidated safety episode and explicitly resume_task with this holdId, replace the task, or cancel it.");
+		return PlannerTrigger.autonomous(
+			PlannerTriggerType.SYSTEM,
+			"survival_runtime",
+			message,
+			event.tick(),
+			event.timestampMs(),
+			"survival_reflex_resolved"
 		);
 	}
 
@@ -3139,12 +3592,13 @@ public final class EmbodiedAgentRuntime {
 			message.append(" station=").append(station);
 		}
 		message.append('.');
-		return ai.moeru.airicraft.agent.llm.PlannerTrigger.pending(
+		return PlannerTrigger.autonomous(
 			PlannerTriggerType.SYSTEM,
 			"runtime",
 			message.toString(),
 			event.tick(),
-			event.timestampMs()
+			event.timestampMs(),
+			"smelting_output:" + processId
 		);
 	}
 
@@ -3171,12 +3625,13 @@ public final class EmbodiedAgentRuntime {
 			message.append(" remaining=").append(formatDecimal(remaining));
 		}
 		message.append('.');
-		return ai.moeru.airicraft.agent.llm.PlannerTrigger.pending(
+		return PlannerTrigger.autonomous(
 			PlannerTriggerType.SYSTEM,
 			"runtime",
 			message.toString(),
 			event.tick(),
-			event.timestampMs()
+			event.timestampMs(),
+			"task_blocked"
 		);
 	}
 
@@ -3287,6 +3742,19 @@ public final class EmbodiedAgentRuntime {
 		profiles.put("crafting.item_crafted", new EventRoutingProfile("crafting.item_crafted", true, PlannerTriggerType.CRAFT, false));
 		profiles.put("smelting.output_ready", new EventRoutingProfile("smelting.output_ready", true, PlannerTriggerType.SYSTEM, true));
 		profiles.put("combat.damage_taken", new EventRoutingProfile("combat.damage_taken", true, PlannerTriggerType.DAMAGE, false));
+		profiles.put("reflex.threat_detected", new EventRoutingProfile("reflex.threat_detected", true, null, true));
+		profiles.put("reflex.started", new EventRoutingProfile("reflex.started", true, null, true));
+		profiles.put("reflex.action_changed", new EventRoutingProfile("reflex.action_changed", true, null, true));
+		profiles.put("reflex.resolved", new EventRoutingProfile("reflex.resolved", true, PlannerTriggerType.SYSTEM, true));
+		profiles.put("reflex.hold_released", new EventRoutingProfile("reflex.hold_released", true, null, true));
+		profiles.put("reflex.actuator_failed", new EventRoutingProfile("reflex.actuator_failed", true, null, true));
+		profiles.put("planner.stale_response_rejected", new EventRoutingProfile("planner.stale_response_rejected", true, null, true));
+		profiles.put("player.died", new EventRoutingProfile("player.died", true, null, true));
+		profiles.put("player.actions_cancelled", new EventRoutingProfile("player.actions_cancelled", true, null, true));
+		profiles.put("player.action_rejected", new EventRoutingProfile("player.action_rejected", true, null, true));
+		profiles.put("player.respawn_requested", new EventRoutingProfile("player.respawn_requested", true, null, true));
+		profiles.put("player.respawn_request_failed", new EventRoutingProfile("player.respawn_request_failed", true, null, true));
+		profiles.put("player.respawned", new EventRoutingProfile("player.respawned", true, null, true));
 		profiles.put("session.world_loaded", new EventRoutingProfile("session.world_loaded", true, null, false));
 		profiles.put("session.world_unloaded", new EventRoutingProfile("session.world_unloaded", true, null, false));
 		profiles.put("session.connection_lost", new EventRoutingProfile("session.connection_lost", true, null, false));
@@ -3354,6 +3822,9 @@ public final class EmbodiedAgentRuntime {
 		if (current.state() == TaskExecutionState.PAUSED_BY_SESSION_GATE) {
 			eventBuffer.append(tickCount, "task.paused_by_session_gate", payload);
 		}
+		if (current.state() == TaskExecutionState.PAUSED_BY_REFLEX) {
+			eventBuffer.append(tickCount, "task.paused_by_reflex", payload);
+		}
 	}
 
 	private void recordSemanticTaskTransition(TaskSnapshot previous, TaskSnapshot current) {
@@ -3397,6 +3868,7 @@ public final class EmbodiedAgentRuntime {
 			case RUNNING -> "task.started";
 			case WAITING_FOR_PICKUP -> "task.blocked";
 			case PAUSED_BY_SESSION_GATE -> "task.paused_by_session_gate";
+			case PAUSED_BY_REFLEX -> "task.paused_by_reflex";
 			case COMPLETED -> "task.completed";
 			case FAILED -> "task.failed";
 			case CANCELLED -> "task.cancelled";
@@ -3409,6 +3881,7 @@ public final class EmbodiedAgentRuntime {
 		semanticTaskTerminalEvent(current).ifPresent(this::captureActionGraphTerminalEvent);
 		if (
 			current.state() == TaskState.PAUSED_BY_SESSION_GATE
+				|| current.state() == TaskState.PAUSED_BY_REFLEX
 				|| current.state() == TaskState.COMPLETED
 				|| current.state() == TaskState.FAILED
 				|| current.state() == TaskState.CANCELLED
@@ -3528,12 +4001,14 @@ public final class EmbodiedAgentRuntime {
 		return state == TaskState.QUEUED
 			|| state == TaskState.RUNNING
 			|| state == TaskState.WAITING_FOR_PICKUP
-			|| state == TaskState.PAUSED_BY_SESSION_GATE;
+			|| state == TaskState.PAUSED_BY_SESSION_GATE
+			|| state == TaskState.PAUSED_BY_REFLEX;
 	}
 
 	private static boolean isActiveTaskExecutionState(TaskExecutionState state) {
 		return state == TaskExecutionState.RUNNING
-			|| state == TaskExecutionState.PAUSED_BY_SESSION_GATE;
+			|| state == TaskExecutionState.PAUSED_BY_SESSION_GATE
+			|| state == TaskExecutionState.PAUSED_BY_REFLEX;
 	}
 
 	private static boolean isTerminalTaskState(TaskState state) {
@@ -3875,6 +4350,16 @@ public final class EmbodiedAgentRuntime {
 			trimIndex--;
 		}
 		return text.substring(0, trimIndex);
+	}
+
+	private static Map<String, Object> mapOfNullable(Object... pairs) {
+		LinkedHashMap<String, Object> map = new LinkedHashMap<>();
+		for (int index = 0; index + 1 < pairs.length; index += 2) {
+			if (pairs[index] != null && pairs[index + 1] != null) {
+				map.put(String.valueOf(pairs[index]), pairs[index + 1]);
+			}
+		}
+		return Map.copyOf(map);
 	}
 
 	private static String nonEmpty(String value, String fallback) {

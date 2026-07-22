@@ -203,6 +203,12 @@ public final class BlockBreakTaskExecutor implements WorldTaskExecutor {
 	}
 
 	private void reset() {
+		if (breakingActive) {
+			MinecraftClient client = clientSupplier.get();
+			if (client != null && client.interactionManager != null) {
+				client.interactionManager.cancelBlockBreaking();
+			}
+		}
 		appliedTask = null;
 		terminalEventEmitted = false;
 		snapshot = TaskExecutionSnapshot.idle();
