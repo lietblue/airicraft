@@ -65,6 +65,21 @@ public final class BaritoneSettingsProfile {
 			public void autoTool(boolean value) {
 				settings.autoTool.value = value;
 			}
+
+			@Override
+			public void randomLooking(double value) {
+				settings.randomLooking.value = value;
+			}
+
+			@Override
+			public void randomLooking113(double value) {
+				settings.randomLooking113.value = value;
+			}
+
+			@Override
+			public void freeLook(boolean value) {
+				settings.freeLook.value = value;
+			}
 		});
 	}
 
@@ -82,6 +97,9 @@ public final class BaritoneSettingsProfile {
 
 		settings.allowBreak(true);
 		settings.autoTool(true);
+		settings.randomLooking(0.0D);
+		settings.randomLooking113(0.0D);
+		settings.freeLook(false);
 	}
 
 	interface SettingsTarget {
@@ -104,5 +122,11 @@ public final class BaritoneSettingsProfile {
 		void allowBreak(boolean value);
 
 		void autoTool(boolean value);
+
+		void randomLooking(double value);
+
+		void randomLooking113(double value);
+
+		void freeLook(boolean value);
 	}
 }

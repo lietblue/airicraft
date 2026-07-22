@@ -2,6 +2,7 @@ package ai.moeru.airicraft.agent.baritone;
 
 import org.junit.jupiter.api.Test;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -22,6 +23,9 @@ class BaritoneSettingsProfileTest {
 		assertFalse(target.allowWaterBucketFall);
 		assertTrue(target.allowBreak);
 		assertTrue(target.autoTool);
+		assertEquals(0.0D, target.randomLooking);
+		assertEquals(0.0D, target.randomLooking113);
+		assertFalse(target.freeLook);
 	}
 
 	private static final class FakeSettingsTarget implements BaritoneSettingsProfile.SettingsTarget {
@@ -35,6 +39,9 @@ class BaritoneSettingsProfileTest {
 		private boolean allowWaterBucketFall = true;
 		private boolean allowBreak = false;
 		private boolean autoTool = false;
+		private double randomLooking = 1.0D;
+		private double randomLooking113 = 1.0D;
+		private boolean freeLook = true;
 
 		@Override
 		public void chatControl(boolean value) {
@@ -84,6 +91,21 @@ class BaritoneSettingsProfileTest {
 		@Override
 		public void autoTool(boolean value) {
 			autoTool = value;
+		}
+
+		@Override
+		public void randomLooking(double value) {
+			randomLooking = value;
+		}
+
+		@Override
+		public void randomLooking113(double value) {
+			randomLooking113 = value;
+		}
+
+		@Override
+		public void freeLook(boolean value) {
+			freeLook = value;
 		}
 	}
 }
