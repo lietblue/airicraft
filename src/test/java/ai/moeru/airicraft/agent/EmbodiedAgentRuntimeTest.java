@@ -1417,6 +1417,50 @@ class EmbodiedAgentRuntimeTest {
 	}
 
 	@Test
+	void placeBlockDispatchesAfterUnrelatedCraftCompletionSnapshot() {
+		FakeWorldTaskExecutor executor = new FakeWorldTaskExecutor();
+		EmbodiedAgentRuntime runtime = EmbodiedAgentRuntime.createForTests(executor);
+		runtime.overrideSessionSnapshotForTests(loadedRemoteSession());
+		executor.forcedSnapshot = new TaskExecutionSnapshot(
+			TaskExecutionState.COMPLETED,
+			"previous-craft-task",
+			null,
+			"Crafting",
+			"crafted",
+			null,
+			null
+		);
+		runtime.onClientTick(null);
+		executor.forcedSnapshot = null;
+		runtime.recordWorldReadForTests(new BlockPos(1, 64, 2));
+
+		CompletableFuture<String> resultFuture = runtime.executePlannerToolCallFutureForTests(new PlannerToolCall(
+			"call_place_after_craft",
+			"place_block",
+			JsonParser.parseString("""
+				{"itemId":"minecraft:crafting_table","x":1,"y":64,"z":2,"requireCurrentTargetMaterial":"air"}
+				""").getAsJsonObject(),
+			null,
+			null
+		));
+		runtime.onClientTick(null);
+
+		WorldTaskRequest request = executor.lastActiveTask.orElseThrow();
+		assertEquals(WorldTaskType.PLACE_BLOCK, request.type());
+		assertFalse(resultFuture.isDone());
+		executor.nextTerminalEvent = Optional.of(new TaskTerminalEvent(
+			request.taskId(),
+			null,
+			TaskExecutionState.COMPLETED,
+			"placed crafting table",
+			TaskTerminationCause.GOAL_REACHED
+		));
+		runtime.onClientTick(null);
+
+		assertTrue(resultFuture.join().contains("completed"));
+	}
+
+	@Test
 	void breakBlocksToolInspectsInsteadOfQueuingUnreadTarget() {
 		FakeWorldTaskExecutor executor = new FakeWorldTaskExecutor();
 		EmbodiedAgentRuntime runtime = EmbodiedAgentRuntime.createForTests(executor);

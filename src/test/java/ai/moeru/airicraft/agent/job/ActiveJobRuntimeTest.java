@@ -573,6 +573,59 @@ class ActiveJobRuntimeTest {
 	}
 
 	@Test
+	void primitiveJobAppliesOnlyMatchingTaskSnapshot() {
+		Map<TaskExecutionState, ActiveJobStatus> taskStatuses = Map.of(
+			TaskExecutionState.RUNNING, ActiveJobStatus.RUNNING,
+			TaskExecutionState.COMPLETED, ActiveJobStatus.COMPLETED,
+			TaskExecutionState.FAILED, ActiveJobStatus.FAILED,
+			TaskExecutionState.CANCELLED, ActiveJobStatus.CANCELLED,
+			TaskExecutionState.PAUSED_BY_SESSION_GATE, ActiveJobStatus.BLOCKED,
+			TaskExecutionState.PAUSED_BY_REFLEX, ActiveJobStatus.BLOCKED
+		);
+		for (Map.Entry<TaskExecutionState, ActiveJobStatus> taskStatus : taskStatuses.entrySet()) {
+			ActiveJobRuntime runtime = new ActiveJobRuntime();
+			runtime.applyPlannerResponse(
+				new DialogueResponse(
+					"Placing the crafting table.",
+					new DialogueIntent(DialogueIntentType.JOB_UPDATE, ActiveJobProposal.placeBlock(new BlockPlacementStepArgs(
+						"minecraft:crafting_table",
+						new GoalPosition(1, 64, 2, true),
+						"down",
+						"air"
+					))),
+					1L
+				),
+				0,
+				"test",
+				1L
+			);
+			WorldTaskRequest request = runtime.activeTaskRequest().orElseThrow();
+
+			runtime.tick(
+				new TaskExecutionSnapshot(taskStatus.getKey(), "previous-craft-task", null, "Crafting", "crafted", null, null),
+				evidence(0, 2L),
+				true,
+				false,
+				2L
+			);
+
+			assertEquals(ActiveJobStatus.QUEUED, runtime.current().status(), taskStatus.getKey().name());
+			assertEquals(request.taskId(), runtime.activeTaskRequest().orElseThrow().taskId(), taskStatus.getKey().name());
+
+			runtime.tick(
+				new TaskExecutionSnapshot(taskStatus.getKey(), request.taskId(), null, "BlockInteraction", "matching", null, null),
+				evidence(0, 3L),
+				true,
+				false,
+				3L
+			);
+
+			assertEquals(taskStatus.getValue(), runtime.current().status(), taskStatus.getKey().name());
+			assertEquals(taskStatus.getValue().terminal(), runtime.activeTaskRequest().isEmpty(), taskStatus.getKey().name());
+		}
+	}
+
+	@Test
 	void useBlockLedgerStepProjectsWorldTaskRequest() {
 		ActiveJobRuntime runtime = new ActiveJobRuntime();
 		BlockUseStepArgs use = new BlockUseStepArgs(
