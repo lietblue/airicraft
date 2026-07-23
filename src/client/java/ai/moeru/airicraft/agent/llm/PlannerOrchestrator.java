@@ -670,6 +670,7 @@ public final class PlannerOrchestrator {
 		minimumSafetyEpoch = Math.max(minimumSafetyEpoch, Math.max(0L, safetyEpoch));
 		currentSafetyHoldId = holdId;
 		safetyLaunchBlocked = activeReflex;
+		toolRegistry.setSafetyHoldActive(holdId != null && !holdId.isBlank());
 	}
 
 	public List<StalePlannerRejection> drainStalePlannerRejections() {
@@ -840,12 +841,18 @@ public final class PlannerOrchestrator {
 		}
 		for (PlannerToolCall toolCall : toolCalls) {
 			if (!isValidToolCall(toolCall)) {
+				String toolName = normalizedToolName(toolCall);
 				Airicraft.LOGGER.warn(
 					"Planner returned invalid tool call name={} narration={}",
 					toolCall.name(),
 					summarizeForLog(toolCall.narration())
 				);
-				return rejectToolRequest(plannerResult, "Planner requested an invalid tool");
+				return rejectToolRequest(
+					plannerResult,
+					toolRegistry.isKnownTool(toolName)
+						? "tool_not_discovered: " + toolName
+						: "Planner requested an invalid tool"
+				);
 			}
 		}
 		if (toolCalls.size() > 1 && !canBatchToolCalls(toolCalls)) {
@@ -1122,6 +1129,7 @@ public final class PlannerOrchestrator {
 
 	private void clearRuntimeState(String reason) {
 		contextAggregator.clear();
+		toolRegistry.resetToolSurface();
 		turnJournal.clear(reason);
 		pendingSubmitRequest = null;
 		lastCompactionResult = null;
@@ -1419,6 +1427,7 @@ public final class PlannerOrchestrator {
 	private CompletableFuture<ToolExecutionOutcome> requestPlannerTool(PlannerToolCall toolCall) {
 		toolExecutionObserver.beforePlannerToolExecution(toolCall);
 		return switch (normalizedToolName(toolCall)) {
+			case PlannerToolCatalog.DISCOVER_TOOLS -> CompletableFuture.completedFuture(new TextToolExecutionOutcome(discoverToolsResult(toolCall)));
 			case VISUAL_TOOL_NAME -> requestVisionTool(toolCall);
 			case INVENTORY_TOOL_NAME -> inventoryTool.inspectInventory(toolPrompt(toolCall)).thenApply(TextToolExecutionOutcome::new);
 			case CRAFTABLES_TOOL_NAME -> inventoryTool.checkCraftables(toolPrompt(toolCall)).thenApply(TextToolExecutionOutcome::new);
@@ -1736,7 +1745,7 @@ public final class PlannerOrchestrator {
 
 	private boolean isValidToolCall(PlannerToolCall toolCall) {
 		String name = normalizedToolName(toolCall);
-		if (!toolRegistry.isKnownTool(name)) {
+		if (!toolRegistry.isActiveTool(name)) {
 			return false;
 		}
 		return switch (name) {
@@ -1762,6 +1771,15 @@ public final class PlannerOrchestrator {
 			case WORLD_TOOL_NAME, INVENTORY_TOOL_NAME, CRAFTABLES_TOOL_NAME, NEARBY_ENTITIES_TOOL_NAME -> true;
 			default -> false;
 		};
+	}
+
+	private String discoverToolsResult(PlannerToolCall toolCall) {
+		JsonObject arguments = toolCall == null ? null : toolCall.arguments();
+		String query = stringArgument(arguments, "query");
+		int maxResults = arguments != null && arguments.has("maxResults") && arguments.get("maxResults").isJsonPrimitive()
+			? arguments.get("maxResults").getAsInt()
+			: 4;
+		return toolRegistry.discoverTools(query, maxResults).renderToolResult();
 	}
 
 	private static String normalizedToolType(PlannerToolRequest toolRequest) {

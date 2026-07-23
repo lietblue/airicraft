@@ -214,7 +214,7 @@ public final class PlannerContextAggregator {
 		if (snapshot == null) {
 			throw new IllegalStateException("No planner context snapshot");
 		}
-		LlmConversation conversation = snapshot.plannerConversation();
+		LlmConversation conversation = withCurrentSystemPrompt(snapshot.plannerConversation());
 		if (priorAssistantRawContent != null) {
 			conversation = conversation.withAppended(LlmChatMessage.assistant(
 				OpenAiCompatibleMessageContent.extractVisibleText(priorAssistantRawContent),
@@ -248,7 +248,7 @@ public final class PlannerContextAggregator {
 		if (toolCalls == null || toolCalls.isEmpty()) {
 			throw new IllegalArgumentException("toolCalls");
 		}
-		LlmConversation conversation = snapshot.plannerConversation()
+		LlmConversation conversation = withCurrentSystemPrompt(snapshot.plannerConversation())
 			.withAppended(LlmChatMessage.assistantToolCalls("", toolCalls));
 		for (int index = 0; index < toolCalls.size(); index++) {
 			PlannerToolCall toolCall = toolCalls.get(index);
@@ -267,7 +267,7 @@ public final class PlannerContextAggregator {
 		if (snapshot == null) {
 			throw new IllegalStateException("No planner context snapshot");
 		}
-		LlmConversation conversation = snapshot.plannerConversation();
+		LlmConversation conversation = withCurrentSystemPrompt(snapshot.plannerConversation());
 		if (priorAssistantRawContent != null) {
 			conversation = conversation.withAppended(LlmChatMessage.assistant(
 				OpenAiCompatibleMessageContent.extractVisibleText(priorAssistantRawContent),
@@ -438,6 +438,20 @@ public final class PlannerContextAggregator {
 		messages.addAll(snapshotNotices);
 		if (terminalMessage != null) {
 			messages.add(terminalMessage);
+		}
+		return LlmConversation.of(messages);
+	}
+
+	private LlmConversation withCurrentSystemPrompt(LlmConversation conversation) {
+		if (conversation == null || conversation.messages().isEmpty()) {
+			return LlmConversation.of(List.of(LlmChatMessage.system(PlannerPromptPolicy.systemPrompt(visionMode, toolRegistry))));
+		}
+		ArrayList<LlmChatMessage> messages = new ArrayList<>(conversation.messages());
+		if ("system".equals(messages.getFirst().role())) {
+			messages.set(0, LlmChatMessage.system(PlannerPromptPolicy.systemPrompt(visionMode, toolRegistry)));
+		}
+		else {
+			messages.add(0, LlmChatMessage.system(PlannerPromptPolicy.systemPrompt(visionMode, toolRegistry)));
 		}
 		return LlmConversation.of(messages);
 	}

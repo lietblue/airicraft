@@ -1,8 +1,10 @@
 package ai.moeru.airicraft.agent.llm;
 
 import com.google.gson.JsonObject;
+import com.google.gson.Gson;
 import org.junit.jupiter.api.Test;
 
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
@@ -10,14 +12,75 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class PlannerToolRegistryTest {
 	@Test
-	void routesProviderToolAfterAvailabilityFlipsUnavailable() {
+	void initialSurfaceContainsOnlyCoreToolsAndDiscoverTools() {
+		PlannerToolRegistry registry = PlannerToolRegistry.empty();
+
+		assertEquals(List.of(
+			PlannerToolCatalog.DISCOVER_TOOLS,
+			PlannerToolCatalog.START_ACTION_GOAL,
+			PlannerToolCatalog.INSPECT_ACTION_GOAL,
+			PlannerToolCatalog.CANCEL_ACTION_GOAL,
+			PlannerToolCatalog.CLEAR_GOAL
+		), toolNames(registry.openAiTools()));
+		assertFalse(registry.isActiveTool(PlannerToolCatalog.NAVIGATE_TO));
+	}
+
+	@Test
+	void initialSchemaPayloadIsMateriallySmallerThanTheFullCatalog() {
+		PlannerToolRegistry registry = PlannerToolRegistry.empty();
+		Gson gson = new Gson();
+		int initialBytes = gson.toJson(registry.openAiTools()).getBytes(StandardCharsets.UTF_8).length;
+		int fullCatalogBytes = gson.toJson(PlannerToolCatalog.openAiTools()).getBytes(StandardCharsets.UTF_8).length;
+
+		assertTrue(initialBytes * 2 < fullCatalogBytes, () ->
+			"Expected staged schemas to be less than half the full catalog: initial=" + initialBytes + " full=" + fullCatalogBytes
+		);
+	}
+
+	@Test
+	void discoveryActivatesBoundedSpecialistSchemasAndReturnsConciseCards() {
+		PlannerToolRegistry registry = PlannerToolRegistry.empty();
+
+		PlannerToolSurface.DiscoveryResult result = registry.discoverTools("navigation", 3);
+
+		assertFalse(result.matches().isEmpty());
+		assertTrue(result.matches().size() <= 3);
+		assertTrue(result.matches().stream().allMatch(match -> "navigation".equals(match.category())));
+		assertTrue(result.renderToolResult().contains("cards=["));
+		assertTrue(result.renderToolResult().contains("activatedTools="));
+		assertTrue(result.renderToolResult().length() < 1_500);
+		assertTrue(registry.isActiveTool(PlannerToolCatalog.NAVIGATE_TO));
+		assertTrue(toolNames(registry.openAiTools()).contains(PlannerToolCatalog.NAVIGATE_TO));
+		assertFalse(toolNames(registry.openAiTools()).contains(PlannerToolCatalog.CRAFT_RECIPE));
+	}
+
+	@Test
+	void safetyHoldTemporarilyActivatesResumeControlAndResetDropsSpecialists() {
+		PlannerToolRegistry registry = PlannerToolRegistry.empty();
+		registry.discoverTools("navigation", 3);
+
+		registry.setSafetyHoldActive(true);
+		assertTrue(registry.isActiveTool(PlannerToolCatalog.RESUME_TASK));
+
+		registry.setSafetyHoldActive(false);
+		registry.resetToolSurface();
+		assertFalse(registry.isActiveTool(PlannerToolCatalog.RESUME_TASK));
+		assertFalse(registry.isActiveTool(PlannerToolCatalog.NAVIGATE_TO));
+		assertEquals(5, registry.openAiTools().size());
+	}
+
+	@Test
+	void routesDiscoveredProviderToolAfterAvailabilityFlipsUnavailable() {
 		FlippingProvider provider = new FlippingProvider();
 		PlannerToolRegistry registry = PlannerToolRegistry.of(provider);
 
+		assertFalse(toolNames(registry.openAiTools()).contains("search_recipes"));
+		registry.discoverTools("recipe", 4);
 		assertTrue(toolNames(registry.openAiTools()).contains("search_recipes"));
 
 		provider.available.set(false);
