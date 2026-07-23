@@ -1,0 +1,29 @@
+id: pickup
+name: Pick up dropped cake
+metadata:
+  minecraftVersion: 1.21.8
+  airicraftVersion: dev
+worldArchive: world.zip
+frozen: true
+prompt: >-
+  A minecraft:cake item from a previous death is lying on the ground near
+  9, 74, -20. Navigate directly to that location and move close enough to pick
+  up the dropped cake. Use inspect_nearby_entities only if you need to confirm
+  the cake after reaching the area. Do not craft, place, eat, or break anything,
+  and do not use commands or creative-mode shortcuts. Stop only after
+  inspect_inventory confirms that you have at least one minecraft:cake.
+budget:
+  maxPlannerTurns: 12
+  maxElapsedTicks: 2400
+  maxElapsedMillis: 0
+  heartbeatIntervalTicks: 80
+checks:
+  - type: inventory_contains
+    itemId: minecraft:cake
+    count: 1
+evidence:
+  includePlannerJournal: true
+  includeDebugTimeline: true
+  includeRecentEvents: true
+  includeTaskState: true
+  includeWorldSnapshot: true
