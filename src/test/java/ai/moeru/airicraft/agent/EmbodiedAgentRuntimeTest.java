@@ -725,6 +725,13 @@ class EmbodiedAgentRuntimeTest {
 
 		runtime.onPlayerMinedBlock("minecraft:dirt", 2, 64, 0);
 
+		WorldTaskRequest request = executor.lastActiveTask.orElseThrow();
+		assertTrue(runtime.activeGoal().isPresent());
+		executor.nextTerminalEvent = Optional.of(new TaskTerminalEvent(
+			request.taskId(), request.goal(), TaskExecutionState.COMPLETED, "Goal reached", TaskTerminationCause.GOAL_REACHED
+		));
+		runtime.onClientTick(null);
+
 		assertTrue(runtime.activeGoal().isEmpty());
 		assertTrue(runtime.recentEvents(null).events().stream().anyMatch(event -> "task.completed".equals(event.type())));
 	}

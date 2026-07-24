@@ -1395,7 +1395,7 @@ public final class EmbodiedAgentRuntime {
 	}
 
 	public void onPlayerMinedBlock(String blockId, int x, int y, int z) {
-		activeJobRuntime.recordMinedBlock(blockId, tickCount).ifPresent(event -> handleTerminalTaskEvent(event, false, Optional.empty()));
+		activeJobRuntime.recordMinedBlock(blockId, new GoalPosition(x, y, z, true), tickCount).ifPresent(event -> handleTerminalTaskEvent(event, false, Optional.empty()));
 	}
 
 	public void onPlayerDamageObserved(DamageSource damageSource) {

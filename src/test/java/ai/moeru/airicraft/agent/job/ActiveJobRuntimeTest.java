@@ -105,13 +105,33 @@ class ActiveJobRuntimeTest {
 		assertEquals(0, runtime.current().collectedCount());
 		assertTrue(runtime.recordMinedBlock("minecraft:dirt", 3L).isEmpty());
 		assertEquals(1, runtime.current().collectedCount());
-		Optional<TaskTerminalEvent> completed = runtime.recordMinedBlock("minecraft:dirt", 4L);
+		assertTrue(runtime.recordMinedBlock("minecraft:dirt", new GoalPosition(1, 64, 0, true), 4L).isEmpty());
+		WorldTaskRequest request = runtime.activeTaskRequest().orElseThrow();
 
-		assertTrue(completed.isPresent());
-		assertEquals(TaskExecutionState.COMPLETED, completed.orElseThrow().terminalState());
-		assertEquals("Mined requested blocks brokenBlocks=2 requestedBlocks=2", completed.orElseThrow().message());
+		assertEquals(new GoalPosition(1, 64, 0, true), request.pickupSweepPosition());
+		assertEquals(ActiveJobStatus.RUNNING, runtime.current().status());
+		runtime.tick(new TaskExecutionSnapshot(TaskExecutionState.RUNNING, request.taskId(), request.goal(), null, null, null, null), evidence(Map.of("minecraft:dirt", 0), 5L), true, true, 5L);
+		assertEquals(request.taskId(), runtime.activeTaskRequest().orElseThrow().taskId());
+
+		ActiveJobRuntime.TerminalTaskReport completed = runtime.reportTerminalTaskEvent(
+			new TaskTerminalEvent(request.taskId(), request.goal(), TaskExecutionState.COMPLETED, "Goal reached", TaskTerminationCause.GOAL_REACHED),
+			Optional.of(request)
+		);
+
+		assertEquals("Goal reached brokenBlocks=2 requestedBlocks=2", completed.event().orElseThrow().message());
 		assertEquals(ActiveJobStatus.COMPLETED, runtime.current().status());
 		assertTrue(runtime.activeTaskRequest().isEmpty());
+	}
+
+	@Test
+	void collectResourceForwardsLastMatchingBrokenBlockToMinePickupSweep() {
+		ActiveJobRuntime runtime = new ActiveJobRuntime();
+		runtime.submitTask(new TaskSpec(TaskType.COLLECT_RESOURCE, TaskResourceKind.COBBLESTONE, 3), 0, "test", 1L);
+		runtime.tick(TaskExecutionSnapshot.idle(), resourceEvidence(TaskResourceKind.COBBLESTONE, 0, 2L), true, true, 2L);
+
+		runtime.recordMinedBlock("minecraft:stone", new GoalPosition(4, 63, -2, true), 3L);
+
+		assertEquals(new GoalPosition(4, 63, -2, true), runtime.activeTaskRequest().orElseThrow().pickupSweepPosition());
 	}
 
 	@Test
@@ -830,6 +850,20 @@ class ActiveJobRuntimeTest {
 		return new WorldEvidence(
 			Map.of(),
 			itemCounts,
+			Map.of(),
+			"minecraft:overworld",
+			0,
+			64,
+			0,
+			null,
+			tick
+		);
+	}
+
+	private static WorldEvidence resourceEvidence(TaskResourceKind resourceKind, int count, long tick) {
+		return new WorldEvidence(
+			Map.of(resourceKind, count),
+			Map.of(),
 			Map.of(),
 			"minecraft:overworld",
 			0,

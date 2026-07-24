@@ -14,6 +14,7 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -81,6 +82,47 @@ class BaritoneTaskExecutorTest {
 
 		assertTrue(event.isPresent());
 		assertEquals(TaskExecutionState.COMPLETED, event.orElseThrow().terminalState());
+	}
+
+	@Test
+	void mineTerminalSweepsMatchingNearbyDropBeforeCompleting() {
+		FakeBaritoneFacade facade = new FakeBaritoneFacade();
+		AtomicBoolean matchingDropNearby = new AtomicBoolean(true);
+		BaritoneTaskExecutor executor = new BaritoneTaskExecutor(() -> null, facade, request -> matchingDropNearby.get());
+		GoalSnapshot goal = new GoalSnapshot(GoalType.MINE_BLOCKS, null, null, new GoalMineSpec(List.of("minecraft:stone"), 1), 20L, "planner_response");
+		GoalPosition finalBrokenBlock = new GoalPosition(10, 64, 20, true);
+		WorldTaskRequest request = WorldTaskRequest.collectMine("mine-task", "mine-task", goal, finalBrokenBlock);
+
+		executor.tick(multiplayer(), Optional.of(request));
+		facade.pathEvents.add("AT_GOAL");
+
+		assertTrue(executor.tick(multiplayer(), Optional.of(request)).isEmpty());
+		assertEquals(List.of(finalBrokenBlock), facade.navigateCalls);
+		assertEquals(TaskExecutionState.RUNNING, executor.snapshot().state());
+		assertEquals("pickup_sweep", executor.snapshot().lastPathEvent());
+
+		matchingDropNearby.set(false);
+		facade.pathEvents.add("AT_GOAL");
+		Optional<TaskTerminalEvent> completed = executor.tick(multiplayer(), Optional.of(request));
+
+		assertTrue(completed.isPresent());
+		assertEquals(TaskExecutionState.COMPLETED, completed.orElseThrow().terminalState());
+	}
+
+	@Test
+	void mineTerminalWithoutMatchingDropCompletesImmediately() {
+		FakeBaritoneFacade facade = new FakeBaritoneFacade();
+		BaritoneTaskExecutor executor = new BaritoneTaskExecutor(() -> null, facade, request -> false);
+		GoalSnapshot goal = new GoalSnapshot(GoalType.MINE_BLOCKS, null, null, new GoalMineSpec(List.of("minecraft:stone"), 1), 20L, "planner_response");
+		WorldTaskRequest request = WorldTaskRequest.collectMine("mine-task", "mine-task", goal, new GoalPosition(10, 64, 20, true));
+
+		executor.tick(multiplayer(), Optional.of(request));
+		facade.pathEvents.add("AT_GOAL");
+		Optional<TaskTerminalEvent> completed = executor.tick(multiplayer(), Optional.of(request));
+
+		assertTrue(completed.isPresent());
+		assertEquals(TaskExecutionState.COMPLETED, completed.orElseThrow().terminalState());
+		assertTrue(facade.navigateCalls.isEmpty());
 	}
 
 	@Test

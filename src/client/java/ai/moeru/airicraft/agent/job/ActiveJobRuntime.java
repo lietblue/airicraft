@@ -4,6 +4,7 @@ import ai.moeru.airicraft.agent.debug.CollectResourceTaskDebugSnapshot;
 import ai.moeru.airicraft.agent.dialogue.DialogueIntentType;
 import ai.moeru.airicraft.agent.dialogue.DialogueResponse;
 import ai.moeru.airicraft.agent.goals.GoalMineSpec;
+import ai.moeru.airicraft.agent.goals.GoalPosition;
 import ai.moeru.airicraft.agent.goals.GoalSnapshot;
 import ai.moeru.airicraft.agent.goals.GoalType;
 import ai.moeru.airicraft.agent.tasks.AskUserStepArgs;
@@ -60,6 +61,8 @@ public final class ActiveJobRuntime {
 	private int collectAttemptSequence;
 	private String mineAttemptJobId;
 	private int mineAttemptSequence;
+	private String minePickupSweepJobId;
+	private GoalPosition minePickupSweepPosition;
 
 	public void clear() {
 		activeJob = ActiveJob.idle();
@@ -73,6 +76,8 @@ public final class ActiveJobRuntime {
 		collectAttemptSequence = 0;
 		mineAttemptJobId = null;
 		mineAttemptSequence = 0;
+		minePickupSweepJobId = null;
+		minePickupSweepPosition = null;
 	}
 
 	public ActiveJob current() {
@@ -112,42 +117,41 @@ public final class ActiveJobRuntime {
 		return collectResourceDebugSnapshot;
 	}
 
-	public Optional<TaskTerminalEvent> recordMinedBlock(String blockId, long tick) {
+	public Optional<TaskTerminalEvent> recordMinedBlock(String blockId, GoalPosition position, long tick) {
 		if (blockId == null || blockId.isBlank()) {
 			return Optional.empty();
 		}
 		if (
-			(activeJob.type() != ActiveJobType.MINE_BLOCKS && activeJob.type() != ActiveJobType.ENSURE_BLOCKS_IN_INVENTORY)
+			(activeJob.type() != ActiveJobType.MINE_BLOCKS && activeJob.type() != ActiveJobType.ENSURE_BLOCKS_IN_INVENTORY && activeJob.type() != ActiveJobType.COLLECT_RESOURCE)
 				|| activeJob.status().terminal()
 		) {
 			return Optional.empty();
 		}
 		GoalSnapshot goal = activeJob.directGoal();
 		GoalMineSpec spec = goal == null ? null : goal.mineSpec();
-		if (spec == null || !spec.blockIds().contains(blockId)) {
+		List<String> targetBlockIds = activeJob.type() == ActiveJobType.COLLECT_RESOURCE ? CollectResourceTaskHandler.targetBlockIds(activeJob.taskSpec()) : spec == null ? List.of() : spec.blockIds();
+		if (!targetBlockIds.contains(blockId)) {
+			return Optional.empty();
+		}
+		minePickupSweepJobId = activeJob.jobId();
+		minePickupSweepPosition = position;
+		if (activeJob.type() == ActiveJobType.COLLECT_RESOURCE) {
+			refreshDesiredTask(tick);
 			return Optional.empty();
 		}
 
-		String taskId = desiredPrimitiveTask == null ? activeJob.jobId() : desiredPrimitiveTask.taskId();
 		int minedCount = activeJob.collectedCount() + 1;
-		ActiveJobStatus nextStatus = activeJob.type() == ActiveJobType.MINE_BLOCKS && minedCount >= spec.quantity()
-			? ActiveJobStatus.COMPLETED
-			: activeMiningStatus(activeJob.status());
+		ActiveJobStatus nextStatus = activeMiningStatus(activeJob.status());
 		activeJob = updated(activeJob, nextStatus, null, null, minedCount, tick);
 		refreshDesiredTask(tick);
 		if (activeJob.type() == ActiveJobType.ENSURE_BLOCKS_IN_INVENTORY) {
 			return Optional.empty();
 		}
-		if (nextStatus != ActiveJobStatus.COMPLETED) {
-			return Optional.empty();
-		}
-		return Optional.of(new TaskTerminalEvent(
-			taskId,
-			goal,
-			TaskExecutionState.COMPLETED,
-			mineBlocksTerminalMessage("Mined requested blocks", minedCount, spec.quantity(), false),
-			TaskTerminationCause.GOAL_REACHED
-		));
+		return Optional.empty();
+	}
+
+	public Optional<TaskTerminalEvent> recordMinedBlock(String blockId, long tick) {
+		return recordMinedBlock(blockId, null, tick);
 	}
 
 	public TerminalTaskReport reportTerminalTaskEvent(TaskTerminalEvent event, Optional<WorldTaskRequest> activeRequest) {
@@ -195,6 +199,10 @@ public final class ActiveJobRuntime {
 			: null;
 		if (mismatch && event.terminalState() == TaskExecutionState.COMPLETED) {
 			return TerminalTaskReport.warnOnly(warning);
+		}
+		if (!mismatch && event.terminalState() == TaskExecutionState.COMPLETED && activeJob.type() == ActiveJobType.MINE_BLOCKS) {
+			activeJob = updated(activeJob, ActiveJobStatus.COMPLETED, null, null, brokenBlocks, lastEvidence.tick());
+			refreshDesiredTask(lastEvidence.tick());
 		}
 		return TerminalTaskReport.of(withTerminalMessage(event, message), warning);
 	}
@@ -475,6 +483,7 @@ public final class ActiveJobRuntime {
 			startCollectAttempt(remaining, tick);
 			return;
 		}
+		applyLatestMinePickupSweepPosition();
 	}
 
 	private void refreshMineBlocksAttempt(long tick) {
@@ -482,8 +491,12 @@ public final class ActiveJobRuntime {
 		int satisfiedCount = activeJob.type() == ActiveJobType.ENSURE_BLOCKS_IN_INVENTORY
 			? MinedBlockDropMapper.matchingInventoryItemCount(lastEvidence.itemCounts(), spec == null ? null : spec.blockIds())
 			: activeJob.collectedCount();
-		if (spec == null || satisfiedCount >= spec.quantity()) {
+		if (spec == null) {
 			clearDesiredTaskState();
+			return;
+		}
+		if (satisfiedCount >= spec.quantity()) {
+			applyLatestMinePickupSweepPosition();
 			return;
 		}
 		boolean mineTaskChanged = !Objects.equals(mineAttemptJobId, activeJob.jobId());
@@ -493,7 +506,9 @@ public final class ActiveJobRuntime {
 			&& Objects.equals(lastPrimitiveExecution.taskId(), desiredPrimitiveTask.taskId());
 		if (mineTaskChanged || mineTaskMissing || primitiveCompleted) {
 			startMineBlocksAttempt(spec, tick, satisfiedCount);
+			return;
 		}
+		applyLatestMinePickupSweepPosition();
 	}
 
 	private void startMineBlocksAttempt(GoalMineSpec requestedSpec, long tick, int satisfiedCount) {
@@ -517,7 +532,8 @@ public final class ActiveJobRuntime {
 		desiredPrimitiveTask = WorldTaskRequest.collectMine(
 			activeJob.jobId() + ":mine:" + mineAttemptSequence,
 			activeJob.jobId(),
-			executionGoal
+			executionGoal,
+			latestMinePickupSweepPosition()
 		);
 	}
 
@@ -536,13 +552,26 @@ public final class ActiveJobRuntime {
 		desiredPrimitiveTask = WorldTaskRequest.collectMine(
 			activeJob.jobId() + ":mine:" + collectAttemptSequence,
 			activeJob.jobId(),
-			goal
+			goal,
+			latestMinePickupSweepPosition()
 		);
+	}
+
+	private void applyLatestMinePickupSweepPosition() {
+		if (desiredPrimitiveTask != null && latestMinePickupSweepPosition() != null) {
+			desiredPrimitiveTask = desiredPrimitiveTask.withPickupSweepPosition(latestMinePickupSweepPosition());
+		}
+	}
+
+	private GoalPosition latestMinePickupSweepPosition() {
+		return Objects.equals(minePickupSweepJobId, activeJob.jobId()) ? minePickupSweepPosition : null;
 	}
 
 	private void clearDesiredTaskState() {
 		desiredPrimitiveTask = null;
 		clearAttemptState();
+		minePickupSweepJobId = null;
+		minePickupSweepPosition = null;
 	}
 
 	private void clearCollectAttemptState() {
@@ -737,7 +766,7 @@ public final class ActiveJobRuntime {
 			return updated(job, ActiveJobStatus.FAILED, null, "missing_mine_blocks_args", job.collectedCount(), tick);
 		}
 		if (job.collectedCount() >= spec.quantity()) {
-			return updated(job, ActiveJobStatus.COMPLETED, null, null, job.collectedCount(), tick);
+			return updated(job, ActiveJobStatus.RUNNING, null, null, job.collectedCount(), tick);
 		}
 		if (!actuationAllowed || primitiveExecution.state() == TaskExecutionState.PAUSED_BY_SESSION_GATE || primitiveExecution.state() == TaskExecutionState.PAUSED_BY_REFLEX) {
 			return updated(job, ActiveJobStatus.BLOCKED, "session_gate", null, job.collectedCount(), tick);
