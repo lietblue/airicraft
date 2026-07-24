@@ -166,7 +166,7 @@ public final class PlannerToolCatalog {
 		builtInTool(LIST_ACTION_CAPABILITIES, true, tool(LIST_ACTION_CAPABILITIES, "List runtime action graph capabilities, primitives, providers, and supported goal kinds.", properties(
 				prop("narration", optionalString("Optional visible narration before using the tool. Omit this field when no narration is needed."))
 			), List.of()), NO_ARGUMENT_VALIDATION),
-		builtInTool(FOLLOW_PLAYER, false, tool(FOLLOW_PLAYER, "Follow a named player.", properties(
+		builtInTool(FOLLOW_PLAYER, false, tool(FOLLOW_PLAYER, "Continuously follow a named player until the goal is cleared, cancelled, or replaced. Use navigate_to when only reaching a fixed position once is needed.", properties(
 				prop("narration", optionalString("Optional visible narration before using the tool. Omit this field when no narration is needed.")),
 				prop("targetPlayer", string("Player name to follow."))
 			), List.of("targetPlayer")), PlannerToolCatalog::validateFollowPlayerArguments),

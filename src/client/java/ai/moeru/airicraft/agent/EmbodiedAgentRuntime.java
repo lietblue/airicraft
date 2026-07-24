@@ -519,7 +519,6 @@ public final class EmbodiedAgentRuntime {
 	public void onClientTick(MinecraftClient client) {
 		tickCount++;
 		localDamageTracker.pruneStale(tickCount);
-		FollowState previousFollowState = followState;
 		BehaviorTreeSnapshot previousTreeSnapshot = behaviorTreeRuntime.snapshot();
 		boolean wasWorldLoaded = sessionSnapshot.worldLoaded();
 		sessionSnapshot = sessionSnapshotOverrideForTests != null
@@ -663,10 +662,6 @@ public final class EmbodiedAgentRuntime {
 			taskExecutionSnapshot,
 			tickCount
 		);
-		if (previousFollowState.targetNearby() && !followState.targetNearby() && previousFollowState.targetPlayer() != null) {
-			activeJobRuntime.clearFollowTarget(previousFollowState.targetPlayer());
-		}
-
 		BehaviorTreeSnapshot currentTreeSnapshot = behaviorTreeRuntime.snapshot();
 		if (
 			followState.goalActive()
@@ -1814,6 +1809,10 @@ public final class EmbodiedAgentRuntime {
 
 	void injectNearbyPlayerForTests(String playerName, Vec3d pos) {
 		nearbyPlayerTracker.injectPlayerNearby(playerName, pos, tickCount, eventBuffer);
+	}
+
+	void disconnectNearbyPlayerForTests(String playerName) {
+		nearbyPlayerTracker.injectPlayerDisconnect(playerName, tickCount, eventBuffer);
 	}
 
 	void injectGoalForTests(GoalSnapshot goalSnapshot) {

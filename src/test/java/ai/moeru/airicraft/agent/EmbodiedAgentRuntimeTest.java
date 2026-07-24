@@ -1854,6 +1854,24 @@ class EmbodiedAgentRuntimeTest {
 	}
 
 	@Test
+	void followGoalRemainsActiveAfterNearbyTargetIsLost() {
+		FakeWorldTaskExecutor executor = new FakeWorldTaskExecutor();
+		EmbodiedAgentRuntime runtime = EmbodiedAgentRuntime.createForTests(executor);
+		runtime.overrideSessionSnapshotForTests(loadedRemoteSession());
+		runtime.injectNearbyPlayerForTests("Alice", new Vec3d(8.0D, 64.0D, 0.0D));
+		runtime.injectGoalForTests(new GoalSnapshot(GoalType.FOLLOW_PLAYER, "Alice", 10L, "test"));
+		runtime.onClientTick(null);
+
+		runtime.disconnectNearbyPlayerForTests("Alice");
+		runtime.onClientTick(null);
+
+		assertTrue(runtime.activeGoal().isPresent());
+		assertEquals(GoalType.FOLLOW_PLAYER, runtime.activeGoal().orElseThrow().type());
+		assertEquals("Alice", runtime.activeGoal().orElseThrow().targetPlayer());
+		assertTrue(runtime.recentEvents(null).events().stream().anyMatch(event -> "follow.target_lost".equals(event.type())));
+	}
+
+	@Test
 	void givePlayerToolRejectsFarTargetBeforeQueuingTask() {
 		FakeWorldTaskExecutor executor = new FakeWorldTaskExecutor();
 		EmbodiedAgentRuntime runtime = EmbodiedAgentRuntime.createForTests(executor);

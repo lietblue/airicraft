@@ -119,6 +119,9 @@ public final class BaritoneTaskExecutor implements WorldTaskExecutor {
 		if (mineDropPickupResult.handled()) {
 			return mineDropPickupResult.event();
 		}
+		if (continueFollow(pathEvent, appliedTask)) {
+			return Optional.empty();
+		}
 		Optional<TerminalOutcome> terminalOutcome = terminalOutcomeFor(pathEvent, appliedTask);
 		if (terminalOutcome.isPresent() && isSuppressedInternalCancel(pathEvent)) {
 			terminalOutcome = Optional.empty();
@@ -356,6 +359,37 @@ public final class BaritoneTaskExecutor implements WorldTaskExecutor {
 			case "CANCELLED", "CANCELED" -> Optional.of(new TerminalOutcome(cancelledStateFor(activeTask == null ? null : activeTask.goal()), TaskTerminationCause.BARITONE_CANCELLED));
 			default -> Optional.empty();
 		};
+	}
+
+	private boolean continueFollow(Optional<String> pathEvent, WorldTaskRequest activeTask) {
+		if (pathEvent.isEmpty()
+			|| activeTask == null
+			|| activeTask.goal() == null
+			|| activeTask.goal().type() != GoalType.FOLLOW_PLAYER) {
+			return false;
+		}
+		String normalized = pathEvent.get().trim().toUpperCase(Locale.ROOT);
+		if (!"AT_GOAL".equals(normalized)
+			&& !"CALC_FAILED".equals(normalized)
+			&& !"CANCELLED".equals(normalized)
+			&& !"CANCELED".equals(normalized)) {
+			return false;
+		}
+		String pathState = normalized;
+		if (!"AT_GOAL".equals(normalized)) {
+			facade.startFollow(activeTask.goal().targetPlayer());
+			pathState = "FOLLOW_REACQUIRING";
+		}
+		snapshot = new TaskExecutionSnapshot(
+			TaskExecutionState.RUNNING,
+			activeTask.taskId(),
+			activeTask.goal(),
+			facade.activeProcessName().orElse(null),
+			pathState,
+			facade.estimatedTicksToGoal().orElse(null),
+			null
+		);
+		return true;
 	}
 
 	private MineDropPickupResult terminalMineDropPickupEvent(Optional<String> pathEvent, WorldTaskRequest activeTask) {

@@ -180,6 +180,55 @@ class BaritoneTaskExecutorTest {
 		FakeBaritoneFacade facade = new FakeBaritoneFacade();
 		BaritoneTaskExecutor executor = new BaritoneTaskExecutor(facade);
 		GoalSnapshot goal = new GoalSnapshot(
+			GoalType.NAVIGATE_TO,
+			null,
+			new GoalPosition(10, 64, 20, true),
+			null,
+			20L,
+			"planner_response"
+		);
+
+		executor.tick(multiplayer(), Optional.of(request("nav-task", goal)));
+		facade.pathEvents.add("CANCELED");
+		facade.pathEvents.add("CANCELED");
+
+		Optional<TaskTerminalEvent> first = executor.tick(multiplayer(), Optional.of(request("nav-task", goal)));
+		Optional<TaskTerminalEvent> second = executor.tick(multiplayer(), Optional.of(request("nav-task", goal)));
+
+		assertTrue(first.isPresent());
+		assertTrue(second.isEmpty());
+		assertEquals(TaskExecutionState.CANCELLED, executor.snapshot().state());
+	}
+
+	@Test
+	void followRemainsRunningAfterReachingTarget() {
+		FakeBaritoneFacade facade = new FakeBaritoneFacade();
+		BaritoneTaskExecutor executor = new BaritoneTaskExecutor(facade);
+		GoalSnapshot goal = new GoalSnapshot(
+			GoalType.FOLLOW_PLAYER,
+			"LanAlice",
+			null,
+			null,
+			20L,
+			"planner_response"
+		);
+
+		executor.tick(multiplayer(), Optional.of(request("follow-task", goal)));
+		facade.pathEvents.add("AT_GOAL");
+
+		Optional<TaskTerminalEvent> event = executor.tick(multiplayer(), Optional.of(request("follow-task", goal)));
+
+		assertTrue(event.isEmpty());
+		assertEquals(TaskExecutionState.RUNNING, executor.snapshot().state());
+		assertEquals("AT_GOAL", executor.snapshot().lastPathEvent());
+		assertEquals(List.of("LanAlice"), facade.followCalls);
+	}
+
+	@Test
+	void cancelledFollowRearmsWithoutCompletingTask() {
+		FakeBaritoneFacade facade = new FakeBaritoneFacade();
+		BaritoneTaskExecutor executor = new BaritoneTaskExecutor(facade);
+		GoalSnapshot goal = new GoalSnapshot(
 			GoalType.FOLLOW_PLAYER,
 			"LanAlice",
 			null,
@@ -190,14 +239,58 @@ class BaritoneTaskExecutorTest {
 
 		executor.tick(multiplayer(), Optional.of(request("follow-task", goal)));
 		facade.pathEvents.add("CANCELED");
-		facade.pathEvents.add("CANCELED");
 
-		Optional<TaskTerminalEvent> first = executor.tick(multiplayer(), Optional.of(request("follow-task", goal)));
-		Optional<TaskTerminalEvent> second = executor.tick(multiplayer(), Optional.of(request("follow-task", goal)));
+		Optional<TaskTerminalEvent> event = executor.tick(multiplayer(), Optional.of(request("follow-task", goal)));
 
-		assertTrue(first.isPresent());
-		assertTrue(second.isEmpty());
-		assertEquals(TaskExecutionState.CANCELLED, executor.snapshot().state());
+		assertTrue(event.isEmpty());
+		assertEquals(TaskExecutionState.RUNNING, executor.snapshot().state());
+		assertEquals("FOLLOW_REACQUIRING", executor.snapshot().lastPathEvent());
+		assertEquals(List.of("LanAlice", "LanAlice"), facade.followCalls);
+	}
+
+	@Test
+	void failedFollowCalculationRearmsWithoutCompletingTask() {
+		FakeBaritoneFacade facade = new FakeBaritoneFacade();
+		BaritoneTaskExecutor executor = new BaritoneTaskExecutor(facade);
+		GoalSnapshot goal = new GoalSnapshot(
+			GoalType.FOLLOW_PLAYER,
+			"LanAlice",
+			null,
+			null,
+			20L,
+			"planner_response"
+		);
+
+		executor.tick(multiplayer(), Optional.of(request("follow-task", goal)));
+		facade.pathEvents.add("CALC_FAILED");
+
+		Optional<TaskTerminalEvent> event = executor.tick(multiplayer(), Optional.of(request("follow-task", goal)));
+
+		assertTrue(event.isEmpty());
+		assertEquals(TaskExecutionState.RUNNING, executor.snapshot().state());
+		assertEquals("FOLLOW_REACQUIRING", executor.snapshot().lastPathEvent());
+		assertEquals(List.of("LanAlice", "LanAlice"), facade.followCalls);
+	}
+
+	@Test
+	void clearingFollowExplicitlyCancelsWithoutRearming() {
+		FakeBaritoneFacade facade = new FakeBaritoneFacade();
+		BaritoneTaskExecutor executor = new BaritoneTaskExecutor(facade);
+		GoalSnapshot goal = new GoalSnapshot(
+			GoalType.FOLLOW_PLAYER,
+			"LanAlice",
+			null,
+			null,
+			20L,
+			"planner_response"
+		);
+
+		executor.tick(multiplayer(), Optional.of(request("follow-task", goal)));
+		executor.tick(multiplayer(), Optional.empty());
+
+		assertEquals(TaskExecutionState.IDLE, executor.snapshot().state());
+		assertEquals(1, facade.cancelCalls);
+		assertEquals(List.of("LanAlice"), facade.followCalls);
 	}
 
 	@Test

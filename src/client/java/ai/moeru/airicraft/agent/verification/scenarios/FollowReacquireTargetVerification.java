@@ -17,10 +17,8 @@ public final class FollowReacquireTargetVerification extends VerificationScenari
 	private final LongPredicate acquiredSeenSince;
 	private final Runnable disconnectTarget;
 	private final LongPredicate lostSeenSince;
-	private final BooleanSupplier goalCleared;
+	private final BooleanSupplier followGoalActiveAfterLoss;
 	private final Runnable reintroduceTarget;
-	private final Runnable setupSecondFollowResponse;
-	private final Runnable injectSecondFollowRequest;
 	private final LongPredicate reacquiredSince;
 	private final BooleanSupplier followGoalActive;
 
@@ -37,10 +35,8 @@ public final class FollowReacquireTargetVerification extends VerificationScenari
 		LongPredicate acquiredSeenSince,
 		Runnable disconnectTarget,
 		LongPredicate lostSeenSince,
-		BooleanSupplier goalCleared,
+		BooleanSupplier followGoalActiveAfterLoss,
 		Runnable reintroduceTarget,
-		Runnable setupSecondFollowResponse,
-		Runnable injectSecondFollowRequest,
 		LongPredicate reacquiredSince,
 		BooleanSupplier followGoalActive
 	) {
@@ -52,10 +48,8 @@ public final class FollowReacquireTargetVerification extends VerificationScenari
 		this.acquiredSeenSince = Objects.requireNonNull(acquiredSeenSince, "acquiredSeenSince");
 		this.disconnectTarget = Objects.requireNonNull(disconnectTarget, "disconnectTarget");
 		this.lostSeenSince = Objects.requireNonNull(lostSeenSince, "lostSeenSince");
-		this.goalCleared = Objects.requireNonNull(goalCleared, "goalCleared");
+		this.followGoalActiveAfterLoss = Objects.requireNonNull(followGoalActiveAfterLoss, "followGoalActiveAfterLoss");
 		this.reintroduceTarget = Objects.requireNonNull(reintroduceTarget, "reintroduceTarget");
-		this.setupSecondFollowResponse = Objects.requireNonNull(setupSecondFollowResponse, "setupSecondFollowResponse");
-		this.injectSecondFollowRequest = Objects.requireNonNull(injectSecondFollowRequest, "injectSecondFollowRequest");
 		this.reacquiredSince = Objects.requireNonNull(reacquiredSince, "reacquiredSince");
 		this.followGoalActive = Objects.requireNonNull(followGoalActive, "followGoalActive");
 	}
@@ -77,12 +71,10 @@ public final class FollowReacquireTargetVerification extends VerificationScenari
 			.action("capture lost baseline", () -> lostBaselineSeqNo = latestEventSeqNo.getAsLong())
 			.action("disconnect target", disconnectTarget)
 			.waitUntil("target lost", 100, () -> lostSeenSince.test(lostBaselineSeqNo))
-			.waitUntil("goal cleared after loss", 100, goalCleared)
+			.assertThat("follow goal remains active after loss", followGoalActiveAfterLoss)
 			.action("capture reacquire baseline", () -> reacquireBaselineSeqNo = latestEventSeqNo.getAsLong())
 			.action("reintroduce target", reintroduceTarget)
-			.action("setup second follow response", setupSecondFollowResponse)
-			.action("inject second follow request", injectSecondFollowRequest)
-			.waitUntil("target reacquired", 300, () -> reacquiredSince.test(reacquireBaselineSeqNo))
-			.assertThat("follow goal active again", followGoalActive);
+			.waitUntil("target reacquired without another request", 300, () -> reacquiredSince.test(reacquireBaselineSeqNo))
+			.assertThat("follow goal remains active", followGoalActive);
 	}
 }

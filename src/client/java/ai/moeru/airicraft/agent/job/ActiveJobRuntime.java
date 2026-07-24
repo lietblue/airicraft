@@ -353,17 +353,6 @@ public final class ActiveJobRuntime {
 		);
 	}
 
-	public void clearFollowTarget(String targetPlayer) {
-		if (activeJob.type() != ActiveJobType.FOLLOW_PLAYER || activeJob.directGoal() == null) {
-			return;
-		}
-		if (!Objects.equals(activeJob.directGoal().targetPlayer(), targetPlayer)) {
-			return;
-		}
-		activeJob = ActiveJob.idle();
-		refreshDesiredTask(lastEvidence.tick());
-	}
-
 	public void tick(
 		TaskExecutionSnapshot primitiveExecution,
 		WorldEvidence evidence,
