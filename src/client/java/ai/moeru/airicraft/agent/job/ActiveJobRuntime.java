@@ -193,18 +193,20 @@ public final class ActiveJobRuntime {
 		}
 
 		boolean mismatch = brokenBlocks != spec.quantity();
-		String message = mineBlocksTerminalMessage(event.message(), brokenBlocks, spec.quantity(), mismatch);
 		String warning = mismatch
 			? mineBlocksMismatchWarning(event.taskId(), brokenBlocks, spec.quantity())
 			: null;
 		if (mismatch && event.terminalState() == TaskExecutionState.COMPLETED) {
 			return TerminalTaskReport.warnOnly(warning);
 		}
-		if (!mismatch && event.terminalState() == TaskExecutionState.COMPLETED && activeJob.type() == ActiveJobType.MINE_BLOCKS) {
+		TaskTerminalEvent reportedEvent = event;
+		if (!mismatch && activeJob.type() == ActiveJobType.MINE_BLOCKS) {
 			activeJob = updated(activeJob, ActiveJobStatus.COMPLETED, null, null, brokenBlocks, lastEvidence.tick());
 			refreshDesiredTask(lastEvidence.tick());
+			reportedEvent = completedMineBlocksTerminalEvent(event);
 		}
-		return TerminalTaskReport.of(withTerminalMessage(event, message), warning);
+		String message = mineBlocksTerminalMessage(reportedEvent.message(), brokenBlocks, spec.quantity(), mismatch);
+		return TerminalTaskReport.of(withTerminalMessage(reportedEvent, message), warning);
 	}
 
 	public void submitTask(TaskSpec spec, int currentResourceCount, String source, long tick) {
@@ -817,6 +819,19 @@ public final class ActiveJobRuntime {
 			event.terminalState(),
 			message,
 			event.terminationCause()
+		);
+	}
+
+	private static TaskTerminalEvent completedMineBlocksTerminalEvent(TaskTerminalEvent event) {
+		if (event.terminalState() == TaskExecutionState.COMPLETED) {
+			return event;
+		}
+		return new TaskTerminalEvent(
+			event.taskId(),
+			event.goal(),
+			TaskExecutionState.COMPLETED,
+			"Goal reached",
+			TaskTerminationCause.GOAL_REACHED
 		);
 	}
 

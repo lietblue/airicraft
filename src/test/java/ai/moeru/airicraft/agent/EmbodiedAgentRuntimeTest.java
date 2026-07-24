@@ -989,6 +989,53 @@ class EmbodiedAgentRuntimeTest {
 	}
 
 	@Test
+	void mineBlocksExactBreakCountReleasesNextPlannerActionAfterCancellation() {
+		FakeWorldTaskExecutor executor = new FakeWorldTaskExecutor();
+		EmbodiedAgentRuntime runtime = EmbodiedAgentRuntime.createForTests(executor);
+		runtime.overrideSessionSnapshotForTests(loadedRemoteSession());
+
+		runtime.executePlannerToolCallForTests(new PlannerToolCall(
+			"call_mine_blocks",
+			"mine_blocks",
+			JsonParser.parseString("""
+				{"blockIds":["minecraft:stone"],"quantity":3}
+				""").getAsJsonObject(),
+			null,
+			null
+		));
+		runtime.onClientTick(null);
+		WorldTaskRequest request = executor.lastActiveTask.orElseThrow();
+		runtime.onPlayerMinedBlock("minecraft:stone", 0, 64, 0);
+		runtime.onPlayerMinedBlock("minecraft:stone", 1, 64, 0);
+		runtime.onPlayerMinedBlock("minecraft:stone", 2, 64, 0);
+		executor.nextTerminalEvent = Optional.of(new TaskTerminalEvent(
+			request.taskId(),
+			request.goal(),
+			TaskExecutionState.CANCELLED,
+			"Task cancelled",
+			TaskTerminationCause.BARITONE_CANCELLED
+		));
+
+		runtime.onClientTick(null);
+
+		assertEquals(ActiveJobStatus.COMPLETED, runtime.activeJob().status());
+		assertTrue(runtime.recentEvents(null).events().stream().anyMatch(event -> "task.completed".equals(event.type())));
+		String result = runtime.executePlannerToolCallForTests(new PlannerToolCall(
+			"call_navigate",
+			"navigate_to",
+			JsonParser.parseString("""
+				{"x":1,"y":64,"z":1,"exactY":true}
+				""").getAsJsonObject(),
+			null,
+			null
+		));
+
+		assertTrue(result.contains("accepted queued"), result);
+		assertFalse(result.contains("active_task_in_progress"), result);
+		assertEquals(ActiveJobType.NAVIGATE_TO, runtime.activeJob().type());
+	}
+
+	@Test
 	void collectSmeltedItemsToolRoutesWorldTaskRequest() {
 		FakeWorldTaskExecutor executor = new FakeWorldTaskExecutor();
 		EmbodiedAgentRuntime runtime = EmbodiedAgentRuntime.createForTests(executor);

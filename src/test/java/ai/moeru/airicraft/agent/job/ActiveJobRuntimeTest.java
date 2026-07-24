@@ -124,6 +124,45 @@ class ActiveJobRuntimeTest {
 	}
 
 	@Test
+	void mineBlocksExactBreakCountNormalizesCancelledTerminalToCompletion() {
+		ActiveJobRuntime runtime = new ActiveJobRuntime();
+		runtime.applyPlannerResponse(
+			new DialogueResponse(
+				"Mining dirt.",
+				new DialogueIntent(DialogueIntentType.JOB_UPDATE, ActiveJobProposal.mineBlocks(new GoalMineSpec(List.of("minecraft:dirt"), 3))),
+				1L
+			),
+			0,
+			"test",
+			1L
+		);
+		runtime.tick(TaskExecutionSnapshot.idle(), evidence(Map.of("minecraft:dirt", 0), 2L), true, true, 2L);
+		WorldTaskRequest request = runtime.activeTaskRequest().orElseThrow();
+		runtime.recordMinedBlock("minecraft:dirt", 3L);
+		runtime.recordMinedBlock("minecraft:dirt", 4L);
+		runtime.recordMinedBlock("minecraft:dirt", 5L);
+
+		ActiveJobRuntime.TerminalTaskReport report = runtime.reportTerminalTaskEvent(
+			new TaskTerminalEvent(
+				request.taskId(),
+				request.goal(),
+				TaskExecutionState.CANCELLED,
+				"Task cancelled",
+				TaskTerminationCause.BARITONE_CANCELLED
+			),
+			Optional.of(request)
+		);
+
+		TaskTerminalEvent completed = report.event().orElseThrow();
+		assertEquals(TaskExecutionState.COMPLETED, completed.terminalState());
+		assertEquals(TaskTerminationCause.GOAL_REACHED, completed.terminationCause());
+		assertEquals("Goal reached brokenBlocks=3 requestedBlocks=3", completed.message());
+		assertTrue(report.warning().isEmpty());
+		assertEquals(ActiveJobStatus.COMPLETED, runtime.current().status());
+		assertTrue(runtime.activeTaskRequest().isEmpty());
+	}
+
+	@Test
 	void collectResourceForwardsLastMatchingBrokenBlockToMinePickupSweep() {
 		ActiveJobRuntime runtime = new ActiveJobRuntime();
 		runtime.submitTask(new TaskSpec(TaskType.COLLECT_RESOURCE, TaskResourceKind.COBBLESTONE, 3), 0, "test", 1L);
