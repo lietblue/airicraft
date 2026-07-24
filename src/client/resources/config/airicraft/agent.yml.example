@@ -1,3 +1,15 @@
+# Planner inference backend: openai-compatible | codex-app-server
+plannerBackend: "openai-compatible"
+
+# Local Codex app-server settings. Codex mode uses the existing local Codex login
+# and does not require providerBaseUrl, apiKey, or model below.
+codexAppServer:
+  executable: "codex"
+  # Empty uses the model selected by the local Codex configuration.
+  model: ""
+  startupTimeoutMillis: 10000
+  turnTimeoutMillis: 120000
+
 # OpenAI-compatible base URL, for example: https://api.openai.com/v1
 providerBaseUrl: "https://api.openai.com/v1"
 

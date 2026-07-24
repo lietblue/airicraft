@@ -65,13 +65,61 @@ public record AgentConfig(
 		int plannerSessionCoalesceMaxMillis,
 		String visionImageDetail,
 		boolean plannerNativeVisionEnabled,
-		boolean plannerUseJsonObjectResponseFormat
+		boolean plannerUseJsonObjectResponseFormat,
+		PlannerBackend plannerBackend,
+		CodexAppServerConfig codexAppServer
 	) {
 		public LlmConfig {
 			plannerPendingSemanticEventCap = Math.max(1, plannerPendingSemanticEventCap);
 			plannerSessionCoalesceStepMillis = Math.max(0, plannerSessionCoalesceStepMillis);
 			plannerSessionCoalesceMinMillis = Math.max(0, plannerSessionCoalesceMinMillis);
 			plannerSessionCoalesceMaxMillis = Math.max(plannerSessionCoalesceMinMillis, plannerSessionCoalesceMaxMillis);
+			plannerBackend = plannerBackend == null ? PlannerBackend.OPENAI_COMPATIBLE : plannerBackend;
+			codexAppServer = codexAppServer == null ? CodexAppServerConfig.defaults() : codexAppServer;
+		}
+
+		public LlmConfig(
+			String providerBaseUrl,
+			String apiKey,
+			String model,
+			String visionProviderBaseUrl,
+			String visionApiKey,
+			String visionModel,
+			int requestTimeoutMillis,
+			int visionRequestTimeoutMillis,
+			int maxRecentConversationTurns,
+			int plannerCompactionTriggerTokens,
+			int plannerPendingSemanticEventCap,
+			int plannerSessionMaxConcurrentAttempts,
+			int plannerSessionCoalesceStepMillis,
+			int plannerSessionCoalesceMinMillis,
+			int plannerSessionCoalesceMaxMillis,
+			String visionImageDetail,
+			boolean plannerNativeVisionEnabled,
+			boolean plannerUseJsonObjectResponseFormat
+		) {
+			this(
+				providerBaseUrl,
+				apiKey,
+				model,
+				visionProviderBaseUrl,
+				visionApiKey,
+				visionModel,
+				requestTimeoutMillis,
+				visionRequestTimeoutMillis,
+				maxRecentConversationTurns,
+				plannerCompactionTriggerTokens,
+				plannerPendingSemanticEventCap,
+				plannerSessionMaxConcurrentAttempts,
+				plannerSessionCoalesceStepMillis,
+				plannerSessionCoalesceMinMillis,
+				plannerSessionCoalesceMaxMillis,
+				visionImageDetail,
+				plannerNativeVisionEnabled,
+				plannerUseJsonObjectResponseFormat,
+				PlannerBackend.OPENAI_COMPATIBLE,
+				CodexAppServerConfig.defaults()
+			);
 		}
 
 		public LlmConfig(
@@ -166,12 +214,19 @@ public record AgentConfig(
 		}
 
 		public boolean isConfigured() {
+			if (plannerBackend == PlannerBackend.CODEX_APP_SERVER) {
+				return codexAppServer.isConfigured();
+			}
 			return providerBaseUrl != null
 				&& !providerBaseUrl.isBlank()
 				&& apiKey != null
 				&& !apiKey.isBlank()
 				&& model != null
 				&& !model.isBlank();
+		}
+
+		public boolean backendManagedHistory() {
+			return plannerBackend == PlannerBackend.CODEX_APP_SERVER;
 		}
 
 		public boolean visionConfigured() {
@@ -187,6 +242,52 @@ public record AgentConfig(
 			return plannerNativeVisionEnabled
 				? ai.moeru.airicraft.agent.llm.PlannerVisionMode.NATIVE_TOOL_IMAGE
 				: ai.moeru.airicraft.agent.llm.PlannerVisionMode.EXTERNAL_SUMMARY;
+		}
+	}
+
+	public enum PlannerBackend {
+		OPENAI_COMPATIBLE("openai-compatible"),
+		CODEX_APP_SERVER("codex-app-server");
+
+		private final String wireValue;
+
+		PlannerBackend(String wireValue) {
+			this.wireValue = wireValue;
+		}
+
+		public String wireValue() {
+			return wireValue;
+		}
+
+		public static PlannerBackend fromWireValue(String value) {
+			for (PlannerBackend backend : values()) {
+				if (backend.wireValue.equalsIgnoreCase(value == null ? "" : value.trim())) {
+					return backend;
+				}
+			}
+			throw new IllegalArgumentException("Unsupported plannerBackend: " + value);
+		}
+	}
+
+	public record CodexAppServerConfig(
+		String executable,
+		String model,
+		int startupTimeoutMillis,
+		int turnTimeoutMillis
+	) {
+		public CodexAppServerConfig {
+			executable = executable == null ? "" : executable.trim();
+			model = model == null ? "" : model.trim();
+			startupTimeoutMillis = Math.max(1, startupTimeoutMillis);
+			turnTimeoutMillis = Math.max(1, turnTimeoutMillis);
+		}
+
+		public static CodexAppServerConfig defaults() {
+			return new CodexAppServerConfig("codex", "", 10_000, 120_000);
+		}
+
+		public boolean isConfigured() {
+			return !executable.isBlank();
 		}
 	}
 

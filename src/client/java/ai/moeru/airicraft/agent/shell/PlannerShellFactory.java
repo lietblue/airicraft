@@ -12,6 +12,7 @@ import ai.moeru.airicraft.agent.llm.CurrentInventoryService;
 import ai.moeru.airicraft.agent.llm.CurrentWorldQueryService;
 import ai.moeru.airicraft.agent.llm.CurrentWorldQueryToolProvider;
 import ai.moeru.airicraft.agent.llm.CurrentViewVisionService;
+import ai.moeru.airicraft.agent.llm.LlmBackend;
 import ai.moeru.airicraft.agent.llm.OpenAiCompatibleChatClient;
 import ai.moeru.airicraft.agent.llm.OpenAiCompatibleLlmBackend;
 import ai.moeru.airicraft.agent.llm.OpenAiCompatibleVisionBackend;
@@ -25,6 +26,7 @@ import ai.moeru.airicraft.agent.llm.PlannerToolNarrationSink;
 import ai.moeru.airicraft.agent.llm.PlannerToolRegistry;
 import ai.moeru.airicraft.agent.llm.WorldFeatureSearchService;
 import ai.moeru.airicraft.agent.llm.WorldFeatureSearchToolProvider;
+import ai.moeru.airicraft.agent.llm.codex.CodexAppServerLlmBackend;
 import ai.moeru.airicraft.agent.observability.AgentObservability;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.util.math.BlockPos;
@@ -147,15 +149,20 @@ public final class PlannerShellFactory {
 			new ReiRecipeSearchToolProvider(),
 			new MapPlannerToolProvider(MapIntegrationBridge::registry)
 		);
+		LlmBackend plannerBackend = switch (config.llm().plannerBackend()) {
+			case OPENAI_COMPATIBLE -> new OpenAiCompatibleLlmBackend(config.llm(), observability, toolRegistry);
+			case CODEX_APP_SERVER -> new CodexAppServerLlmBackend(config.llm(), observability, toolRegistry);
+		};
 		PlannerOrchestrator orchestrator = new PlannerOrchestrator(
-			new PlannerExecutor(new OpenAiCompatibleLlmBackend(config.llm(), observability, toolRegistry), observability),
+			new PlannerExecutor(plannerBackend, observability),
 			new PlannerCompactionService(new OpenAiCompatibleChatClient(config.llm(), observability, toolRegistry), observability),
 			new PlannerContextAggregator(
 				effectiveClock,
 				config.llm().plannerCompactionTriggerTokens(),
 				config.llm().plannerPendingSemanticEventCap(),
 				config.llm().plannerVisionMode(),
-				toolRegistry
+				toolRegistry,
+				config.llm().backendManagedHistory()
 			),
 			visionService,
 			inventoryService,

@@ -24,6 +24,7 @@ public final class PlannerContextAggregator {
 	private final int pendingSemanticEventCap;
 	private final PlannerVisionMode visionMode;
 	private final PlannerToolRegistry toolRegistry;
+	private final boolean backendManagedHistory;
 	private final SemanticContextProjector semanticContextProjector = new SemanticContextProjector();
 
 	private PlannerContextState state = PlannerContextState.initial();
@@ -46,12 +47,24 @@ public final class PlannerContextAggregator {
 		PlannerVisionMode visionMode,
 		PlannerToolRegistry toolRegistry
 	) {
+		this(clock, compactionTriggerTokens, pendingSemanticEventCap, visionMode, toolRegistry, false);
+	}
+
+	public PlannerContextAggregator(
+		Clock clock,
+		int compactionTriggerTokens,
+		int pendingSemanticEventCap,
+		PlannerVisionMode visionMode,
+		PlannerToolRegistry toolRegistry,
+		boolean backendManagedHistory
+	) {
 		this.clock = Objects.requireNonNull(clock, "clock");
 		this.zoneId = clock.getZone();
 		this.compactionTriggerTokens = compactionTriggerTokens;
 		this.pendingSemanticEventCap = Math.max(1, pendingSemanticEventCap);
 		this.visionMode = Objects.requireNonNull(visionMode, "visionMode");
 		this.toolRegistry = Objects.requireNonNull(toolRegistry, "toolRegistry");
+		this.backendManagedHistory = backendManagedHistory;
 	}
 
 	public boolean compactionPending() {
@@ -185,6 +198,9 @@ public final class PlannerContextAggregator {
 			return;
 		}
 		state = PlannerContextReducer.commitAcceptedSnapshot(state, snapshot);
+		if (backendManagedHistory) {
+			state = withoutAcceptedProviderHistory(state);
+		}
 		lastFrozenSnapshot = null;
 		recomputeOverflowFlushPending();
 	}
@@ -214,7 +230,13 @@ public final class PlannerContextAggregator {
 		if (snapshot == null) {
 			throw new IllegalStateException("No planner context snapshot");
 		}
-		LlmConversation conversation = withCurrentSystemPrompt(snapshot.plannerConversation());
+		LlmConversation conversation = followUpBase(snapshot);
+		if (backendManagedHistory) {
+			return conversation.withAppended(LlmChatMessage.user(
+				"Tool result: " + (toolResult == null || toolResult.isBlank() ? "none" : toolResult),
+				LlmMessageKind.TOOL_RESULT
+			));
+		}
 		if (priorAssistantRawContent != null) {
 			conversation = conversation.withAppended(LlmChatMessage.assistant(
 				OpenAiCompatibleMessageContent.extractVisibleText(priorAssistantRawContent),
@@ -248,12 +270,19 @@ public final class PlannerContextAggregator {
 		if (toolCalls == null || toolCalls.isEmpty()) {
 			throw new IllegalArgumentException("toolCalls");
 		}
-		LlmConversation conversation = withCurrentSystemPrompt(snapshot.plannerConversation())
-			.withAppended(LlmChatMessage.assistantToolCalls("", toolCalls));
+		LlmConversation conversation = followUpBase(snapshot);
+		if (!backendManagedHistory) {
+			conversation = conversation.withAppended(LlmChatMessage.assistantToolCalls("", toolCalls));
+		}
 		for (int index = 0; index < toolCalls.size(); index++) {
 			PlannerToolCall toolCall = toolCalls.get(index);
 			String toolResult = toolResults == null || index >= toolResults.size() ? "" : toolResults.get(index);
-			conversation = conversation.withAppended(LlmChatMessage.tool(toolCall.id(), toolResultContent(toolResult)));
+			conversation = backendManagedHistory
+				? conversation.withAppended(LlmChatMessage.user(
+					"Tool result for " + toolCall.name() + ": " + toolResultContent(toolResult),
+					LlmMessageKind.TOOL_RESULT
+				))
+				: conversation.withAppended(LlmChatMessage.tool(toolCall.id(), toolResultContent(toolResult)));
 		}
 		return conversation;
 	}
@@ -267,7 +296,16 @@ public final class PlannerContextAggregator {
 		if (snapshot == null) {
 			throw new IllegalStateException("No planner context snapshot");
 		}
-		LlmConversation conversation = withCurrentSystemPrompt(snapshot.plannerConversation());
+		LlmConversation conversation = followUpBase(snapshot);
+		if (backendManagedHistory) {
+			return conversation.withAppended(
+				LlmChatMessage.userWithImage(
+					toolResult == null || toolResult.isBlank() ? "Tool result: image attached." : toolResult,
+					LlmMessageKind.TOOL_RESULT,
+					imageAttachment
+				)
+			);
+		}
 		if (priorAssistantRawContent != null) {
 			conversation = conversation.withAppended(LlmChatMessage.assistant(
 				OpenAiCompatibleMessageContent.extractVisibleText(priorAssistantRawContent),
@@ -289,6 +327,17 @@ public final class PlannerContextAggregator {
 		String toolResult,
 		LlmImageAttachment imageAttachment
 	) {
+		if (backendManagedHistory && imageAttachment != null) {
+			return followUpBase(snapshot).withAppended(
+				LlmChatMessage.userWithImage(
+					toolResult == null || toolResult.isBlank()
+						? "Tool result for " + toolCall.name() + ": image attached."
+						: "Tool result for " + toolCall.name() + ": " + toolResult,
+					LlmMessageKind.TOOL_RESULT,
+					imageAttachment
+				)
+			);
+		}
 		LlmConversation conversation = buildPlannerFollowUpConversation(snapshot, toolCall, toolResult);
 		if (imageAttachment == null) {
 			return conversation;
@@ -326,25 +375,28 @@ public final class PlannerContextAggregator {
 
 	public void recordAgentTurn(DialogueTurn turn, JsonElement rawAssistantContent) {
 		Objects.requireNonNull(turn, "turn");
+		if (backendManagedHistory) {
+			return;
+		}
 		state = PlannerContextReducer.recordAcceptedAssistantTurn(state, turn, rawAssistantContent);
 	}
 
 	public void recordAcceptedToolExchange(JsonElement assistantRawContent, String toolResultText, long tick, long timestampMs) {
-		if (assistantRawContent == null) {
+		if (backendManagedHistory || assistantRawContent == null) {
 			return;
 		}
 		state = PlannerContextReducer.recordAcceptedToolExchange(state, assistantRawContent, toolResultText, tick, timestampMs);
 	}
 
 	public void recordAcceptedToolExchange(PlannerToolCall toolCall, String toolResultText, long tick, long timestampMs) {
-		if (toolCall == null) {
+		if (backendManagedHistory || toolCall == null) {
 			return;
 		}
 		state = PlannerContextReducer.recordAcceptedToolExchange(state, toolCall, toolResultText, tick, timestampMs);
 	}
 
 	public void recordAcceptedToolExchange(List<PlannerToolCall> toolCalls, List<String> toolResultTexts, long tick, long timestampMs) {
-		if (toolCalls == null || toolCalls.isEmpty()) {
+		if (backendManagedHistory || toolCalls == null || toolCalls.isEmpty()) {
 			return;
 		}
 		state = PlannerContextReducer.recordAcceptedToolExchange(state, toolCalls, toolResultTexts, tick, timestampMs);
@@ -355,7 +407,9 @@ public final class PlannerContextAggregator {
 	}
 
 	public void recordUsage(LlmUsageSnapshot usage) {
-		state = PlannerContextReducer.updateUsage(state, usage, compactionTriggerTokens);
+		state = backendManagedHistory
+			? PlannerContextReducer.updateObservedUsage(state, usage, false)
+			: PlannerContextReducer.updateUsage(state, usage, compactionTriggerTokens);
 	}
 
 	public void recordObservedUsage(LlmUsageSnapshot usage) {
@@ -431,15 +485,41 @@ public final class PlannerContextAggregator {
 	) {
 		ArrayList<LlmChatMessage> messages = new ArrayList<>();
 		messages.add(LlmChatMessage.system(PlannerPromptPolicy.systemPrompt(visionMode, toolRegistry)));
-		if (state.activeCheckpoint() != null) {
+		if (!backendManagedHistory && state.activeCheckpoint() != null) {
 			messages.add(LlmChatMessage.user(state.activeCheckpoint().renderMessage(), LlmMessageKind.CHECKPOINT));
 		}
-		messages.addAll(renderAcceptedHistory(anchorTimeMs));
+		if (!backendManagedHistory) {
+			messages.addAll(renderAcceptedHistory(anchorTimeMs));
+		}
 		messages.addAll(snapshotNotices);
 		if (terminalMessage != null) {
 			messages.add(terminalMessage);
 		}
 		return LlmConversation.of(messages);
+	}
+
+	private LlmConversation followUpBase(PlannerContextSnapshot snapshot) {
+		if (!backendManagedHistory) {
+			return withCurrentSystemPrompt(snapshot.plannerConversation());
+		}
+		return LlmConversation.of(List.of(LlmChatMessage.system(PlannerPromptPolicy.systemPrompt(visionMode, toolRegistry))));
+	}
+
+	private static PlannerContextState withoutAcceptedProviderHistory(PlannerContextState value) {
+		return new PlannerContextState(
+			List.of(),
+			null,
+			value.pendingSemanticEvents(),
+			value.pendingSemanticGapVersion(),
+			value.nextSemanticGapVersion(),
+			value.lastObservedEventSeqNo(),
+			value.lastAcceptedAmbientContext(),
+			value.lastAcceptedTimeContextAtMs(),
+			false,
+			value.lastObservedUsage(),
+			value.queuedTriggers(),
+			value.nextTriggerSeqNo()
+		);
 	}
 
 	private LlmConversation withCurrentSystemPrompt(LlmConversation conversation) {

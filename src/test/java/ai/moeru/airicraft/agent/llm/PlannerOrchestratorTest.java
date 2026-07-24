@@ -918,6 +918,7 @@ class PlannerOrchestratorTest {
 
 		orchestrator.submit(requestAt(11L, 1_100L, "Alice", "B"));
 		assertEquals(1, backend.callCount());
+		assertEquals(List.of(1L), backend.discardedGenerations());
 		PlannerOrchestratorDebugSnapshot firstCoalesce = orchestrator.debugSnapshot();
 		assertTrue(firstCoalesce.coalescePending());
 		assertEquals(1_010L, firstCoalesce.coalesceReadyAtMs());
@@ -960,6 +961,7 @@ class PlannerOrchestratorTest {
 		assertEquals(2L, result.generation());
 		assertEquals(3, result.request().triggerBatch().size());
 		assertEquals(1L, orchestrator.debugSnapshot().supersededCount());
+		assertEquals(List.of(2L), backend.acceptedGenerations());
 	}
 
 	@Test
@@ -2122,6 +2124,7 @@ class PlannerOrchestratorTest {
 		assertFalse(result.succeeded());
 		assertTrue(result.failureMessage().contains("tool_not_discovered: navigate_to"));
 		assertTrue(invokedTools.isEmpty());
+		assertTrue(backend.acceptedGenerations().isEmpty());
 	}
 
 	@Test
@@ -2154,6 +2157,8 @@ class PlannerOrchestratorTest {
 			null
 		), null));
 		awaitBackendCallCount(orchestrator, backend, 2, Duration.ofSeconds(1));
+		assertEquals(List.of(1L), backend.acceptedGenerations());
+		assertEquals(0, orchestrator.debugSnapshot().context().queuedTriggerCount());
 
 		LlmConversation followUp = backend.conversation(1);
 		assertTrue(conversationText(followUp).contains("navigate_to"));
@@ -2377,13 +2382,10 @@ class PlannerOrchestratorTest {
 		assertEquals(1, backend.callCount());
 		PlannerOrchestratorDebugSnapshot snapshot = orchestrator.debugSnapshot();
 		assertTrue(snapshot.coalescePending());
-		assertEquals(10L, snapshot.coalesceWindowMs());
+		assertEquals(0L, snapshot.coalesceWindowMs());
 
 		visionTool.captureFuture().complete(capturedScreenshot());
 		assertNull(awaitNullPoll(orchestrator));
-		assertEquals(1, backend.callCount());
-
-		clock.advanceMillis(10L);
 		awaitBackendCallCount(orchestrator, backend, 2, Duration.ofSeconds(1));
 
 		backend.succeed(1, replyOnly("reply B"));
@@ -3362,6 +3364,8 @@ class PlannerOrchestratorTest {
 	private static final class RecordingBackend implements LlmBackend {
 		private final List<LlmConversation> conversations = new ArrayList<>();
 		private final List<CompletableFuture<LlmCallResult<PlannerResponse>>> responses = new ArrayList<>();
+		private final List<Long> acceptedGenerations = new ArrayList<>();
+		private final List<Long> discardedGenerations = new ArrayList<>();
 		private int completedCallCount;
 
 		@Override
@@ -3388,6 +3392,21 @@ class PlannerOrchestratorTest {
 					notifyAll();
 				}
 			}
+		}
+
+		@Override
+		public LlmCallResult<PlannerResponse> generate(PlannerBackendRequest request) throws LlmBackendException {
+			return generate(request.conversation());
+		}
+
+		@Override
+		public synchronized void acceptGeneration(long generation) {
+			acceptedGenerations.add(generation);
+		}
+
+		@Override
+		public synchronized void discardGeneration(long generation) {
+			discardedGenerations.add(generation);
 		}
 
 		@Override
@@ -3425,6 +3444,14 @@ class PlannerOrchestratorTest {
 
 		private synchronized int callCount() {
 			return conversations.size();
+		}
+
+		private synchronized List<Long> acceptedGenerations() {
+			return List.copyOf(acceptedGenerations);
+		}
+
+		private synchronized List<Long> discardedGenerations() {
+			return List.copyOf(discardedGenerations);
 		}
 
 		private synchronized void awaitCompletions(int expectedCount, Duration timeout) {

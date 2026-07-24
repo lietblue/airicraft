@@ -74,7 +74,7 @@ public final class PlannerExecutor {
 		long submissionId = nextSubmissionId++;
 		CompletableFuture<LlmCallResult<PlannerResponse>> future = CompletableFuture.supplyAsync(() -> {
 			try (Scope scope = plannerContext.makeCurrent()) {
-				return llmBackend.generate(conversation);
+				return llmBackend.generate(new PlannerBackendRequest(generation, attempt, phase, request, conversation));
 			}
 			catch (LlmBackendException exception) {
 				throw new CompletionException(exception);
@@ -153,16 +153,47 @@ public final class PlannerExecutor {
 		llmBackend.injectTimeout();
 	}
 
+	public boolean managesConversationHistory() {
+		return llmBackend.managesConversationHistory();
+	}
+
+	public void acceptGeneration(long generation) throws LlmBackendException {
+		llmBackend.acceptGeneration(generation);
+	}
+
+	public void discardGeneration(long generation) {
+		llmBackend.discardGeneration(generation);
+		if (!llmBackend.supportsGenerationCancellation()) {
+			return;
+		}
+		Iterator<Map.Entry<Long, InFlightAttempt>> iterator = inFlightAttempts.entrySet().iterator();
+		while (iterator.hasNext()) {
+			InFlightAttempt attempt = iterator.next().getValue();
+			if (attempt.generation() != generation) {
+				continue;
+			}
+			attempt.future().cancel(true);
+			endFlightSpan(attempt.context());
+			iterator.remove();
+		}
+	}
+
 	public void reset() {
 		for (InFlightAttempt attempt : inFlightAttempts.values()) {
 			attempt.future().cancel(true);
 			endFlightSpan(attempt.context());
 		}
 		inFlightAttempts.clear();
+		llmBackend.resetBackend();
 	}
 
 	public void shutdown() {
-		reset();
+		for (InFlightAttempt attempt : inFlightAttempts.values()) {
+			attempt.future().cancel(true);
+			endFlightSpan(attempt.context());
+		}
+		inFlightAttempts.clear();
+		llmBackend.shutdownBackend();
 		executorService.shutdownNow();
 	}
 

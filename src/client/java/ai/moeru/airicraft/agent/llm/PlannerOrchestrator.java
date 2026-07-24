@@ -20,6 +20,7 @@ import io.opentelemetry.context.Scope;
 import java.time.Clock;
 import java.util.ArrayList;
 import java.util.ArrayDeque;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
@@ -67,6 +68,7 @@ public final class PlannerOrchestrator {
 	private final PlannerToolExecutionObserver toolExecutionObserver;
 	private final PlannerTurnJournal turnJournal;
 	private final PlannerConversationProjector conversationProjector;
+	private final HashSet<Long> committedSnapshotGenerations = new HashSet<>();
 
 	private PlannerRequest pendingSubmitRequest;
 	private PendingToolExecution pendingToolExecution;
@@ -711,6 +713,7 @@ public final class PlannerOrchestrator {
 			}
 			long supersededGeneration = sessionCoordinator.activeGeneration();
 			coalesceSupersededSnapshot = sessionCoordinator.supersedeActiveSessionIfReplaceable();
+			committedSnapshotGenerations.remove(supersededGeneration);
 			turnJournal.markSuperseded(supersededGeneration);
 			recordConversationSources();
 			armCoalesceWindow();
@@ -782,6 +785,7 @@ public final class PlannerOrchestrator {
 		observability.recordFailure(turnContext, plannerResult.failureType().name(), plannerResult.failureMessage(), null);
 		lifecycleListener.onPlannerExecutionFailed(plannerResult);
 		sessionCoordinator.finishGeneration(plannerResult.generation(), true);
+		committedSnapshotGenerations.remove(plannerResult.generation());
 		endTurnSpan();
 		return plannerResult;
 	}
@@ -796,6 +800,10 @@ public final class PlannerOrchestrator {
 		lifecycleListener.onPlannerExecutionSucceeded(plannerResult);
 		List<PlannerToolCall> toolCalls = effectiveToolCalls(plannerResult.response());
 		if (toolCalls.isEmpty()) {
+			PlannerExecutionResult promotionFailure = promoteBackendCandidate(plannerResult);
+			if (promotionFailure != null) {
+				return finishFailedPlannerResult(promotionFailure);
+			}
 			acceptPlannerReply(plannerResult);
 			return plannerResult;
 		}
@@ -808,10 +816,36 @@ public final class PlannerOrchestrator {
 			appendFailureCard(toolRequestFailure);
 			debugRecorder.recordPlannerCompletion(toolRequestFailure);
 			sessionCoordinator.finishGeneration(plannerResult.generation(), true);
+			committedSnapshotGenerations.remove(plannerResult.generation());
 			return toolRequestFailure;
 		}
-		startToolExecution(plannerResult, toolCalls);
-		return null;
+		return startToolExecution(plannerResult, toolCalls);
+	}
+
+	private PlannerExecutionResult promoteBackendCandidate(PlannerExecutionResult plannerResult) {
+		try {
+			if (sessionCoordinator.acceptGeneration(plannerResult.generation())) {
+				return null;
+			}
+			return backendPromotionFailure(plannerResult, "Planner generation is no longer active");
+		}
+		catch (LlmBackendException exception) {
+			return backendPromotionFailure(plannerResult, exception.getMessage());
+		}
+	}
+
+	private static PlannerExecutionResult backendPromotionFailure(PlannerExecutionResult result, String message) {
+		return new PlannerExecutionResult(
+			result.request(),
+			null,
+			result.usage(),
+			LlmFailureType.PROVIDER_ERROR,
+			message == null || message.isBlank() ? "Failed to promote planner backend context" : message,
+			result.generation(),
+			result.attempt(),
+			result.phase(),
+			false
+		);
 	}
 
 	private void acceptPlannerReply(PlannerExecutionResult plannerResult) {
@@ -1030,7 +1064,12 @@ public final class PlannerOrchestrator {
 			+ "\nWhen calling a tool, leave assistant content empty and put visible pre-action text in the tool narration argument.";
 	}
 
-	private void startToolExecution(PlannerExecutionResult plannerResult, List<PlannerToolCall> toolCalls) {
+	private PlannerExecutionResult startToolExecution(PlannerExecutionResult plannerResult, List<PlannerToolCall> toolCalls) {
+		PlannerExecutionResult promotionFailure = promoteBackendCandidate(plannerResult);
+		if (promotionFailure != null) {
+			return finishFailedPlannerResult(promotionFailure);
+		}
+		commitSnapshotIfNeeded(plannerResult.generation());
 		for (PlannerToolCall toolCall : toolCalls) {
 			narrationSink.onToolNarration(toolCall);
 		}
@@ -1047,6 +1086,7 @@ public final class PlannerOrchestrator {
 			plannerResult.response().rawAssistantContent(),
 			toolCalls
 		);
+		return null;
 	}
 
 	private boolean pendingSideEffectToolExecution() {
@@ -1094,7 +1134,7 @@ public final class PlannerOrchestrator {
 	}
 
 	public boolean startDebugCompaction() {
-		if (!isConfigured() || hasInFlight()) {
+		if (!isConfigured() || hasInFlight() || plannerExecutor.managesConversationHistory()) {
 			return false;
 		}
 		lastCompactionResult = null;
@@ -1140,6 +1180,7 @@ public final class PlannerOrchestrator {
 		minimumSafetyEpoch = 0L;
 		currentSafetyHoldId = null;
 		safetyLaunchBlocked = false;
+		committedSnapshotGenerations.clear();
 		recordConversationSources();
 		clearCoalesceState();
 		endTurnSpan();
@@ -1297,13 +1338,11 @@ public final class PlannerOrchestrator {
 	}
 
 	private void acceptGeneration(PlannerExecutionResult acceptedResult) {
-		PlannerContextSnapshot snapshot = sessionCoordinator.contextSnapshotFor(acceptedResult.generation());
-		if (snapshot != null) {
-			contextAggregator.commitAcceptedTriggerBatch(snapshot);
-		}
+		commitSnapshotIfNeeded(acceptedResult.generation());
 		commitRecordedToolExchanges(acceptedResult.generation());
 		turnJournal.recordAcceptedReply(acceptedResult);
 		sessionCoordinator.finishGeneration(acceptedResult.generation(), false);
+		committedSnapshotGenerations.remove(acceptedResult.generation());
 		boolean hasVisibleReply = acceptedResult.response() != null
 			&& acceptedResult.response().replyText() != null
 			&& !acceptedResult.response().replyText().isBlank();
@@ -1326,6 +1365,18 @@ public final class PlannerOrchestrator {
 		else {
 			awaitingAcceptedReplyRecord = true;
 		}
+	}
+
+	private void commitSnapshotIfNeeded(long generation) {
+		if (!committedSnapshotGenerations.add(generation)) {
+			return;
+		}
+		PlannerContextSnapshot snapshot = sessionCoordinator.contextSnapshotFor(generation);
+		if (snapshot == null) {
+			committedSnapshotGenerations.remove(generation);
+			return;
+		}
+		contextAggregator.commitAcceptedTriggerBatch(snapshot);
 	}
 
 	private PlannerExecutionResult continueAfterTool() {
@@ -1363,6 +1414,7 @@ public final class PlannerOrchestrator {
 		if (safetyContextChanged && !sameEpochHoldRelease) {
 			recordStalePlannerRejection(toolExecution.generation(), snapshot.request(), "TOOL_WAIT");
 			sessionCoordinator.finishGeneration(toolExecution.generation(), true);
+			committedSnapshotGenerations.remove(toolExecution.generation());
 			turnJournal.markSuperseded(toolExecution.generation());
 			endTurnSpan();
 			if (!safetyLaunchBlocked) {
@@ -1698,6 +1750,7 @@ public final class PlannerOrchestrator {
 		);
 		turnJournal.markSuperseded(result.generation());
 		sessionCoordinator.finishGeneration(result.generation(), true);
+		committedSnapshotGenerations.remove(result.generation());
 		endTurnSpan();
 		if (!safetyLaunchBlocked) {
 			startQueuedWorkIfPossible();

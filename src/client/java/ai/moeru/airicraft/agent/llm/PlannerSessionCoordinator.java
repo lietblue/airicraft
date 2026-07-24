@@ -94,6 +94,7 @@ public final class PlannerSessionCoordinator {
 			return null;
 		}
 		PlannerContextSnapshot contextSnapshot = activeSession.contextSnapshot();
+		plannerExecutor.discardGeneration(activeSession.generation());
 		activeSession.markSuperseded();
 		supersededCount++;
 		activeSession = null;
@@ -200,12 +201,21 @@ public final class PlannerSessionCoordinator {
 			return;
 		}
 		if (failed) {
+			plannerExecutor.discardGeneration(generation);
 			activeSession.markFailed();
 		}
 		else {
 			activeSession.markCompleted();
 		}
 		activeSession = null;
+	}
+
+	public boolean acceptGeneration(long generation) throws LlmBackendException {
+		if (activeSession == null || activeSession.generation() != generation) {
+			return false;
+		}
+		plannerExecutor.acceptGeneration(generation);
+		return true;
 	}
 
 	public void reset() {

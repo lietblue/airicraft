@@ -1,0 +1,214 @@
+package ai.moeru.airicraft.agent.llm.codex;
+
+import ai.moeru.airicraft.agent.AgentConfig;
+import ai.moeru.airicraft.agent.llm.LlmBackendException;
+import ai.moeru.airicraft.agent.llm.LlmCallResult;
+import ai.moeru.airicraft.agent.llm.LlmChatMessage;
+import ai.moeru.airicraft.agent.llm.LlmConversation;
+import ai.moeru.airicraft.agent.llm.LlmMessageKind;
+import ai.moeru.airicraft.agent.llm.PlannerChatMessage;
+import ai.moeru.airicraft.agent.llm.PlannerBackendRequest;
+import ai.moeru.airicraft.agent.llm.PlannerRequest;
+import ai.moeru.airicraft.agent.llm.PlannerResponse;
+import ai.moeru.airicraft.agent.llm.PlannerSessionPhase;
+import ai.moeru.airicraft.agent.llm.PlannerToolCatalog;
+import ai.moeru.airicraft.agent.llm.PlannerToolRegistry;
+import ai.moeru.airicraft.agent.observability.NoopObservability;
+import ai.moeru.airicraft.agent.session.SessionMode;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
+import org.junit.jupiter.api.io.TempDir;
+
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.List;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
+import java.util.concurrent.TimeUnit;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+class CodexAppServerLlmBackendTest {
+	@TempDir
+	Path tempDir;
+
+	@Test
+	void acceptsInjectedDebugResponseWithoutStartingAppServer() throws Exception {
+		Path log = tempDir.resolve("injected.log");
+		CodexAppServerLlmBackend backend = backend(log);
+		try {
+			backend.injectMockResponse(new PlannerResponse(
+				List.of(new PlannerChatMessage("injected", 0)),
+				null,
+				null
+			));
+			assertEquals("injected", backend.generate(request(42L, "ignored")).payload().replyText());
+			backend.acceptGeneration(42L);
+			assertTrue(Files.notExists(log));
+		}
+		finally {
+			backend.shutdownBackend();
+		}
+	}
+
+	@Test
+	@EnabledIfEnvironmentVariable(named = "AIRICRAFT_CODEX_LIVE", matches = "1")
+	void completesStructuredTurnThroughInstalledCodexAppServer() throws Exception {
+		AgentConfig.LlmConfig liveConfig = withCodexCommand(
+			System.getenv().getOrDefault("AIRICRAFT_CODEX_EXECUTABLE", "codex"),
+			120_000
+		);
+		CodexAppServerLlmBackend backend = new CodexAppServerLlmBackend(
+			liveConfig,
+			NoopObservability.INSTANCE,
+			PlannerToolRegistry.empty()
+		);
+		try {
+			LlmCallResult<PlannerResponse> result = backend.generate(request(99L, "Reply with exactly: ready"));
+			assertTrue(result.payload().toolCalls().isEmpty());
+			assertTrue(result.payload().replyText().equalsIgnoreCase("ready"));
+			backend.acceptGeneration(99L);
+		}
+		finally {
+			backend.shutdownBackend();
+		}
+	}
+
+	@Test
+	void promotesOnlyAcceptedCandidateAndForksToolFollowUpFromIt() throws Exception {
+		Path log = tempDir.resolve("promotion.log");
+		CodexAppServerLlmBackend backend = backend(log);
+		try {
+			LlmCallResult<PlannerResponse> first = backend.generate(request(1L, "first"));
+			assertEquals("from:root", first.payload().replyText());
+			backend.acceptGeneration(1L);
+
+			LlmCallResult<PlannerResponse> unacceptedSibling = backend.generate(request(2L, "sibling"));
+			assertEquals("from:fork-from-root-1", unacceptedSibling.payload().replyText());
+			backend.discardGeneration(2L);
+
+			LlmCallResult<PlannerResponse> toolProposal = backend.generate(request(1L, "REQUEST_TOOL"));
+			assertEquals(PlannerToolCatalog.CLEAR_GOAL, toolProposal.payload().toolCall().name());
+			backend.acceptGeneration(1L);
+
+			LlmCallResult<PlannerResponse> followUp = backend.generate(request(1L, "Tool result: goal cleared"));
+			assertEquals("from:fork-from-fork-from-root-2-3", followUp.payload().replyText());
+		}
+		finally {
+			backend.shutdownBackend();
+		}
+
+		String wireLog = Files.readString(log);
+		assertTrue(wireLog.contains("thread/start"));
+		assertEquals(2L, wireLog.lines().filter(line -> line.equals("thread/fork root")).count());
+		assertTrue(wireLog.contains("thread/fork fork-from-root-2"));
+	}
+
+	@Test
+	void discardInterruptsActiveTurnAndLeavesCanonicalThreadUnchanged() throws Exception {
+		Path log = tempDir.resolve("supersede.log");
+		CodexAppServerLlmBackend backend = backend(log);
+		try {
+			CompletableFuture<LlmCallResult<PlannerResponse>> waiting = CompletableFuture.supplyAsync(() -> {
+				try {
+					return backend.generate(request(7L, "WAIT"));
+				}
+				catch (LlmBackendException exception) {
+					throw new CompletionException(exception);
+				}
+			});
+			awaitLog(log, "turn/start");
+
+			backend.discardGeneration(7L);
+			assertThrows(CompletionException.class, waiting::join);
+			awaitLog(log, "turn/interrupt");
+
+			LlmCallResult<PlannerResponse> replacement = backend.generate(request(8L, "replacement"));
+			assertEquals("from:root", replacement.payload().replyText());
+		}
+		finally {
+			backend.shutdownBackend();
+		}
+
+		String wireLog = Files.readString(log);
+		assertTrue(wireLog.contains("turn/interrupt"));
+		assertEquals(2L, wireLog.lines().filter(line -> line.equals("thread/start")).count());
+	}
+
+	private CodexAppServerLlmBackend backend(Path log) {
+		return new CodexAppServerLlmBackend(
+			codexConfig(),
+			NoopObservability.INSTANCE,
+			PlannerToolRegistry.empty(),
+			() -> CodexAppServerClientTest.fakeClient(log)
+		);
+	}
+
+	private static PlannerBackendRequest request(long generation, String text) {
+		PlannerRequest plannerRequest = new PlannerRequest(
+			1L,
+			1_000L,
+			SessionMode.OUT_OF_WORLD,
+			null,
+			null,
+			null,
+			null,
+			"Tester",
+			text,
+			null
+		);
+		return new PlannerBackendRequest(
+			generation,
+			1,
+			PlannerSessionPhase.PLANNER_REQUEST,
+			plannerRequest,
+			LlmConversation.of(List.of(
+				LlmChatMessage.system("You are a test planner."),
+				LlmChatMessage.user(text, LlmMessageKind.USER_TURN)
+			))
+		);
+	}
+
+	private static AgentConfig.LlmConfig codexConfig() {
+		return withCodexCommand("fake", 5_000);
+	}
+
+	private static AgentConfig.LlmConfig withCodexCommand(String executable, int turnTimeoutMillis) {
+		AgentConfig.LlmConfig defaults = AgentConfig.LlmConfig.defaults();
+		return new AgentConfig.LlmConfig(
+			defaults.providerBaseUrl(),
+			"",
+			"",
+			defaults.visionProviderBaseUrl(),
+			defaults.visionApiKey(),
+			defaults.visionModel(),
+			defaults.requestTimeoutMillis(),
+			defaults.visionRequestTimeoutMillis(),
+			defaults.maxRecentConversationTurns(),
+			defaults.plannerCompactionTriggerTokens(),
+			defaults.plannerPendingSemanticEventCap(),
+			defaults.plannerSessionMaxConcurrentAttempts(),
+			defaults.plannerSessionCoalesceStepMillis(),
+			defaults.plannerSessionCoalesceMinMillis(),
+			defaults.plannerSessionCoalesceMaxMillis(),
+			defaults.visionImageDetail(),
+			true,
+			defaults.plannerUseJsonObjectResponseFormat(),
+			AgentConfig.PlannerBackend.CODEX_APP_SERVER,
+			new AgentConfig.CodexAppServerConfig(executable, "", 10_000, turnTimeoutMillis)
+		);
+	}
+
+	private static void awaitLog(Path log, String fragment) throws Exception {
+		long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+		while (System.nanoTime() < deadline) {
+			if (Files.exists(log) && Files.readString(log).contains(fragment)) {
+				return;
+			}
+			Thread.sleep(10L);
+		}
+		throw new AssertionError("Timed out waiting for fake app-server log: " + fragment);
+	}
+}

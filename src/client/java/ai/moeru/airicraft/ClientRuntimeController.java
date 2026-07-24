@@ -317,6 +317,7 @@ public final class ClientRuntimeController {
 
 		private Map<String, Object> llmPayload() {
 			LinkedHashMap<String, Object> payload = new LinkedHashMap<>();
+			payload.put("plannerBackend", agentConfig.llm().plannerBackend().wireValue());
 			payload.put("providerBaseUrl", agentConfig.llm().providerBaseUrl());
 			payload.put("model", agentConfig.llm().model());
 			payload.put("requestTimeoutMillis", agentConfig.llm().requestTimeoutMillis());
@@ -332,6 +333,10 @@ public final class ClientRuntimeController {
 			payload.put("plannerSessionCoalesceMaxMillis", agentConfig.llm().plannerSessionCoalesceMaxMillis());
 			payload.put("visionImageDetail", agentConfig.llm().visionImageDetail());
 			payload.put("plannerNativeVisionEnabled", agentConfig.llm().plannerNativeVisionEnabled());
+			payload.put("codexExecutable", agentConfig.llm().codexAppServer().executable());
+			payload.put("codexModel", agentConfig.llm().codexAppServer().model());
+			payload.put("codexStartupTimeoutMillis", agentConfig.llm().codexAppServer().startupTimeoutMillis());
+			payload.put("codexTurnTimeoutMillis", agentConfig.llm().codexAppServer().turnTimeoutMillis());
 			return payload;
 		}
 

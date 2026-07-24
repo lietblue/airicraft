@@ -300,6 +300,45 @@ class PlannerContextAggregatorTest {
 	}
 
 	@Test
+	void backendManagedHistoryKeepsEventTransactionsWithoutLocalTranscriptOrCompaction() {
+		Clock clock = Clock.fixed(Instant.ofEpochMilli(10_000L), ZoneId.of("Asia/Taipei"));
+		PlannerContextAggregator aggregator = new PlannerContextAggregator(
+			clock,
+			10,
+			128,
+			PlannerVisionMode.NATIVE_TOOL_IMAGE,
+			PlannerToolRegistry.empty(),
+			true
+		);
+		recordEvents(aggregator, 10_000L, List.of(
+			new SemanticEvent(7L, 199L, 9_500L, "follow.target_acquired", Map.of("player", "Alice"))
+		));
+
+		PlannerContextSnapshot first = freezeSnapshot(aggregator, requestAt(10_000L, "Alice", "@agent hi"));
+		assertTrue(first.plannerConversation().messages().stream().anyMatch(message -> message.content().contains("Started following Alice")));
+		aggregator.commitAcceptedTriggerBatch(first);
+		aggregator.recordAgentTurn(new ai.moeru.airicraft.agent.dialogue.DialogueTurn("agent", "Hello.", 200L, 10_000L));
+		aggregator.recordAcceptedToolExchange(JsonParser.parseString("{\"tool\":\"ignored\"}"), "ignored", 200L, 10_000L);
+		aggregator.recordUsage(new LlmUsageSnapshot(100_000, 100, 100_100));
+
+		PlannerContextDebugSnapshot debug = aggregator.debugSnapshot();
+		assertEquals(0, debug.acceptedTurnCount());
+		assertEquals(0, debug.pendingSemanticEventCount());
+		assertEquals(0, debug.queuedTriggerCount());
+		assertEquals(7L, debug.lastObservedEventSeqNo());
+		assertFalse(aggregator.compactionPending());
+
+		PlannerContextSnapshot second = freezeSnapshot(aggregator, requestAt(11_000L, "Alice", "@agent status"));
+		assertFalse(second.plannerConversation().messages().stream().anyMatch(message -> message.content().contains("@agent hi")));
+		assertFalse(second.plannerConversation().messages().stream().anyMatch(message -> "assistant".equals(message.role())));
+
+		LlmConversation followUp = aggregator.buildPlannerFollowUpConversation(first, (com.google.gson.JsonElement) null, "inventory count=3");
+		assertEquals(2, followUp.messages().size());
+		assertEquals(LlmMessageKind.TOOL_RESULT, followUp.messages().getLast().kind());
+		assertTrue(followUp.messages().getLast().content().contains("inventory count=3"));
+	}
+
+	@Test
 	void acceptedAssistantHistoryIsRenderedWithoutFrozenRelativeTimeText() {
 		MutableClock clock = new MutableClock(Instant.ofEpochMilli(1_000L), ZoneId.of("Asia/Taipei"));
 		PlannerContextAggregator aggregator = new PlannerContextAggregator(clock, 65_536, PlannerVisionMode.EXTERNAL_SUMMARY);

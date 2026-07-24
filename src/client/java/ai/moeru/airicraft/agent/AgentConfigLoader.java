@@ -82,6 +82,14 @@ public final class AgentConfigLoader {
 	}
 
 	private static AgentConfig fromMap(Map<String, Object> root, AgentConfig defaults, boolean strict) {
+		warnIfMalformedObject(root, "codexAppServer", strict);
+		Map<String, Object> codexRoot = readObjectMap(root, "codexAppServer", strict);
+		AgentConfig.CodexAppServerConfig codexAppServer = new AgentConfig.CodexAppServerConfig(
+			readString(codexRoot, "executable", defaults.llm().codexAppServer().executable(), strict),
+			readString(codexRoot, "model", defaults.llm().codexAppServer().model(), strict),
+			readInt(codexRoot, "startupTimeoutMillis", defaults.llm().codexAppServer().startupTimeoutMillis()),
+			readInt(codexRoot, "turnTimeoutMillis", defaults.llm().codexAppServer().turnTimeoutMillis())
+		);
 		AgentConfig.LlmConfig llm = new AgentConfig.LlmConfig(
 			readString(root, "providerBaseUrl", defaults.llm().providerBaseUrl(), strict),
 			readString(root, "apiKey", defaults.llm().apiKey(), strict),
@@ -100,7 +108,9 @@ public final class AgentConfigLoader {
 			readInt(root, "plannerSessionCoalesceMaxMillis", defaults.llm().plannerSessionCoalesceMaxMillis()),
 			readString(root, "visionImageDetail", defaults.llm().visionImageDetail(), strict),
 			readBoolean(root, "plannerNativeVisionEnabled", defaults.llm().plannerNativeVisionEnabled(), strict),
-			readBoolean(root, "plannerUseJsonObjectResponseFormat", defaults.llm().plannerUseJsonObjectResponseFormat(), strict)
+			readBoolean(root, "plannerUseJsonObjectResponseFormat", defaults.llm().plannerUseJsonObjectResponseFormat(), strict),
+			readPlannerBackend(root, defaults.llm().plannerBackend(), strict),
+			codexAppServer
 		);
 		AgentConfig.IdleConfig idle = new AgentConfig.IdleConfig(
 			readInt(root, "idleInitialDelaySeconds", defaults.idle().initialDelaySeconds()),
@@ -183,6 +193,7 @@ public final class AgentConfigLoader {
 		}
 
 		Map<String, Object> yamlData = new LinkedHashMap<>();
+		yamlData.put("plannerBackend", defaults.llm().plannerBackend().wireValue());
 		yamlData.put("providerBaseUrl", readString(root, "providerBaseUrl", defaults.llm().providerBaseUrl(), false));
 		yamlData.put("apiKey", readString(root, "apiKey", defaults.llm().apiKey(), false));
 		yamlData.put("model", readString(root, "model", defaults.llm().model(), false));
@@ -212,6 +223,12 @@ public final class AgentConfigLoader {
 			"plannerUseJsonObjectResponseFormat",
 			readBoolean(root, "plannerUseJsonObjectResponseFormat", defaults.llm().plannerUseJsonObjectResponseFormat(), false)
 		);
+		yamlData.put("codexAppServer", Map.of(
+			"executable", defaults.llm().codexAppServer().executable(),
+			"model", defaults.llm().codexAppServer().model(),
+			"startupTimeoutMillis", defaults.llm().codexAppServer().startupTimeoutMillis(),
+			"turnTimeoutMillis", defaults.llm().codexAppServer().turnTimeoutMillis()
+		));
 		yamlData.put("observability", Map.of(
 			"enabled", defaults.observability().enabled(),
 			"exporter", defaults.observability().exporter(),
@@ -238,6 +255,24 @@ public final class AgentConfigLoader {
 			)
 		));
 		Files.writeString(yamlConfigPath, dumpYaml(yamlData), StandardCharsets.UTF_8);
+	}
+
+	private static AgentConfig.PlannerBackend readPlannerBackend(
+		Map<String, Object> root,
+		AgentConfig.PlannerBackend fallback,
+		boolean strict
+	) {
+		String wireValue = readString(root, "plannerBackend", fallback.wireValue(), strict);
+		try {
+			return AgentConfig.PlannerBackend.fromWireValue(wireValue);
+		}
+		catch (IllegalArgumentException exception) {
+			if (strict) {
+				throw exception;
+			}
+			Airicraft.LOGGER.warn("Unsupported plannerBackend {}; using {}", wireValue, fallback.wireValue());
+			return fallback;
+		}
 	}
 
 	private static void warnIfMalformedObject(Map<String, Object> root, String fieldName, boolean strict) {
