@@ -85,11 +85,14 @@ class BaritoneTaskExecutorTest {
 	}
 
 	@Test
-	void mineTerminalSweepsMatchingNearbyDropBeforeCompleting() {
+	void mineTerminalSweepsPossibleDropFromTargetBlockBeforeCompleting() {
 		FakeBaritoneFacade facade = new FakeBaritoneFacade();
 		AtomicBoolean matchingDropNearby = new AtomicBoolean(true);
-		BaritoneTaskExecutor executor = new BaritoneTaskExecutor(() -> null, facade, request -> matchingDropNearby.get());
-		GoalSnapshot goal = new GoalSnapshot(GoalType.MINE_BLOCKS, null, null, new GoalMineSpec(List.of("minecraft:stone"), 1), 20L, "planner_response");
+		BaritoneTaskExecutor executor = new BaritoneTaskExecutor(() -> null, facade, request ->
+			matchingDropNearby.get()
+				&& MinedBlockDropMapper.matchingInventoryItemIds(request.goal().mineSpec().blockIds()).contains("minecraft:wheat_seeds")
+		);
+		GoalSnapshot goal = new GoalSnapshot(GoalType.MINE_BLOCKS, null, null, new GoalMineSpec(List.of("minecraft:short_grass"), 1), 20L, "planner_response");
 		GoalPosition finalBrokenBlock = new GoalPosition(10, 64, 20, true);
 		WorldTaskRequest request = WorldTaskRequest.collectMine("mine-task", "mine-task", goal, finalBrokenBlock);
 

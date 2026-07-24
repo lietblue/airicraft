@@ -12,6 +12,9 @@ import java.util.Set;
 public final class ResourceGatheringCatalog {
 	private static final Map<TaskResourceKind, ResourceEntry> BY_KIND = buildByKind();
 	private static final Map<String, List<String>> DROPS_BY_BLOCK_ID = buildDropsByBlockId();
+	private static final Map<String, List<String>> POSSIBLE_DROPS_BY_BLOCK_ID = Map.of(
+		"minecraft:short_grass", List.of("minecraft:wheat_seeds")
+	);
 
 	private ResourceGatheringCatalog() {
 	}
@@ -66,6 +69,7 @@ public final class ResourceGatheringCatalog {
 			}
 			itemIds.add(normalized);
 			itemIds.addAll(DROPS_BY_BLOCK_ID.getOrDefault(normalized, List.of()));
+			itemIds.addAll(POSSIBLE_DROPS_BY_BLOCK_ID.getOrDefault(normalized, List.of()));
 		}
 		return Collections.unmodifiableSet(itemIds);
 	}
