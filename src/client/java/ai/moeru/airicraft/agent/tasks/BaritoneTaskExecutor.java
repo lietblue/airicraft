@@ -126,7 +126,10 @@ public final class BaritoneTaskExecutor implements WorldTaskExecutor {
 		if (isSuppressedInternalCancel(pathEvent)) {
 			pathEvent = Optional.empty();
 		}
-		MineDropPickupResult mineDropPickupResult = terminalMineDropPickupEvent(pathEvent, appliedTask);
+		boolean mineProcessOwnsPathEvent = mineProcessOwnsPathEvent(pathEvent, appliedTask);
+		MineDropPickupResult mineDropPickupResult = mineProcessOwnsPathEvent
+			? MineDropPickupResult.notHandled()
+			: terminalMineDropPickupEvent(pathEvent, appliedTask);
 		if (mineDropPickupResult.handled()) {
 			return mineDropPickupResult.event();
 		}
@@ -362,11 +365,15 @@ public final class BaritoneTaskExecutor implements WorldTaskExecutor {
 		}
 		String normalized = pathEvent.get().trim().toUpperCase(Locale.ROOT);
 		return switch (normalized) {
-			case "AT_GOAL" -> Optional.of(new TerminalOutcome(TaskExecutionState.COMPLETED, TaskTerminationCause.GOAL_REACHED));
-			case "CALC_FAILED" -> mineProcessCanReselect(activeTask)
+			case "AT_GOAL" -> mineProcessOwnsPathEvent(pathEvent, activeTask)
+				? Optional.empty()
+				: Optional.of(new TerminalOutcome(TaskExecutionState.COMPLETED, TaskTerminationCause.GOAL_REACHED));
+			case "CALC_FAILED" -> mineProcessOwnsPathEvent(pathEvent, activeTask)
 				? Optional.empty()
 				: Optional.of(new TerminalOutcome(TaskExecutionState.FAILED, TaskTerminationCause.CALCULATION_FAILED));
-			case "CANCELLED", "CANCELED" -> Optional.of(cancelledOutcomeFor(activeTask));
+			case "CANCELLED", "CANCELED" -> mineProcessOwnsPathEvent(pathEvent, activeTask)
+				? Optional.empty()
+				: Optional.of(cancelledOutcomeFor(activeTask));
 			default -> Optional.empty();
 		};
 	}
@@ -402,11 +409,25 @@ public final class BaritoneTaskExecutor implements WorldTaskExecutor {
 		return true;
 	}
 
-	private boolean mineProcessCanReselect(WorldTaskRequest activeTask) {
-		return activeTask != null
-			&& activeTask.goal() != null
-			&& activeTask.goal().type() == GoalType.MINE_BLOCKS
-			&& facade.mineProcessActive();
+	private boolean mineProcessOwnsPathEvent(Optional<String> pathEvent, WorldTaskRequest activeTask) {
+		if (
+			pathEvent.isEmpty()
+				|| activeTask == null
+				|| activeTask.goal() == null
+				|| activeTask.goal().type() != GoalType.MINE_BLOCKS
+		) {
+			return false;
+		}
+		String normalized = pathEvent.get().trim().toUpperCase(Locale.ROOT);
+		return switch (normalized) {
+			// MineProcess uses path goals per selected block. It owns target completion,
+			// target blacklisting, and reselection until the process itself deactivates.
+			case "AT_GOAL", "CANCELLED", "CANCELED" -> facade.mineProcessActive();
+			// A failed calculation is input to MineProcess.onTick, which either blacklists
+			// the failed target and selects another or cancels the process when exhausted.
+			case "CALC_FAILED" -> true;
+			default -> false;
+		};
 	}
 
 	private MineDropPickupResult terminalMineDropPickupEvent(Optional<String> pathEvent, WorldTaskRequest activeTask) {

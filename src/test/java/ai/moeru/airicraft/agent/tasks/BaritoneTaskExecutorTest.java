@@ -85,9 +85,60 @@ class BaritoneTaskExecutorTest {
 	}
 
 	@Test
-	void activeMineProcessReselectsAfterCalculationFailureWithoutRestartingTask() {
+	void activeMineProcessOwnsTargetCompletionFailureAndReselectionWithoutRestartingTask() {
 		FakeBaritoneFacade facade = new FakeBaritoneFacade();
 		facade.mineProcessActive = true;
+		BaritoneTaskExecutor executor = new BaritoneTaskExecutor(facade);
+		GoalSnapshot goal = new GoalSnapshot(
+			GoalType.MINE_BLOCKS,
+			null,
+			null,
+			new GoalMineSpec(List.of("minecraft:short_grass"), 64),
+			20L,
+			"planner_response"
+		);
+		WorldTaskRequest request = request("mine-task", goal);
+
+		executor.tick(multiplayer(), Optional.of(request));
+		facade.pathEvents.add("AT_GOAL");
+
+		Optional<TaskTerminalEvent> targetReached = executor.tick(multiplayer(), Optional.of(request));
+
+		assertTrue(targetReached.isEmpty());
+		assertEquals(TaskExecutionState.RUNNING, executor.snapshot().state());
+		assertEquals("AT_GOAL", executor.snapshot().lastPathEvent());
+		assertEquals(1, facade.mineCalls.size());
+
+		facade.pathEvents.add("CALC_FAILED");
+
+		Optional<TaskTerminalEvent> calculationFailure = executor.tick(multiplayer(), Optional.of(request));
+
+		assertTrue(calculationFailure.isEmpty());
+		assertEquals(TaskExecutionState.RUNNING, executor.snapshot().state());
+		assertEquals("CALC_FAILED", executor.snapshot().lastPathEvent());
+		assertNull(executor.snapshot().terminationCause());
+		assertEquals(1, facade.mineCalls.size());
+
+		facade.pathEvents.add("CANCELED");
+		Optional<TaskTerminalEvent> internalCancellation = executor.tick(multiplayer(), Optional.of(request));
+
+		assertTrue(internalCancellation.isEmpty());
+		assertEquals(TaskExecutionState.RUNNING, executor.snapshot().state());
+		assertEquals(1, facade.mineCalls.size());
+
+		facade.mineProcessActive = false;
+		facade.pathEvents.add("CANCELED");
+		Optional<TaskTerminalEvent> exhausted = executor.tick(multiplayer(), Optional.of(request));
+
+		assertTrue(exhausted.isPresent());
+		assertEquals(TaskExecutionState.CANCELLED, exhausted.orElseThrow().terminalState());
+		assertEquals(TaskTerminationCause.BARITONE_CANCELLED, exhausted.orElseThrow().terminationCause());
+		assertEquals(1, facade.mineCalls.size());
+	}
+
+	@Test
+	void queuedMineCalculationFailureWaitsForInactiveProcessCancellation() {
+		FakeBaritoneFacade facade = new FakeBaritoneFacade();
 		BaritoneTaskExecutor executor = new BaritoneTaskExecutor(facade);
 		GoalSnapshot goal = new GoalSnapshot(
 			GoalType.MINE_BLOCKS,
@@ -107,31 +158,28 @@ class BaritoneTaskExecutorTest {
 		assertTrue(calculationFailure.isEmpty());
 		assertEquals(TaskExecutionState.RUNNING, executor.snapshot().state());
 		assertEquals("CALC_FAILED", executor.snapshot().lastPathEvent());
-		assertNull(executor.snapshot().terminationCause());
-		assertEquals(1, facade.mineCalls.size());
 
-		facade.mineProcessActive = false;
-		facade.pathEvents.add("AT_GOAL");
-		Optional<TaskTerminalEvent> completed = executor.tick(multiplayer(), Optional.of(request));
+		facade.pathEvents.add("CANCELED");
+		Optional<TaskTerminalEvent> exhausted = executor.tick(multiplayer(), Optional.of(request));
 
-		assertTrue(completed.isPresent());
-		assertEquals(TaskExecutionState.COMPLETED, completed.orElseThrow().terminalState());
-		assertEquals(1, facade.mineCalls.size());
+		assertTrue(exhausted.isPresent());
+		assertEquals(TaskExecutionState.CANCELLED, exhausted.orElseThrow().terminalState());
+		assertEquals(TaskTerminationCause.BARITONE_CANCELLED, exhausted.orElseThrow().terminationCause());
 	}
 
 	@Test
-	void calculationFailureAfterMineProcessExhaustionRemainsTerminal() {
+	void nonMiningCalculationFailureRemainsTerminal() {
 		FakeBaritoneFacade facade = new FakeBaritoneFacade();
 		BaritoneTaskExecutor executor = new BaritoneTaskExecutor(facade);
 		GoalSnapshot goal = new GoalSnapshot(
-			GoalType.MINE_BLOCKS,
+			GoalType.NAVIGATE_TO,
 			null,
+			new GoalPosition(10, 64, 20, true),
 			null,
-			new GoalMineSpec(List.of("minecraft:short_grass"), 64),
 			20L,
 			"planner_response"
 		);
-		WorldTaskRequest request = request("mine-task", goal);
+		WorldTaskRequest request = request("nav-task", goal);
 
 		executor.tick(multiplayer(), Optional.of(request));
 		facade.pathEvents.add("CALC_FAILED");
@@ -141,7 +189,6 @@ class BaritoneTaskExecutorTest {
 		assertTrue(calculationFailure.isPresent());
 		assertEquals(TaskExecutionState.FAILED, calculationFailure.orElseThrow().terminalState());
 		assertEquals(TaskTerminationCause.CALCULATION_FAILED, calculationFailure.orElseThrow().terminationCause());
-		assertEquals(TaskExecutionState.FAILED, executor.snapshot().state());
 	}
 
 	@Test
