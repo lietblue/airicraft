@@ -205,12 +205,19 @@ public final class EmbodiedAgentRuntime {
 	private final SemanticEventBuffer eventBuffer = new SemanticEventBuffer(512);
 	private final SemanticEventBuffer plannerEventBuffer = new SemanticEventBuffer(512);
 	private final EventPolicyState eventPolicyState = new EventPolicyState();
-	private final AgentEventPipeline eventPipeline = new AgentEventPipeline(eventBuffer, plannerEventBuffer, eventPolicyState, EVENT_ROUTING_PROFILES, debugRecorder);
+	private final ActiveJobRuntime activeJobRuntime = new ActiveJobRuntime();
+	private final AgentEventPipeline eventPipeline = new AgentEventPipeline(
+		eventBuffer,
+		plannerEventBuffer,
+		eventPolicyState,
+		EVENT_ROUTING_PROFILES,
+		debugRecorder,
+		this::resolveDefaultEventPolicy
+	);
 	private final ChatIngestService chatIngestService = new ChatIngestService();
 	private final LocalDamageTracker localDamageTracker = new LocalDamageTracker();
 	private final NearbyPlayerTracker nearbyPlayerTracker;
 	private final PrimaryInteractionResolver primaryInteractionResolver = new PrimaryInteractionResolver(200L);
-	private final ActiveJobRuntime activeJobRuntime = new ActiveJobRuntime();
 	private final IdleIdeaScheduler idleIdeaScheduler;
 	private final FollowCapability followCapability = new FollowCapability();
 	private final BehaviorTreeRuntime behaviorTreeRuntime;
@@ -3501,6 +3508,25 @@ public final class EmbodiedAgentRuntime {
 			event.tick(),
 			event.timestampMs(),
 			"pickup:" + itemId
+		);
+	}
+
+	private EventPolicyDecision resolveDefaultEventPolicy(SemanticEvent event, EventRoutingProfile profile) {
+		if (event == null || !"pickup.item_picked_up".equals(event.type())) {
+			return EventPolicyDecision.allow();
+		}
+		ActiveJob current = activeJobRuntime.current();
+		if (current == null || current.isIdle() || current.status().terminal()) {
+			return EventPolicyDecision.allow();
+		}
+		if (current.type() != ActiveJobType.MINE_BLOCKS && current.type() != ActiveJobType.ENSURE_BLOCKS_IN_INVENTORY) {
+			return EventPolicyDecision.allow();
+		}
+		return new EventPolicyDecision(
+			EventPolicyEffect.SEMANTIC_ONLY,
+			"default-mining-pickup-semantic-only",
+			"pickup progress is owned by the active mining job",
+			false
 		);
 	}
 

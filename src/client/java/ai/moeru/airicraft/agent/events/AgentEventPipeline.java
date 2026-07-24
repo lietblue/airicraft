@@ -15,11 +15,17 @@ public final class AgentEventPipeline {
 		PlannerTrigger create(SemanticEvent event, EventRoutingProfile profile);
 	}
 
+	@FunctionalInterface
+	public interface DefaultPolicyResolver {
+		EventPolicyDecision resolve(SemanticEvent event, EventRoutingProfile profile);
+	}
+
 	private final SemanticEventBuffer rawEventBuffer;
 	private final SemanticEventBuffer plannerEventBuffer;
 	private final EventPolicyState policyState;
 	private final Map<String, EventRoutingProfile> routingProfiles;
 	private final AgentDebugRecorder debugRecorder;
+	private final DefaultPolicyResolver defaultPolicyResolver;
 	private long lastProcessedRawSeqNo;
 
 	public AgentEventPipeline(
@@ -28,7 +34,7 @@ public final class AgentEventPipeline {
 		EventPolicyState policyState,
 		Map<String, EventRoutingProfile> routingProfiles
 	) {
-		this(rawEventBuffer, plannerEventBuffer, policyState, routingProfiles, new AgentDebugRecorder());
+		this(rawEventBuffer, plannerEventBuffer, policyState, routingProfiles, new AgentDebugRecorder(), (event, profile) -> EventPolicyDecision.allow());
 	}
 
 	public AgentEventPipeline(
@@ -38,11 +44,23 @@ public final class AgentEventPipeline {
 		Map<String, EventRoutingProfile> routingProfiles,
 		AgentDebugRecorder debugRecorder
 	) {
+		this(rawEventBuffer, plannerEventBuffer, policyState, routingProfiles, debugRecorder, (event, profile) -> EventPolicyDecision.allow());
+	}
+
+	public AgentEventPipeline(
+		SemanticEventBuffer rawEventBuffer,
+		SemanticEventBuffer plannerEventBuffer,
+		EventPolicyState policyState,
+		Map<String, EventRoutingProfile> routingProfiles,
+		AgentDebugRecorder debugRecorder,
+		DefaultPolicyResolver defaultPolicyResolver
+	) {
 		this.rawEventBuffer = Objects.requireNonNull(rawEventBuffer, "rawEventBuffer");
 		this.plannerEventBuffer = Objects.requireNonNull(plannerEventBuffer, "plannerEventBuffer");
 		this.policyState = Objects.requireNonNull(policyState, "policyState");
 		this.routingProfiles = Map.copyOf(Objects.requireNonNull(routingProfiles, "routingProfiles"));
 		this.debugRecorder = Objects.requireNonNull(debugRecorder, "debugRecorder");
+		this.defaultPolicyResolver = Objects.requireNonNull(defaultPolicyResolver, "defaultPolicyResolver");
 	}
 
 	public SemanticEvent appendRaw(long tick, String type, Map<String, Object> payload) {
@@ -110,6 +128,12 @@ public final class AgentEventPipeline {
 		}
 
 		EventPolicyDecision decision = policyState.evaluate(event, profile.policyBypass());
+		if (!decision.bypassed() && decision.matchedRuleId() == null) {
+			EventPolicyDecision defaultDecision = defaultPolicyResolver.resolve(event, profile);
+			if (defaultDecision != null) {
+				decision = defaultDecision;
+			}
+		}
 		if (decision.intervened()) {
 			EventPolicyIntervention intervention = new EventPolicyIntervention(
 				event.seqNo(),

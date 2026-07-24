@@ -74,6 +74,81 @@ class AgentEventPipelineTest {
 	}
 
 	@Test
+	void defaultSemanticOnlyPolicySuppressesTriggerWithoutDroppingContext() {
+		SemanticEventBuffer raw = new SemanticEventBuffer(16, () -> 1000L);
+		SemanticEventBuffer planner = new SemanticEventBuffer(16, () -> 1000L);
+		EventPolicyState policyState = new EventPolicyState();
+		AgentEventPipeline pipeline = new AgentEventPipeline(
+			raw,
+			planner,
+			policyState,
+			Map.of(
+				"pickup.item_picked_up", new EventRoutingProfile("pickup.item_picked_up", true, PlannerTriggerType.PICKUP, false),
+				"policy.event_intervened", EventRoutingProfile.rawOnly("policy.event_intervened")
+			),
+			new ai.moeru.airicraft.agent.debug.AgentDebugRecorder(),
+			(event, profile) -> new EventPolicyDecision(
+				EventPolicyEffect.SEMANTIC_ONLY,
+				"default-mining-pickup-semantic-only",
+				"mining owns pickup progress",
+				false
+			)
+		);
+
+		pipeline.appendRaw(10L, "pickup.item_picked_up", Map.of("actor", "self", "itemId", "minecraft:cobblestone", "count", 1));
+		List<PlannerTrigger> triggers = pipeline.drain((event, profile) ->
+			PlannerTrigger.pending(profile.triggerType(), "self", "picked up", event.tick(), event.timestampMs())
+		);
+
+		assertEquals(0, triggers.size());
+		assertEquals(1, planner.size());
+		assertTrue(planner.containsType("pickup.item_picked_up"));
+		assertEquals("default-mining-pickup-semantic-only", policyState.lastDecision().orElseThrow().matchedRuleId());
+	}
+
+	@Test
+	void explicitAllowRuleOverridesDefaultSemanticOnlyPolicy() {
+		SemanticEventBuffer raw = new SemanticEventBuffer(16, () -> 1000L);
+		SemanticEventBuffer planner = new SemanticEventBuffer(16, () -> 1000L);
+		EventPolicyState policyState = new EventPolicyState();
+		policyState.upsert(new EventPolicyRule(
+			"allow-pickups",
+			EventPolicyEffect.ALLOW,
+			new EventPolicyMatch("pickup.item_picked_up", null, null, "self", null, null, null),
+			"wake on pickups",
+			1000L,
+			null,
+			0L,
+			"planner"
+		));
+		AgentEventPipeline pipeline = new AgentEventPipeline(
+			raw,
+			planner,
+			policyState,
+			Map.of(
+				"pickup.item_picked_up", new EventRoutingProfile("pickup.item_picked_up", true, PlannerTriggerType.PICKUP, false),
+				"policy.event_intervened", EventRoutingProfile.rawOnly("policy.event_intervened")
+			),
+			new ai.moeru.airicraft.agent.debug.AgentDebugRecorder(),
+			(event, profile) -> new EventPolicyDecision(
+				EventPolicyEffect.SEMANTIC_ONLY,
+				"default-mining-pickup-semantic-only",
+				"mining owns pickup progress",
+				false
+			)
+		);
+
+		pipeline.appendRaw(10L, "pickup.item_picked_up", Map.of("actor", "self", "itemId", "minecraft:cobblestone", "count", 1));
+		List<PlannerTrigger> triggers = pipeline.drain((event, profile) ->
+			PlannerTrigger.pending(profile.triggerType(), "self", "picked up", event.tick(), event.timestampMs())
+		);
+
+		assertEquals(1, triggers.size());
+		assertEquals(1, planner.size());
+		assertEquals("allow-pickups", policyState.lastDecision().orElseThrow().matchedRuleId());
+	}
+
+	@Test
 	void triggerOnlyWakesPlannerWithoutSemanticProjectionInput() {
 		SemanticEventBuffer raw = new SemanticEventBuffer(16, () -> 1000L);
 		SemanticEventBuffer planner = new SemanticEventBuffer(16, () -> 1000L);

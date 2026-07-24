@@ -14,6 +14,7 @@ import ai.moeru.airicraft.agent.dialogue.DialogueIntent;
 import ai.moeru.airicraft.agent.dialogue.DialogueIntentType;
 import ai.moeru.airicraft.agent.dialogue.DialogueResponse;
 import ai.moeru.airicraft.agent.debug.AgentDebugTimelineEntry;
+import ai.moeru.airicraft.agent.events.EventPolicyEffect;
 import ai.moeru.airicraft.agent.events.EventRoutingProfile;
 import ai.moeru.airicraft.agent.events.SemanticEvent;
 import ai.moeru.airicraft.agent.job.ActiveJob;
@@ -734,6 +735,54 @@ class EmbodiedAgentRuntimeTest {
 
 		assertTrue(runtime.activeGoal().isEmpty());
 		assertTrue(runtime.recentEvents(null).events().stream().anyMatch(event -> "task.completed".equals(event.type())));
+	}
+
+	@Test
+	void mineBlocksPickupDefaultsToSemanticOnlyEventPolicy() {
+		FakeWorldTaskExecutor executor = new FakeWorldTaskExecutor();
+		EmbodiedAgentRuntime runtime = EmbodiedAgentRuntime.createForTests(executor);
+		runtime.overrideSessionSnapshotForTests(loadedRemoteSession());
+
+		runtime.executePlannerToolCallForTests(new PlannerToolCall(
+			"call_mine",
+			"mine_blocks",
+			JsonParser.parseString("""
+				{"blockIds":["minecraft:cobblestone"],"quantity":3}
+				""").getAsJsonObject(),
+			null,
+			null
+		));
+		runtime.onClientTick(null);
+
+		runtime.onPlayerPickedUpItem("minecraft:cobblestone", 1);
+
+		assertEquals(EventPolicyEffect.SEMANTIC_ONLY, runtime.lastEventPolicyDecision().effect());
+		assertEquals("default-mining-pickup-semantic-only", runtime.lastEventPolicyDecision().matchedRuleId());
+		assertEquals(1, runtime.recentEventPolicyInterventionCount());
+	}
+
+	@Test
+	void ensureBlocksInInventoryPickupDefaultsToSemanticOnlyEventPolicy() {
+		FakeWorldTaskExecutor executor = new FakeWorldTaskExecutor();
+		EmbodiedAgentRuntime runtime = EmbodiedAgentRuntime.createForTests(executor);
+		runtime.overrideSessionSnapshotForTests(loadedRemoteSession());
+
+		runtime.executePlannerToolCallForTests(new PlannerToolCall(
+			"call_ensure_blocks",
+			"ensure_blocks_in_inventory",
+			JsonParser.parseString("""
+				{"blockIds":["minecraft:iron_ore"],"quantity":3}
+				""").getAsJsonObject(),
+			null,
+			null
+		));
+		runtime.onClientTick(null);
+
+		runtime.onPlayerPickedUpItem("minecraft:raw_iron", 1);
+
+		assertEquals(EventPolicyEffect.SEMANTIC_ONLY, runtime.lastEventPolicyDecision().effect());
+		assertEquals("default-mining-pickup-semantic-only", runtime.lastEventPolicyDecision().matchedRuleId());
+		assertEquals(1, runtime.recentEventPolicyInterventionCount());
 	}
 
 	@Test
