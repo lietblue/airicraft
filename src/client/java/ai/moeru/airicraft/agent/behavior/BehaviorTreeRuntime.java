@@ -98,7 +98,7 @@ public final class BehaviorTreeRuntime {
 			return;
 		}
 
-		if (activeGoal.get().type() == GoalType.FOLLOW_PLAYER && followState.targetNearby()) {
+		if (shouldLookAtFollowTarget(activeGoal.get(), followState)) {
 			Vec3d targetPos = new Vec3d(followState.targetX(), followState.targetY() + 1.62D, followState.targetZ());
 			cameraController.lookAtStep(client, targetPos, LOOK_YAW_STEP, LOOK_PITCH_STEP);
 		}
@@ -162,6 +162,14 @@ public final class BehaviorTreeRuntime {
 			&& "EntityInteraction".equals(taskExecutionSnapshot.processName())
 			&& ("direct_chase".equals(taskExecutionSnapshot.lastPathEvent())
 				|| "baritone_chase".equals(taskExecutionSnapshot.lastPathEvent()));
+	}
+
+	static boolean shouldLookAtFollowTarget(GoalSnapshot activeGoal, FollowState followState) {
+		return activeGoal != null
+			&& activeGoal.type() == GoalType.FOLLOW_PLAYER
+			&& followState != null
+			&& followState.targetNearby()
+			&& followState.distanceToTarget() <= FOLLOW_STOP_DISTANCE;
 	}
 
 	private static List<String> runningPathFor(GoalSnapshot activeGoal, FollowState followState, String subtree) {

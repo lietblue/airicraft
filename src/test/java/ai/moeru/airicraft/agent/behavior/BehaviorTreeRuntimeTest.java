@@ -1,5 +1,8 @@
 package ai.moeru.airicraft.agent.behavior;
 
+import ai.moeru.airicraft.agent.follow.FollowState;
+import ai.moeru.airicraft.agent.goals.GoalSnapshot;
+import ai.moeru.airicraft.agent.goals.GoalType;
 import ai.moeru.airicraft.agent.reflex.SurvivalReflexAction;
 import ai.moeru.airicraft.agent.reflex.SurvivalReflexCause;
 import ai.moeru.airicraft.agent.reflex.SurvivalReflexSnapshot;
@@ -47,6 +50,20 @@ class BehaviorTreeRuntimeTest {
 			null,
 			null
 		)));
+	}
+
+	@Test
+	void leavesCameraToPathingWhileDistantFollowTargetRequiresMovement() {
+		GoalSnapshot followGoal = new GoalSnapshot(GoalType.FOLLOW_PLAYER, "Alex", 10L, "test");
+
+		assertFalse(BehaviorTreeRuntime.shouldLookAtFollowTarget(
+			followGoal,
+			new FollowState(true, "Alex", true, true, 12.0D, 10.0D, 64.0D, 10.0D)
+		));
+		assertTrue(BehaviorTreeRuntime.shouldLookAtFollowTarget(
+			followGoal,
+			new FollowState(true, "Alex", true, true, 4.0D, 3.0D, 64.0D, 3.0D)
+		));
 	}
 
 	private static SurvivalReflexSnapshot reflex(SurvivalReflexState state) {
