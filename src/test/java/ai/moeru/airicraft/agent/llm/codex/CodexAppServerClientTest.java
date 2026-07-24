@@ -4,6 +4,7 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.io.BufferedReader;
@@ -18,6 +19,7 @@ import java.util.List;
 import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class CodexAppServerClientTest {
@@ -31,16 +33,11 @@ class CodexAppServerClientTest {
 			JsonObject threadParams = new JsonObject();
 			threadParams.addProperty("ephemeral", true);
 			JsonObject thread = client.request("thread/start", threadParams, 2_000);
-			assertEquals("root", thread.getAsJsonObject("thread").get("id").getAsString());
-
-			JsonObject forkParams = new JsonObject();
-			forkParams.addProperty("threadId", "root");
-			forkParams.addProperty("ephemeral", true);
-			JsonObject fork = client.request("thread/fork", forkParams, 2_000);
-			String forkId = fork.getAsJsonObject("thread").get("id").getAsString();
+			String threadId = thread.getAsJsonObject("thread").get("id").getAsString();
+			assertEquals("root", threadId);
 
 			JsonObject turnParams = new JsonObject();
-			turnParams.addProperty("threadId", forkId);
+			turnParams.addProperty("threadId", threadId);
 			turnParams.add("input", JsonParser.parseString("[{\"type\":\"text\",\"text\":\"hello\"}]").getAsJsonArray());
 			turnParams.add("outputSchema", new JsonObject());
 			CodexAppServerClient.TurnHandle handle = client.startTurn(turnParams, 2_000);
@@ -48,15 +45,48 @@ class CodexAppServerClientTest {
 
 			assertEquals("completed", result.status());
 			assertTrue(result.agentMessage().contains("chatMessages"));
-			assertTrue(result.agentMessage().contains(forkId));
+			assertTrue(result.agentMessage().contains(threadId));
+			client.archiveThread(threadId, 2_000);
 		}
 
 		String wireLog = Files.readString(log);
 		assertTrue(wireLog.contains("initialize"));
 		assertTrue(wireLog.contains("initialized"));
 		assertTrue(wireLog.contains("thread/start"));
-		assertTrue(wireLog.contains("thread/fork root"));
 		assertTrue(wireLog.contains("turn/start"));
+		assertTrue(wireLog.contains("thread/archive root"));
+		assertFalse(wireLog.contains("thread/fork"));
+	}
+
+	@Test
+	@EnabledIfEnvironmentVariable(named = "AIRICRAFT_CODEX_LIVE", matches = "1")
+	void interruptsThenContinuesSameThreadThroughInstalledAppServer() throws Exception {
+		String executable = System.getenv().getOrDefault("AIRICRAFT_CODEX_EXECUTABLE", "codex");
+		try (CodexAppServerClient client = new CodexAppServerClient(executable, 10_000)) {
+			String threadId = client.request("thread/start", liveThreadParams(), 10_000)
+				.getAsJsonObject("thread")
+				.get("id")
+				.getAsString();
+			try {
+				CodexAppServerClient.TurnHandle superseded = client.startTurn(
+					liveTurnParams(threadId, "Think extensively before replying with exactly: stale"),
+					10_000
+				);
+				client.interrupt(threadId, superseded.turnId()).get(10, TimeUnit.SECONDS);
+				assertEquals("interrupted", superseded.completion().get(120, TimeUnit.SECONDS).status());
+
+				CodexAppServerClient.TurnHandle replacement = client.startTurn(
+					liveTurnParams(threadId, "Reply with exactly: ready"),
+					10_000
+				);
+				CodexAppServerClient.TurnResult result = replacement.completion().get(120, TimeUnit.SECONDS);
+				assertEquals("completed", result.status());
+				assertTrue(result.agentMessage().trim().equalsIgnoreCase("ready"));
+			}
+			finally {
+				client.archiveThread(threadId, 10_000);
+			}
+		}
 	}
 
 	@Test
@@ -69,10 +99,10 @@ class CodexAppServerClientTest {
 
 			JsonObject turnParams = new JsonObject();
 			turnParams.addProperty("threadId", "root");
-			turnParams.add("input", JsonParser.parseString("[{\"type\":\"text\",\"text\":\"WAIT\"}]").getAsJsonArray());
+			turnParams.add("input", JsonParser.parseString("[{\"type\":\"text\",\"text\":\"WAIT DELAY_START_RESPONSE\"}]").getAsJsonArray());
 			CodexAppServerClient.TurnHandle handle = client.startTurn(turnParams, 2_000);
 
-			client.interrupt(handle.threadId(), handle.turnId());
+			client.interrupt(handle.threadId(), handle.turnId()).get(2, TimeUnit.SECONDS);
 			CodexAppServerClient.TurnResult result = handle.completion().get(2, TimeUnit.SECONDS);
 			assertEquals("interrupted", result.status());
 		}
@@ -91,14 +121,31 @@ class CodexAppServerClientTest {
 		), 2_000);
 	}
 
+	private static JsonObject liveThreadParams() {
+		JsonObject params = new JsonObject();
+		params.addProperty("approvalPolicy", "never");
+		params.addProperty("sandbox", "read-only");
+		params.addProperty("cwd", Path.of(System.getProperty("java.io.tmpdir")).toAbsolutePath().normalize().toString());
+		params.addProperty("baseInstructions", "Return only a final response.");
+		return params;
+	}
+
+	private static JsonObject liveTurnParams(String threadId, String text) {
+		JsonObject params = new JsonObject();
+		params.addProperty("threadId", threadId);
+		params.add("input", JsonParser.parseString("[{\"type\":\"text\",\"text\":" + new com.google.gson.Gson().toJson(text) + "}]").getAsJsonArray());
+		params.addProperty("approvalPolicy", "never");
+		return params;
+	}
+
 	public static final class FakeAppServer {
 		private FakeAppServer() {
 		}
 
 		public static void main(String[] args) throws Exception {
 			Path log = Path.of(System.getProperty("airicraft.fake.codex.log"));
-			int forkCount = 0;
 			int turnCount = 0;
+			JsonElement delayedTurnStartId = null;
 			try (
 				BufferedReader reader = new BufferedReader(new InputStreamReader(System.in, StandardCharsets.UTF_8));
 				BufferedWriter writer = new BufferedWriter(new OutputStreamWriter(System.out, StandardCharsets.UTF_8))
@@ -108,7 +155,10 @@ class CodexAppServerClientTest {
 					JsonObject request = JsonParser.parseString(line).getAsJsonObject();
 					String method = request.get("method").getAsString();
 					JsonObject params = request.has("params") ? request.getAsJsonObject("params") : new JsonObject();
-					String suffix = "thread/fork".equals(method) ? " " + params.get("threadId").getAsString() : "";
+					String suffix = switch (method) {
+						case "thread/archive" -> " " + params.get("threadId").getAsString();
+						default -> "";
+					};
 					append(log, method + suffix);
 					if (!request.has("id")) {
 						continue;
@@ -118,22 +168,18 @@ class CodexAppServerClientTest {
 					switch (method) {
 						case "initialize" -> respond(writer, id, new JsonObject());
 						case "thread/start" -> respond(writer, id, threadResponse("root"));
-						case "thread/fork" -> {
-							forkCount++;
-							respond(writer, id, threadResponse("fork-from-" + params.get("threadId").getAsString() + "-" + forkCount));
-						}
 						case "turn/start" -> {
 							turnCount++;
 							String turnId = "turn-" + turnCount;
 							String threadId = params.get("threadId").getAsString();
-							JsonObject result = new JsonObject();
-							JsonObject turn = new JsonObject();
-							turn.addProperty("id", turnId);
-							turn.addProperty("status", "inProgress");
-							turn.add("items", new com.google.gson.JsonArray());
-							result.add("turn", turn);
-							respond(writer, id, result);
 							String input = params.get("input").toString();
+							notifyTurnStarted(writer, threadId, turnId);
+							if (input.contains("DELAY_START_RESPONSE")) {
+								delayedTurnStartId = id.deepCopy();
+							}
+							else {
+								respond(writer, id, turnResponse(turnId));
+							}
 							if (!input.contains("WAIT")) {
 								completeTurn(writer, threadId, turnId, "completed", structuredReply(threadId, input));
 							}
@@ -147,11 +193,32 @@ class CodexAppServerClientTest {
 								"interrupted",
 								null
 							);
+							if (delayedTurnStartId != null) {
+								respond(writer, delayedTurnStartId, turnResponse(params.get("turnId").getAsString()));
+								delayedTurnStartId = null;
+							}
 						}
 						default -> respond(writer, id, new JsonObject());
 					}
 				}
 			}
+		}
+
+		private static JsonObject turnResponse(String turnId) {
+			JsonObject result = new JsonObject();
+			JsonObject turn = new JsonObject();
+			turn.addProperty("id", turnId);
+			turn.addProperty("status", "inProgress");
+			turn.add("items", new com.google.gson.JsonArray());
+			result.add("turn", turn);
+			return result;
+		}
+
+		private static void notifyTurnStarted(BufferedWriter writer, String threadId, String turnId) throws Exception {
+			JsonObject params = new JsonObject();
+			params.addProperty("threadId", threadId);
+			params.add("turn", turnResponse(turnId).getAsJsonObject("turn"));
+			notify(writer, "turn/started", params);
 		}
 
 		private static JsonObject threadResponse(String threadId) {

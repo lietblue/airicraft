@@ -27,6 +27,7 @@ import java.util.concurrent.CompletionException;
 import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -77,8 +78,8 @@ class CodexAppServerLlmBackendTest {
 	}
 
 	@Test
-	void promotesOnlyAcceptedCandidateAndForksToolFollowUpFromIt() throws Exception {
-		Path log = tempDir.resolve("promotion.log");
+	void reusesSingleThreadAcrossAcceptedDiscardedAndToolFollowUpTurns() throws Exception {
+		Path log = tempDir.resolve("single-thread.log");
 		CodexAppServerLlmBackend backend = backend(log);
 		try {
 			LlmCallResult<PlannerResponse> first = backend.generate(request(1L, "first"));
@@ -86,7 +87,7 @@ class CodexAppServerLlmBackendTest {
 			backend.acceptGeneration(1L);
 
 			LlmCallResult<PlannerResponse> unacceptedSibling = backend.generate(request(2L, "sibling"));
-			assertEquals("from:fork-from-root-1", unacceptedSibling.payload().replyText());
+			assertEquals("from:root", unacceptedSibling.payload().replyText());
 			backend.discardGeneration(2L);
 
 			LlmCallResult<PlannerResponse> toolProposal = backend.generate(request(1L, "REQUEST_TOOL"));
@@ -94,16 +95,18 @@ class CodexAppServerLlmBackendTest {
 			backend.acceptGeneration(1L);
 
 			LlmCallResult<PlannerResponse> followUp = backend.generate(request(1L, "Tool result: goal cleared"));
-			assertEquals("from:fork-from-fork-from-root-2-3", followUp.payload().replyText());
+			assertEquals("from:root", followUp.payload().replyText());
+			backend.acceptGeneration(1L);
 		}
 		finally {
 			backend.shutdownBackend();
 		}
 
 		String wireLog = Files.readString(log);
-		assertTrue(wireLog.contains("thread/start"));
-		assertEquals(2L, wireLog.lines().filter(line -> line.equals("thread/fork root")).count());
-		assertTrue(wireLog.contains("thread/fork fork-from-root-2"));
+		assertEquals(1L, wireLog.lines().filter(line -> line.equals("thread/start")).count());
+		assertEquals(4L, wireLog.lines().filter(line -> line.equals("turn/start")).count());
+		assertTrue(wireLog.contains("thread/archive root"));
+		assertFalse(wireLog.contains("thread/fork"));
 	}
 
 	@Test
@@ -134,7 +137,10 @@ class CodexAppServerLlmBackendTest {
 
 		String wireLog = Files.readString(log);
 		assertTrue(wireLog.contains("turn/interrupt"));
-		assertEquals(2L, wireLog.lines().filter(line -> line.equals("thread/start")).count());
+		assertEquals(1L, wireLog.lines().filter(line -> line.equals("thread/start")).count());
+		assertEquals(2L, wireLog.lines().filter(line -> line.equals("turn/start")).count());
+		assertTrue(wireLog.contains("thread/archive root"));
+		assertFalse(wireLog.contains("thread/fork"));
 	}
 
 	private CodexAppServerLlmBackend backend(Path log) {

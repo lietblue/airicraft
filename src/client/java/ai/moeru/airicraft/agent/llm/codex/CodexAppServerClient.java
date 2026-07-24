@@ -28,6 +28,7 @@ public final class CodexAppServerClient implements AutoCloseable {
 	private final int startupTimeoutMillis;
 	private final AtomicLong nextRequestId = new AtomicLong(1L);
 	private final Map<Long, CompletableFuture<JsonElement>> pendingRequests = new ConcurrentHashMap<>();
+	private final Map<String, CompletableFuture<String>> pendingTurnStarts = new ConcurrentHashMap<>();
 	private final Map<String, TurnAccumulator> turns = new ConcurrentHashMap<>();
 	private final Object writeLock = new Object();
 
@@ -109,30 +110,77 @@ public final class CodexAppServerClient implements AutoCloseable {
 
 	public TurnHandle startTurn(JsonObject params, int timeoutMillis)
 		throws IOException, TimeoutException, InterruptedException {
-		JsonObject result = request("turn/start", params, timeoutMillis);
-		JsonObject turn = object(result, "turn");
-		String turnId = string(turn, "id");
 		String threadId = string(params, "threadId");
-		if (turnId == null || threadId == null) {
-			throw new IOException("Codex app-server turn/start response is missing identifiers");
+		if (threadId == null) {
+			throw new IOException("Codex app-server turn/start request is missing threadId");
 		}
-		TurnAccumulator accumulator = turns.computeIfAbsent(turnId, ignored -> new TurnAccumulator(threadId, turnId));
-		return new TurnHandle(threadId, turnId, accumulator.completion());
+		CompletableFuture<String> started = new CompletableFuture<>();
+		if (pendingTurnStarts.putIfAbsent(threadId, started) != null) {
+			throw new IOException("Codex app-server thread already has a pending turn/start request");
+		}
+		try {
+			requestAsync("turn/start", params).whenComplete((result, failure) -> {
+				if (failure != null) {
+					started.completeExceptionally(failure);
+					return;
+				}
+				JsonObject response = result != null && result.isJsonObject() ? result.getAsJsonObject() : null;
+				String responseTurnId = string(object(response, "turn"), "id");
+				if (responseTurnId == null) {
+					started.completeExceptionally(new IOException("Codex app-server turn/start response is missing turn.id"));
+				}
+			});
+			String turnId;
+			try {
+				turnId = started.get(Math.max(1, timeoutMillis), TimeUnit.MILLISECONDS);
+			}
+			catch (ExecutionException exception) {
+				throw asIOException(exception.getCause());
+			}
+			TurnAccumulator accumulator = turns.computeIfAbsent(turnId, ignored -> new TurnAccumulator(threadId, turnId));
+			CompletableFuture<TurnResult> completion = accumulator.completion();
+			completion.whenComplete((ignored, failure) -> turns.remove(turnId, accumulator));
+			return new TurnHandle(threadId, turnId, completion);
+		}
+		finally {
+			pendingTurnStarts.remove(threadId, started);
+		}
 	}
 
-	public void interrupt(String threadId, String turnId) {
+	public CompletableFuture<Void> interrupt(String threadId, String turnId) {
 		if (threadId == null || turnId == null || !initialized) {
-			return;
+			return CompletableFuture.completedFuture(null);
 		}
 		JsonObject params = new JsonObject();
 		params.addProperty("threadId", threadId);
 		params.addProperty("turnId", turnId);
 		try {
-			requestAsync("turn/interrupt", params);
+			CompletableFuture<Void> interruption = requestAsync("turn/interrupt", params).thenApply(ignored -> null);
+			interruption.whenComplete((ignored, failure) -> {
+				if (failure != null) {
+					Airicraft.LOGGER.debug("Failed to interrupt Codex turn {}", turnId, failure);
+				}
+			});
+			return interruption;
 		}
 		catch (IOException exception) {
 			Airicraft.LOGGER.debug("Failed to dispatch Codex turn interruption", exception);
+			return CompletableFuture.failedFuture(exception);
 		}
+	}
+
+	public void archiveThread(String threadId, int timeoutMillis)
+		throws IOException, TimeoutException, InterruptedException {
+		request("thread/archive", threadParams(threadId), timeoutMillis);
+	}
+
+	private static JsonObject threadParams(String threadId) {
+		if (threadId == null || threadId.isBlank()) {
+			throw new IllegalArgumentException("threadId is required");
+		}
+		JsonObject params = new JsonObject();
+		params.addProperty("threadId", threadId);
+		return params;
 	}
 
 	private CompletableFuture<JsonElement> requestInternal(String method, JsonObject params) throws IOException {
@@ -230,11 +278,28 @@ public final class CodexAppServerClient implements AutoCloseable {
 		}
 		String method = string(message, "method");
 		JsonObject params = object(message, "params");
-		if ("item/completed".equals(method)) {
+		if ("turn/started".equals(method)) {
+			handleTurnStarted(params);
+		}
+		else if ("item/completed".equals(method)) {
 			handleItemCompleted(params);
 		}
 		else if ("turn/completed".equals(method)) {
 			handleTurnCompleted(params);
+		}
+	}
+
+	private void handleTurnStarted(JsonObject params) {
+		String threadId = string(params, "threadId");
+		JsonObject turn = object(params, "turn");
+		String turnId = string(turn, "id");
+		if (threadId == null || turnId == null) {
+			return;
+		}
+		turns.computeIfAbsent(turnId, ignored -> new TurnAccumulator(threadId, turnId));
+		CompletableFuture<String> started = pendingTurnStarts.get(threadId);
+		if (started != null) {
+			started.complete(turnId);
 		}
 	}
 
@@ -286,6 +351,8 @@ public final class CodexAppServerClient implements AutoCloseable {
 		terminalFailure = exception;
 		pendingRequests.values().forEach(future -> future.completeExceptionally(exception));
 		pendingRequests.clear();
+		pendingTurnStarts.values().forEach(future -> future.completeExceptionally(exception));
+		pendingTurnStarts.clear();
 		turns.values().forEach(turn -> turn.completion().completeExceptionally(exception));
 	}
 

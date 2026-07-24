@@ -1,5 +1,6 @@
 package ai.moeru.airicraft.agent.llm.codex;
 
+import ai.moeru.airicraft.Airicraft;
 import ai.moeru.airicraft.agent.AgentConfig;
 import ai.moeru.airicraft.agent.llm.LlmBackend;
 import ai.moeru.airicraft.agent.llm.LlmBackendException;
@@ -28,6 +29,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 
 public final class CodexAppServerLlmBackend implements LlmBackend {
+	private static final int THREAD_CLEANUP_TIMEOUT_MILLIS = 2_000;
 	private static final String BASE_INSTRUCTIONS = """
 		You are an inference-only planner embedded inside Airicraft.
 		Do not inspect or modify the working directory and do not call Codex built-in tools.
@@ -46,6 +48,7 @@ public final class CodexAppServerLlmBackend implements LlmBackend {
 	private final CodexPlannerResponseCodec codec;
 	private final ClientFactory clientFactory;
 	private final Object lifecycleLock = new Object();
+	private final Object turnLock = new Object();
 	private final Map<Long, CandidateTurn> candidates = new ConcurrentHashMap<>();
 	private final Set<Long> discardedGenerations = ConcurrentHashMap.newKeySet();
 	private final Set<Long> injectedGenerations = ConcurrentHashMap.newKeySet();
@@ -92,6 +95,12 @@ public final class CodexAppServerLlmBackend implements LlmBackend {
 	}
 
 	private LlmCallResult<PlannerResponse> generate(long generation, LlmConversation conversation) throws LlmBackendException {
+		synchronized (turnLock) {
+			return generateTurn(generation, conversation);
+		}
+	}
+
+	private LlmCallResult<PlannerResponse> generateTurn(long generation, LlmConversation conversation) throws LlmBackendException {
 		Object injected;
 		synchronized (injectedOutcomes) {
 			injected = injectedOutcomes.pollFirst();
@@ -105,9 +114,15 @@ public final class CodexAppServerLlmBackend implements LlmBackend {
 		}
 
 		try {
-			CandidateTurn candidate = beginCandidate(generation, conversation);
+			if (discardedGenerations.contains(generation)) {
+				throw new GenerationSupersededException();
+			}
+			String threadId = requireThread(conversation);
+			if (discardedGenerations.contains(generation)) {
+				throw new GenerationSupersededException();
+			}
 			JsonObject turnParams = new JsonObject();
-			turnParams.addProperty("threadId", candidate.threadId());
+			turnParams.addProperty("threadId", threadId);
 			turnParams.add("input", codec.turnInput(conversation));
 			turnParams.add("outputSchema", codec.outputSchema());
 			turnParams.addProperty("approvalPolicy", "never");
@@ -119,11 +134,14 @@ public final class CodexAppServerLlmBackend implements LlmBackend {
 				turnParams,
 				codexConfig.startupTimeoutMillis()
 			);
-			CandidateTurn active = new CandidateTurn(candidate.threadId(), handle.turnId());
-			candidates.put(generation, active);
+			CandidateTurn active = new CandidateTurn(threadId, handle.turnId());
+			CandidateTurn previous = candidates.put(generation, active);
+			if (previous != null && previous.turnId() != null) {
+				requireClient().interrupt(previous.threadId(), previous.turnId());
+			}
 			if (discardedGenerations.contains(generation)) {
-				requireClient().interrupt(active.threadId(), active.turnId());
-				throw new InterruptedException("Codex planner generation was superseded");
+				abandonCandidate(generation);
+				throw new GenerationSupersededException();
 			}
 
 			CodexAppServerClient.TurnResult turnResult = handle.completion().get(
@@ -148,6 +166,10 @@ public final class CodexAppServerLlmBackend implements LlmBackend {
 			abandonCandidate(generation);
 			throw exception;
 		}
+		catch (GenerationSupersededException exception) {
+			abandonCandidate(generation);
+			throw failure(LlmFailureType.PROVIDER_UNAVAILABLE, exception.getMessage(), exception);
+		}
 		catch (TimeoutException exception) {
 			abandonCandidate(generation);
 			throw failure(LlmFailureType.TIMEOUT, "Codex app-server request timed out", exception);
@@ -167,44 +189,32 @@ public final class CodexAppServerLlmBackend implements LlmBackend {
 		}
 	}
 
-	private CandidateTurn beginCandidate(long generation, LlmConversation conversation)
+	private String requireThread(LlmConversation conversation)
 		throws IOException, TimeoutException, InterruptedException {
-		if (discardedGenerations.contains(generation)) {
-			throw new InterruptedException("Codex planner generation was superseded");
+		String existing = canonicalThreadId;
+		if (existing != null && !existing.isBlank()) {
+			return existing;
 		}
-		CandidateTurn previous = candidates.remove(generation);
-		if (previous != null && previous.turnId() != null) {
-			requireClient().interrupt(previous.threadId(), previous.turnId());
+		synchronized (lifecycleLock) {
+			if (canonicalThreadId != null && !canonicalThreadId.isBlank()) {
+				return canonicalThreadId;
+			}
+			JsonObject params = baseThreadParams();
+			params.addProperty("developerInstructions", codec.developerInstructions(conversation));
+			JsonObject response = requireClient().request("thread/start", params, codexConfig.startupTimeoutMillis());
+			JsonObject thread = response.has("thread") && response.get("thread").isJsonObject()
+				? response.getAsJsonObject("thread")
+				: null;
+			String threadId = thread == null || !thread.has("id") ? null : thread.get("id").getAsString();
+			if (threadId == null || threadId.isBlank()) {
+				throw new IOException("Codex app-server thread/start response is missing thread.id");
+			}
+			if (response.has("model") && !response.get("model").isJsonNull()) {
+				responseModel = response.get("model").getAsString();
+			}
+			canonicalThreadId = threadId;
+			return threadId;
 		}
-
-		JsonObject params = baseThreadParams();
-		params.addProperty("developerInstructions", codec.developerInstructions(conversation));
-		String canonical = canonicalThreadId;
-		String method;
-		if (canonical == null) {
-			method = "thread/start";
-		}
-		else {
-			method = "thread/fork";
-			params.addProperty("threadId", canonical);
-		}
-		JsonObject response = requireClient().request(method, params, codexConfig.startupTimeoutMillis());
-		JsonObject thread = response.has("thread") && response.get("thread").isJsonObject()
-			? response.getAsJsonObject("thread")
-			: null;
-		String threadId = thread == null || !thread.has("id") ? null : thread.get("id").getAsString();
-		if (threadId == null || threadId.isBlank()) {
-			throw new IOException("Codex app-server " + method + " response is missing thread.id");
-		}
-		if (response.has("model") && !response.get("model").isJsonNull()) {
-			responseModel = response.get("model").getAsString();
-		}
-		CandidateTurn candidate = new CandidateTurn(threadId, null);
-		if (discardedGenerations.contains(generation)) {
-			throw new InterruptedException("Codex planner generation was superseded");
-		}
-		candidates.put(generation, candidate);
-		return candidate;
 	}
 
 	private JsonObject baseThreadParams() {
@@ -237,16 +247,15 @@ public final class CodexAppServerLlmBackend implements LlmBackend {
 	@Override
 	public void acceptGeneration(long generation) throws LlmBackendException {
 		if (discardedGenerations.contains(generation)) {
-			throw new LlmBackendException(LlmFailureType.PROVIDER_ERROR, "Codex candidate thread was discarded");
+			throw new LlmBackendException(LlmFailureType.PROVIDER_ERROR, "Codex candidate turn was discarded");
 		}
 		if (injectedGenerations.remove(generation)) {
 			return;
 		}
 		CandidateTurn accepted = candidates.remove(generation);
 		if (accepted == null || accepted.threadId() == null) {
-			throw new LlmBackendException(LlmFailureType.PROVIDER_ERROR, "Codex candidate thread is unavailable for promotion");
+			throw new LlmBackendException(LlmFailureType.PROVIDER_ERROR, "Codex turn is unavailable for acceptance");
 		}
-		canonicalThreadId = accepted.threadId();
 		discardedGenerations.remove(generation);
 	}
 
@@ -303,6 +312,8 @@ public final class CodexAppServerLlmBackend implements LlmBackend {
 	private void closeClient() {
 		synchronized (lifecycleLock) {
 			CodexAppServerClient activeClient = client;
+			String finalCanonicalThreadId = canonicalThreadId;
+			CandidateTurn[] abandonedCandidates = candidates.values().toArray(CandidateTurn[]::new);
 			client = null;
 			canonicalThreadId = null;
 			responseModel = null;
@@ -310,8 +321,30 @@ public final class CodexAppServerLlmBackend implements LlmBackend {
 			discardedGenerations.clear();
 			injectedGenerations.clear();
 			if (activeClient != null) {
+				for (CandidateTurn candidate : abandonedCandidates) {
+					if (candidate.turnId() != null) {
+						activeClient.interrupt(candidate.threadId(), candidate.turnId());
+					}
+				}
+				archiveThreadBeforeClose(activeClient, finalCanonicalThreadId);
 				activeClient.close();
 			}
+		}
+	}
+
+	private static void archiveThreadBeforeClose(CodexAppServerClient activeClient, String threadId) {
+		if (threadId == null || threadId.isBlank()) {
+			return;
+		}
+		try {
+			activeClient.archiveThread(threadId, THREAD_CLEANUP_TIMEOUT_MILLIS);
+		}
+		catch (InterruptedException exception) {
+			Thread.currentThread().interrupt();
+			Airicraft.LOGGER.debug("Interrupted while archiving Codex thread {}", threadId, exception);
+		}
+		catch (IOException | TimeoutException exception) {
+			Airicraft.LOGGER.debug("Failed to archive Codex thread {} during shutdown", threadId, exception);
 		}
 	}
 
@@ -330,5 +363,11 @@ public final class CodexAppServerLlmBackend implements LlmBackend {
 	}
 
 	private record CandidateTurn(String threadId, String turnId) {
+	}
+
+	private static final class GenerationSupersededException extends Exception {
+		private GenerationSupersededException() {
+			super("Codex planner generation was superseded");
+		}
 	}
 }
