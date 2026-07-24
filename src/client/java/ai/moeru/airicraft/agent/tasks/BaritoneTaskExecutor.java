@@ -421,11 +421,8 @@ public final class BaritoneTaskExecutor implements WorldTaskExecutor {
 		String normalized = pathEvent.get().trim().toUpperCase(Locale.ROOT);
 		return switch (normalized) {
 			// MineProcess uses path goals per selected block. It owns target completion,
-			// target blacklisting, and reselection until the process itself deactivates.
-			case "AT_GOAL", "CANCELLED", "CANCELED" -> facade.mineProcessActive();
-			// A failed calculation is input to MineProcess.onTick, which either blacklists
-			// the failed target and selects another or cancels the process when exhausted.
-			case "CALC_FAILED" -> true;
+			// target blacklisting after CALC_FAILED, and reselection until it deactivates.
+			case "AT_GOAL", "CALC_FAILED", "CANCELLED", "CANCELED" -> facade.mineProcessActive();
 			default -> false;
 		};
 	}

@@ -137,7 +137,7 @@ class BaritoneTaskExecutorTest {
 	}
 
 	@Test
-	void queuedMineCalculationFailureWaitsForInactiveProcessCancellation() {
+	void calculationFailureAfterMineProcessExhaustionRemainsTerminal() {
 		FakeBaritoneFacade facade = new FakeBaritoneFacade();
 		BaritoneTaskExecutor executor = new BaritoneTaskExecutor(facade);
 		GoalSnapshot goal = new GoalSnapshot(
@@ -155,16 +155,10 @@ class BaritoneTaskExecutorTest {
 
 		Optional<TaskTerminalEvent> calculationFailure = executor.tick(multiplayer(), Optional.of(request));
 
-		assertTrue(calculationFailure.isEmpty());
-		assertEquals(TaskExecutionState.RUNNING, executor.snapshot().state());
-		assertEquals("CALC_FAILED", executor.snapshot().lastPathEvent());
-
-		facade.pathEvents.add("CANCELED");
-		Optional<TaskTerminalEvent> exhausted = executor.tick(multiplayer(), Optional.of(request));
-
-		assertTrue(exhausted.isPresent());
-		assertEquals(TaskExecutionState.CANCELLED, exhausted.orElseThrow().terminalState());
-		assertEquals(TaskTerminationCause.BARITONE_CANCELLED, exhausted.orElseThrow().terminationCause());
+		assertTrue(calculationFailure.isPresent());
+		assertEquals(TaskExecutionState.FAILED, calculationFailure.orElseThrow().terminalState());
+		assertEquals(TaskTerminationCause.CALCULATION_FAILED, calculationFailure.orElseThrow().terminationCause());
+		assertEquals(TaskExecutionState.FAILED, executor.snapshot().state());
 	}
 
 	@Test
