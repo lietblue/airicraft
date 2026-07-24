@@ -1,6 +1,7 @@
 package ai.moeru.airicraft.agent.tasks;
 
 import ai.moeru.airicraft.agent.goals.GoalPosition;
+import net.minecraft.util.math.BlockPos;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -9,22 +10,33 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class ReturnToSurfaceTaskExecutorTest {
 	@Test
-	void targetReachedUndergroundWithoutToweringFailsInsteadOfCompleting() {
+	void exactNavigationTerminalUndergroundWithoutToweringFailsInsteadOfCompleting() {
 		assertEquals(
 			ReturnToSurfaceTaskExecutor.SurfaceTargetOutcome.FAIL,
-			ReturnToSurfaceTaskExecutor.surfaceTargetOutcome(false, false, "nearest_surface")
+			ReturnToSurfaceTaskExecutor.surfaceTargetOutcome(false, false, "nearest_surface", false)
 		);
 	}
 
 	@Test
-	void targetReachedRememberedSurfaceWithToweringFailsInsteadOfTowering() {
+	void proximityTwoBlocksBelowRememberedSurfaceRefinesToExactNavigation() {
+		GoalPosition rememberedSurface = new GoalPosition(36, 66, 156, false);
+
+		assertTrue(ReturnToSurfaceTaskExecutor.reachedTarget(new BlockPos(37, 64, 156), rememberedSurface));
+		assertEquals(
+			ReturnToSurfaceTaskExecutor.SurfaceTargetOutcome.NAVIGATE_EXACT,
+			ReturnToSurfaceTaskExecutor.surfaceTargetOutcome(false, true, "nearest_surface", true)
+		);
+	}
+
+	@Test
+	void exactNavigationTerminalAtRememberedSurfaceFailsInsteadOfToweringPastTarget() {
 		assertEquals(
 			ReturnToSurfaceTaskExecutor.SurfaceTargetOutcome.FAIL,
-			ReturnToSurfaceTaskExecutor.surfaceTargetOutcome(false, true, "nearest_surface")
+			ReturnToSurfaceTaskExecutor.surfaceTargetOutcome(false, true, "nearest_surface", false)
 		);
 		assertEquals(
 			ReturnToSurfaceTaskExecutor.SurfaceTargetOutcome.FAIL,
-			ReturnToSurfaceTaskExecutor.surfaceTargetOutcome(false, true, "last_surface")
+			ReturnToSurfaceTaskExecutor.surfaceTargetOutcome(false, true, "last_surface", false)
 		);
 	}
 
@@ -32,7 +44,7 @@ class ReturnToSurfaceTaskExecutorTest {
 	void targetReachedLastGroundWithToweringFallsBackToTowering() {
 		assertEquals(
 			ReturnToSurfaceTaskExecutor.SurfaceTargetOutcome.TOWER,
-			ReturnToSurfaceTaskExecutor.surfaceTargetOutcome(false, true, "last_ground")
+			ReturnToSurfaceTaskExecutor.surfaceTargetOutcome(false, true, "last_ground", true)
 		);
 	}
 
@@ -40,7 +52,7 @@ class ReturnToSurfaceTaskExecutorTest {
 	void targetReachedOnSafeSurfaceCompletes() {
 		assertEquals(
 			ReturnToSurfaceTaskExecutor.SurfaceTargetOutcome.COMPLETE,
-			ReturnToSurfaceTaskExecutor.surfaceTargetOutcome(true, false, "nearest_surface")
+			ReturnToSurfaceTaskExecutor.surfaceTargetOutcome(true, false, "nearest_surface", true)
 		);
 	}
 

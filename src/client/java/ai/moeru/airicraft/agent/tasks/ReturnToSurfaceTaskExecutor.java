@@ -45,6 +45,7 @@ public final class ReturnToSurfaceTaskExecutor implements WorldTaskExecutor {
 	private WorldTaskRequest appliedTask;
 	private boolean terminalEventEmitted;
 	private boolean navigationStarted;
+	private boolean exactSurfaceNavigationStarted;
 	private boolean toweringStarted;
 	private int towerStartY;
 	private BlockPos headroomBreakTarget;
@@ -103,8 +104,10 @@ public final class ReturnToSurfaceTaskExecutor implements WorldTaskExecutor {
 				return Optional.empty();
 			}
 		}
-		if (args.targetPosition() != null && reachedTarget(player, args.targetPosition())) {
-			return handleSurfaceTargetReached(request, client, player, args);
+		if (args.targetPosition() != null
+			&& !exactSurfaceNavigationStarted
+			&& reachedTarget(player, args.targetPosition())) {
+			return handleSurfaceTargetReached(request, client, player, args, canRefineSurfaceNavigation());
 		}
 		if (toweringStarted || shouldTowerFirst(args)) {
 			return tickTowering(request, client, player, args);
@@ -127,7 +130,13 @@ public final class ReturnToSurfaceTaskExecutor implements WorldTaskExecutor {
 		if (pathEvent.isPresent()) {
 			String event = pathEvent.get();
 			if ("AT_GOAL".equalsIgnoreCase(event)) {
-				return handleSurfaceTargetReached(request, client, player, args);
+				return handleSurfaceTargetReached(
+					request,
+					client,
+					player,
+					args,
+					canRefineSurfaceNavigation()
+				);
 			}
 			if ("CALC_FAILED".equalsIgnoreCase(event) || "CANCELLED".equalsIgnoreCase(event) || "CANCELED".equalsIgnoreCase(event)) {
 				return args.useTowering()
@@ -135,7 +144,11 @@ public final class ReturnToSurfaceTaskExecutor implements WorldTaskExecutor {
 					: fail(request, "surface_path_" + event.toLowerCase(java.util.Locale.ROOT));
 			}
 		}
-		snapshot = snapshot(TaskExecutionState.RUNNING, request, "navigating_to_surface");
+		snapshot = snapshot(
+			TaskExecutionState.RUNNING,
+			request,
+			exactSurfaceNavigationStarted ? "navigating_exact_surface_target" : "navigating_to_surface"
+		);
 		return Optional.empty();
 	}
 
@@ -203,13 +216,37 @@ public final class ReturnToSurfaceTaskExecutor implements WorldTaskExecutor {
 		WorldTaskRequest request,
 		MinecraftClient client,
 		ClientPlayerEntity player,
-		ReturnToSurfaceStepArgs args
+		ReturnToSurfaceStepArgs args,
+		boolean canRefineNavigation
 	) {
-		return switch (surfaceTargetOutcome(isSurfaceReached(client, player), args.useTowering(), args.targetKind())) {
+		return switch (surfaceTargetOutcome(
+			isSurfaceReached(client, player),
+			args.useTowering(),
+			args.targetKind(),
+			canRefineNavigation
+		)) {
 			case COMPLETE -> complete(request, "surface_target_reached");
+			case NAVIGATE_EXACT -> startExactSurfaceNavigation(request, args.targetPosition());
 			case TOWER -> tickTowering(request, client, player, args);
 			case FAIL -> fail(request, "surface_target_not_surface");
 		};
+	}
+
+	private boolean canRefineSurfaceNavigation() {
+		return !exactSurfaceNavigationStarted
+			&& baritoneFacade != null
+			&& baritoneFacade.isLoaded();
+	}
+
+	private Optional<TaskTerminalEvent> startExactSurfaceNavigation(
+		WorldTaskRequest request,
+		GoalPosition targetPosition
+	) {
+		baritoneFacade.startNavigate(targetPosition);
+		navigationStarted = true;
+		exactSurfaceNavigationStarted = true;
+		snapshot = snapshot(TaskExecutionState.RUNNING, request, "navigating_exact_surface_target");
+		return Optional.empty();
 	}
 
 	private Optional<TaskTerminalEvent> tickTowering(
@@ -536,10 +573,13 @@ public final class ReturnToSurfaceTaskExecutor implements WorldTaskExecutor {
 	}
 
 	private static boolean reachedTarget(ClientPlayerEntity player, GoalPosition position) {
-		if (player == null || position == null) {
+		return player != null && reachedTarget(player.getBlockPos(), position);
+	}
+
+	static boolean reachedTarget(BlockPos playerPos, GoalPosition position) {
+		if (playerPos == null || position == null) {
 			return false;
 		}
-		BlockPos playerPos = player.getBlockPos();
 		return Math.abs(playerPos.getX() - position.x()) <= NAVIGATION_RADIUS_BLOCKS
 			&& Math.abs(playerPos.getZ() - position.z()) <= NAVIGATION_RADIUS_BLOCKS
 			&& Math.abs(playerPos.getY() - position.y()) <= 2;
@@ -551,12 +591,17 @@ public final class ReturnToSurfaceTaskExecutor implements WorldTaskExecutor {
 			&& SurfaceMemory.isSurfaceStandingPosition(client, player.getBlockPos());
 	}
 
-	static SurfaceTargetOutcome surfaceTargetOutcome(boolean surfaceReached, boolean useTowering, String targetKind) {
+	static SurfaceTargetOutcome surfaceTargetOutcome(
+		boolean surfaceReached,
+		boolean useTowering,
+		String targetKind,
+		boolean canRefineNavigation
+	) {
 		if (surfaceReached) {
 			return SurfaceTargetOutcome.COMPLETE;
 		}
 		if (isRememberedSurfaceTarget(targetKind)) {
-			return SurfaceTargetOutcome.FAIL;
+			return canRefineNavigation ? SurfaceTargetOutcome.NAVIGATE_EXACT : SurfaceTargetOutcome.FAIL;
 		}
 		return useTowering ? SurfaceTargetOutcome.TOWER : SurfaceTargetOutcome.FAIL;
 	}
@@ -599,6 +644,7 @@ public final class ReturnToSurfaceTaskExecutor implements WorldTaskExecutor {
 			baritoneFacade.cancel();
 		}
 		navigationStarted = false;
+		exactSurfaceNavigationStarted = false;
 	}
 
 	private void releaseMovementControls() {
@@ -664,6 +710,7 @@ public final class ReturnToSurfaceTaskExecutor implements WorldTaskExecutor {
 
 	enum SurfaceTargetOutcome {
 		COMPLETE,
+		NAVIGATE_EXACT,
 		TOWER,
 		FAIL
 	}
