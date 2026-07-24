@@ -51,6 +51,7 @@ class CodexAppServerClientTest {
 
 		String wireLog = Files.readString(log);
 		assertTrue(wireLog.contains("initialize"));
+		assertTrue(wireLog.contains("initialize experimentalApi true"));
 		assertTrue(wireLog.contains("initialized"));
 		assertTrue(wireLog.contains("thread/start"));
 		assertTrue(wireLog.contains("turn/start"));
@@ -160,8 +161,15 @@ class CodexAppServerClientTest {
 						default -> "";
 					};
 					append(log, method + suffix);
+					if ("initialize".equals(method) && params.has("capabilities")) {
+						append(log, "initialize experimentalApi "
+							+ params.getAsJsonObject("capabilities").get("experimentalApi").getAsBoolean());
+					}
 					if ("turn/start".equals(method) && params.has("effort")) {
 						append(log, "turn/start effort " + params.get("effort").getAsString());
+					}
+					if ("turn/start".equals(method) && params.has("additionalContext")) {
+						append(log, "turn/start additionalContext " + params.get("additionalContext"));
 					}
 					if (!request.has("id")) {
 						continue;

@@ -124,6 +124,7 @@ public final class CodexAppServerLlmBackend implements LlmBackend {
 			JsonObject turnParams = new JsonObject();
 			turnParams.addProperty("threadId", threadId);
 			turnParams.add("input", codec.turnInput(conversation));
+			turnParams.add("additionalContext", codec.turnAdditionalContext());
 			turnParams.add("outputSchema", codec.outputSchema());
 			turnParams.addProperty("approvalPolicy", "never");
 			if (!codexConfig.model().isBlank()) {

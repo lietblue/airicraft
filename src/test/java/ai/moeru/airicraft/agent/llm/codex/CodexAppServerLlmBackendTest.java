@@ -111,6 +111,47 @@ class CodexAppServerLlmBackendTest {
 	}
 
 	@Test
+	void refreshesActiveToolSchemasInAdditionalContextAcrossTurns() throws Exception {
+		Path log = tempDir.resolve("tool-schema-refresh.log");
+		PlannerToolRegistry registry = PlannerToolRegistry.empty();
+		CodexAppServerLlmBackend backend = backend(log, registry);
+		try {
+			backend.generate(request(1L, "first"));
+			backend.acceptGeneration(1L);
+			registry.discoverTools("observation", 4);
+			backend.generate(request(2L, "second"));
+			backend.acceptGeneration(2L);
+		}
+		finally {
+			backend.shutdownBackend();
+		}
+
+		List<String> schemaContexts = Files.readAllLines(log).stream()
+			.filter(line -> line.startsWith("turn/start additionalContext "))
+			.toList();
+		assertEquals(2, schemaContexts.size());
+		assertFalse(schemaContexts.get(0).contains("inspect_world"));
+		assertTrue(schemaContexts.get(1).contains("inspect_world"));
+		assertTrue(schemaContexts.get(1).contains("inspect_area"));
+		assertTrue(schemaContexts.get(1).contains("find_placement_sites"));
+	}
+
+	@Test
+	void invalidArgumentsIdentifyTheRejectedToolForSchemaRepair() {
+		PlannerToolRegistry registry = PlannerToolRegistry.empty();
+		registry.discoverTools("observation", 4);
+		CodexPlannerResponseCodec codec = new CodexPlannerResponseCodec(registry);
+
+		LlmBackendException exception = assertThrows(LlmBackendException.class, () -> codec.parse("""
+			{"chatMessages":[],"toolCalls":[{"name":"inspect_world","argumentsJson":"{\\"mode\\":\\"block\\",\\"scope\\":\\"self\\"}"}]}
+			""", 7L));
+
+		assertEquals(ai.moeru.airicraft.agent.llm.LlmFailureType.PARSE_ERROR, exception.failureType());
+		assertTrue(exception.getMessage().contains("Invalid inspect_world tool arguments"));
+		assertTrue(exception.getMessage().contains("Unsupported inspect_world mode: block"));
+	}
+
+	@Test
 	void discardInterruptsActiveTurnAndLeavesCanonicalThreadUnchanged() throws Exception {
 		Path log = tempDir.resolve("supersede.log");
 		CodexAppServerLlmBackend backend = backend(log);
@@ -145,10 +186,14 @@ class CodexAppServerLlmBackendTest {
 	}
 
 	private CodexAppServerLlmBackend backend(Path log) {
+		return backend(log, PlannerToolRegistry.empty());
+	}
+
+	private CodexAppServerLlmBackend backend(Path log, PlannerToolRegistry registry) {
 		return new CodexAppServerLlmBackend(
 			codexConfig(),
 			NoopObservability.INSTANCE,
-			PlannerToolRegistry.empty(),
+			registry,
 			() -> CodexAppServerClientTest.fakeClient(log)
 		);
 	}

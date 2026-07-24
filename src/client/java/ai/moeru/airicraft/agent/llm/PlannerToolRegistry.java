@@ -37,6 +37,13 @@ public final class PlannerToolRegistry {
 		return filterToActiveSurface(availableOpenAiTools());
 	}
 
+	public Optional<Map<String, Object>> activeOpenAiTool(String toolName) {
+		String normalized = PlannerToolCatalog.normalizeName(toolName);
+		return openAiTools().stream()
+			.filter(tool -> normalized.equals(PlannerToolCatalog.normalizeName(toolName(tool))))
+			.findFirst();
+	}
+
 	public List<String> activeToolNames() {
 		return toolSurface.activeToolNames();
 	}

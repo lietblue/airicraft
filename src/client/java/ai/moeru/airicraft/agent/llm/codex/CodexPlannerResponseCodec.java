@@ -49,11 +49,21 @@ final class CodexPlannerResponseCodec {
 			.map(LlmChatMessage::content)
 			.findFirst()
 			.orElse("You are the Airicraft Minecraft planner.");
+		return system + ADAPTER_INSTRUCTIONS;
+	}
+
+	JsonObject turnAdditionalContext() {
 		List<Map<String, Object>> tools = toolRegistry.openAiTools();
 		String toolContract = tools.isEmpty()
-			? "\nNo Airicraft tools are available in this turn. toolCalls must be empty."
-			: "\nAVAILABLE AIRICRAFT TOOL SCHEMAS:\n" + GSON.toJson(tools);
-		return system + ADAPTER_INSTRUCTIONS + toolContract;
+			? "No Airicraft tools are available in this turn. toolCalls must be empty."
+			: "CURRENT AIRICRAFT TOOL SCHEMAS FOR THIS TURN (these supersede schemas from earlier turns):\n"
+				+ GSON.toJson(tools);
+		JsonObject entry = new JsonObject();
+		entry.addProperty("kind", "application");
+		entry.addProperty("value", toolContract);
+		JsonObject context = new JsonObject();
+		context.add("airicraft_tool_schemas", entry);
+		return context;
 	}
 
 	JsonArray turnInput(LlmConversation conversation) {
@@ -147,19 +157,24 @@ final class CodexPlannerResponseCodec {
 		for (int index = 0; index < array.size(); index++) {
 			JsonObject proposal = array.get(index).getAsJsonObject();
 			String name = requiredString(proposal, "name");
-			String argumentsJson = requiredString(proposal, "argumentsJson");
-			JsonElement parsedArguments = JsonParser.parseString(argumentsJson);
-			if (!parsedArguments.isJsonObject()) {
-				throw new JsonParseException("argumentsJson must encode a JSON object");
+			try {
+				String argumentsJson = requiredString(proposal, "argumentsJson");
+				JsonElement parsedArguments = JsonParser.parseString(argumentsJson);
+				if (!parsedArguments.isJsonObject()) {
+					throw new JsonParseException("argumentsJson must encode a JSON object");
+				}
+				JsonObject function = new JsonObject();
+				function.addProperty("name", name);
+				function.addProperty("arguments", parsedArguments.toString());
+				JsonObject openAiShape = new JsonObject();
+				openAiShape.addProperty("id", "codex-" + generation + "-" + (index + 1));
+				openAiShape.addProperty("type", "function");
+				openAiShape.add("function", function);
+				calls.add(PlannerToolCatalog.parseToolCall(openAiShape, toolRegistry));
 			}
-			JsonObject function = new JsonObject();
-			function.addProperty("name", name);
-			function.addProperty("arguments", parsedArguments.toString());
-			JsonObject openAiShape = new JsonObject();
-			openAiShape.addProperty("id", "codex-" + generation + "-" + (index + 1));
-			openAiShape.addProperty("type", "function");
-			openAiShape.add("function", function);
-			calls.add(PlannerToolCatalog.parseToolCall(openAiShape, toolRegistry));
+			catch (IllegalStateException | JsonParseException exception) {
+				throw new JsonParseException("Invalid " + name + " tool arguments: " + exception.getMessage(), exception);
+			}
 		}
 		return List.copyOf(calls);
 	}

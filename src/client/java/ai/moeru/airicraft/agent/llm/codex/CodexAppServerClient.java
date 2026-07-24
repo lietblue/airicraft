@@ -67,6 +67,9 @@ public final class CodexAppServerClient implements AutoCloseable {
 		clientInfo.addProperty("version", "1");
 		JsonObject params = new JsonObject();
 		params.add("clientInfo", clientInfo);
+		JsonObject capabilities = new JsonObject();
+		capabilities.addProperty("experimentalApi", true);
+		params.add("capabilities", capabilities);
 		try {
 			requestInternal("initialize", params).get(startupTimeoutMillis, TimeUnit.MILLISECONDS);
 			notifyInternal("initialized", new JsonObject());

@@ -12,6 +12,7 @@ import ai.moeru.airicraft.agent.events.EventPolicyMatch;
 import ai.moeru.airicraft.agent.events.EventPolicyRuleUpsert;
 import ai.moeru.airicraft.agent.events.SemanticEventQueryResult;
 import ai.moeru.airicraft.agent.session.SessionMode;
+import com.google.gson.Gson;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import io.opentelemetry.context.Context;
@@ -26,8 +27,12 @@ import java.util.Locale;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 public final class PlannerOrchestrator {
+	private static final Gson GSON = new Gson();
+	private static final Pattern FAILED_TOOL_ARGUMENTS_PATTERN = Pattern.compile("Invalid ([a-z0-9_]+) tool arguments:");
 	private static final String VISUAL_TOOL_NAME = "take_a_look";
 	private static final String WORLD_TOOL_NAME = "inspect_world";
 	private static final String INVENTORY_TOOL_NAME = "inspect_inventory";
@@ -1054,14 +1059,34 @@ public final class PlannerOrchestrator {
 		return length;
 	}
 
-	private static String toolCallRepairMessage(String failureMessage) {
-		return TOOL_CALL_REPAIR_PREFIX
+	private String toolCallRepairMessage(String failureMessage) {
+		String reminder = TOOL_CALL_REPAIR_PREFIX
 			+ " Previous response was rejected: "
 			+ (failureMessage == null || failureMessage.isBlank() ? "parse error" : failureMessage)
 			+ "\nCall exactly one tool in this response unless every tool call is a read-only text tool."
 			+ "\nDo not batch multiple action tool calls such as navigate_to, mine_blocks, collect_resource, craft_recipe, smelt_items, drop_items, give_player, attack_entity, use_entity, place_block, use_block, cancel_task, clear_goal, or update_event_policy."
 			+ "\nIf multiple actions are needed, call only the next single action tool now and wait for the tool result or TASK UPDATE before another action. A single place_block, use_block, or break_blocks call may use ordered targets[] when all targets were inspected and the schema supports them."
 			+ "\nWhen calling a tool, leave assistant content empty and put visible pre-action text in the tool narration argument.";
+		String failedToolSchema = failedToolSchema(failureMessage);
+		if (failedToolSchema == null) {
+			return reminder;
+		}
+		return reminder
+			+ "\nCURRENT SCHEMA FOR THE REJECTED TOOL (use these exact field names and enum values):\n"
+			+ failedToolSchema;
+	}
+
+	private String failedToolSchema(String failureMessage) {
+		if (failureMessage == null || failureMessage.isBlank()) {
+			return null;
+		}
+		Matcher matcher = FAILED_TOOL_ARGUMENTS_PATTERN.matcher(failureMessage);
+		if (!matcher.find()) {
+			return null;
+		}
+		return toolRegistry.activeOpenAiTool(matcher.group(1))
+			.map(GSON::toJson)
+			.orElse(null);
 	}
 
 	private PlannerExecutionResult startToolExecution(PlannerExecutionResult plannerResult, List<PlannerToolCall> toolCalls) {

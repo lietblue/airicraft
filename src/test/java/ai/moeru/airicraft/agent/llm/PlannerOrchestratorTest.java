@@ -1923,6 +1923,40 @@ class PlannerOrchestratorTest {
 	}
 
 	@Test
+	void parseRepairIncludesCurrentSchemaForRejectedToolArguments() {
+		RecordingBackend backend = new RecordingBackend();
+		PlannerToolRegistry registry = PlannerToolRegistry.empty();
+		registry.discoverTools("observation", 4);
+		PlannerOrchestrator orchestrator = newOrchestrator(
+			backend,
+			CurrentViewVisionTool.disabled(),
+			CurrentInventoryTool.disabled(),
+			PlannerVisionMode.EXTERNAL_SUMMARY,
+			registry,
+			PlannerActionToolExecutor.DISABLED
+		);
+
+		orchestrator.submit(requestAt(10L, 1_000L, "Alice", "@agent inspect here"));
+		backend.awaitCalls(1, Duration.ofSeconds(1));
+		backend.fail(
+			0,
+			LlmFailureType.PARSE_ERROR,
+			"Failed to parse Codex planner response: Invalid inspect_world tool arguments: Unsupported inspect_world mode: block"
+		);
+		awaitBackendCallCount(orchestrator, backend, 2, Duration.ofSeconds(1));
+
+		String repairPrompt = conversationText(backend.conversation(1));
+		assertTrue(repairPrompt.contains("CURRENT SCHEMA FOR THE REJECTED TOOL"), repairPrompt);
+		assertTrue(repairPrompt.contains("inspect_world"), repairPrompt);
+		assertTrue(repairPrompt.contains("inspect_area"), repairPrompt);
+		assertTrue(repairPrompt.contains("find_placement_sites"), repairPrompt);
+		assertTrue(repairPrompt.contains("\"center\""), repairPrompt);
+
+		backend.succeed(1, replyOnly("I checked the schema."));
+		assertTrue(awaitResult(orchestrator).succeeded());
+	}
+
+	@Test
 	void consecutiveToolFollowUpKeepsPriorToolExchangeInPrompt() {
 		RecordingBackend backend = new RecordingBackend();
 		StubInventoryTool inventoryTool = new StubInventoryTool(
