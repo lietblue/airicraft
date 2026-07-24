@@ -59,13 +59,15 @@ class PlannerToolCallInterfaceTest {
 			assertEquals("auto", body.get("tool_choice").getAsString());
 			JsonArray tools = body.getAsJsonArray("tools");
 			assertNotNull(tools);
-			assertTrue(tools.size() >= 10);
-			JsonObject narrationSchema = tools.get(0).getAsJsonObject()
+			assertEquals(5, tools.size());
+			assertEquals(PlannerToolCatalog.DISCOVER_TOOLS, tools.get(0).getAsJsonObject()
+				.getAsJsonObject("function").get("name").getAsString());
+			JsonObject discoverySchema = tools.get(0).getAsJsonObject()
 				.getAsJsonObject("function")
 				.getAsJsonObject("parameters")
 				.getAsJsonObject("properties")
-				.getAsJsonObject("narration");
-			assertEquals("string", narrationSchema.get("type").getAsString());
+				.getAsJsonObject("query");
+			assertEquals("string", discoverySchema.get("type").getAsString());
 		}
 	}
 
@@ -612,6 +614,7 @@ class PlannerToolCallInterfaceTest {
 			"Use search_recipes for recipe viewer searches.",
 			"Tool result for search_recipes: provider=stub"
 		));
+		registry.discoverTools("recipe", 4);
 		AtomicReference<String> bodyRef = new AtomicReference<>();
 		try (TestServer server = TestServer.start(bodyRef, """
 			{

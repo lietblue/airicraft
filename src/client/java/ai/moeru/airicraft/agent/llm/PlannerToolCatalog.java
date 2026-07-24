@@ -21,6 +21,7 @@ import java.util.Optional;
 import java.util.function.Consumer;
 
 public final class PlannerToolCatalog {
+	public static final String DISCOVER_TOOLS = "discover_tools";
 	public static final String TAKE_A_LOOK = "take_a_look";
 	public static final String INSPECT_WORLD = "inspect_world";
 	public static final String INSPECT_INVENTORY = "inspect_inventory";
@@ -59,6 +60,10 @@ public final class PlannerToolCatalog {
 	private static final Consumer<JsonObject> NO_ARGUMENT_VALIDATION = arguments -> {
 	};
 	private static final List<BuiltInTool> BUILT_IN_TOOLS = List.of(
+		builtInTool(DISCOVER_TOOLS, true, tool(DISCOVER_TOOLS, "Discover a small set of specialist tools by capability. The result activates matching full schemas for the next planner request.", properties(
+				prop("query", string("Short capability or tool search, for example smelting, navigation, exact world blocks, or map waypoints.")),
+				prop("maxResults", integer("Maximum concise tool cards to return, from 1 to 5. Defaults to 4."))
+			), List.of("query")), PlannerToolCatalog::validateDiscoverToolsArguments),
 		builtInTool(TAKE_A_LOOK, true, tool(TAKE_A_LOOK, "Inspect current first-person view.", properties(
 				prop("narration", optionalString("Optional visible narration before using the tool. Omit this field when no narration is needed.")),
 				prop("prompt", string("Short prompt describing what to inspect.")),
@@ -452,6 +457,16 @@ public final class PlannerToolCatalog {
 
 	private static void validateFollowPlayerArguments(JsonObject arguments) {
 		requireString(arguments, "targetPlayer");
+	}
+
+	private static void validateDiscoverToolsArguments(JsonObject arguments) {
+		requireString(arguments, "query");
+		if (arguments.has("maxResults") && !arguments.get("maxResults").isJsonNull()) {
+			int maxResults = requireInt(arguments, "maxResults");
+			if (maxResults < 1 || maxResults > 5) {
+				throw new JsonParseException("maxResults must be between 1 and 5");
+			}
+		}
 	}
 
 	private static void validateNavigateToArguments(JsonObject arguments) {

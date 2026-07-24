@@ -23,10 +23,7 @@ public final class PlannerPromptPolicy {
 
 	public static String systemPrompt(PlannerVisionMode visionMode, PlannerToolRegistry toolRegistry) {
 		PlannerToolRegistry effectiveToolRegistry = toolRegistry == null ? PlannerToolRegistry.empty() : toolRegistry;
-		String visionInstruction = switch (visionMode) {
-			case EXTERNAL_SUMMARY -> "If you need visual information, call take_a_look with a short prompt describing what the separate vision model should inspect.";
-			case NATIVE_TOOL_IMAGE -> "If you need visual information, call take_a_look.";
-		};
+		String visionInstruction = "If visual information is needed, discover an observation capability before requesting it.";
 		return renderTemplate(SYSTEM_PROMPT_TEMPLATE, SYSTEM_PROMPT_TEMPLATE_TEXT, Map.of(
 			"available_tool_line", availableToolLine(effectiveToolRegistry),
 			"vision_instruction", visionInstruction,

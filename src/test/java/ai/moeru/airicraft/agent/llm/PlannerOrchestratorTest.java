@@ -2071,6 +2071,136 @@ class PlannerOrchestratorTest {
 	}
 
 	@Test
+	void undiscoveredSpecialistToolIsRejectedBeforeTheActionExecutor() {
+		RecordingBackend backend = new RecordingBackend();
+		PlannerToolRegistry registry = PlannerToolRegistry.empty();
+		ArrayList<String> invokedTools = new ArrayList<>();
+		PlannerOrchestrator orchestrator = newOrchestrator(
+			backend,
+			CurrentViewVisionTool.disabled(),
+			CurrentInventoryTool.disabled(),
+			PlannerVisionMode.EXTERNAL_SUMMARY,
+			registry,
+			toolCall -> {
+				invokedTools.add(toolCall.name());
+				return CompletableFuture.completedFuture("Tool result for " + toolCall.name() + ": ok");
+			}
+		);
+		JsonObject arguments = new JsonObject();
+		arguments.addProperty("x", 4);
+		arguments.addProperty("y", 64);
+		arguments.addProperty("z", 8);
+
+		orchestrator.submit(requestAt(10L, 1_000L, "Alice", "@agent go there"));
+		backend.awaitCalls(1, Duration.ofSeconds(1));
+		backend.succeed(0, new PlannerResponse("", new PlannerToolCall(
+			"call_hidden",
+			PlannerToolCatalog.NAVIGATE_TO,
+			arguments,
+			null,
+			null
+		), null));
+		awaitBackendCallCount(orchestrator, backend, 2, Duration.ofSeconds(1));
+		backend.succeed(1, new PlannerResponse("", new PlannerToolCall(
+			"call_hidden_retry",
+			PlannerToolCatalog.NAVIGATE_TO,
+			arguments,
+			null,
+			null
+		), null));
+		awaitBackendCallCount(orchestrator, backend, 3, Duration.ofSeconds(1));
+		backend.succeed(2, new PlannerResponse("", new PlannerToolCall(
+			"call_hidden_final",
+			PlannerToolCatalog.NAVIGATE_TO,
+			arguments,
+			null,
+			null
+		), null));
+
+		PlannerExecutionResult result = awaitResult(orchestrator);
+
+		assertFalse(result.succeeded());
+		assertTrue(result.failureMessage().contains("tool_not_discovered: navigate_to"));
+		assertTrue(invokedTools.isEmpty());
+	}
+
+	@Test
+	void discoveryActivatesSpecialistSchemaForTheNextPlannerRequestAndExecution() {
+		RecordingBackend backend = new RecordingBackend();
+		PlannerToolRegistry registry = PlannerToolRegistry.empty();
+		ArrayList<String> invokedTools = new ArrayList<>();
+		PlannerOrchestrator orchestrator = newOrchestrator(
+			backend,
+			CurrentViewVisionTool.disabled(),
+			CurrentInventoryTool.disabled(),
+			PlannerVisionMode.EXTERNAL_SUMMARY,
+			registry,
+			toolCall -> {
+				invokedTools.add(toolCall.name());
+				return CompletableFuture.completedFuture("Tool result for " + toolCall.name() + ": ok");
+			}
+		);
+		JsonObject discoverArguments = new JsonObject();
+		discoverArguments.addProperty("query", "navigation");
+
+		orchestrator.submit(requestAt(10L, 1_000L, "Alice", "@agent go there"));
+		backend.awaitCalls(1, Duration.ofSeconds(1));
+		assertFalse(conversationText(backend.conversation(0)).contains("navigate_to"));
+		backend.succeed(0, new PlannerResponse("", new PlannerToolCall(
+			"call_discover",
+			PlannerToolCatalog.DISCOVER_TOOLS,
+			discoverArguments,
+			null,
+			null
+		), null));
+		awaitBackendCallCount(orchestrator, backend, 2, Duration.ofSeconds(1));
+
+		LlmConversation followUp = backend.conversation(1);
+		assertTrue(conversationText(followUp).contains("navigate_to"));
+		assertTrue(conversationText(followUp).contains("Tool result for discover_tools"));
+		assertTrue(registry.isActiveTool(PlannerToolCatalog.NAVIGATE_TO));
+
+		JsonObject navigateArguments = new JsonObject();
+		navigateArguments.addProperty("x", 4);
+		navigateArguments.addProperty("y", 64);
+		navigateArguments.addProperty("z", 8);
+		backend.succeed(1, new PlannerResponse("", new PlannerToolCall(
+			"call_navigate",
+			PlannerToolCatalog.NAVIGATE_TO,
+			navigateArguments,
+			null,
+			null
+		), null));
+		awaitInvokedToolCount(orchestrator, invokedTools, 1, Duration.ofSeconds(1));
+		awaitBackendCallCount(orchestrator, backend, 3, Duration.ofSeconds(1));
+		backend.succeed(2, replyOnly("On my way."));
+
+		PlannerExecutionResult result = awaitResult(orchestrator);
+
+		assertTrue(result.succeeded());
+		assertEquals(List.of(PlannerToolCatalog.NAVIGATE_TO), invokedTools);
+	}
+
+	@Test
+	void activeSafetyHoldTemporarilyExposesTheResumeControlOnTheCoreSurface() {
+		PlannerToolRegistry registry = PlannerToolRegistry.empty();
+		PlannerOrchestrator orchestrator = newOrchestrator(
+			new RecordingBackend(),
+			CurrentViewVisionTool.disabled(),
+			CurrentInventoryTool.disabled(),
+			PlannerVisionMode.EXTERNAL_SUMMARY,
+			registry,
+			PlannerActionToolExecutor.DISABLED
+		);
+
+		orchestrator.updateSafetyContext(1L, "hold-1", true);
+		assertTrue(registry.isActiveTool(PlannerToolCatalog.RESUME_TASK));
+
+		orchestrator.updateSafetyContext(2L, null, false);
+		assertFalse(registry.isActiveTool(PlannerToolCatalog.RESUME_TASK));
+	}
+
+	@Test
 	void plannerRequestAndToolFollowUpUseTurnContextAsSpanParent() {
 		RecordingBackend backend = new RecordingBackend();
 		RecordingObservability observability = new RecordingObservability();
@@ -2468,10 +2598,12 @@ class PlannerOrchestratorTest {
 	) {
 		AgentConfig.LlmConfig config = AgentConfig.LlmConfig.defaults();
 		Clock clock = Clock.systemDefaultZone();
+		PlannerToolRegistry toolRegistry = PlannerToolRegistry.empty();
+		toolRegistry.activateAllForTesting();
 		return new PlannerOrchestrator(
 			new PlannerExecutor(backend),
-			new PlannerCompactionService(new OpenAiCompatibleChatClient(config)),
-			new PlannerContextAggregator(clock, config.plannerCompactionTriggerTokens(), config.plannerPendingSemanticEventCap(), visionMode),
+			new PlannerCompactionService(new OpenAiCompatibleChatClient(config, toolRegistry)),
+			new PlannerContextAggregator(clock, config.plannerCompactionTriggerTokens(), config.plannerPendingSemanticEventCap(), visionMode, toolRegistry),
 			visionTool,
 			inventoryTool,
 			visionMode,
@@ -2485,7 +2617,8 @@ class PlannerOrchestratorTest {
 			lifecycleListener,
 			new AgentDebugRecorder(),
 			PlannerActionToolExecutor.DISABLED,
-			PlannerToolNarrationSink.NO_OP
+			PlannerToolNarrationSink.NO_OP,
+			toolRegistry
 		);
 	}
 
@@ -2499,6 +2632,7 @@ class PlannerOrchestratorTest {
 		AgentConfig.LlmConfig config = AgentConfig.LlmConfig.defaults();
 		Clock clock = Clock.systemDefaultZone();
 		PlannerToolRegistry toolRegistry = PlannerToolRegistry.empty();
+		toolRegistry.activateAllForTesting();
 		return new PlannerOrchestrator(
 			new PlannerExecutor(backend),
 			new PlannerCompactionService(new OpenAiCompatibleChatClient(config, toolRegistry)),
@@ -2528,6 +2662,25 @@ class PlannerOrchestratorTest {
 		PlannerVisionMode visionMode,
 		PlannerToolRegistry toolRegistry
 	) {
+		toolRegistry.activateAllForTesting();
+		return newOrchestrator(
+			backend,
+			visionTool,
+			inventoryTool,
+			visionMode,
+			toolRegistry,
+			PlannerActionToolExecutor.DISABLED
+		);
+	}
+
+	private static PlannerOrchestrator newOrchestrator(
+		LlmBackend backend,
+		CurrentViewVisionTool visionTool,
+		CurrentInventoryTool inventoryTool,
+		PlannerVisionMode visionMode,
+		PlannerToolRegistry toolRegistry,
+		PlannerActionToolExecutor actionToolExecutor
+	) {
 		AgentConfig.LlmConfig config = AgentConfig.LlmConfig.defaults();
 		Clock clock = Clock.systemDefaultZone();
 		return new PlannerOrchestrator(
@@ -2546,7 +2699,7 @@ class PlannerOrchestratorTest {
 			NoopObservability.INSTANCE,
 			PlannerLifecycleListener.NO_OP,
 			new AgentDebugRecorder(),
-			PlannerActionToolExecutor.DISABLED,
+			actionToolExecutor,
 			PlannerToolNarrationSink.NO_OP,
 			toolRegistry
 		);
@@ -2562,6 +2715,7 @@ class PlannerOrchestratorTest {
 		AgentConfig.LlmConfig config = AgentConfig.LlmConfig.defaults();
 		Clock clock = Clock.systemDefaultZone();
 		PlannerToolRegistry toolRegistry = PlannerToolRegistry.empty();
+		toolRegistry.activateAllForTesting();
 		return new PlannerOrchestrator(
 			new PlannerExecutor(backend, observability),
 			new PlannerCompactionService(new OpenAiCompatibleChatClient(config, observability, toolRegistry), observability),
@@ -2692,10 +2846,12 @@ class PlannerOrchestratorTest {
 		PlannerToolNarrationSink narrationSink
 	) {
 		AgentConfig.LlmConfig config = AgentConfig.LlmConfig.defaults();
+		PlannerToolRegistry toolRegistry = PlannerToolRegistry.empty();
+		toolRegistry.activateAllForTesting();
 		return new PlannerOrchestrator(
 			new PlannerExecutor(backend),
-			new PlannerCompactionService(new OpenAiCompatibleChatClient(config)),
-			new PlannerContextAggregator(clock, config.plannerCompactionTriggerTokens(), plannerPendingSemanticEventCap, visionMode),
+			new PlannerCompactionService(new OpenAiCompatibleChatClient(config, toolRegistry)),
+			new PlannerContextAggregator(clock, config.plannerCompactionTriggerTokens(), plannerPendingSemanticEventCap, visionMode, toolRegistry),
 			visionTool,
 			inventoryTool,
 			visionMode,
@@ -2709,7 +2865,8 @@ class PlannerOrchestratorTest {
 			PlannerLifecycleListener.NO_OP,
 			new AgentDebugRecorder(),
 			actionToolExecutor,
-			narrationSink
+			narrationSink,
+			toolRegistry
 		);
 	}
 

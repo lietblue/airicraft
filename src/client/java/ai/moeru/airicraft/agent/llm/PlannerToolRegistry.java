@@ -4,6 +4,7 @@ import com.google.gson.JsonObject;
 
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -12,16 +13,15 @@ import java.util.concurrent.CompletableFuture;
 import java.util.stream.Collectors;
 
 public final class PlannerToolRegistry {
-	private static final PlannerToolRegistry EMPTY = new PlannerToolRegistry(List.of());
-
 	private final List<PlannerToolProvider> providers;
+	private final PlannerToolSurface toolSurface = new PlannerToolSurface();
 
 	private PlannerToolRegistry(List<PlannerToolProvider> providers) {
 		this.providers = List.copyOf(providers);
 	}
 
 	public static PlannerToolRegistry empty() {
-		return EMPTY;
+		return new PlannerToolRegistry(List.of());
 	}
 
 	public static PlannerToolRegistry of(PlannerToolProvider... providers) {
@@ -34,6 +34,38 @@ public final class PlannerToolRegistry {
 	}
 
 	public List<Map<String, Object>> openAiTools() {
+		return filterToActiveSurface(availableOpenAiTools());
+	}
+
+	public List<String> activeToolNames() {
+		return toolSurface.activeToolNames();
+	}
+
+	public boolean isActiveTool(String toolName) {
+		String normalized = PlannerToolCatalog.normalizeName(toolName);
+		return toolSurface.isActive(normalized) && availableToolNames(availableOpenAiTools()).contains(normalized);
+	}
+
+	public PlannerToolSurface.DiscoveryResult discoverTools(String query, int maxResults) {
+		return toolSurface.discover(availableToolDescriptors(), query, maxResults);
+	}
+
+	public void resetToolSurface() {
+		toolSurface.reset();
+	}
+
+	public void setSafetyHoldActive(boolean active) {
+		toolSurface.setSafetyHoldActive(active);
+	}
+
+	/**
+	 * Keeps legacy mock-response tests independent of the staged production surface.
+	 */
+	void activateAllForTesting() {
+		toolSurface.activateAllForTesting(availableToolDescriptors());
+	}
+
+	private List<Map<String, Object>> availableOpenAiTools() {
 		ArrayList<Map<String, Object>> tools = new ArrayList<>(PlannerToolCatalog.openAiTools());
 		for (PlannerToolProvider provider : providers) {
 			if (provider.available()) {
@@ -43,19 +75,46 @@ public final class PlannerToolRegistry {
 		return List.copyOf(tools);
 	}
 
+	private List<Map<String, Object>> filterToActiveSurface(List<Map<String, Object>> tools) {
+		return tools.stream()
+			.filter(tool -> toolSurface.isActive(toolName(tool)))
+			.toList();
+	}
+
 	public String promptInstructions() {
 		return providers.stream()
-			.filter(PlannerToolProvider::available)
+			.filter(provider -> provider.available() && providerHasActiveTool(provider))
 			.map(PlannerToolProvider::promptInstructions)
 			.filter(instruction -> instruction != null && !instruction.isBlank())
 			.collect(Collectors.joining("\n"));
 	}
 
 	public String availableToolNames() {
-		return openAiTools().stream()
+		return availableToolNames(openAiTools()).stream()
+			.collect(Collectors.joining(", "));
+	}
+
+	private static List<String> availableToolNames(Collection<Map<String, Object>> tools) {
+		return tools.stream()
 			.map(PlannerToolRegistry::toolName)
 			.filter(name -> !name.isBlank())
-			.collect(Collectors.joining(", "));
+			.map(PlannerToolCatalog::normalizeName)
+			.toList();
+	}
+
+	private boolean providerHasActiveTool(PlannerToolProvider provider) {
+		return provider.openAiTools().stream().anyMatch(tool -> toolSurface.isActive(toolName(tool)));
+	}
+
+	private List<PlannerToolSurface.ToolDescriptor> availableToolDescriptors() {
+		return availableOpenAiTools().stream()
+			.map(tool -> new PlannerToolSurface.ToolDescriptor(
+				toolName(tool),
+				toolDescription(tool),
+				PlannerToolSurface.categoryFor(toolName(tool))
+			))
+			.filter(descriptor -> !descriptor.name().isBlank())
+			.toList();
 	}
 
 	public boolean isKnownTool(String toolName) {
@@ -96,5 +155,14 @@ public final class PlannerToolRegistry {
 		}
 		Object name = functionMap.get("name");
 		return name instanceof String string ? string : "";
+	}
+
+	private static String toolDescription(Map<String, Object> tool) {
+		Object function = tool == null ? null : tool.get("function");
+		if (!(function instanceof Map<?, ?> functionMap)) {
+			return "";
+		}
+		Object description = functionMap.get("description");
+		return description instanceof String string ? string : "";
 	}
 }
