@@ -129,6 +129,9 @@ public final class CodexAppServerLlmBackend implements LlmBackend {
 			if (!codexConfig.model().isBlank()) {
 				turnParams.addProperty("model", codexConfig.model());
 			}
+			if (!codexConfig.reasoningEffort().isBlank()) {
+				turnParams.addProperty("effort", codexConfig.reasoningEffort());
+			}
 
 			CodexAppServerClient.TurnHandle handle = requireClient().startTurn(
 				turnParams,

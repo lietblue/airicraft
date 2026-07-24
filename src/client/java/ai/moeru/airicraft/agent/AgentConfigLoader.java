@@ -87,6 +87,7 @@ public final class AgentConfigLoader {
 		AgentConfig.CodexAppServerConfig codexAppServer = new AgentConfig.CodexAppServerConfig(
 			readString(codexRoot, "executable", defaults.llm().codexAppServer().executable(), strict),
 			readString(codexRoot, "model", defaults.llm().codexAppServer().model(), strict),
+			readString(codexRoot, "reasoningEffort", defaults.llm().codexAppServer().reasoningEffort(), strict),
 			readInt(codexRoot, "startupTimeoutMillis", defaults.llm().codexAppServer().startupTimeoutMillis()),
 			readInt(codexRoot, "turnTimeoutMillis", defaults.llm().codexAppServer().turnTimeoutMillis())
 		);
@@ -226,6 +227,7 @@ public final class AgentConfigLoader {
 		yamlData.put("codexAppServer", Map.of(
 			"executable", defaults.llm().codexAppServer().executable(),
 			"model", defaults.llm().codexAppServer().model(),
+			"reasoningEffort", defaults.llm().codexAppServer().reasoningEffort(),
 			"startupTimeoutMillis", defaults.llm().codexAppServer().startupTimeoutMillis(),
 			"turnTimeoutMillis", defaults.llm().codexAppServer().turnTimeoutMillis()
 		));

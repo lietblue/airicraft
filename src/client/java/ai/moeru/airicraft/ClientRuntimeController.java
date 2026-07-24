@@ -335,6 +335,7 @@ public final class ClientRuntimeController {
 			payload.put("plannerNativeVisionEnabled", agentConfig.llm().plannerNativeVisionEnabled());
 			payload.put("codexExecutable", agentConfig.llm().codexAppServer().executable());
 			payload.put("codexModel", agentConfig.llm().codexAppServer().model());
+			payload.put("codexReasoningEffort", agentConfig.llm().codexAppServer().reasoningEffort());
 			payload.put("codexStartupTimeoutMillis", agentConfig.llm().codexAppServer().startupTimeoutMillis());
 			payload.put("codexTurnTimeoutMillis", agentConfig.llm().codexAppServer().turnTimeoutMillis());
 			return payload;

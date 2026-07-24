@@ -160,6 +160,9 @@ class CodexAppServerClientTest {
 						default -> "";
 					};
 					append(log, method + suffix);
+					if ("turn/start".equals(method) && params.has("effort")) {
+						append(log, "turn/start effort " + params.get("effort").getAsString());
+					}
 					if (!request.has("id")) {
 						continue;
 					}

@@ -16,6 +16,7 @@ class AgentConfigLoaderTest {
 
 		assertEquals(AgentConfig.PlannerBackend.OPENAI_COMPATIBLE, llm.plannerBackend());
 		assertEquals("codex", llm.codexAppServer().executable());
+		assertEquals("", llm.codexAppServer().reasoningEffort());
 		assertFalse(llm.backendManagedHistory());
 	}
 
@@ -26,6 +27,7 @@ class AgentConfigLoaderTest {
 			"codexAppServer", Map.of(
 				"executable", "/opt/codex/bin/codex",
 				"model", "local-codex-model",
+				"reasoningEffort", "high",
 				"startupTimeoutMillis", 4321,
 				"turnTimeoutMillis", 98765
 			)
@@ -34,6 +36,7 @@ class AgentConfigLoaderTest {
 		assertEquals(AgentConfig.PlannerBackend.CODEX_APP_SERVER, parsed.llm().plannerBackend());
 		assertEquals("/opt/codex/bin/codex", parsed.llm().codexAppServer().executable());
 		assertEquals("local-codex-model", parsed.llm().codexAppServer().model());
+		assertEquals("high", parsed.llm().codexAppServer().reasoningEffort());
 		assertEquals(4321, parsed.llm().codexAppServer().startupTimeoutMillis());
 		assertEquals(98765, parsed.llm().codexAppServer().turnTimeoutMillis());
 		assertTrue(parsed.llm().isConfigured());

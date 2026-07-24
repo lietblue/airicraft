@@ -105,6 +105,7 @@ class CodexAppServerLlmBackendTest {
 		String wireLog = Files.readString(log);
 		assertEquals(1L, wireLog.lines().filter(line -> line.equals("thread/start")).count());
 		assertEquals(4L, wireLog.lines().filter(line -> line.equals("turn/start")).count());
+		assertEquals(4L, wireLog.lines().filter(line -> line.equals("turn/start effort high")).count());
 		assertTrue(wireLog.contains("thread/archive root"));
 		assertFalse(wireLog.contains("thread/fork"));
 	}
@@ -203,7 +204,7 @@ class CodexAppServerLlmBackendTest {
 			true,
 			defaults.plannerUseJsonObjectResponseFormat(),
 			AgentConfig.PlannerBackend.CODEX_APP_SERVER,
-			new AgentConfig.CodexAppServerConfig(executable, "", 10_000, turnTimeoutMillis)
+			new AgentConfig.CodexAppServerConfig(executable, "", "high", 10_000, turnTimeoutMillis)
 		);
 	}
 

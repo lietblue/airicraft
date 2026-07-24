@@ -7,6 +7,9 @@ codexAppServer:
   executable: "codex"
   # Empty uses the model selected by the local Codex configuration.
   model: ""
+  # Examples: low, medium, high, xhigh. Accepted values are model-specific.
+  # Empty uses the local Codex default.
+  reasoningEffort: ""
   startupTimeoutMillis: 10000
   turnTimeoutMillis: 120000
 
