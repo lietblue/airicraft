@@ -106,7 +106,6 @@ class BaritoneTaskExecutorTest {
 		assertEquals(List.of(dropPosition), facade.navigateCalls);
 		assertEquals(TaskExecutionState.RUNNING, executor.snapshot().state());
 		assertEquals("pickup_sweep", executor.snapshot().lastPathEvent());
-
 		facade.pathEvents.add("AT_GOAL");
 		Optional<TaskTerminalEvent> completed = executor.tick(multiplayer(), Optional.of(request));
 
@@ -190,6 +189,74 @@ class BaritoneTaskExecutorTest {
 		assertTrue(completed.isPresent());
 		assertEquals(TaskExecutionState.COMPLETED, completed.orElseThrow().terminalState());
 		assertTrue(facade.navigateCalls.isEmpty());
+	}
+
+	@Test
+	void satisfiedMineTreatsBaritoneCancellationAsCompletion() {
+		FakeBaritoneFacade facade = new FakeBaritoneFacade();
+		BaritoneTaskExecutor executor = new BaritoneTaskExecutor(() -> null, facade, request -> List.of());
+		GoalSnapshot goal = new GoalSnapshot(GoalType.MINE_BLOCKS, null, null, new GoalMineSpec(List.of("minecraft:short_grass"), 14), 20L, "planner_response");
+		WorldTaskRequest request = WorldTaskRequest.collectMine("mine-task", "mine-job", goal, new GoalPosition(10, 64, 20, true))
+			.withMineGoalSatisfied(true);
+
+		executor.tick(multiplayer(), Optional.of(request));
+		facade.pathEvents.add("CANCELED");
+		Optional<TaskTerminalEvent> completed = executor.tick(multiplayer(), Optional.of(request));
+
+		assertTrue(completed.isPresent());
+		assertEquals(TaskExecutionState.COMPLETED, completed.orElseThrow().terminalState());
+		assertEquals(TaskTerminationCause.GOAL_REACHED, completed.orElseThrow().terminationCause());
+		assertEquals(TaskExecutionState.COMPLETED, executor.snapshot().state());
+		assertEquals(TaskTerminationCause.GOAL_REACHED, executor.snapshot().terminationCause());
+	}
+
+	@Test
+	void satisfiedMineCancellationSweepsMatchingDropBeforeCompleting() {
+		FakeBaritoneFacade facade = new FakeBaritoneFacade();
+		GoalSnapshot goal = new GoalSnapshot(GoalType.MINE_BLOCKS, null, null, new GoalMineSpec(List.of("minecraft:short_grass"), 14), 20L, "planner_response");
+		GoalPosition finalBrokenBlock = new GoalPosition(10, 64, 20, true);
+		ArrayDeque<List<BaritoneTaskExecutor.MineDropTarget>> observedDrops = new ArrayDeque<>();
+		observedDrops.add(List.of(new BaritoneTaskExecutor.MineDropTarget(31, finalBrokenBlock)));
+		observedDrops.add(List.of());
+		BaritoneTaskExecutor executor = new BaritoneTaskExecutor(() -> null, facade, request -> observedDrops.removeFirst());
+		WorldTaskRequest request = WorldTaskRequest.collectMine("mine-task", "mine-job", goal, finalBrokenBlock)
+			.withMineGoalSatisfied(true);
+
+		executor.tick(multiplayer(), Optional.of(request));
+		facade.pathEvents.add("CANCELED");
+
+		assertTrue(executor.tick(multiplayer(), Optional.of(request)).isEmpty());
+		assertEquals(List.of(finalBrokenBlock), facade.navigateCalls);
+		assertEquals(TaskExecutionState.RUNNING, executor.snapshot().state());
+		assertEquals("pickup_sweep", executor.snapshot().lastPathEvent());
+
+		facade.pathEvents.add("CANCELED");
+		assertTrue(executor.tick(multiplayer(), Optional.of(request)).isEmpty());
+		assertEquals(TaskExecutionState.RUNNING, executor.snapshot().state());
+
+		facade.pathEvents.add("AT_GOAL");
+		Optional<TaskTerminalEvent> completed = executor.tick(multiplayer(), Optional.of(request));
+
+		assertTrue(completed.isPresent());
+		assertEquals(TaskExecutionState.COMPLETED, completed.orElseThrow().terminalState());
+		assertEquals(TaskTerminationCause.GOAL_REACHED, completed.orElseThrow().terminationCause());
+	}
+
+	@Test
+	void unsatisfiedMinePreservesBaritoneCancellation() {
+		FakeBaritoneFacade facade = new FakeBaritoneFacade();
+		BaritoneTaskExecutor executor = new BaritoneTaskExecutor(() -> null, facade, request -> List.of());
+		GoalSnapshot goal = new GoalSnapshot(GoalType.MINE_BLOCKS, null, null, new GoalMineSpec(List.of("minecraft:short_grass"), 14), 20L, "planner_response");
+		WorldTaskRequest request = WorldTaskRequest.collectMine("mine-task", "mine-job", goal, new GoalPosition(10, 64, 20, true));
+
+		executor.tick(multiplayer(), Optional.of(request));
+		facade.pathEvents.add("CANCELED");
+		Optional<TaskTerminalEvent> cancelled = executor.tick(multiplayer(), Optional.of(request));
+
+		assertTrue(cancelled.isPresent());
+		assertEquals(TaskExecutionState.CANCELLED, cancelled.orElseThrow().terminalState());
+		assertEquals(TaskTerminationCause.BARITONE_CANCELLED, cancelled.orElseThrow().terminationCause());
+		assertEquals(TaskExecutionState.CANCELLED, executor.snapshot().state());
 	}
 
 	@Test

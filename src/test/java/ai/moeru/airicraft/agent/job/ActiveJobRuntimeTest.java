@@ -166,6 +166,37 @@ class ActiveJobRuntimeTest {
 	}
 
 	@Test
+	void mineBlocksAtOrAboveRequestedCountCompletesParentJob() {
+		ActiveJobRuntime runtime = new ActiveJobRuntime();
+		runtime.applyPlannerResponse(
+			new DialogueResponse(
+				"Mining dirt.",
+				new DialogueIntent(DialogueIntentType.JOB_UPDATE, ActiveJobProposal.mineBlocks(new GoalMineSpec(List.of("minecraft:dirt"), 1))),
+				1L
+			),
+			0,
+			"test",
+			1L
+		);
+		runtime.tick(TaskExecutionSnapshot.idle(), evidence(Map.of("minecraft:dirt", 0), 2L), true, true, 2L);
+		runtime.recordMinedBlock("minecraft:dirt", new GoalPosition(1, 64, 0, true), 3L);
+		runtime.recordMinedBlock("minecraft:dirt", new GoalPosition(2, 64, 0, true), 4L);
+		WorldTaskRequest request = runtime.activeTaskRequest().orElseThrow();
+
+		assertTrue(request.mineGoalSatisfied());
+		ActiveJobRuntime.TerminalTaskReport report = runtime.reportTerminalTaskEvent(
+			new TaskTerminalEvent(request.taskId(), request.goal(), TaskExecutionState.COMPLETED, "Goal reached", TaskTerminationCause.GOAL_REACHED),
+			Optional.of(request)
+		);
+
+		assertEquals(TaskExecutionState.COMPLETED, report.event().orElseThrow().terminalState());
+		assertTrue(report.warning().isEmpty());
+		assertEquals("Goal reached brokenBlocks=2 requestedBlocks=1", report.event().orElseThrow().message());
+		assertEquals(ActiveJobStatus.COMPLETED, runtime.current().status());
+		assertTrue(runtime.activeTaskRequest().isEmpty());
+	}
+
+	@Test
 	void collectResourceForwardsLastMatchingBrokenBlockToMinePickupSweep() {
 		ActiveJobRuntime runtime = new ActiveJobRuntime();
 		runtime.submitTask(new TaskSpec(TaskType.COLLECT_RESOURCE, TaskResourceKind.COBBLESTONE, 3), 0, "test", 1L);

@@ -123,10 +123,10 @@ public final class BaritoneTaskExecutor implements WorldTaskExecutor {
 		appliedTask = activeTask.get();
 
 		Optional<String> pathEvent = facade.pollPathEvent();
-		boolean suppressedInternalCancel = isSuppressedInternalCancel(pathEvent);
-		MineDropPickupResult mineDropPickupResult = suppressedInternalCancel
-			? MineDropPickupResult.notHandled()
-			: terminalMineDropPickupEvent(pathEvent, appliedTask);
+		if (isSuppressedInternalCancel(pathEvent)) {
+			pathEvent = Optional.empty();
+		}
+		MineDropPickupResult mineDropPickupResult = terminalMineDropPickupEvent(pathEvent, appliedTask);
 		if (mineDropPickupResult.handled()) {
 			return mineDropPickupResult.event();
 		}
@@ -134,9 +134,6 @@ public final class BaritoneTaskExecutor implements WorldTaskExecutor {
 			return Optional.empty();
 		}
 		Optional<TerminalOutcome> terminalOutcome = terminalOutcomeFor(pathEvent, appliedTask);
-		if (terminalOutcome.isPresent() && suppressedInternalCancel) {
-			terminalOutcome = Optional.empty();
-		}
 		TaskExecutionState state = terminalOutcome
 			.map(TerminalOutcome::state)
 			.orElseGet(() -> taskTargetChanged || !isTerminal(snapshot.state()) ? TaskExecutionState.RUNNING : snapshot.state());
@@ -367,7 +364,7 @@ public final class BaritoneTaskExecutor implements WorldTaskExecutor {
 		return switch (normalized) {
 			case "AT_GOAL" -> Optional.of(new TerminalOutcome(TaskExecutionState.COMPLETED, TaskTerminationCause.GOAL_REACHED));
 			case "CALC_FAILED" -> Optional.of(new TerminalOutcome(TaskExecutionState.FAILED, TaskTerminationCause.CALCULATION_FAILED));
-			case "CANCELLED", "CANCELED" -> Optional.of(new TerminalOutcome(cancelledStateFor(activeTask == null ? null : activeTask.goal()), TaskTerminationCause.BARITONE_CANCELLED));
+			case "CANCELLED", "CANCELED" -> Optional.of(cancelledOutcomeFor(activeTask));
 			default -> Optional.empty();
 		};
 	}
@@ -441,6 +438,7 @@ public final class BaritoneTaskExecutor implements WorldTaskExecutor {
 			mineDropPickupAttempts = 0;
 		}
 		mineDropPickupAttempts++;
+		pendingInternalCancelTaskId = activeTask.taskId();
 		facade.startNavigate(nextTarget.position());
 		snapshot = new TaskExecutionSnapshot(
 			TaskExecutionState.RUNNING,
@@ -476,6 +474,21 @@ public final class BaritoneTaskExecutor implements WorldTaskExecutor {
 			messageFor(outcome.state()),
 			outcome.cause()
 		));
+	}
+
+	private TerminalOutcome cancelledOutcomeFor(WorldTaskRequest activeTask) {
+		if (
+			activeTask != null
+				&& activeTask.mineGoalSatisfied()
+				&& activeTask.goal() != null
+				&& activeTask.goal().type() == GoalType.MINE_BLOCKS
+		) {
+			return new TerminalOutcome(TaskExecutionState.COMPLETED, TaskTerminationCause.GOAL_REACHED);
+		}
+		return new TerminalOutcome(
+			cancelledStateFor(activeTask == null ? null : activeTask.goal()),
+			TaskTerminationCause.BARITONE_CANCELLED
+		);
 	}
 
 	private MineDropPickupResult failMineDropPickup(WorldTaskRequest activeTask) {
@@ -557,11 +570,15 @@ public final class BaritoneTaskExecutor implements WorldTaskExecutor {
 			return false;
 		}
 		String normalized = pathEvent.get().trim().toUpperCase(Locale.ROOT);
-		if (!normalized.equals("CANCELLED") && !normalized.equals("CANCELED")) {
+		if (!isCancelledPathEvent(normalized)) {
 			return false;
 		}
 		pendingInternalCancelTaskId = null;
 		return true;
+	}
+
+	private static boolean isCancelledPathEvent(String normalizedPathEvent) {
+		return "CANCELLED".equals(normalizedPathEvent) || "CANCELED".equals(normalizedPathEvent);
 	}
 
 	private static boolean sameTaskTarget(WorldTaskRequest left, WorldTaskRequest right) {

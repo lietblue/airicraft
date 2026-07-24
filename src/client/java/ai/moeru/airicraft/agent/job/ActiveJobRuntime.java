@@ -198,7 +198,7 @@ public final class ActiveJobRuntime {
 			));
 		}
 
-		boolean mismatch = brokenBlocks != spec.quantity();
+		boolean mismatch = brokenBlocks < spec.quantity();
 		String warning = mismatch
 			? mineBlocksMismatchWarning(event.taskId(), brokenBlocks, spec.quantity())
 			: null;
@@ -557,6 +557,11 @@ public final class ActiveJobRuntime {
 	private void applyMinePickupSweepPositions() {
 		if (desiredPrimitiveTask != null && !minePickupSweepPositions().isEmpty()) {
 			desiredPrimitiveTask = desiredPrimitiveTask.withPickupSweepPositions(minePickupSweepPositions());
+		}
+		if (desiredPrimitiveTask != null && activeJob.type() == ActiveJobType.MINE_BLOCKS && activeJob.directGoal() != null && activeJob.directGoal().mineSpec() != null) {
+			desiredPrimitiveTask = desiredPrimitiveTask.withMineGoalSatisfied(
+				activeJob.collectedCount() >= activeJob.directGoal().mineSpec().quantity()
+			);
 		}
 	}
 
