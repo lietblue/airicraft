@@ -18,6 +18,8 @@ public interface BaritoneFacade {
 
 	void startMine(GoalMineSpec spec);
 
+	boolean mineProcessActive();
+
 	void cancel();
 
 	Optional<String> activeProcessName();

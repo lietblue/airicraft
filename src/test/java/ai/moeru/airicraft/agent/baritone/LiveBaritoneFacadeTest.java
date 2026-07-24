@@ -75,6 +75,21 @@ class LiveBaritoneFacadeTest {
 	}
 
 	@Test
+	void mineProcessLivenessDelegatesToInjectedBaritoneProcess() {
+		RecordingBaritoneHarness harness = new RecordingBaritoneHarness();
+		LiveBaritoneFacade facade = new LiveBaritoneFacade(harness.baritone(), () -> {
+		});
+
+		assertFalse(facade.mineProcessActive());
+
+		facade.startMine(new GoalMineSpec(List.of("minecraft:short_grass"), 64));
+
+		assertTrue(facade.mineProcessActive());
+		harness.mineProcessActive.set(false);
+		assertFalse(facade.mineProcessActive());
+	}
+
+	@Test
 	void startNavigateNearUsesGoalNearRadius() {
 		RecordingBaritoneHarness harness = new RecordingBaritoneHarness();
 		LiveBaritoneFacade facade = new LiveBaritoneFacade(harness.baritone(), () -> {
@@ -95,6 +110,7 @@ class LiveBaritoneFacadeTest {
 		private final AtomicReference<String> activeProcessName = new AtomicReference<>();
 		private final AtomicReference<Object> followPredicate = new AtomicReference<>();
 		private final AtomicReference<Boolean> cancelEverythingCalled = new AtomicReference<>(false);
+		private final AtomicReference<Boolean> mineProcessActive = new AtomicReference<>(false);
 		private final AtomicReference<Double> estimatedTicksToGoal = new AtomicReference<>(37.5D);
 		private final List<Object> navigateCalls = new ArrayList<>();
 		private final List<Object[]> mineCalls = new ArrayList<>();
@@ -145,13 +161,16 @@ class LiveBaritoneFacadeTest {
 			case "mineByName" -> {
 				mineCalls.add(args.clone());
 				activeProcessName.set("mine");
+				mineProcessActive.set(true);
 				yield null;
 			}
-			case "mine", "cancel" -> null;
-			case "isActive" -> false;
+			case "mine", "cancel", "onLostControl" -> {
+				mineProcessActive.set(false);
+				yield null;
+			}
+			case "isActive" -> mineProcessActive.get();
 			case "onTick" -> null;
 			case "isTemporary" -> false;
-			case "onLostControl" -> null;
 			case "displayName0" -> "mine";
 			default -> defaultValue(method);
 		});

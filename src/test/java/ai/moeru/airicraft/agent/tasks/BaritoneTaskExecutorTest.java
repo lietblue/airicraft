@@ -16,6 +16,7 @@ import java.util.List;
 import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class BaritoneTaskExecutorTest {
@@ -81,6 +82,66 @@ class BaritoneTaskExecutorTest {
 
 		assertTrue(event.isPresent());
 		assertEquals(TaskExecutionState.COMPLETED, event.orElseThrow().terminalState());
+	}
+
+	@Test
+	void activeMineProcessReselectsAfterCalculationFailureWithoutRestartingTask() {
+		FakeBaritoneFacade facade = new FakeBaritoneFacade();
+		facade.mineProcessActive = true;
+		BaritoneTaskExecutor executor = new BaritoneTaskExecutor(facade);
+		GoalSnapshot goal = new GoalSnapshot(
+			GoalType.MINE_BLOCKS,
+			null,
+			null,
+			new GoalMineSpec(List.of("minecraft:short_grass"), 64),
+			20L,
+			"planner_response"
+		);
+		WorldTaskRequest request = request("mine-task", goal);
+
+		executor.tick(multiplayer(), Optional.of(request));
+		facade.pathEvents.add("CALC_FAILED");
+
+		Optional<TaskTerminalEvent> calculationFailure = executor.tick(multiplayer(), Optional.of(request));
+
+		assertTrue(calculationFailure.isEmpty());
+		assertEquals(TaskExecutionState.RUNNING, executor.snapshot().state());
+		assertEquals("CALC_FAILED", executor.snapshot().lastPathEvent());
+		assertNull(executor.snapshot().terminationCause());
+		assertEquals(1, facade.mineCalls.size());
+
+		facade.mineProcessActive = false;
+		facade.pathEvents.add("AT_GOAL");
+		Optional<TaskTerminalEvent> completed = executor.tick(multiplayer(), Optional.of(request));
+
+		assertTrue(completed.isPresent());
+		assertEquals(TaskExecutionState.COMPLETED, completed.orElseThrow().terminalState());
+		assertEquals(1, facade.mineCalls.size());
+	}
+
+	@Test
+	void calculationFailureAfterMineProcessExhaustionRemainsTerminal() {
+		FakeBaritoneFacade facade = new FakeBaritoneFacade();
+		BaritoneTaskExecutor executor = new BaritoneTaskExecutor(facade);
+		GoalSnapshot goal = new GoalSnapshot(
+			GoalType.MINE_BLOCKS,
+			null,
+			null,
+			new GoalMineSpec(List.of("minecraft:short_grass"), 64),
+			20L,
+			"planner_response"
+		);
+		WorldTaskRequest request = request("mine-task", goal);
+
+		executor.tick(multiplayer(), Optional.of(request));
+		facade.pathEvents.add("CALC_FAILED");
+
+		Optional<TaskTerminalEvent> calculationFailure = executor.tick(multiplayer(), Optional.of(request));
+
+		assertTrue(calculationFailure.isPresent());
+		assertEquals(TaskExecutionState.FAILED, calculationFailure.orElseThrow().terminalState());
+		assertEquals(TaskTerminationCause.CALCULATION_FAILED, calculationFailure.orElseThrow().terminationCause());
+		assertEquals(TaskExecutionState.FAILED, executor.snapshot().state());
 	}
 
 	@Test
@@ -635,6 +696,7 @@ class BaritoneTaskExecutorTest {
 		private final List<GoalMineSpec> mineCalls = new ArrayList<>();
 		private final ArrayDeque<String> pathEvents = new ArrayDeque<>();
 		private boolean navigationGoalReached;
+		private boolean mineProcessActive;
 		private int cancelCalls;
 		private RuntimeException startMineFailure;
 		private boolean loaded = true;
@@ -670,6 +732,11 @@ class BaritoneTaskExecutorTest {
 				throw startMineFailure;
 			}
 			mineCalls.add(spec);
+		}
+
+		@Override
+		public boolean mineProcessActive() {
+			return mineProcessActive;
 		}
 
 		@Override

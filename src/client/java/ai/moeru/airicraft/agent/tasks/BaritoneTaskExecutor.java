@@ -363,7 +363,9 @@ public final class BaritoneTaskExecutor implements WorldTaskExecutor {
 		String normalized = pathEvent.get().trim().toUpperCase(Locale.ROOT);
 		return switch (normalized) {
 			case "AT_GOAL" -> Optional.of(new TerminalOutcome(TaskExecutionState.COMPLETED, TaskTerminationCause.GOAL_REACHED));
-			case "CALC_FAILED" -> Optional.of(new TerminalOutcome(TaskExecutionState.FAILED, TaskTerminationCause.CALCULATION_FAILED));
+			case "CALC_FAILED" -> mineProcessCanReselect(activeTask)
+				? Optional.empty()
+				: Optional.of(new TerminalOutcome(TaskExecutionState.FAILED, TaskTerminationCause.CALCULATION_FAILED));
 			case "CANCELLED", "CANCELED" -> Optional.of(cancelledOutcomeFor(activeTask));
 			default -> Optional.empty();
 		};
@@ -398,6 +400,13 @@ public final class BaritoneTaskExecutor implements WorldTaskExecutor {
 			null
 		);
 		return true;
+	}
+
+	private boolean mineProcessCanReselect(WorldTaskRequest activeTask) {
+		return activeTask != null
+			&& activeTask.goal() != null
+			&& activeTask.goal().type() == GoalType.MINE_BLOCKS
+			&& facade.mineProcessActive();
 	}
 
 	private MineDropPickupResult terminalMineDropPickupEvent(Optional<String> pathEvent, WorldTaskRequest activeTask) {

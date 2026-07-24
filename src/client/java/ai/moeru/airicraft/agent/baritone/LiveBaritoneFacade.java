@@ -93,6 +93,11 @@ public final class LiveBaritoneFacade implements BaritoneFacade {
 	}
 
 	@Override
+	public boolean mineProcessActive() {
+		return isLoaded() && baritone.getMineProcess().isActive();
+	}
+
+	@Override
 	public void cancel() {
 		if (!isLoaded()) {
 			return;
