@@ -6,12 +6,14 @@ import ai.moeru.airicraft.agent.goals.GoalPosition;
 import ai.moeru.airicraft.agent.session.SessionSnapshot;
 import net.minecraft.block.BlockState;
 import net.minecraft.block.Blocks;
+import net.minecraft.block.ShapeContext;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.gui.screen.ingame.InventoryScreen;
 import net.minecraft.client.network.ClientPlayerEntity;
 import net.minecraft.item.Item;
 import net.minecraft.item.ItemStack;
 import net.minecraft.item.Items;
+import net.minecraft.network.packet.c2s.play.UpdateSelectedSlotC2SPacket;
 import net.minecraft.recipe.NetworkRecipeId;
 import net.minecraft.screen.CraftingScreenHandler;
 import net.minecraft.screen.PlayerScreenHandler;
@@ -24,9 +26,12 @@ import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Direction;
 import net.minecraft.util.math.Vec3d;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.function.Predicate;
 import java.util.function.Supplier;
 
 public final class CraftingTaskExecutor implements WorldTaskExecutor {
@@ -187,18 +192,12 @@ public final class CraftingTaskExecutor implements WorldTaskExecutor {
 		}
 		if (phase == CraftPhase.IDLE) {
 			tableTarget = findNearbyCraftingTable(client, player).orElse(null);
-			if (tableTarget != null) {
-				phase = CraftPhase.NAVIGATING_TO_TABLE;
-				waitTicks = 0;
-			}
-			else if (hasCraftingTableItem(player.currentScreenHandler)) {
-				phase = CraftPhase.PLACING_TABLE;
-				waitTicks = 0;
-			}
-			else {
-				phase = CraftPhase.CRAFTING_TABLE_INPUTS;
-				waitTicks = 0;
-			}
+			phase = switch (initialWorkbenchSetupAction(tableTarget != null, hasCraftingTableItem(player.currentScreenHandler))) {
+				case REUSE_NEARBY_TABLE -> CraftPhase.NAVIGATING_TO_TABLE;
+				case PLACE_PORTABLE_TABLE -> CraftPhase.PLACING_TABLE;
+				case CRAFT_PORTABLE_TABLE -> CraftPhase.CRAFTING_TABLE_INPUTS;
+			};
+			waitTicks = 0;
 		}
 
 		if (phase == CraftPhase.CRAFTING_TABLE_INPUTS
@@ -639,32 +638,71 @@ public final class CraftingTaskExecutor implements WorldTaskExecutor {
 	}
 
 	private static Optional<BlockPos> chooseCraftingTablePlacement(MinecraftClient client, ClientPlayerEntity player) {
-		BlockPos origin = player.getBlockPos();
-		for (Direction direction : Direction.Type.HORIZONTAL) {
-			BlockPos candidate = origin.offset(direction);
-			if (canPlaceCraftingTableAt(client, candidate)) {
+		return chooseCraftingTablePlacement(
+			player.getBlockPos(),
+			candidate -> canPlaceCraftingTableAt(client, player, candidate)
+		);
+	}
+
+	static Optional<BlockPos> chooseCraftingTablePlacement(BlockPos origin, Predicate<BlockPos> placementAllowed) {
+		Objects.requireNonNull(origin, "origin");
+		Objects.requireNonNull(placementAllowed, "placementAllowed");
+		for (BlockPos candidate : craftingTablePlacementCandidatePositions(origin)) {
+			if (placementAllowed.test(candidate)) {
 				return Optional.of(candidate.toImmutable());
-			}
-		}
-		for (int dx = -2; dx <= 2; dx++) {
-			for (int dz = -2; dz <= 2; dz++) {
-				BlockPos candidate = origin.add(dx, 0, dz);
-				if (!candidate.equals(origin) && canPlaceCraftingTableAt(client, candidate)) {
-					return Optional.of(candidate.toImmutable());
-				}
 			}
 		}
 		return Optional.empty();
 	}
 
-	private static boolean canPlaceCraftingTableAt(MinecraftClient client, BlockPos pos) {
+	static List<BlockPos> craftingTablePlacementCandidatePositions(BlockPos origin) {
+		ArrayList<BlockPos> candidates = new ArrayList<>();
+		for (int yOffset : List.of(0, -1, 1)) {
+			for (Direction direction : Direction.Type.HORIZONTAL) {
+				candidates.add(origin.offset(direction).add(0, yOffset, 0));
+			}
+		}
+		for (int yOffset : List.of(0, -1, 1)) {
+			for (int dx = -2; dx <= 2; dx++) {
+				for (int dz = -2; dz <= 2; dz++) {
+					BlockPos candidate = origin.add(dx, yOffset, dz);
+					if (!candidate.equals(origin)) {
+						candidates.add(candidate);
+					}
+				}
+			}
+		}
+		return List.copyOf(candidates);
+	}
+
+	private static boolean canPlaceCraftingTableAt(MinecraftClient client, ClientPlayerEntity player, BlockPos pos) {
 		if (client.world == null || !client.world.isChunkLoaded(pos) || !client.world.isChunkLoaded(pos.down())) {
 			return false;
 		}
 		BlockState target = client.world.getBlockState(pos);
 		BlockState support = client.world.getBlockState(pos.down());
-		return (target.isAir() || target.isReplaceable())
-			&& support.isSideSolidFullSquare(client.world, pos.down(), Direction.UP);
+		Vec3d hitVec = new Vec3d(pos.getX() + 0.5D, pos.getY(), pos.getZ() + 0.5D);
+		return isSafeCraftingTablePlacement(
+			target.isAir() || target.isReplaceable(),
+			support.isSideSolidFullSquare(client.world, pos.down(), Direction.UP),
+			client.world.canPlace(Blocks.CRAFTING_TABLE.getDefaultState(), pos, ShapeContext.ofPlacement(player)),
+			player.squaredDistanceTo(hitVec) <= TABLE_INTERACTION_RANGE_SQUARED,
+			BlockInteractionTaskExecutor.raycastMatchesSupport(client, player, pos.down(), hitVec, Direction.UP)
+		);
+	}
+
+	static boolean isSafeCraftingTablePlacement(
+		boolean targetReplaceable,
+		boolean supportSolid,
+		boolean worldAllowsPlacement,
+		boolean withinInteractionRange,
+		boolean supportVisible
+	) {
+		return targetReplaceable
+			&& supportSolid
+			&& worldAllowsPlacement
+			&& withinInteractionRange
+			&& supportVisible;
 	}
 
 	private static boolean selectHotbarItem(MinecraftClient client, ClientPlayerEntity player, Item item) {
@@ -675,13 +713,20 @@ public final class CraftingTaskExecutor implements WorldTaskExecutor {
 		}
 		int selectedHotbarSlot = player.getInventory().getSelectedSlot();
 		if (sourceSlot >= CraftingGridSpec.PLAYER.hotbarStart() && sourceSlot < CraftingGridSpec.PLAYER.hotbarEnd()) {
-			player.getInventory().setSelectedSlot(sourceSlot - CraftingGridSpec.PLAYER.hotbarStart());
+			selectAndSyncHotbarSlot(client, player, sourceSlot - CraftingGridSpec.PLAYER.hotbarStart());
 			return true;
 		}
 		client.interactionManager.clickSlot(handler.syncId, sourceSlot, selectedHotbarSlot, SlotActionType.SWAP, player);
-		player.getInventory().setSelectedSlot(selectedHotbarSlot);
+		selectAndSyncHotbarSlot(client, player, selectedHotbarSlot);
 		ItemStack selected = player.getInventory().getSelectedStack();
 		return !selected.isEmpty() && selected.isOf(item);
+	}
+
+	private static void selectAndSyncHotbarSlot(MinecraftClient client, ClientPlayerEntity player, int hotbarSlot) {
+		player.getInventory().setSelectedSlot(hotbarSlot);
+		if (client.getNetworkHandler() != null) {
+			client.getNetworkHandler().sendPacket(new UpdateSelectedSlotC2SPacket(hotbarSlot));
+		}
 	}
 
 	private static Hand selectCraftingTablePlacementHand(MinecraftClient client, ClientPlayerEntity player) {
@@ -855,6 +900,21 @@ public final class CraftingTaskExecutor implements WorldTaskExecutor {
 		WAIT,
 		OPEN_TABLE,
 		FALLBACK
+	}
+
+	static WorkbenchSetupAction initialWorkbenchSetupAction(boolean nearbyTableAvailable, boolean portableTableAvailable) {
+		if (nearbyTableAvailable) {
+			return WorkbenchSetupAction.REUSE_NEARBY_TABLE;
+		}
+		return portableTableAvailable
+			? WorkbenchSetupAction.PLACE_PORTABLE_TABLE
+			: WorkbenchSetupAction.CRAFT_PORTABLE_TABLE;
+	}
+
+	enum WorkbenchSetupAction {
+		REUSE_NEARBY_TABLE,
+		PLACE_PORTABLE_TABLE,
+		CRAFT_PORTABLE_TABLE
 	}
 
 	static record CraftingPlan(

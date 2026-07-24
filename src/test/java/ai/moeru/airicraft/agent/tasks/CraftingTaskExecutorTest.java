@@ -2,6 +2,7 @@ package ai.moeru.airicraft.agent.tasks;
 
 import net.minecraft.recipe.NetworkRecipeId;
 import net.minecraft.screen.PlayerScreenHandler;
+import net.minecraft.util.math.BlockPos;
 import org.junit.jupiter.api.Test;
 
 import java.util.Optional;
@@ -14,6 +15,37 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class CraftingTaskExecutorTest {
+	@Test
+	void portableTableFromInventoryUsesFirstSafeNearbyGroundSite() {
+		BlockPos origin = new BlockPos(39, 67, 152);
+		BlockPos safeGroundSite = new BlockPos(39, 66, 153);
+
+		assertEquals(
+			CraftingTaskExecutor.WorkbenchSetupAction.PLACE_PORTABLE_TABLE,
+			CraftingTaskExecutor.initialWorkbenchSetupAction(false, true)
+		);
+		assertEquals(
+			Optional.of(safeGroundSite),
+			CraftingTaskExecutor.chooseCraftingTablePlacement(origin, safeGroundSite::equals)
+		);
+	}
+
+	@Test
+	void nearbyTableReuseWinsOverPortableTableSetup() {
+		assertEquals(
+			CraftingTaskExecutor.WorkbenchSetupAction.REUSE_NEARBY_TABLE,
+			CraftingTaskExecutor.initialWorkbenchSetupAction(true, true)
+		);
+	}
+
+	@Test
+	void portableTablePlacementRequiresWorldSafetyReachAndVisibility() {
+		assertTrue(CraftingTaskExecutor.isSafeCraftingTablePlacement(true, true, true, true, true));
+		assertFalse(CraftingTaskExecutor.isSafeCraftingTablePlacement(true, true, false, true, true));
+		assertFalse(CraftingTaskExecutor.isSafeCraftingTablePlacement(true, true, true, false, true));
+		assertFalse(CraftingTaskExecutor.isSafeCraftingTablePlacement(true, true, true, true, false));
+	}
+
 	@Test
 	void portableCraftingTableSourceSlotsIncludeOffhand() {
 		assertTrue(CraftingTaskExecutor.isPortableCraftingTableSourceSlot(PlayerScreenHandler.INVENTORY_START));

@@ -779,11 +779,24 @@ public final class BlockInteractionTaskExecutor implements WorldTaskExecutor {
 		if (client == null || client.world == null || player == null || hitTarget == null) {
 			return false;
 		}
+		return raycastMatchesSupport(client, player, hitTarget.supportPos(), hitTarget.hitVec(), hitTarget.face());
+	}
+
+	static boolean raycastMatchesSupport(
+		MinecraftClient client,
+		ClientPlayerEntity player,
+		BlockPos supportPos,
+		Vec3d surfacePoint,
+		Direction outwardFace
+	) {
+		if (client == null || client.world == null || player == null || supportPos == null || surfacePoint == null || outwardFace == null) {
+			return false;
+		}
 		return raycastMatchesTarget(
 			client,
 			player,
-			hitTarget.supportPos(),
-			supportRaycastEndpoint(hitTarget.hitVec(), hitTarget.face()),
+			supportPos,
+			supportRaycastEndpoint(surfacePoint, outwardFace),
 			RaycastContext.FluidHandling.NONE
 		);
 	}
