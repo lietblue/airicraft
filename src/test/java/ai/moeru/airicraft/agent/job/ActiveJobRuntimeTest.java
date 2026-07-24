@@ -103,12 +103,15 @@ class ActiveJobRuntimeTest {
 
 		assertTrue(runtime.recordMinedBlock("minecraft:stone", 2L).isEmpty());
 		assertEquals(0, runtime.current().collectedCount());
-		assertTrue(runtime.recordMinedBlock("minecraft:dirt", 3L).isEmpty());
+		GoalPosition firstBrokenBlock = new GoalPosition(0, 64, 0, true);
+		GoalPosition secondBrokenBlock = new GoalPosition(1, 64, 0, true);
+		assertTrue(runtime.recordMinedBlock("minecraft:dirt", firstBrokenBlock, 3L).isEmpty());
 		assertEquals(1, runtime.current().collectedCount());
-		assertTrue(runtime.recordMinedBlock("minecraft:dirt", new GoalPosition(1, 64, 0, true), 4L).isEmpty());
+		assertTrue(runtime.recordMinedBlock("minecraft:dirt", secondBrokenBlock, 4L).isEmpty());
 		WorldTaskRequest request = runtime.activeTaskRequest().orElseThrow();
 
-		assertEquals(new GoalPosition(1, 64, 0, true), request.pickupSweepPosition());
+		assertEquals(List.of(firstBrokenBlock, secondBrokenBlock), request.pickupSweepPositions());
+		assertEquals(secondBrokenBlock, request.pickupSweepPosition());
 		assertEquals(ActiveJobStatus.RUNNING, runtime.current().status());
 		runtime.tick(new TaskExecutionSnapshot(TaskExecutionState.RUNNING, request.taskId(), request.goal(), null, null, null, null), evidence(Map.of("minecraft:dirt", 0), 5L), true, true, 5L);
 		assertEquals(request.taskId(), runtime.activeTaskRequest().orElseThrow().taskId());

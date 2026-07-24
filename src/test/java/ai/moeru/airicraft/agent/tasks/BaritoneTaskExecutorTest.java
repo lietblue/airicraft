@@ -14,7 +14,6 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
-import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -87,10 +86,14 @@ class BaritoneTaskExecutorTest {
 	@Test
 	void mineTerminalSweepsPossibleDropFromTargetBlockBeforeCompleting() {
 		FakeBaritoneFacade facade = new FakeBaritoneFacade();
-		AtomicBoolean matchingDropNearby = new AtomicBoolean(true);
+		GoalPosition dropPosition = new GoalPosition(8, 64, 18, true);
+		ArrayDeque<List<BaritoneTaskExecutor.MineDropTarget>> observedDrops = new ArrayDeque<>();
+		observedDrops.add(List.of(new BaritoneTaskExecutor.MineDropTarget(7, dropPosition)));
+		observedDrops.add(List.of());
 		BaritoneTaskExecutor executor = new BaritoneTaskExecutor(() -> null, facade, request ->
-			matchingDropNearby.get()
-				&& MinedBlockDropMapper.matchingInventoryItemIds(request.goal().mineSpec().blockIds()).contains("minecraft:wheat_seeds")
+			MinedBlockDropMapper.matchingInventoryItemIds(request.goal().mineSpec().blockIds()).contains("minecraft:wheat_seeds")
+				? observedDrops.removeFirst()
+				: List.of()
 		);
 		GoalSnapshot goal = new GoalSnapshot(GoalType.MINE_BLOCKS, null, null, new GoalMineSpec(List.of("minecraft:short_grass"), 1), 20L, "planner_response");
 		GoalPosition finalBrokenBlock = new GoalPosition(10, 64, 20, true);
@@ -100,11 +103,10 @@ class BaritoneTaskExecutorTest {
 		facade.pathEvents.add("AT_GOAL");
 
 		assertTrue(executor.tick(multiplayer(), Optional.of(request)).isEmpty());
-		assertEquals(List.of(finalBrokenBlock), facade.navigateCalls);
+		assertEquals(List.of(dropPosition), facade.navigateCalls);
 		assertEquals(TaskExecutionState.RUNNING, executor.snapshot().state());
 		assertEquals("pickup_sweep", executor.snapshot().lastPathEvent());
 
-		matchingDropNearby.set(false);
 		facade.pathEvents.add("AT_GOAL");
 		Optional<TaskTerminalEvent> completed = executor.tick(multiplayer(), Optional.of(request));
 
@@ -113,9 +115,71 @@ class BaritoneTaskExecutorTest {
 	}
 
 	@Test
+	void cancelledMineBatchSweepsDropsFromMultipleBrokenTargetsBeforeReportingTerminalOutcome() {
+		FakeBaritoneFacade facade = new FakeBaritoneFacade();
+		GoalPosition firstBrokenBlock = new GoalPosition(10, 64, 20, true);
+		GoalPosition secondBrokenBlock = new GoalPosition(18, 64, 20, true);
+		GoalPosition firstDrop = new GoalPosition(10, 64, 21, true);
+		GoalPosition secondDrop = new GoalPosition(18, 64, 19, true);
+		ArrayDeque<List<BaritoneTaskExecutor.MineDropTarget>> observedDrops = new ArrayDeque<>();
+		observedDrops.add(List.of(
+			new BaritoneTaskExecutor.MineDropTarget(11, firstDrop),
+			new BaritoneTaskExecutor.MineDropTarget(12, secondDrop)
+		));
+		observedDrops.add(List.of(new BaritoneTaskExecutor.MineDropTarget(12, secondDrop)));
+		observedDrops.add(List.of());
+		BaritoneTaskExecutor executor = new BaritoneTaskExecutor(() -> null, facade, request -> observedDrops.removeFirst());
+		GoalSnapshot goal = new GoalSnapshot(GoalType.MINE_BLOCKS, null, null, new GoalMineSpec(List.of("minecraft:short_grass"), 2), 20L, "planner_response");
+		WorldTaskRequest request = WorldTaskRequest.collectMine(
+			"mine-task",
+			"mine-task",
+			goal,
+			List.of(firstBrokenBlock, secondBrokenBlock)
+		);
+
+		executor.tick(multiplayer(), Optional.of(request));
+		facade.pathEvents.add("CANCELED");
+		assertTrue(executor.tick(multiplayer(), Optional.of(request)).isEmpty());
+		assertEquals(List.of(firstDrop), facade.navigateCalls);
+
+		facade.pathEvents.add("AT_GOAL");
+		assertTrue(executor.tick(multiplayer(), Optional.of(request)).isEmpty());
+		assertEquals(List.of(firstDrop, secondDrop), facade.navigateCalls);
+
+		facade.pathEvents.add("AT_GOAL");
+		Optional<TaskTerminalEvent> terminal = executor.tick(multiplayer(), Optional.of(request));
+
+		assertTrue(terminal.isPresent());
+		assertEquals(TaskExecutionState.CANCELLED, terminal.orElseThrow().terminalState());
+		assertEquals(TaskTerminationCause.BARITONE_CANCELLED, terminal.orElseThrow().terminationCause());
+	}
+
+	@Test
+	void minePickupFailsInsteadOfCompletingWhileMatchingDropRemains() {
+		FakeBaritoneFacade facade = new FakeBaritoneFacade();
+		GoalPosition dropPosition = new GoalPosition(10, 64, 20, true);
+		BaritoneTaskExecutor.MineDropTarget drop = new BaritoneTaskExecutor.MineDropTarget(21, dropPosition);
+		BaritoneTaskExecutor executor = new BaritoneTaskExecutor(() -> null, facade, request -> List.of(drop));
+		GoalSnapshot goal = new GoalSnapshot(GoalType.MINE_BLOCKS, null, null, new GoalMineSpec(List.of("minecraft:short_grass"), 1), 20L, "planner_response");
+		WorldTaskRequest request = WorldTaskRequest.collectMine("mine-task", "mine-task", goal, dropPosition);
+
+		executor.tick(multiplayer(), Optional.of(request));
+		facade.pathEvents.add("AT_GOAL");
+		assertTrue(executor.tick(multiplayer(), Optional.of(request)).isEmpty());
+		facade.pathEvents.add("AT_GOAL");
+		assertTrue(executor.tick(multiplayer(), Optional.of(request)).isEmpty());
+		facade.pathEvents.add("AT_GOAL");
+		Optional<TaskTerminalEvent> failed = executor.tick(multiplayer(), Optional.of(request));
+
+		assertTrue(failed.isPresent());
+		assertEquals(TaskExecutionState.FAILED, failed.orElseThrow().terminalState());
+		assertEquals("nearby_mined_drop_not_collected", failed.orElseThrow().message());
+	}
+
+	@Test
 	void mineTerminalWithoutMatchingDropCompletesImmediately() {
 		FakeBaritoneFacade facade = new FakeBaritoneFacade();
-		BaritoneTaskExecutor executor = new BaritoneTaskExecutor(() -> null, facade, request -> false);
+		BaritoneTaskExecutor executor = new BaritoneTaskExecutor(() -> null, facade, request -> List.of());
 		GoalSnapshot goal = new GoalSnapshot(GoalType.MINE_BLOCKS, null, null, new GoalMineSpec(List.of("minecraft:stone"), 1), 20L, "planner_response");
 		WorldTaskRequest request = WorldTaskRequest.collectMine("mine-task", "mine-task", goal, new GoalPosition(10, 64, 20, true));
 

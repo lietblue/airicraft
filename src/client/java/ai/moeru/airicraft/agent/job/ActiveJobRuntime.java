@@ -41,6 +41,7 @@ import ai.moeru.airicraft.agent.tasks.TaskTerminationCause;
 import ai.moeru.airicraft.agent.tasks.WorldTaskRequest;
 import ai.moeru.airicraft.agent.tasks.WorldEvidence;
 
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -62,7 +63,7 @@ public final class ActiveJobRuntime {
 	private String mineAttemptJobId;
 	private int mineAttemptSequence;
 	private String minePickupSweepJobId;
-	private GoalPosition minePickupSweepPosition;
+	private final LinkedHashSet<GoalPosition> minePickupSweepPositions = new LinkedHashSet<>();
 
 	public void clear() {
 		activeJob = ActiveJob.idle();
@@ -77,7 +78,7 @@ public final class ActiveJobRuntime {
 		mineAttemptJobId = null;
 		mineAttemptSequence = 0;
 		minePickupSweepJobId = null;
-		minePickupSweepPosition = null;
+		minePickupSweepPositions.clear();
 	}
 
 	public ActiveJob current() {
@@ -133,8 +134,13 @@ public final class ActiveJobRuntime {
 		if (!targetBlockIds.contains(blockId)) {
 			return Optional.empty();
 		}
+		if (!Objects.equals(minePickupSweepJobId, activeJob.jobId())) {
+			minePickupSweepPositions.clear();
+		}
 		minePickupSweepJobId = activeJob.jobId();
-		minePickupSweepPosition = position;
+		if (position != null) {
+			minePickupSweepPositions.add(position);
+		}
 		if (activeJob.type() == ActiveJobType.COLLECT_RESOURCE) {
 			refreshDesiredTask(tick);
 			return Optional.empty();
@@ -474,7 +480,7 @@ public final class ActiveJobRuntime {
 			startCollectAttempt(remaining, tick);
 			return;
 		}
-		applyLatestMinePickupSweepPosition();
+		applyMinePickupSweepPositions();
 	}
 
 	private void refreshMineBlocksAttempt(long tick) {
@@ -487,7 +493,7 @@ public final class ActiveJobRuntime {
 			return;
 		}
 		if (satisfiedCount >= spec.quantity()) {
-			applyLatestMinePickupSweepPosition();
+			applyMinePickupSweepPositions();
 			return;
 		}
 		boolean mineTaskChanged = !Objects.equals(mineAttemptJobId, activeJob.jobId());
@@ -499,7 +505,7 @@ public final class ActiveJobRuntime {
 			startMineBlocksAttempt(spec, tick, satisfiedCount);
 			return;
 		}
-		applyLatestMinePickupSweepPosition();
+		applyMinePickupSweepPositions();
 	}
 
 	private void startMineBlocksAttempt(GoalMineSpec requestedSpec, long tick, int satisfiedCount) {
@@ -524,7 +530,7 @@ public final class ActiveJobRuntime {
 			activeJob.jobId() + ":mine:" + mineAttemptSequence,
 			activeJob.jobId(),
 			executionGoal,
-			latestMinePickupSweepPosition()
+			minePickupSweepPositions()
 		);
 	}
 
@@ -544,25 +550,25 @@ public final class ActiveJobRuntime {
 			activeJob.jobId() + ":mine:" + collectAttemptSequence,
 			activeJob.jobId(),
 			goal,
-			latestMinePickupSweepPosition()
+			minePickupSweepPositions()
 		);
 	}
 
-	private void applyLatestMinePickupSweepPosition() {
-		if (desiredPrimitiveTask != null && latestMinePickupSweepPosition() != null) {
-			desiredPrimitiveTask = desiredPrimitiveTask.withPickupSweepPosition(latestMinePickupSweepPosition());
+	private void applyMinePickupSweepPositions() {
+		if (desiredPrimitiveTask != null && !minePickupSweepPositions().isEmpty()) {
+			desiredPrimitiveTask = desiredPrimitiveTask.withPickupSweepPositions(minePickupSweepPositions());
 		}
 	}
 
-	private GoalPosition latestMinePickupSweepPosition() {
-		return Objects.equals(minePickupSweepJobId, activeJob.jobId()) ? minePickupSweepPosition : null;
+	private List<GoalPosition> minePickupSweepPositions() {
+		return Objects.equals(minePickupSweepJobId, activeJob.jobId()) ? List.copyOf(minePickupSweepPositions) : List.of();
 	}
 
 	private void clearDesiredTaskState() {
 		desiredPrimitiveTask = null;
 		clearAttemptState();
 		minePickupSweepJobId = null;
-		minePickupSweepPosition = null;
+		minePickupSweepPositions.clear();
 	}
 
 	private void clearCollectAttemptState() {

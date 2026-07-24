@@ -17,17 +17,22 @@ import net.minecraft.screen.PlayerScreenHandler;
 import net.minecraft.screen.ScreenHandler;
 import net.minecraft.screen.slot.SlotActionType;
 import net.minecraft.util.Identifier;
+import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Box;
 import net.minecraft.util.math.Vec3d;
 
 import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.HashSet;
+import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.function.Supplier;
 
 public final class BaritoneTaskExecutor implements WorldTaskExecutor {
-	private static final int MAX_MINE_DROP_PICKUP_ATTEMPTS = 2;
+	private static final int MAX_MINE_DROP_PICKUP_ATTEMPTS_PER_TARGET = 2;
 	private static final double MINE_DROP_PICKUP_RADIUS_BLOCKS = 4.0D;
 
 	private final BaritoneFacade facade;
@@ -40,7 +45,9 @@ public final class BaritoneTaskExecutor implements WorldTaskExecutor {
 	private TaskTerminationCause terminalEventCause;
 	private String pendingInternalCancelTaskId;
 	private String mineDropPickupTaskId;
+	private MineDropTarget mineDropPickupTarget;
 	private int mineDropPickupAttempts;
+	private TerminalOutcome pendingMineTerminalOutcome;
 	private TaskExecutionSnapshot snapshot = TaskExecutionSnapshot.idle();
 
 	public BaritoneTaskExecutor(BaritoneFacade facade) {
@@ -48,7 +55,7 @@ public final class BaritoneTaskExecutor implements WorldTaskExecutor {
 	}
 
 	BaritoneTaskExecutor(Supplier<MinecraftClient> clientSupplier, BaritoneFacade facade) {
-		this(clientSupplier, facade, request -> hasMatchingMineDropNearby(clientSupplier.get(), request));
+		this(clientSupplier, facade, request -> matchingMineDropsNearby(clientSupplier.get(), request));
 	}
 
 	BaritoneTaskExecutor(Supplier<MinecraftClient> clientSupplier, BaritoneFacade facade, MineDropObserver mineDropObserver) {
@@ -99,6 +106,7 @@ public final class BaritoneTaskExecutor implements WorldTaskExecutor {
 
 		boolean taskTargetChanged = !sameTaskTarget(activeTask.get(), appliedTask);
 		if (taskTargetChanged) {
+			clearMineDropPickupState();
 			if (appliedTask != null) {
 				pendingInternalCancelTaskId = appliedTask.taskId();
 				facade.cancel();
@@ -115,7 +123,10 @@ public final class BaritoneTaskExecutor implements WorldTaskExecutor {
 		appliedTask = activeTask.get();
 
 		Optional<String> pathEvent = facade.pollPathEvent();
-		MineDropPickupResult mineDropPickupResult = terminalMineDropPickupEvent(pathEvent, appliedTask);
+		boolean suppressedInternalCancel = isSuppressedInternalCancel(pathEvent);
+		MineDropPickupResult mineDropPickupResult = suppressedInternalCancel
+			? MineDropPickupResult.notHandled()
+			: terminalMineDropPickupEvent(pathEvent, appliedTask);
 		if (mineDropPickupResult.handled()) {
 			return mineDropPickupResult.event();
 		}
@@ -123,7 +134,7 @@ public final class BaritoneTaskExecutor implements WorldTaskExecutor {
 			return Optional.empty();
 		}
 		Optional<TerminalOutcome> terminalOutcome = terminalOutcomeFor(pathEvent, appliedTask);
-		if (terminalOutcome.isPresent() && isSuppressedInternalCancel(pathEvent)) {
+		if (terminalOutcome.isPresent() && suppressedInternalCancel) {
 			terminalOutcome = Optional.empty();
 		}
 		TaskExecutionState state = terminalOutcome
@@ -393,36 +404,44 @@ public final class BaritoneTaskExecutor implements WorldTaskExecutor {
 	}
 
 	private MineDropPickupResult terminalMineDropPickupEvent(Optional<String> pathEvent, WorldTaskRequest activeTask) {
-		if (pathEvent.isEmpty() || activeTask == null || !"AT_GOAL".equals(pathEvent.get().trim().toUpperCase(Locale.ROOT))) {
+		Optional<TerminalOutcome> currentOutcome = terminalOutcomeFor(pathEvent, activeTask);
+		if (currentOutcome.isEmpty() || activeTask == null) {
 			return MineDropPickupResult.notHandled();
 		}
-		if (activeTask.goal() == null || activeTask.goal().type() != GoalType.MINE_BLOCKS || activeTask.pickupSweepPosition() == null) {
+		if (activeTask.goal() == null || activeTask.goal().type() != GoalType.MINE_BLOCKS || activeTask.pickupSweepPositions().isEmpty()) {
 			return MineDropPickupResult.notHandled();
 		}
-		boolean pickupInProgress = Objects.equals(activeTask.taskId(), mineDropPickupTaskId);
-		if (!mineDropObserver.hasMatchingNearbyDrop(activeTask)) {
-			clearMineDropPickupState();
-			return MineDropPickupResult.notHandled();
+		boolean pickupInProgress = Objects.equals(activeTask.taskId(), mineDropPickupTaskId) && pendingMineTerminalOutcome != null;
+		if (!pickupInProgress) {
+			mineDropPickupTaskId = activeTask.taskId();
+			mineDropPickupTarget = null;
+			mineDropPickupAttempts = 0;
+			pendingMineTerminalOutcome = currentOutcome.orElseThrow();
 		}
-		if (pickupInProgress && mineDropPickupAttempts >= MAX_MINE_DROP_PICKUP_ATTEMPTS) {
-			String message = "nearby_mined_drop_not_collected";
-			snapshot = new TaskExecutionSnapshot(
-				TaskExecutionState.FAILED,
-				activeTask.taskId(),
-				activeTask.goal(),
-				facade.activeProcessName().orElse(null),
-				message,
-				facade.estimatedTicksToGoal().orElse(null),
-				null
-			);
-			terminalEventTaskId = activeTask.taskId();
-			terminalEventState = TaskExecutionState.FAILED;
-			terminalEventCause = null;
-			return MineDropPickupResult.withEvent(new TaskTerminalEvent(activeTask.taskId(), activeTask.goal(), TaskExecutionState.FAILED, message, null));
+
+		List<MineDropTarget> matchingDrops = mineDropObserver.matchingNearbyDrops(activeTask);
+		if (matchingDrops == null || matchingDrops.isEmpty()) {
+			if (!pickupInProgress) {
+				clearMineDropPickupState();
+				return MineDropPickupResult.notHandled();
+			}
+			return finishMineDropPickup(activeTask);
 		}
-		mineDropPickupTaskId = activeTask.taskId();
+
+		MineDropTarget nextTarget = matchingDrops.stream()
+			.filter(target -> mineDropPickupTarget != null && target.entityId() == mineDropPickupTarget.entityId())
+			.findFirst()
+			.orElse(matchingDrops.getFirst());
+		boolean sameTarget = mineDropPickupTarget != null && nextTarget.entityId() == mineDropPickupTarget.entityId();
+		if (sameTarget && mineDropPickupAttempts >= MAX_MINE_DROP_PICKUP_ATTEMPTS_PER_TARGET) {
+			return failMineDropPickup(activeTask);
+		}
+		if (!sameTarget) {
+			mineDropPickupTarget = nextTarget;
+			mineDropPickupAttempts = 0;
+		}
 		mineDropPickupAttempts++;
-		facade.startNavigate(activeTask.pickupSweepPosition());
+		facade.startNavigate(nextTarget.position());
 		snapshot = new TaskExecutionSnapshot(
 			TaskExecutionState.RUNNING,
 			activeTask.taskId(),
@@ -435,27 +454,87 @@ public final class BaritoneTaskExecutor implements WorldTaskExecutor {
 		return MineDropPickupResult.handledWithoutEvent();
 	}
 
-	private static boolean hasMatchingMineDropNearby(MinecraftClient client, WorldTaskRequest request) {
-		if (client == null || client.world == null || request == null || request.goal() == null || request.goal().mineSpec() == null || request.pickupSweepPosition() == null) {
-			return false;
-		}
-		GoalPosition position = request.pickupSweepPosition();
-		Box area = Box.of(
-			Vec3d.ofCenter(new net.minecraft.util.math.BlockPos(position.x(), position.y(), position.z())),
-			MINE_DROP_PICKUP_RADIUS_BLOCKS * 2.0D,
-			MINE_DROP_PICKUP_RADIUS_BLOCKS * 2.0D,
-			MINE_DROP_PICKUP_RADIUS_BLOCKS * 2.0D
+	private MineDropPickupResult finishMineDropPickup(WorldTaskRequest activeTask) {
+		TerminalOutcome outcome = pendingMineTerminalOutcome;
+		clearMineDropPickupState();
+		snapshot = new TaskExecutionSnapshot(
+			outcome.state(),
+			activeTask.taskId(),
+			activeTask.goal(),
+			facade.activeProcessName().orElse(null),
+			messageFor(outcome.state()),
+			facade.estimatedTicksToGoal().orElse(null),
+			outcome.cause()
 		);
-		java.util.Set<String> matchingItemIds = MinedBlockDropMapper.matchingInventoryItemIds(request.goal().mineSpec().blockIds());
-		return !client.world.getEntitiesByClass(ItemEntity.class, area, itemEntity -> {
-			ItemStack stack = itemEntity.getStack();
-			return stack != null && !stack.isEmpty() && matchingItemIds.contains(Registries.ITEM.getId(stack.getItem()).toString());
-		}).isEmpty();
+		terminalEventTaskId = activeTask.taskId();
+		terminalEventState = outcome.state();
+		terminalEventCause = outcome.cause();
+		return MineDropPickupResult.withEvent(new TaskTerminalEvent(
+			activeTask.taskId(),
+			activeTask.goal(),
+			outcome.state(),
+			messageFor(outcome.state()),
+			outcome.cause()
+		));
+	}
+
+	private MineDropPickupResult failMineDropPickup(WorldTaskRequest activeTask) {
+		String message = "nearby_mined_drop_not_collected";
+		clearMineDropPickupState();
+		snapshot = new TaskExecutionSnapshot(
+			TaskExecutionState.FAILED,
+			activeTask.taskId(),
+			activeTask.goal(),
+			facade.activeProcessName().orElse(null),
+			message,
+			facade.estimatedTicksToGoal().orElse(null),
+			null
+		);
+		terminalEventTaskId = activeTask.taskId();
+		terminalEventState = TaskExecutionState.FAILED;
+		terminalEventCause = null;
+		return MineDropPickupResult.withEvent(new TaskTerminalEvent(activeTask.taskId(), activeTask.goal(), TaskExecutionState.FAILED, message, null));
+	}
+
+	private static List<MineDropTarget> matchingMineDropsNearby(MinecraftClient client, WorldTaskRequest request) {
+		if (client == null || client.world == null || client.player == null || request == null || request.goal() == null || request.goal().mineSpec() == null || request.pickupSweepPositions().isEmpty()) {
+			return List.of();
+		}
+		Set<String> matchingItemIds = MinedBlockDropMapper.matchingInventoryItemIds(request.goal().mineSpec().blockIds());
+		Set<Integer> seenEntityIds = new HashSet<>();
+		ArrayList<ItemEntity> matchingDrops = new ArrayList<>();
+		for (GoalPosition position : request.pickupSweepPositions()) {
+			Box area = Box.of(
+				Vec3d.ofCenter(new BlockPos(position.x(), position.y(), position.z())),
+				MINE_DROP_PICKUP_RADIUS_BLOCKS * 2.0D,
+				MINE_DROP_PICKUP_RADIUS_BLOCKS * 2.0D,
+				MINE_DROP_PICKUP_RADIUS_BLOCKS * 2.0D
+			);
+			for (ItemEntity itemEntity : client.world.getEntitiesByClass(ItemEntity.class, area, entity -> isMatchingMineDrop(entity, matchingItemIds))) {
+				if (seenEntityIds.add(itemEntity.getId())) {
+					matchingDrops.add(itemEntity);
+				}
+			}
+		}
+		matchingDrops.sort(Comparator.comparingDouble(itemEntity -> itemEntity.squaredDistanceTo(client.player)));
+		return matchingDrops.stream()
+			.map(itemEntity -> {
+				BlockPos position = itemEntity.getBlockPos();
+				return new MineDropTarget(itemEntity.getId(), new GoalPosition(position.getX(), position.getY(), position.getZ(), true));
+			})
+			.toList();
+	}
+
+	private static boolean isMatchingMineDrop(ItemEntity itemEntity, Set<String> matchingItemIds) {
+		ItemStack stack = itemEntity == null ? ItemStack.EMPTY : itemEntity.getStack();
+		return stack != null && !stack.isEmpty() && matchingItemIds.contains(Registries.ITEM.getId(stack.getItem()).toString());
 	}
 
 	private void clearMineDropPickupState() {
 		mineDropPickupTaskId = null;
+		mineDropPickupTarget = null;
 		mineDropPickupAttempts = 0;
+		pendingMineTerminalOutcome = null;
 	}
 
 	private TaskExecutionState cancelledStateFor(GoalSnapshot activeGoal) {
@@ -524,7 +603,13 @@ public final class BaritoneTaskExecutor implements WorldTaskExecutor {
 
 	@FunctionalInterface
 	interface MineDropObserver {
-		boolean hasMatchingNearbyDrop(WorldTaskRequest request);
+		List<MineDropTarget> matchingNearbyDrops(WorldTaskRequest request);
+	}
+
+	record MineDropTarget(int entityId, GoalPosition position) {
+		MineDropTarget {
+			Objects.requireNonNull(position, "position");
+		}
 	}
 
 	private record MineDropPickupResult(boolean handled, Optional<TaskTerminalEvent> event) {

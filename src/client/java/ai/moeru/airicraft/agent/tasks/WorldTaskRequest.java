@@ -4,6 +4,7 @@ import ai.moeru.airicraft.agent.goals.GoalSnapshot;
 import ai.moeru.airicraft.agent.goals.GoalPosition;
 import ai.moeru.airicraft.agent.goals.GoalType;
 
+import java.util.List;
 import java.util.Objects;
 
 public record WorldTaskRequest(
@@ -20,7 +21,7 @@ public record WorldTaskRequest(
 	BlockPlacementStepArgs blockPlacement,
 	BlockUseStepArgs blockUse,
 	BlockBreakStepArgs blockBreak,
-	GoalPosition pickupSweepPosition
+	List<GoalPosition> pickupSweepPositions
 ) {
 	public WorldTaskRequest(String taskId, String sourceJobId, WorldTaskType type, GoalSnapshot goal, CraftRecipeStepArgs craftRecipe, DropItemsStepArgs dropItems, EntityInteractionStepArgs entityInteraction, SmeltItemsStepArgs smeltItems, CollectSmeltedItemsStepArgs collectSmeltedItems, ReturnToSurfaceStepArgs returnToSurface, BlockPlacementStepArgs blockPlacement, BlockUseStepArgs blockUse, BlockBreakStepArgs blockBreak) {
 		this(taskId, sourceJobId, type, goal, craftRecipe, dropItems, entityInteraction, smeltItems, collectSmeltedItems, returnToSurface, blockPlacement, blockUse, blockBreak, null);
@@ -42,6 +43,7 @@ public record WorldTaskRequest(
 		taskId = normalizedValue(taskId, "taskId");
 		sourceJobId = normalizedValue(sourceJobId, "sourceJobId");
 		type = Objects.requireNonNull(type, "type");
+		pickupSweepPositions = List.copyOf(pickupSweepPositions == null ? List.of() : pickupSweepPositions);
 		if (type == WorldTaskType.CRAFT_RECIPE) {
 			craftRecipe = Objects.requireNonNull(craftRecipe, "craftRecipe");
 		}
@@ -79,11 +81,15 @@ public record WorldTaskRequest(
 	}
 
 	public static WorldTaskRequest collectMine(String taskId, String sourceJobId, GoalSnapshot goal) {
-		return collectMine(taskId, sourceJobId, goal, null);
+		return collectMine(taskId, sourceJobId, goal, List.of());
 	}
 
 	public static WorldTaskRequest collectMine(String taskId, String sourceJobId, GoalSnapshot goal, GoalPosition pickupSweepPosition) {
-		return new WorldTaskRequest(taskId, sourceJobId, WorldTaskType.MINE, goal, null, null, null, null, null, null, null, null, null, pickupSweepPosition);
+		return collectMine(taskId, sourceJobId, goal, pickupSweepPosition == null ? List.of() : List.of(pickupSweepPosition));
+	}
+
+	public static WorldTaskRequest collectMine(String taskId, String sourceJobId, GoalSnapshot goal, List<GoalPosition> pickupSweepPositions) {
+		return new WorldTaskRequest(taskId, sourceJobId, WorldTaskType.MINE, goal, null, null, null, null, null, null, null, null, null, pickupSweepPositions);
 	}
 
 	public static WorldTaskRequest craftRecipe(String taskId, String sourceJobId, CraftRecipeStepArgs craftRecipe) {
@@ -127,7 +133,15 @@ public record WorldTaskRequest(
 	}
 
 	public WorldTaskRequest withPickupSweepPosition(GoalPosition position) {
-		return new WorldTaskRequest(taskId, sourceJobId, type, goal, craftRecipe, dropItems, entityInteraction, smeltItems, collectSmeltedItems, returnToSurface, blockPlacement, blockUse, blockBreak, position);
+		return withPickupSweepPositions(position == null ? List.of() : List.of(position));
+	}
+
+	public WorldTaskRequest withPickupSweepPositions(List<GoalPosition> positions) {
+		return new WorldTaskRequest(taskId, sourceJobId, type, goal, craftRecipe, dropItems, entityInteraction, smeltItems, collectSmeltedItems, returnToSurface, blockPlacement, blockUse, blockBreak, positions);
+	}
+
+	public GoalPosition pickupSweepPosition() {
+		return pickupSweepPositions.isEmpty() ? null : pickupSweepPositions.getLast();
 	}
 
 	private static WorldTaskType typeFor(GoalSnapshot goal) {
