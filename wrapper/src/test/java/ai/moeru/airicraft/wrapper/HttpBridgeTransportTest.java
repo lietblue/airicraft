@@ -228,6 +228,41 @@ class HttpBridgeTransportTest {
 	}
 
 	@Test
+	void listAgentToolsReadsCompleteSurface(@TempDir Path tempDir) throws Exception {
+		try (TestBridgeServer server = TestBridgeServer.start()) {
+			server.respondJson("/v1/agent/tools", 0, 200, """
+				{"available":true,"codexDriverActive":true,"toolCount":1,"tools":[{"type":"function","function":{"name":"navigate_to"}}]}
+				""");
+			writeBridgeState(tempDir, server.port());
+			System.setProperty("user.home", tempDir.toString());
+
+			HttpBridgeTransport transport = new HttpBridgeTransport();
+			Map<String, Object> payload = transport.listAgentTools();
+
+			assertEquals(true, payload.get("codexDriverActive"));
+			assertEquals(1, ((Number) payload.get("toolCount")).intValue());
+			assertEquals("GET", server.lastMethod("/v1/agent/tools"));
+		}
+	}
+
+	@Test
+	void callAgentToolPostsAndAllowsLongRunningResult(@TempDir Path tempDir) throws Exception {
+		try (TestBridgeServer server = TestBridgeServer.start()) {
+			server.respondJson("/v1/agent/tools", 2500, 200, """
+				{"available":true,"codexDriverActive":true,"toolName":"inspect_inventory","result":"ok","imageAttached":false}
+				""");
+			writeBridgeState(tempDir, server.port());
+			System.setProperty("user.home", tempDir.toString());
+
+			HttpBridgeTransport transport = new HttpBridgeTransport();
+			Map<String, Object> payload = transport.callAgentTool("inspect_inventory", Map.of(), 30_000);
+
+			assertEquals("ok", payload.get("result"));
+			assertEquals("POST", server.lastMethod("/v1/agent/tools"));
+		}
+	}
+
+	@Test
 	void getAgentDebugStateReadsPayload(@TempDir Path tempDir) throws Exception {
 		try (TestBridgeServer server = TestBridgeServer.start()) {
 			server.respondJson("/v1/agent/debug/state", 0, 200, """

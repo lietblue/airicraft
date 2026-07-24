@@ -72,6 +72,7 @@ import ai.moeru.airicraft.agent.job.ActiveJobRuntime;
 import ai.moeru.airicraft.agent.llm.CompactionExecutionResult;
 import ai.moeru.airicraft.agent.llm.CurrentWorldQueryService;
 import ai.moeru.airicraft.agent.llm.CurrentViewVisionService;
+import ai.moeru.airicraft.agent.llm.ExternalPlannerToolResult;
 import ai.moeru.airicraft.agent.llm.LlmBackendException;
 import ai.moeru.airicraft.agent.llm.OpenAiCompatibleChatClient;
 import ai.moeru.airicraft.agent.llm.OpenAiCompatibleLlmBackend;
@@ -230,6 +231,7 @@ public final class EmbodiedAgentRuntime {
 	private final ActionGraphExecutionRuntime actionGraphRuntime;
 	private final SurvivalReflexRuntime survivalReflexRuntime;
 	private final PersistentActionFactStore persistentActionFactStore = PersistentActionFactStore.defaults();
+	private final boolean codexDriverActive;
 
 	private boolean initialized;
 	private long tickCount;
@@ -299,6 +301,7 @@ public final class EmbodiedAgentRuntime {
 	) {
 		this.airicraftConfig = Objects.requireNonNull(airicraftConfig, "airicraftConfig");
 		this.config = Objects.requireNonNull(config, "config");
+		this.codexDriverActive = Boolean.getBoolean("airicraft.codexDriver");
 		this.survivalReflexRuntime = new SurvivalReflexRuntime(this.config.reflex());
 		this.worldTaskExecutor = Objects.requireNonNull(worldTaskExecutor, "worldTaskExecutor");
 		this.observability = new FlightRecordingObservability(Objects.requireNonNull(observability, "observability"), llmFlightRecorder);
@@ -323,6 +326,9 @@ public final class EmbodiedAgentRuntime {
 			);
 		this.visionService = plannerShell.visionService();
 		this.dialogueRuntime = plannerShell.dialogueRuntime();
+		if (codexDriverActive) {
+			this.dialogueRuntime.enableExternalDriver();
+		}
 		this.plannerJournal = plannerShell.plannerJournal();
 		this.debugRecorder.recordDialogueState(this.dialogueRuntime.snapshot());
 	}
@@ -1000,6 +1006,37 @@ public final class EmbodiedAgentRuntime {
 
 	public boolean llmAvailable() {
 		return dialogueRuntime.llmAvailable();
+	}
+
+	public boolean codexDriverActive() {
+		return codexDriverActive;
+	}
+
+	public List<Map<String, Object>> codexDriverTools() {
+		requireCodexDriverActive();
+		return dialogueRuntime.allAvailableTools();
+	}
+
+	public CompletableFuture<ExternalPlannerToolResult> executeCodexDriverTool(String name, JsonObject arguments) {
+		requireCodexDriverActive();
+		try {
+			return dialogueRuntime.executeExternalTool(name, arguments);
+		}
+		catch (com.google.gson.JsonParseException | IllegalArgumentException exception) {
+			throw new BridgeUnavailableException(
+				"invalid_request",
+				exception.getMessage() == null || exception.getMessage().isBlank() ? "Invalid tool arguments" : exception.getMessage()
+			);
+		}
+	}
+
+	private void requireCodexDriverActive() {
+		if (!codexDriverActive) {
+			throw new BridgeUnavailableException(
+				"codex_driver_inactive",
+				"Codex driver tools require launching Airicraft with scripts/codex-driver"
+			);
+		}
 	}
 
 	public boolean visionAvailable() {

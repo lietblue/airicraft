@@ -56,6 +56,10 @@ public final class AiricraftCliMain {
 		root.addSubcommand("agent", new UsageCommand(out, "airicraft agent", "Agent observability and debug commands"));
 		CommandLine agent = root.getSubcommands().get("agent");
 		agent.addSubcommand(new AgentStatusCommand(context));
+		agent.addSubcommand("tools", new UsageCommand(out, "airicraft agent tools", "External Codex driver tool commands"));
+		CommandLine agentTools = agent.getSubcommands().get("tools");
+		agentTools.addSubcommand(new AgentToolsListCommand(context));
+		agentTools.addSubcommand(new AgentToolsCallCommand(context));
 		agent.addSubcommand(new AgentSessionCommand(context));
 		CommandLine agentSession = agent.getSubcommands().get("session");
 		agentSession.addSubcommand(new AgentSessionOpenLanCommand(context));
@@ -273,6 +277,58 @@ public final class AiricraftCliMain {
 		@Override
 		Map<String, Object> runCommand() {
 			return PayloadViews.agentStatus(transport().getAgentStatus(), verbose());
+		}
+	}
+
+	@Command(name = "list", mixinStandardHelpOptions = true, description = "List every planner tool available to an external Codex driver.")
+	private static final class AgentToolsListCommand extends BaseCommand {
+		private AgentToolsListCommand(CliContext context) {
+			super(context, "agent tools list");
+		}
+
+		@Override
+		Map<String, Object> runCommand() {
+			return PayloadViews.agentTools(transport().listAgentTools(), verbose());
+		}
+	}
+
+	@Command(name = "call", mixinStandardHelpOptions = true, description = "Call any planner tool through the external Codex driver.")
+	private static final class AgentToolsCallCommand extends BaseCommand {
+		@Option(names = "--name", required = true, description = "Planner tool name.")
+		private String name;
+
+		@Option(names = "--arguments", defaultValue = "{}", description = "Tool arguments as a JSON object.")
+		private String argumentsJson;
+
+		@Option(names = "--timeout-seconds", defaultValue = "120", description = "Maximum seconds to wait for a tool result (1-300).")
+		private int timeoutSeconds;
+
+		@Option(names = "--output-image", description = "Write an image-producing tool result to this path.")
+		private Path outputImage;
+
+		private AgentToolsCallCommand(CliContext context) {
+			super(context, "agent tools call");
+		}
+
+		@Override
+		Map<String, Object> runCommand() {
+			if (timeoutSeconds < 1 || timeoutSeconds > 300) {
+				throw new CliUsageException(commandPath(), "invalid_arguments", "timeout-seconds must be between 1 and 300");
+			}
+			Map<String, Object> arguments = parseJsonObject(argumentsJson, commandPath());
+			Map<String, Object> payload = new LinkedHashMap<>(transport().callAgentTool(name, arguments, timeoutSeconds * 1000));
+			Object encodedImage = payload.remove("imageBase64");
+			if (encodedImage instanceof String imageBase64 && !imageBase64.isBlank() && outputImage != null) {
+				try {
+					Path outputPath = outputImage.toAbsolutePath().normalize();
+					writeCapture(outputPath, java.util.Base64.getDecoder().decode(imageBase64));
+					payload.put("imageOutputPath", outputPath.toString());
+				}
+				catch (IllegalArgumentException exception) {
+					throw new CliUsageException(commandPath(), "bridge_io_error", "Bridge returned invalid image data");
+				}
+			}
+			return PayloadViews.agentToolResult(payload, verbose());
 		}
 	}
 
@@ -1508,6 +1564,15 @@ public final class AiricraftCliMain {
 		}
 	}
 
+	private static Map<String, Object> parseJsonObject(String raw, String commandPath) {
+		try {
+			return OBJECT_MAPPER.readValue(raw == null || raw.isBlank() ? "{}" : raw, MAP_TYPE);
+		}
+		catch (java.io.IOException exception) {
+			throw new CliUsageException(commandPath, "invalid_arguments", "arguments must be a JSON object");
+		}
+	}
+
 	private static final class TextPrinter {
 		private final PrintWriter out;
 
@@ -1596,7 +1661,7 @@ public final class AiricraftCliMain {
 
 		private static Map<String, Object> agentStatus(Map<String, Object> payload, boolean verbose) {
 			LinkedHashMap<String, Object> view = new LinkedHashMap<>();
-			copy(view, payload, "available", "initialized", "tickCount", "llmAvailable", "visionAvailable", "plannerVisionMode", "degraded");
+			copy(view, payload, "available", "initialized", "tickCount", "codexDriverActive", "llmAvailable", "visionAvailable", "plannerVisionMode", "degraded");
 			if (payload.containsKey("session")) {
 				view.put("session", payload.get("session"));
 			}
@@ -1616,6 +1681,33 @@ public final class AiricraftCliMain {
 			}
 			if (verbose && payload.containsKey("evaluation")) {
 				view.put("evaluation", payload.get("evaluation"));
+			}
+			return view;
+		}
+
+		private static Map<String, Object> agentTools(Map<String, Object> payload, boolean verbose) {
+			LinkedHashMap<String, Object> view = new LinkedHashMap<>();
+			copy(view, payload, "available", "codexDriverActive", "toolCount");
+			List<Map<String, Object>> tools = maps(payload.get("tools"));
+			List<Map<String, Object>> projected = new ArrayList<>();
+			for (Map<String, Object> tool : tools) {
+				Map<String, Object> function = map(tool.get("function"));
+				LinkedHashMap<String, Object> item = new LinkedHashMap<>();
+				copy(item, function, "name", "description");
+				if (verbose) {
+					copy(item, function, "parameters");
+				}
+				projected.add(item);
+			}
+			view.put("tools", projected);
+			return view;
+		}
+
+		private static Map<String, Object> agentToolResult(Map<String, Object> payload, boolean verbose) {
+			LinkedHashMap<String, Object> view = new LinkedHashMap<>();
+			copy(view, payload, "available", "codexDriverActive", "toolName", "result", "imageAttached", "imageOutputPath");
+			if (verbose) {
+				copy(view, payload, "imageMimeType", "imageDetail");
 			}
 			return view;
 		}

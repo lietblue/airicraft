@@ -43,6 +43,18 @@ class PlannerToolRegistryTest {
 	}
 
 	@Test
+	void externalSurfaceIncludesEveryAvailableBuiltInAndProviderTool() {
+		PlannerToolRegistry registry = PlannerToolRegistry.of(new FlippingProvider());
+
+		List<String> externalNames = toolNames(registry.allAvailableOpenAiTools());
+
+		assertTrue(externalNames.contains(PlannerToolCatalog.NAVIGATE_TO));
+		assertTrue(externalNames.contains(PlannerToolCatalog.CRAFT_RECIPE));
+		assertTrue(externalNames.contains("search_recipes"));
+		assertTrue(externalNames.size() > registry.openAiTools().size());
+	}
+
+	@Test
 	void discoveryActivatesBoundedSpecialistSchemasAndReturnsConciseCards() {
 		PlannerToolRegistry registry = PlannerToolRegistry.empty();
 

@@ -328,6 +328,22 @@ public final class PlannerToolCatalog {
 		return new PlannerToolCall(id, name, arguments, getString(arguments, "narration").orElse(null), object);
 	}
 
+	public static PlannerToolCall parseToolCall(String name, JsonObject arguments, PlannerToolRegistry toolRegistry) {
+		String normalizedName = normalizeName(name);
+		if (normalizedName.isBlank()) {
+			throw new JsonParseException("Missing tool name");
+		}
+		JsonObject effectiveArguments = arguments == null ? new JsonObject() : arguments.deepCopy();
+		validateArguments(normalizedName, effectiveArguments, toolRegistry);
+		return new PlannerToolCall(
+			"call_external_" + normalizedName,
+			normalizedName,
+			effectiveArguments,
+			getString(effectiveArguments, "narration").orElse(null),
+			null
+		);
+	}
+
 	public static JsonArray toOpenAiToolCalls(List<PlannerToolCall> toolCalls) {
 		JsonArray array = new JsonArray();
 		if (toolCalls == null) {

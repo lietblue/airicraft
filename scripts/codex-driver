@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+	printf '%s\n' \
+		'Usage: scripts/codex-driver [Gradle runClient arguments...]' \
+		'' \
+		'Launch the Airicraft dev client with its embedded planner dormant.' \
+		'The current Codex task drives the client through the wrapper CLI.' \
+		'' \
+		'On the first launch in a new worktree, Minecraft may wait at the' \
+		'narrator/accessibility screen until Continue is clicked manually.'
+}
+
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+	usage
+	exit 0
+fi
+
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+repo_root="$(cd -- "$script_dir/.." && pwd)"
+cd "$repo_root"
+
+envrc_path="$repo_root/.envrc"
+if [[ ! -f "$envrc_path" ]]; then
+	git_common_dir="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
+	if [[ -n "$git_common_dir" && -f "$(dirname -- "$git_common_dir")/.envrc" ]]; then
+		envrc_path="$(dirname -- "$git_common_dir")/.envrc"
+	fi
+fi
+
+if [[ -f "$envrc_path" ]]; then
+	# shellcheck disable=SC1091
+	source "$envrc_path"
+fi
+
+printf '%s\n' \
+	'Launching Airicraft in external Codex-driver mode.' \
+	'This script starts Minecraft only; it does not start or fork Codex.' \
+	'Keep this process running while the current Codex task uses the wrapper CLI.'
+
+exec ./gradlew wrapper:installDist runClient -Pairicraft.codexDriver=true "$@"

@@ -24,6 +24,7 @@ import java.util.ArrayDeque;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
@@ -615,6 +616,19 @@ public final class PlannerOrchestrator {
 
 	public boolean isConfigured() {
 		return plannerExecutor.isConfigured();
+	}
+
+	public List<Map<String, Object>> allAvailableTools() {
+		return toolRegistry.allAvailableOpenAiTools();
+	}
+
+	public CompletableFuture<ExternalPlannerToolResult> executeExternalTool(String name, JsonObject arguments) {
+		PlannerToolCall toolCall = PlannerToolCatalog.parseToolCall(name, arguments, toolRegistry);
+		return requestExternalPlannerTool(toolCall).thenApply(outcome -> new ExternalPlannerToolResult(
+			toolCall.name(),
+			outcome.toolResultText(),
+			outcome instanceof ImageToolExecutionOutcome imageOutcome ? imageOutcome.imageAttachment() : null
+		));
 	}
 
 	public boolean hasInFlight() {
@@ -1503,15 +1517,24 @@ public final class PlannerOrchestrator {
 
 	private CompletableFuture<ToolExecutionOutcome> requestPlannerTool(PlannerToolCall toolCall) {
 		toolExecutionObserver.beforePlannerToolExecution(toolCall);
+		return requestPlannerTool(toolCall, false);
+	}
+
+	private CompletableFuture<ToolExecutionOutcome> requestExternalPlannerTool(PlannerToolCall toolCall) {
+		toolExecutionObserver.beforePlannerToolExecution(toolCall);
+		return requestPlannerTool(toolCall, true);
+	}
+
+	private CompletableFuture<ToolExecutionOutcome> requestPlannerTool(PlannerToolCall toolCall, boolean preserveImageAttachment) {
 		return switch (normalizedToolName(toolCall)) {
 			case PlannerToolCatalog.DISCOVER_TOOLS -> CompletableFuture.completedFuture(new TextToolExecutionOutcome(discoverToolsResult(toolCall)));
-			case VISUAL_TOOL_NAME -> requestVisionTool(toolCall);
+			case VISUAL_TOOL_NAME -> preserveImageAttachment ? requestNativeVisionTool(toolCall) : requestVisionTool(toolCall);
 			case INVENTORY_TOOL_NAME -> inventoryTool.inspectInventory(toolPrompt(toolCall)).thenApply(TextToolExecutionOutcome::new);
 			case CRAFTABLES_TOOL_NAME -> inventoryTool.checkCraftables(toolPrompt(toolCall)).thenApply(TextToolExecutionOutcome::new);
 			case NEARBY_ENTITIES_TOOL_NAME -> inventoryTool.inspectNearbyEntities(toolPrompt(toolCall)).thenApply(TextToolExecutionOutcome::new);
 			default -> {
 				CompletableFuture<ToolExecutionOutcome> providerToolFuture = toolRegistry.providerFor(toolCall.name())
-					.map(provider -> provider.executeResult(toolCall).thenCompose(result -> providerToolOutcome(toolCall, result)))
+					.map(provider -> provider.executeResult(toolCall).thenCompose(result -> providerToolOutcome(toolCall, result, preserveImageAttachment)))
 					.orElse(null);
 				yield providerToolFuture == null
 					? actionToolExecutor.execute(toolCall).<ToolExecutionOutcome>thenApply(TextToolExecutionOutcome::new)
@@ -1520,11 +1543,15 @@ public final class PlannerOrchestrator {
 			};
 	}
 
-	private CompletableFuture<ToolExecutionOutcome> providerToolOutcome(PlannerToolCall toolCall, PlannerProviderToolResult result) {
+	private CompletableFuture<ToolExecutionOutcome> providerToolOutcome(
+		PlannerToolCall toolCall,
+		PlannerProviderToolResult result,
+		boolean preserveImageAttachment
+	) {
 		if (result.imageAttachment() == null) {
 			return CompletableFuture.completedFuture(new TextToolExecutionOutcome(result.text()));
 		}
-		if (visionMode == PlannerVisionMode.NATIVE_TOOL_IMAGE) {
+		if (preserveImageAttachment || visionMode == PlannerVisionMode.NATIVE_TOOL_IMAGE) {
 			return CompletableFuture.completedFuture(new ImageToolExecutionOutcome(result.text(), result.imageAttachment()));
 		}
 		if (!visionTool.isConfigured()) {
@@ -1585,6 +1612,13 @@ public final class PlannerOrchestrator {
 					.thenCompose(future -> future);
 			}
 
+			return requestNativeVisionTool(toolCall);
+		}
+	}
+
+	private CompletableFuture<ToolExecutionOutcome> requestNativeVisionTool(PlannerToolCall toolCall) {
+		Context parentContext = currentTurnContext();
+		try (Scope scope = parentContext.makeCurrent()) {
 			return requestCapture(toolCall).handle((captureResult, throwable) -> {
 				if (throwable == null) {
 					return new ImageToolExecutionOutcome(

@@ -41,6 +41,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -414,6 +415,51 @@ class PlannerOrchestratorTest {
 		assertEquals("Oak planks have a recipe.", result.response().replyText());
 		assertEquals("Tool result for search_recipes: query=oak planks", result.request().toolResult());
 		assertEquals(List.of("oak planks"), provider.queries());
+	}
+
+	@Test
+	void externalToolCallUsesProviderWithoutStagedDiscovery() {
+		RecordingPlannerToolProvider provider = new RecordingPlannerToolProvider();
+		PlannerToolRegistry registry = PlannerToolRegistry.of(provider);
+		PlannerOrchestrator orchestrator = newOrchestrator(
+			new OpenAiCompatibleLlmBackend(AgentConfig.LlmConfig.defaults()),
+			CurrentViewVisionTool.disabled(),
+			CurrentInventoryTool.disabled(),
+			PlannerVisionMode.EXTERNAL_SUMMARY,
+			registry
+		);
+		JsonObject arguments = new JsonObject();
+		arguments.addProperty("query", "iron pickaxe");
+
+		ExternalPlannerToolResult result = orchestrator.executeExternalTool("search_recipes", arguments).join();
+
+		assertEquals("search_recipes", result.toolName());
+		assertEquals("Tool result for search_recipes: query=iron pickaxe", result.text());
+		assertFalse(result.hasImage());
+		assertEquals(List.of("iron pickaxe"), provider.queries());
+	}
+
+	@Test
+	void externalVisionToolReturnsRawImageWithoutInternalVisionSummary() {
+		StubVisionTool visionTool = new StubVisionTool(
+			true,
+			CompletableFuture.completedFuture(capturedScreenshot()),
+			CompletableFuture.failedFuture(new AssertionError("External Codex should receive the image directly"))
+		);
+		PlannerOrchestrator orchestrator = newOrchestrator(
+			new OpenAiCompatibleLlmBackend(AgentConfig.LlmConfig.defaults()),
+			visionTool,
+			CurrentInventoryTool.disabled(),
+			PlannerVisionMode.EXTERNAL_SUMMARY
+		);
+
+		ExternalPlannerToolResult result = orchestrator.executeExternalTool("take_a_look", new JsonObject()).join();
+
+		assertTrue(result.hasImage());
+		assertEquals("image/png", result.imageAttachment().mimeType());
+		assertArrayEquals(new byte[]{1, 2, 3}, result.imageAttachment().imageBytes());
+		assertEquals(1, visionTool.captureRequestCount());
+		assertEquals(0, visionTool.descriptionRequestCount());
 	}
 
 	@Test

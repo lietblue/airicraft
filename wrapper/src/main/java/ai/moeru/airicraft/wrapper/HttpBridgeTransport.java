@@ -22,6 +22,7 @@ final class HttpBridgeTransport implements MinecraftTransport {
 	private static final Duration SCREENSHOT_REQUEST_TIMEOUT = Duration.ofSeconds(10);
 	private static final Duration VISION_REQUEST_TIMEOUT = Duration.ofSeconds(20);
 	private static final Duration DEBUG_COMPACTION_REQUEST_TIMEOUT = Duration.ofSeconds(45);
+	private static final Duration AGENT_TOOL_REQUEST_TIMEOUT = Duration.ofSeconds(305);
 	private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
 	private static final TypeReference<LinkedHashMap<String, Object>> MAP_TYPE = new TypeReference<>() {
 	};
@@ -266,6 +267,22 @@ final class HttpBridgeTransport implements MinecraftTransport {
 	@Override
 	public Map<String, Object> getAgentStatus() {
 		return get("/v1/agent/status");
+	}
+
+	@Override
+	public Map<String, Object> listAgentTools() {
+		return get("/v1/agent/tools");
+	}
+
+	@Override
+	public Map<String, Object> callAgentTool(String name, Map<String, Object> arguments, Integer timeoutMs) {
+		Map<String, Object> body = new LinkedHashMap<>();
+		body.put("name", name);
+		body.put("arguments", arguments == null ? Map.of() : arguments);
+		if (timeoutMs != null) {
+			body.put("timeoutMs", timeoutMs);
+		}
+		return send("POST", "/v1/agent/tools", body);
 	}
 
 	@Override
@@ -547,6 +564,7 @@ final class HttpBridgeTransport implements MinecraftTransport {
 			case "/v1/vision/describe" -> VISION_REQUEST_TIMEOUT;
 			case "/v1/worlds/join", "/v1/servers/join", "/v1/evaluation/run" -> JOIN_REQUEST_TIMEOUT;
 			case "/v1/agent/debug/compact" -> DEBUG_COMPACTION_REQUEST_TIMEOUT;
+			case "/v1/agent/tools" -> AGENT_TOOL_REQUEST_TIMEOUT;
 			default -> DEFAULT_REQUEST_TIMEOUT;
 		};
 	}

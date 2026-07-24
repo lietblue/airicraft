@@ -44,6 +44,10 @@ public final class PlannerToolRegistry {
 			.findFirst();
 	}
 
+	public List<Map<String, Object>> allAvailableOpenAiTools() {
+		return availableOpenAiTools();
+	}
+
 	public List<String> activeToolNames() {
 		return toolSurface.activeToolNames();
 	}

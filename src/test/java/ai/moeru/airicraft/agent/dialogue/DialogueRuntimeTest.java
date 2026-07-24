@@ -75,6 +75,23 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class DialogueRuntimeTest {
 	@Test
+	void externalDriverSuppressesPlannerSubmission() throws Exception {
+		BlockingLlmBackend backend = new BlockingLlmBackend();
+		DialogueRuntime runtime = newDialogueRuntime(backend);
+		SemanticEventBuffer eventBuffer = new SemanticEventBuffer(32);
+		runtime.enableExternalDriver();
+
+		runtime.onPlayerChat("Alice", "@agent follow me", 10L, SessionSnapshot.initial(), "Alice", Optional.empty(), eventBuffer);
+		Thread.sleep(50L);
+
+		assertTrue(runtime.externalDriverActive());
+		assertEquals(0, backend.conversationCount());
+		assertFalse(runtime.plannerDebugSnapshot().inFlight());
+		assertEquals(null, runtime.poll(11L, eventBuffer));
+		runtime.shutdown();
+	}
+
+	@Test
 	void mockPlannerResponseProducesDialogueResponse() {
 		OpenAiCompatibleLlmBackend backend = new OpenAiCompatibleLlmBackend(AgentConfig.LlmConfig.defaults());
 		DialogueRuntime runtime = newDialogueRuntime(backend);

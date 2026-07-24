@@ -344,6 +344,7 @@ class AiricraftCliMainTest {
 			"available", true,
 			"initialized", true,
 			"tickCount", 42,
+			"codexDriverActive", true,
 			"llmAvailable", true,
 			"visionAvailable", false,
 			"plannerVisionMode", "native_tool_image",
@@ -355,9 +356,69 @@ class AiricraftCliMainTest {
 
 		assertEquals(0, result.exitCode());
 		assertTrue(result.output().contains("command: agent status\n"));
+		assertTrue(result.output().contains("codexDriverActive: true\n"));
 		assertTrue(result.output().contains("plannerVisionMode: native_tool_image\n"));
 		assertTrue(result.output().contains("state: AWAITING_PLANNER\n"));
 		assertTrue(result.output().contains("holdId: hold-42\n"));
+	}
+
+	@Test
+	void agentToolsListRendersCompleteFunctionSchemas() {
+		TestTransport transport = new TestTransport();
+		transport.agentToolsPayload = linkedMap(
+			"available", true,
+			"codexDriverActive", true,
+			"toolCount", 1,
+			"tools", List.of(linkedMap(
+				"type", "function",
+				"function", linkedMap(
+					"name", "navigate_to",
+					"description", "Navigate to a block position.",
+					"parameters", linkedMap("type", "object", "required", List.of("x", "y", "z"))
+				)
+			))
+		);
+
+		CliResult result = execute(transport, "agent", "tools", "list", "--verbose");
+
+		assertEquals(0, result.exitCode());
+		assertTrue(result.output().contains("command: agent tools list\n"));
+		assertTrue(result.output().contains("codexDriverActive: true\n"));
+		assertTrue(result.output().contains("name: navigate_to\n"));
+		assertTrue(result.output().contains("[parameters]\n"));
+	}
+
+	@Test
+	void agentToolsCallPassesJsonAndWritesReturnedImage(@TempDir Path tempDir) throws Exception {
+		TestTransport transport = new TestTransport();
+		transport.agentToolCallPayload = linkedMap(
+			"available", true,
+			"codexDriverActive", true,
+			"toolName", "take_a_look",
+			"result", "current view attached",
+			"imageAttached", true,
+			"imageMimeType", "image/png",
+			"imageDetail", "high",
+			"imageBase64", java.util.Base64.getEncoder().encodeToString(new byte[]{4, 5, 6})
+		);
+		Path output = tempDir.resolve("look.png");
+
+		CliResult result = execute(
+			transport,
+			"agent", "tools", "call",
+			"--name", "take_a_look",
+			"--arguments", "{\"direction\":\"north\"}",
+			"--timeout-seconds", "30",
+			"--output-image", output.toString()
+		);
+
+		assertEquals(0, result.exitCode());
+		assertEquals("take_a_look", transport.lastAgentToolName);
+		assertEquals("north", transport.lastAgentToolArguments.get("direction"));
+		assertEquals(30_000, transport.lastAgentToolTimeoutMs);
+		assertArrayEquals(new byte[]{4, 5, 6}, Files.readAllBytes(output));
+		assertTrue(result.output().contains("imageOutputPath: " + output.toAbsolutePath().normalize() + "\n"));
+		assertFalse(result.output().contains("imageBase64"));
 	}
 
 	@Test
@@ -1351,6 +1412,8 @@ class AiricraftCliMainTest {
 		private Map<String, Object> snapshotPayload = Map.of();
 		private Map<String, Object> playerNearbyEntitiesPayload = Map.of("entities", List.of());
 		private Map<String, Object> agentStatusPayload = Map.of();
+		private Map<String, Object> agentToolsPayload = Map.of("tools", List.of());
+		private Map<String, Object> agentToolCallPayload = Map.of();
 		private Map<String, Object> agentSessionPayload = Map.of();
 		private Map<String, Object> agentSessionOpenLanPayload = Map.of();
 		private Map<String, Object> agentGoalsPayload = Map.of();
@@ -1432,6 +1495,9 @@ class AiricraftCliMainTest {
 		private double lastLookAtZ;
 		private Integer lastLookAtDurationTicks;
 		private boolean playerNearbyEntitiesCalled;
+		private String lastAgentToolName;
+		private Map<String, Object> lastAgentToolArguments;
+		private Integer lastAgentToolTimeoutMs;
 
 		private RuntimeException worldsJoinFailure;
 		private RuntimeException serversListFailure;
@@ -1585,6 +1651,19 @@ class AiricraftCliMainTest {
 		@Override
 		public Map<String, Object> getAgentStatus() {
 			return agentStatusPayload;
+		}
+
+		@Override
+		public Map<String, Object> listAgentTools() {
+			return agentToolsPayload;
+		}
+
+		@Override
+		public Map<String, Object> callAgentTool(String name, Map<String, Object> arguments, Integer timeoutMs) {
+			lastAgentToolName = name;
+			lastAgentToolArguments = arguments;
+			lastAgentToolTimeoutMs = timeoutMs;
+			return agentToolCallPayload;
 		}
 
 		@Override

@@ -63,6 +63,10 @@ interface MinecraftTransport {
 
 	Map<String, Object> getAgentStatus();
 
+	Map<String, Object> listAgentTools();
+
+	Map<String, Object> callAgentTool(String name, Map<String, Object> arguments, Integer timeoutMs);
+
 	Map<String, Object> getAgentSession();
 
 	Map<String, Object> openAgentSessionLan();

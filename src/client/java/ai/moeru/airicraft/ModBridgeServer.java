@@ -16,6 +16,7 @@ import ai.moeru.airicraft.agent.integration.map.MapWaypoint;
 import ai.moeru.airicraft.agent.integration.map.MapWaypointQuery;
 import ai.moeru.airicraft.agent.integration.map.MapWaypointWrite;
 import ai.moeru.airicraft.agent.llm.CurrentViewVisionService;
+import ai.moeru.airicraft.agent.llm.ExternalPlannerToolResult;
 import ai.moeru.airicraft.agent.llm.LlmBackendException;
 import ai.moeru.airicraft.agent.llm.PlannerTrigger;
 import ai.moeru.airicraft.agent.session.LanHostingService;
@@ -85,6 +86,8 @@ public final class ModBridgeServer {
 	private static final long DEBUG_COMPACTION_DEFAULT_TIMEOUT_MILLIS = 30_000L;
 	private static final long DEBUG_COMPACTION_MAX_TIMEOUT_MILLIS = 120_000L;
 	private static final long DEBUG_COMPACTION_POLL_INTERVAL_MILLIS = 25L;
+	private static final long CODEX_TOOL_DEFAULT_TIMEOUT_MILLIS = 120_000L;
+	private static final long CODEX_TOOL_MAX_TIMEOUT_MILLIS = 300_000L;
 
 	private final Supplier<HighlightManager> highlightManagerSupplier;
 	private final Supplier<EmbodiedAgentRuntime> agentRuntimeSupplier;
@@ -164,6 +167,7 @@ public final class ModBridgeServer {
 			httpServer.createContext("/v1/agent/debug/state", exchange -> handleJson(exchange, this::createAgentDebugStateResponse));
 			httpServer.createContext("/v1/agent/debug/timeline", exchange -> handleJson(exchange, () -> createAgentDebugTimelineResponse(exchange)));
 			httpServer.createContext("/v1/agent/debug/llm-calls", exchange -> handleJson(exchange, () -> createAgentDebugLlmCallsResponse(exchange)));
+			httpServer.createContext("/v1/agent/tools", this::handleAgentTools);
 			registerExtensionRoutes(httpServer);
 			httpServer.start();
 
@@ -594,6 +598,97 @@ public final class ModBridgeServer {
 			}
 			throw new BridgeUnavailableException("compaction_timeout", "Timed out waiting for planner compaction");
 		});
+	}
+
+	private void handleAgentTools(HttpExchange exchange) throws IOException {
+		if ("GET".equalsIgnoreCase(exchange.getRequestMethod())) {
+			handleJson(exchange, this::createAgentToolsResponse);
+			return;
+		}
+		if ("POST".equalsIgnoreCase(exchange.getRequestMethod())) {
+			handleJsonBody(exchange, "POST", AgentToolCallRequest.class, this::executeAgentTool);
+			return;
+		}
+		if (!authorize(exchange)) {
+			writeJson(exchange, 401, Map.of("error", "unauthorized", "message", "Invalid bridge token"));
+			return;
+		}
+		writeJson(exchange, 405, Map.of("error", "method_not_allowed"));
+	}
+
+	private Object createAgentToolsResponse() {
+		return onClientThread(() -> {
+			List<Map<String, Object>> tools = agentRuntime().codexDriverTools();
+			Map<String, Object> response = new LinkedHashMap<>();
+			response.put("available", true);
+			response.put("codexDriverActive", true);
+			response.put("toolCount", tools.size());
+			response.put("tools", tools);
+			return response;
+		});
+	}
+
+	private Object executeAgentTool(AgentToolCallRequest request) {
+		if (request == null || request.name() == null || request.name().isBlank()) {
+			throw new BridgeUnavailableException("invalid_request", "Missing tool name");
+		}
+		long timeoutMillis = requestedCodexToolTimeoutMillis(request.timeoutMs());
+		CompletableFuture<ExternalPlannerToolResult> resultFuture;
+		try {
+			resultFuture = onClientThread(() -> agentRuntime().executeCodexDriverTool(request.name(), request.arguments()));
+		}
+		catch (com.google.gson.JsonParseException | IllegalArgumentException exception) {
+			throw new BridgeUnavailableException("invalid_request", nonEmpty(exception.getMessage(), "Invalid tool arguments"));
+		}
+
+		ExternalPlannerToolResult result = awaitAgentTool(resultFuture, timeoutMillis);
+		Map<String, Object> response = new LinkedHashMap<>();
+		response.put("available", true);
+		response.put("codexDriverActive", true);
+		response.put("toolName", result.toolName());
+		response.put("result", result.text());
+		response.put("imageAttached", result.hasImage());
+		if (result.hasImage()) {
+			response.put("imageMimeType", result.imageAttachment().mimeType());
+			response.put("imageDetail", result.imageAttachment().detail());
+			response.put("imageBase64", Base64.getEncoder().encodeToString(result.imageAttachment().imageBytes()));
+		}
+		return response;
+	}
+
+	private static ExternalPlannerToolResult awaitAgentTool(
+		CompletableFuture<ExternalPlannerToolResult> resultFuture,
+		long timeoutMillis
+	) {
+		try {
+			return resultFuture.get(timeoutMillis, TimeUnit.MILLISECONDS);
+		}
+		catch (TimeoutException exception) {
+			throw new BridgeUnavailableException("tool_timeout", "Timed out waiting for Airicraft tool result");
+		}
+		catch (InterruptedException exception) {
+			Thread.currentThread().interrupt();
+			throw new BridgeUnavailableException("bridge_interrupted", "Airicraft tool wait interrupted");
+		}
+		catch (ExecutionException exception) {
+			if (exception.getCause() instanceof BridgeUnavailableException bridgeUnavailableException) {
+				throw bridgeUnavailableException;
+			}
+			throw new BridgeUnavailableException(
+				"tool_failed",
+				nonEmpty(exception.getCause() == null ? null : exception.getCause().getMessage(), "Airicraft tool failed")
+			);
+		}
+	}
+
+	private static long requestedCodexToolTimeoutMillis(Integer timeoutMs) {
+		if (timeoutMs == null) {
+			return CODEX_TOOL_DEFAULT_TIMEOUT_MILLIS;
+		}
+		if (timeoutMs <= 0) {
+			throw new BridgeUnavailableException("invalid_request", "timeoutMs must be positive");
+		}
+		return Math.min(timeoutMs.longValue(), CODEX_TOOL_MAX_TIMEOUT_MILLIS);
 	}
 
 	private void handleAgentEventPolicyClear(HttpExchange exchange) throws IOException {
@@ -1139,6 +1234,7 @@ public final class ModBridgeServer {
 			response.put("missionExecution", snapshot.missionExecution());
 			response.put("reflex", snapshot.reflex());
 			response.put("activeJob", agentRuntime().activeJob());
+			response.put("codexDriverActive", agentRuntime().codexDriverActive());
 			response.put("llmAvailable", agentRuntime().llmAvailable());
 			response.put("visionAvailable", agentRuntime().visionAvailable());
 			response.put("plannerVisionMode", plannerSnapshot.plannerVisionMode());
@@ -1968,6 +2064,9 @@ public final class ModBridgeServer {
 	}
 
 	private record DebugChatRequest(String senderName, String message) {
+	}
+
+	private record AgentToolCallRequest(String name, JsonObject arguments, Integer timeoutMs) {
 	}
 
 	private static final class DebugCompactRequest {

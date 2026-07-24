@@ -8,6 +8,7 @@ group = project.maven_group
 
 def runClientJdwpPort = providers.gradleProperty("airicraft.jdwp.port").orElse("5005")
 def runClientJdwpSuspend = providers.gradleProperty("airicraft.jdwp.suspend").orElse("n")
+def codexDriverEnabled = providers.gradleProperty("airicraft.codexDriver").orElse("false")
 def arthasVersion = providers.gradleProperty("airicraft.arthas.version").orElse("4.1.8")
 def arthasBootUrl = providers.gradleProperty("airicraft.arthas.bootUrl").orElse("https://arthas.aliyun.com/arthas-boot.jar")
 def arthasSelect = providers.gradleProperty("airicraft.arthas.select").orElse("net.fabricmc.devlaunchinjector.Main")
@@ -39,6 +40,7 @@ tasks.named("runClient").configure {
 	jvmArgs(
 		"-agentlib:jdwp=transport=dt_socket,server=y,suspend=${runClientJdwpSuspend.get()},address=127.0.0.1:${runClientJdwpPort.get()}"
 	)
+	systemProperty("airicraft.codexDriver", codexDriverEnabled.get())
 }
 
 def arthasJavaExecutable = {

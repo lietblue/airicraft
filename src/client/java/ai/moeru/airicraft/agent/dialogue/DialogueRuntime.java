@@ -3,6 +3,7 @@ package ai.moeru.airicraft.agent.dialogue;
 import ai.moeru.airicraft.agent.events.SemanticEventBuffer;
 import ai.moeru.airicraft.agent.goals.GoalSnapshot;
 import ai.moeru.airicraft.agent.llm.CompactionExecutionResult;
+import ai.moeru.airicraft.agent.llm.ExternalPlannerToolResult;
 import ai.moeru.airicraft.agent.llm.LlmFailureType;
 import ai.moeru.airicraft.agent.llm.PlannerConversationDebugSnapshot;
 import ai.moeru.airicraft.agent.llm.PlannerExecutionResult;
@@ -18,6 +19,7 @@ import ai.moeru.airicraft.agent.llm.StalePlannerRejection;
 import ai.moeru.airicraft.agent.session.SessionSnapshot;
 import ai.moeru.airicraft.agent.tasks.MissionExecutionSnapshot;
 import ai.moeru.airicraft.agent.tasks.TaskSnapshot;
+import com.google.gson.JsonObject;
 
 import java.time.Clock;
 import java.util.ArrayDeque;
@@ -27,6 +29,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
 
 public final class DialogueRuntime {
 	private final PlannerOrchestrator plannerOrchestrator;
@@ -43,6 +46,7 @@ public final class DialogueRuntime {
 	private long safetyEpoch;
 	private String safetyHoldId;
 	private boolean reflexActive;
+	private boolean externalDriverActive;
 
 	public DialogueRuntime(PlannerOrchestrator plannerOrchestrator, int maxRecentTurns) {
 		this(plannerOrchestrator, maxRecentTurns, Clock.systemDefaultZone());
@@ -90,6 +94,26 @@ public final class DialogueRuntime {
 
 	public boolean llmAvailable() {
 		return plannerOrchestrator.isConfigured();
+	}
+
+	public void enableExternalDriver() {
+		externalDriverActive = true;
+		queuedTimeoutInjections = 0;
+		pendingTimeoutVisibleReply = false;
+		pendingInternalTaskUpdates.clear();
+		plannerOrchestrator.reset();
+	}
+
+	public boolean externalDriverActive() {
+		return externalDriverActive;
+	}
+
+	public List<Map<String, Object>> allAvailableTools() {
+		return plannerOrchestrator.allAvailableTools();
+	}
+
+	public CompletableFuture<ExternalPlannerToolResult> executeExternalTool(String name, JsonObject arguments) {
+		return plannerOrchestrator.executeExternalTool(name, arguments);
 	}
 
 	public PlannerOrchestratorDebugSnapshot plannerDebugSnapshot() {
@@ -291,7 +315,7 @@ public final class DialogueRuntime {
 	) {
 		long timestampMs = clock.millis();
 		appendTurn(new DialogueTurn("system", updateMessage, tick, timestampMs));
-		if (state.degraded() || !plannerOrchestrator.isConfigured()) {
+		if (externalDriverActive || state.degraded() || !plannerOrchestrator.isConfigured()) {
 			return;
 		}
 		PendingInternalTaskUpdate pendingUpdate = new PendingInternalTaskUpdate(
@@ -332,6 +356,9 @@ public final class DialogueRuntime {
 		TaskSnapshot activeTask,
 		MissionExecutionSnapshot missionExecution
 	) {
+		if (externalDriverActive) {
+			return null;
+		}
 		if (queuedTimeoutInjections > 0 && !plannerOrchestrator.hasInFlight()) {
 			queuedTimeoutInjections--;
 			applyTransition(DialogueCore.onPlannerFailure(state, LlmFailureType.TIMEOUT, "Injected LLM timeout", pendingTimeoutVisibleReply, tick), tick, eventBuffer);
@@ -420,6 +447,9 @@ public final class DialogueRuntime {
 		long timestampMs,
 		boolean directUserGuidance
 	) {
+		if (externalDriverActive) {
+			return;
+		}
 		request = request.withSafetyContext(safetyEpoch, safetyHoldId);
 		if (directUserGuidance) {
 			supersedePendingInternalTaskUpdates("new_user_guidance", request.tick(), eventBuffer);
@@ -454,7 +484,7 @@ public final class DialogueRuntime {
 		TaskSnapshot activeTask,
 		MissionExecutionSnapshot missionExecution
 	) {
-		if (pendingInternalTaskUpdates.isEmpty()) {
+		if (externalDriverActive || pendingInternalTaskUpdates.isEmpty()) {
 			return false;
 		}
 		if (state.degraded() || !plannerOrchestrator.isConfigured()) {
@@ -550,7 +580,7 @@ public final class DialogueRuntime {
 	}
 
 	private boolean submitInternalTaskUpdate(PendingInternalTaskUpdate pendingUpdate, SemanticEventBuffer eventBuffer) {
-		if (pendingUpdate == null || state.degraded() || plannerOrchestrator.hasInFlight() || !plannerOrchestrator.isConfigured()) {
+		if (externalDriverActive || pendingUpdate == null || state.degraded() || plannerOrchestrator.hasInFlight() || !plannerOrchestrator.isConfigured()) {
 			return false;
 		}
 		Long sinceSeqNo = plannerOrchestrator.lastObservedEventSeqNo();
