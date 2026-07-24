@@ -31,10 +31,16 @@ import net.minecraft.util.math.Vec3d;
 import net.minecraft.world.RaycastContext;
 import net.minecraft.world.World;
 
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
+import java.util.function.Predicate;
 import java.util.function.Supplier;
 
 public final class BlockInteractionTaskExecutor implements WorldTaskExecutor {
@@ -71,6 +77,7 @@ public final class BlockInteractionTaskExecutor implements WorldTaskExecutor {
 	private BlockPos navigationTarget;
 	private GoalPosition navigationGoal;
 	private long navigationStartTick;
+	private final Set<BlockPos> attemptedPlacementStandPositions = new HashSet<>();
 	private PendingPlacementConfirmation pendingPlacementConfirmation;
 
 	public BlockInteractionTaskExecutor() {
@@ -450,20 +457,25 @@ public final class BlockInteractionTaskExecutor implements WorldTaskExecutor {
 		if (baritoneFacade == null || !baritoneFacade.isLoaded()) {
 			return fail(request, targetFailure(target, outOfRangeReason));
 		}
-		Optional<GoalPosition> standGoal = interactionStandPosition(
-			client,
-			player,
-			target,
-			hitTarget,
-			request.type() == WorldTaskType.PLACE_BLOCK
-		);
 		if (!navigationStarted || navigationTargetIndex != targetIndex || !target.equals(navigationTarget)) {
+			Optional<GoalPosition> standGoal = interactionStandPosition(
+				client,
+				player,
+				target,
+				hitTarget,
+				request.type() == WorldTaskType.PLACE_BLOCK,
+				attemptedPlacementStandPositions
+			);
 			if (standGoal.isPresent()) {
 				navigationGoal = standGoal.get();
+				if (request.type() == WorldTaskType.PLACE_BLOCK) {
+					attemptedPlacementStandPositions.add(blockPos(navigationGoal));
+				}
 				baritoneFacade.startNavigate(navigationGoal);
 			}
 			else if (request.type() == WorldTaskType.PLACE_BLOCK) {
-				return fail(request, targetFailure(target, outOfRangeReason + " safe_stand_position_not_found"));
+				return fail(request, targetFailure(target, outOfRangeReason
+					+ " safe_stand_position_not_found attemptedStandPositions=" + attemptedPlacementStandPositions.size()));
 			}
 			else {
 				navigationGoal = new GoalPosition(target.getX(), target.getY(), target.getZ(), false);
@@ -496,6 +508,20 @@ public final class BlockInteractionTaskExecutor implements WorldTaskExecutor {
 		}
 		if (shouldFallbackToDirectApproachAfterNavigationFailure(pathEvent, player.squaredDistanceTo(hitTarget.hitVec()), movementController.snapshot().stuck())
 			&& startOrContinueDirectApproach(tick, client, player, request, target, hitTarget.hitVec(), outOfRangeReason + " navigationEvent=" + pathEvent.orElse(""))) {
+			return Optional.empty();
+		}
+		if (request.type() == WorldTaskType.PLACE_BLOCK
+			&& (outcome == BlockInteractionNavigationOutcome.FAILED
+				|| outcome == BlockInteractionNavigationOutcome.AT_GOAL_BUT_STILL_OUT_OF_RANGE)) {
+			String rejectedGoal = compactGoal(navigationGoal);
+			String rejection = pathEvent.map(event -> "navigationEvent=" + event)
+				.orElse("navigationTimeoutTicks=" + (tick - navigationStartTick));
+			clearNavigation();
+			snapshot = snapshot(TaskExecutionState.RUNNING, request, "placement_stand_rejected targetIndex=" + targetIndex
+				+ " targetPos=" + compactPos(target)
+				+ " navigationGoal=" + rejectedGoal
+				+ " " + rejection
+				+ " tryingAnotherStand=true");
 			return Optional.empty();
 		}
 		if (outcome == BlockInteractionNavigationOutcome.FAILED) {
@@ -651,17 +677,31 @@ public final class BlockInteractionTaskExecutor implements WorldTaskExecutor {
 		ClientPlayerEntity player,
 		BlockPos target,
 		HitTarget hitTarget,
-		boolean placement
+		boolean placement,
+		Set<BlockPos> excludedPlacementStands
 	) {
 		if (client == null || client.world == null || player == null || target == null || hitTarget == null) {
 			return Optional.empty();
 		}
 		BlockPos current = player.getBlockPos();
+		List<BlockPos> candidates = placement
+			? viablePlacementStandCandidates(
+				target,
+				hitTarget.supportPos(),
+				current,
+				excludedPlacementStands,
+				candidate -> isStandable(client, candidate),
+				candidate -> withinInteractionRange(candidate, hitTarget.hitVec()),
+				candidate -> placementStandHasLineOfSight(client, player, candidate, hitTarget)
+			)
+			: interactionStandCandidates(target, hitTarget.supportPos());
+		if (placement) {
+			return candidates.stream()
+				.findFirst()
+				.map(candidate -> new GoalPosition(candidate.getX(), candidate.getY(), candidate.getZ(), true));
+		}
 		GoalPosition best = null;
 		double bestDistance = Double.MAX_VALUE;
-		List<BlockPos> candidates = placement
-			? placementStandCandidates(target, hitTarget.supportPos())
-			: interactionStandCandidates(target, hitTarget.supportPos());
 		for (BlockPos candidate : candidates) {
 			if (candidate.equals(current) || !isStandable(client, candidate)) {
 				continue;
@@ -702,23 +742,62 @@ public final class BlockInteractionTaskExecutor implements WorldTaskExecutor {
 	static List<BlockPos> placementStandCandidates(BlockPos target, BlockPos support) {
 		// TODO: Replace this conservative fixed-offset stance list with Baritone's placement process
 		// once that integration can preserve Airicraft's no-break and target-verification semantics.
-		return List.of(
-			target.north(2),
-			target.north(2).up(),
-			target.south(2),
-			target.south(2).up(),
-			target.west(2),
-			target.west(2).up(),
-			target.east(2),
-			target.east(2).up(),
-			support.north(2),
-			support.north(2).up(),
-			support.south(2),
-			support.south(2).up(),
-			support.west(2),
-			support.west(2).up(),
-			support.east(2),
-			support.east(2).up()
+		Set<BlockPos> candidates = new LinkedHashSet<>();
+		for (Direction direction : List.of(Direction.NORTH, Direction.SOUTH, Direction.WEST, Direction.EAST)) {
+			candidates.add(target.offset(direction).down(2));
+			candidates.add(target.offset(direction, 2).down(2));
+			candidates.add(target.offset(direction, 2).down());
+			candidates.add(target.offset(direction, 2));
+			candidates.add(target.offset(direction, 2).up());
+			candidates.add(support.offset(direction, 2).down());
+			candidates.add(support.offset(direction, 2));
+			candidates.add(support.offset(direction, 2).up());
+		}
+		return List.copyOf(candidates);
+	}
+
+	static List<BlockPos> viablePlacementStandCandidates(
+		BlockPos target,
+		BlockPos support,
+		BlockPos current,
+		Set<BlockPos> excluded,
+		Predicate<BlockPos> standable,
+		Predicate<BlockPos> withinRange,
+		Predicate<BlockPos> hasLineOfSight
+	) {
+		List<BlockPos> viable = new ArrayList<>();
+		for (BlockPos candidate : placementStandCandidates(target, support)) {
+			if (candidate.equals(current) || excluded.contains(candidate)) {
+				continue;
+			}
+			if (standable.test(candidate) && withinRange.test(candidate) && hasLineOfSight.test(candidate)) {
+				viable.add(candidate);
+			}
+		}
+		viable.sort(Comparator
+			.comparingInt((BlockPos candidate) -> Math.max(0, candidate.getY() - current.getY()))
+			.thenComparingDouble(current::getSquaredDistance));
+		return List.copyOf(viable);
+	}
+
+	private static boolean placementStandHasLineOfSight(
+		MinecraftClient client,
+		ClientPlayerEntity player,
+		BlockPos stand,
+		HitTarget hitTarget
+	) {
+		Vec3d eyePos = new Vec3d(
+			stand.getX() + 0.5D,
+			stand.getY() + player.getStandingEyeHeight(),
+			stand.getZ() + 0.5D
+		);
+		return raycastMatchesTarget(
+			client,
+			player,
+			hitTarget.supportPos(),
+			eyePos,
+			supportRaycastEndpoint(hitTarget.hitVec(), hitTarget.face()),
+			RaycastContext.FluidHandling.NONE
 		);
 	}
 
@@ -819,11 +898,22 @@ public final class BlockInteractionTaskExecutor implements WorldTaskExecutor {
 		Vec3d hitVec,
 		RaycastContext.FluidHandling fluidHandling
 	) {
-		if (client == null || client.world == null || player == null || target == null || hitVec == null || fluidHandling == null) {
+		return raycastMatchesTarget(client, player, target, player == null ? null : player.getEyePos(), hitVec, fluidHandling);
+	}
+
+	private static boolean raycastMatchesTarget(
+		MinecraftClient client,
+		ClientPlayerEntity player,
+		BlockPos target,
+		Vec3d start,
+		Vec3d hitVec,
+		RaycastContext.FluidHandling fluidHandling
+	) {
+		if (client == null || client.world == null || player == null || target == null || start == null || hitVec == null || fluidHandling == null) {
 			return false;
 		}
 		BlockHitResult raycast = client.world.raycast(new RaycastContext(
-			player.getEyePos(),
+			start,
 			hitVec,
 			RaycastContext.ShapeType.COLLIDER,
 			fluidHandling,
@@ -1070,6 +1160,7 @@ public final class BlockInteractionTaskExecutor implements WorldTaskExecutor {
 	}
 
 	private Optional<TaskTerminalEvent> completeTarget(long tick, WorldTaskRequest request, String message) {
+		attemptedPlacementStandPositions.clear();
 		completedTargets++;
 		targetIndex++;
 		if (targetIndex >= targetCount(request)) {
@@ -1220,6 +1311,7 @@ public final class BlockInteractionTaskExecutor implements WorldTaskExecutor {
 		targetIndex = 0;
 		completedTargets = 0;
 		nextInteractionTick = 0L;
+		attemptedPlacementStandPositions.clear();
 		pendingPlacementConfirmation = null;
 	}
 

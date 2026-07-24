@@ -11,6 +11,7 @@ import org.junit.jupiter.api.Test;
 
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -201,6 +202,56 @@ class BlockInteractionTaskExecutorTest {
 		assertTrue(candidates.contains(new BlockPos(12, 65, 10)));
 		assertFalse(candidates.contains(target.north()));
 		assertFalse(candidates.contains(target.east()));
+	}
+
+	@Test
+	void overheadPlacementPrefersReachableGroundStanceWithSupportFaceLineOfSight() {
+		BlockPos target = new BlockPos(35, 68, 155);
+		BlockPos support = target.down();
+		BlockPos current = new BlockPos(35, 66, 152);
+		BlockPos groundStance = new BlockPos(35, 66, 154);
+		BlockPos roofStance = new BlockPos(35, 69, 153);
+
+		List<BlockPos> candidates = BlockInteractionTaskExecutor.viablePlacementStandCandidates(
+			target,
+			support,
+			current,
+			Set.of(),
+			candidate -> candidate.equals(groundStance) || candidate.equals(roofStance),
+			candidate -> true,
+			candidate -> true
+		);
+
+		assertEquals(List.of(groundStance, roofStance), candidates);
+	}
+
+	@Test
+	void overheadPlacementHasNoValidStanceWithoutSupportFaceLineOfSight() {
+		BlockPos target = new BlockPos(35, 68, 155);
+		BlockPos support = target.down();
+		BlockPos current = new BlockPos(35, 66, 152);
+		BlockPos groundStance = new BlockPos(35, 66, 154);
+		BlockPos roofStance = new BlockPos(35, 69, 153);
+
+		assertTrue(BlockInteractionTaskExecutor.viablePlacementStandCandidates(
+			target,
+			support,
+			current,
+			Set.of(),
+			candidate -> candidate.equals(groundStance),
+			candidate -> true,
+			candidate -> false
+		).isEmpty());
+
+		assertTrue(BlockInteractionTaskExecutor.viablePlacementStandCandidates(
+			target,
+			support,
+			current,
+			Set.of(groundStance, roofStance),
+			candidate -> candidate.equals(groundStance) || candidate.equals(roofStance),
+			candidate -> true,
+			candidate -> true
+		).isEmpty());
 	}
 
 	@Test
