@@ -105,6 +105,7 @@ public final class BaritoneTaskExecutor implements WorldTaskExecutor {
 		}
 
 		boolean taskTargetChanged = !sameTaskTarget(activeTask.get(), appliedTask);
+		boolean mineGoalJustSatisfied = mineGoalJustSatisfied(activeTask.get(), appliedTask);
 		if (taskTargetChanged) {
 			clearMineDropPickupState();
 			if (appliedTask != null) {
@@ -119,6 +120,10 @@ public final class BaritoneTaskExecutor implements WorldTaskExecutor {
 				appliedTask = activeTask.get();
 				return failTaskStart(appliedTask, exception);
 			}
+		}
+		else if (mineGoalJustSatisfied) {
+			clearTerminalEvent(activeTask.get());
+			facade.cancel();
 		}
 		appliedTask = activeTask.get();
 
@@ -617,6 +622,14 @@ public final class BaritoneTaskExecutor implements WorldTaskExecutor {
 		}
 		return Objects.equals(left.taskId(), right.taskId())
 			&& sameGoalTarget(left.goal(), right.goal());
+	}
+
+	private static boolean mineGoalJustSatisfied(WorldTaskRequest current, WorldTaskRequest previous) {
+		return current != null
+			&& current.mineGoalSatisfied()
+			&& (previous == null || !previous.mineGoalSatisfied())
+			&& current.goal() != null
+			&& current.goal().type() == GoalType.MINE_BLOCKS;
 	}
 
 	private static boolean sameGoalTarget(GoalSnapshot left, GoalSnapshot right) {

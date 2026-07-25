@@ -137,6 +137,41 @@ class BaritoneTaskExecutorTest {
 	}
 
 	@Test
+	void newlySatisfiedMineCancelsOwnedProcessOnceThenCompletes() {
+		FakeBaritoneFacade facade = new FakeBaritoneFacade();
+		facade.mineProcessActive = true;
+		BaritoneTaskExecutor executor = new BaritoneTaskExecutor(facade);
+		GoalSnapshot goal = new GoalSnapshot(
+			GoalType.MINE_BLOCKS,
+			null,
+			null,
+			new GoalMineSpec(List.of("minecraft:short_grass"), 6),
+			20L,
+			"planner_response"
+		);
+		WorldTaskRequest request = WorldTaskRequest.collectMine("mine-task", "mine-job", goal);
+
+		executor.tick(multiplayer(), Optional.of(request));
+		WorldTaskRequest satisfied = request.withMineGoalSatisfied(true);
+
+		assertTrue(executor.tick(multiplayer(), Optional.of(satisfied)).isEmpty());
+		assertEquals(1, facade.cancelCalls);
+		assertEquals(1, facade.mineCalls.size());
+
+		assertTrue(executor.tick(multiplayer(), Optional.of(satisfied)).isEmpty());
+		assertEquals(1, facade.cancelCalls);
+
+		facade.mineProcessActive = false;
+		facade.pathEvents.add("CANCELED");
+		Optional<TaskTerminalEvent> completed = executor.tick(multiplayer(), Optional.of(satisfied));
+
+		assertTrue(completed.isPresent());
+		assertEquals(TaskExecutionState.COMPLETED, completed.orElseThrow().terminalState());
+		assertEquals(TaskTerminationCause.GOAL_REACHED, completed.orElseThrow().terminationCause());
+		assertEquals(1, facade.mineCalls.size());
+	}
+
+	@Test
 	void calculationFailureAfterMineProcessExhaustionRemainsTerminal() {
 		FakeBaritoneFacade facade = new FakeBaritoneFacade();
 		BaritoneTaskExecutor executor = new BaritoneTaskExecutor(facade);
