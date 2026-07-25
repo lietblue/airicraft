@@ -305,7 +305,15 @@ class BaritoneTaskExecutorTest {
 		facade.pathEvents.add("AT_GOAL");
 		assertTrue(executor.tick(multiplayer(), Optional.of(request)).isEmpty());
 		facade.pathEvents.add("AT_GOAL");
-		Optional<TaskTerminalEvent> failed = executor.tick(multiplayer(), Optional.of(request));
+		assertTrue(executor.tick(multiplayer(), Optional.of(request)).isEmpty());
+		assertEquals("pickup_settle", executor.snapshot().lastPathEvent());
+
+		Optional<TaskTerminalEvent> failed = Optional.empty();
+		for (int tick = 0; tick < 9; tick++) {
+			failed = executor.tick(multiplayer(), Optional.of(request));
+		}
+		assertTrue(failed.isEmpty());
+		failed = executor.tick(multiplayer(), Optional.of(request));
 
 		assertTrue(failed.isPresent());
 		assertEquals(TaskExecutionState.FAILED, failed.orElseThrow().terminalState());
@@ -353,6 +361,7 @@ class BaritoneTaskExecutorTest {
 		GoalSnapshot goal = new GoalSnapshot(GoalType.MINE_BLOCKS, null, null, new GoalMineSpec(List.of("minecraft:short_grass"), 14), 20L, "planner_response");
 		GoalPosition finalBrokenBlock = new GoalPosition(10, 64, 20, true);
 		ArrayDeque<List<BaritoneTaskExecutor.MineDropTarget>> observedDrops = new ArrayDeque<>();
+		observedDrops.add(List.of(new BaritoneTaskExecutor.MineDropTarget(31, finalBrokenBlock)));
 		observedDrops.add(List.of(new BaritoneTaskExecutor.MineDropTarget(31, finalBrokenBlock)));
 		observedDrops.add(List.of());
 		BaritoneTaskExecutor executor = new BaritoneTaskExecutor(() -> null, facade, request -> observedDrops.removeFirst());

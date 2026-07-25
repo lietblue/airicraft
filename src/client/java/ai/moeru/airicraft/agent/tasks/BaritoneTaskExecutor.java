@@ -33,6 +33,7 @@ import java.util.function.Supplier;
 
 public final class BaritoneTaskExecutor implements WorldTaskExecutor {
 	private static final int MAX_MINE_DROP_PICKUP_ATTEMPTS_PER_TARGET = 2;
+	private static final int MAX_MINE_DROP_PICKUP_SETTLE_TICKS = 10;
 	private static final double MINE_DROP_PICKUP_RADIUS_BLOCKS = 4.0D;
 
 	private final BaritoneFacade facade;
@@ -47,6 +48,7 @@ public final class BaritoneTaskExecutor implements WorldTaskExecutor {
 	private String mineDropPickupTaskId;
 	private MineDropTarget mineDropPickupTarget;
 	private int mineDropPickupAttempts;
+	private int mineDropPickupSettleTicks;
 	private TerminalOutcome pendingMineTerminalOutcome;
 	private TaskExecutionSnapshot snapshot = TaskExecutionSnapshot.idle();
 
@@ -433,18 +435,21 @@ public final class BaritoneTaskExecutor implements WorldTaskExecutor {
 	}
 
 	private MineDropPickupResult terminalMineDropPickupEvent(Optional<String> pathEvent, WorldTaskRequest activeTask) {
+		boolean pickupInProgress = activeTask != null
+			&& Objects.equals(activeTask.taskId(), mineDropPickupTaskId)
+			&& pendingMineTerminalOutcome != null;
 		Optional<TerminalOutcome> currentOutcome = terminalOutcomeFor(pathEvent, activeTask);
-		if (currentOutcome.isEmpty() || activeTask == null) {
+		if ((!pickupInProgress && currentOutcome.isEmpty()) || activeTask == null) {
 			return MineDropPickupResult.notHandled();
 		}
 		if (activeTask.goal() == null || activeTask.goal().type() != GoalType.MINE_BLOCKS || activeTask.pickupSweepPositions().isEmpty()) {
 			return MineDropPickupResult.notHandled();
 		}
-		boolean pickupInProgress = Objects.equals(activeTask.taskId(), mineDropPickupTaskId) && pendingMineTerminalOutcome != null;
 		if (!pickupInProgress) {
 			mineDropPickupTaskId = activeTask.taskId();
 			mineDropPickupTarget = null;
 			mineDropPickupAttempts = 0;
+			mineDropPickupSettleTicks = 0;
 			pendingMineTerminalOutcome = currentOutcome.orElseThrow();
 		}
 
@@ -463,11 +468,25 @@ public final class BaritoneTaskExecutor implements WorldTaskExecutor {
 			.orElse(matchingDrops.getFirst());
 		boolean sameTarget = mineDropPickupTarget != null && nextTarget.entityId() == mineDropPickupTarget.entityId();
 		if (sameTarget && mineDropPickupAttempts >= MAX_MINE_DROP_PICKUP_ATTEMPTS_PER_TARGET) {
-			return failMineDropPickup(activeTask);
+			mineDropPickupSettleTicks++;
+			if (mineDropPickupSettleTicks > MAX_MINE_DROP_PICKUP_SETTLE_TICKS) {
+				return failMineDropPickup(activeTask);
+			}
+			snapshot = new TaskExecutionSnapshot(
+				TaskExecutionState.RUNNING,
+				activeTask.taskId(),
+				activeTask.goal(),
+				facade.activeProcessName().orElse(null),
+				"pickup_settle",
+				facade.estimatedTicksToGoal().orElse(null),
+				null
+			);
+			return MineDropPickupResult.handledWithoutEvent();
 		}
 		if (!sameTarget) {
 			mineDropPickupTarget = nextTarget;
 			mineDropPickupAttempts = 0;
+			mineDropPickupSettleTicks = 0;
 		}
 		mineDropPickupAttempts++;
 		pendingInternalCancelTaskId = activeTask.taskId();
@@ -579,6 +598,7 @@ public final class BaritoneTaskExecutor implements WorldTaskExecutor {
 		mineDropPickupTaskId = null;
 		mineDropPickupTarget = null;
 		mineDropPickupAttempts = 0;
+		mineDropPickupSettleTicks = 0;
 		pendingMineTerminalOutcome = null;
 	}
 
