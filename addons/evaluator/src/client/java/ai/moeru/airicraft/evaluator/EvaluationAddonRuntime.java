@@ -46,7 +46,6 @@ public final class EvaluationAddonRuntime {
 	private RunState runState = RunState.IDLE;
 	private EmbodiedAgentRuntime acceptedRuntime;
 	private EmbodiedAgentRuntime cleanupRuntime;
-	private boolean cleanupRecording;
 
 	public EvaluationWorldFixtureService fixtures() {
 		return fixtures;
@@ -75,7 +74,7 @@ public final class EvaluationAddonRuntime {
 				runner.failSetup(exception.getMessage(), runtime.tickCount());
 				var report = runner.report(runtime.tickCount());
 				recorder.recordTick(activeScenario, report, runtime, this::evidencePayload);
-				beginCleanup(runtime, true);
+				beginCleanup(runtime);
 				return;
 			}
 		}
@@ -83,7 +82,7 @@ public final class EvaluationAddonRuntime {
 		var report = runner.report(runtime.tickCount());
 		recorder.recordTick(activeScenario, report, runtime, this::evidencePayload);
 		if (runner.terminal()) {
-			beginCleanup(runtime, true);
+			beginCleanup(runtime);
 		}
 	}
 
@@ -237,7 +236,7 @@ public final class EvaluationAddonRuntime {
 		waypointsSeeded = false;
 		runner.reset();
 		recorder.reset();
-		beginCleanup(runtime, false);
+		beginCleanup(runtime);
 		return null;
 	}
 
@@ -263,12 +262,11 @@ public final class EvaluationAddonRuntime {
 		return null;
 	}
 
-	private void beginCleanup(EmbodiedAgentRuntime runtime, boolean recordTerminalEvidence) {
+	private void beginCleanup(EmbodiedAgentRuntime runtime) {
 		scenario = null;
 		waypointsSeeded = false;
 		cleanupRuntime = runtime;
 		acceptedRuntime = null;
-		cleanupRecording = recordTerminalEvidence;
 		runState = RunState.CLEANUP;
 		runtime.finishEvaluation();
 		continueCleanup();
@@ -280,17 +278,11 @@ public final class EvaluationAddonRuntime {
 			clearCleanup();
 			return;
 		}
-		boolean complete = cleanupRecording
-			? recorder.recordPostFinish(runtime)
-			: runtime.motorShadowCleanupComplete();
-		if (complete) {
-			clearCleanup();
-		}
+		clearCleanup();
 	}
 
 	private void clearCleanup() {
 		cleanupRuntime = null;
-		cleanupRecording = false;
 		runState = RunState.IDLE;
 	}
 
@@ -353,7 +345,6 @@ public final class EvaluationAddonRuntime {
 		var settings = currentScenario == null ? ai.moeru.airicraft.agent.evaluation.EvaluationEvidenceSettings.defaults() : currentScenario.evidence();
 		evidence.put("report", runner.report(runtime.tickCount()));
 		evidence.put("session", runtime.sessionSnapshot());
-		evidence.put("motorShadow", runtime.motorShadowSnapshot());
 		if (settings.includeTaskState()) {
 			evidence.put("activeGoal", runtime.activeGoal().orElse(null));
 			evidence.put("task", runtime.taskSnapshot());

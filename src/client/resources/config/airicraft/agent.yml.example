@@ -70,41 +70,6 @@ plannerNativeVisionEnabled: false
 # Hidden compaction requests still use response_format.type=json_object.
 plannerUseJsonObjectResponseFormat: true
 
-# Learned-motor pilot. This is deliberately shadow-only: Optimus-3 receives
-# eligible action-graph mining frames and returns proposed controls, but those
-# controls are never applied to Minecraft.
-motor:
-  optimus3Shadow:
-    enabled: false
-
-    # HTTPS is required for remote services. Plain HTTP is accepted only for
-    # localhost/loopback development endpoints.
-    baseUrl: ""
-
-    # Optional bearer token. It is never included in status or evidence output.
-    apiKey: ""
-
-    # For a proxy-authenticated Modal Web Function, set both values from a
-    # workspace Proxy Token. They are sent as Modal-Key / Modal-Secret and are
-    # never included in status or evidence output.
-    modalKey: ""
-    modalSecret: ""
-
-    # Session creation may include a Modal scale-to-zero cold start and the
-    # one-time pinned conditioning check. This does not relax step deadlines.
-    sessionTimeoutMillis: 180000
-
-    # End-to-end request deadline. Requests are never automatically retried,
-    # because a retry could advance recurrent policy state twice.
-    requestTimeoutMillis: 250
-
-    # Session cleanup is idempotent and bounded independently so a hung close
-    # cannot suppress the rest of a shadow campaign.
-    closeTimeoutMillis: 5000
-
-    # Recurrent policy seed supplied once when a graph-step session starts.
-    policySeed: 7
-
 observability:
   # Enable vendor-neutral OpenTelemetry tracing for outbound planner and vision model calls.
   enabled: false
