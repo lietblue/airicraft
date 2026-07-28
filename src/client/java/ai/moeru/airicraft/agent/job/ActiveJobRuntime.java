@@ -655,7 +655,7 @@ public final class ActiveJobRuntime {
 			collectResourceDebugSnapshot = collectResourceProbe(cancelled, currentCount, nearbyResourceTargetAvailable, primitiveExecution.state(), cancelled.lastError(), tick);
 			return cancelled;
 		}
-		if (!nearbyResourceTargetAvailable) {
+		if (!nearbyResourceTargetAvailable && !"action_graph".equals(job.source())) {
 			ActiveJob blocked = updated(job, ActiveJobStatus.BLOCKED, "target_missing", null, collected, tick);
 			collectResourceDebugSnapshot = collectResourceProbe(blocked, currentCount, false, primitiveExecution.state(), null, tick);
 			return blocked;
