@@ -61,17 +61,17 @@ class SemanticEventBufferTest {
 	@Test
 	void shutdownClearCanPreserveSequenceForLateTerminalEvidence() {
 		SemanticEventBuffer buffer = new SemanticEventBuffer(8, () -> 4_000L);
-		buffer.append(1L, "motor.optimus3_shadow.session_stopped", Map.of());
+		buffer.append(1L, "runtime.shutdown_started", Map.of());
 		long recorderCursor = buffer.latestSeqNo();
 
 		buffer.clearPreservingSequence();
 		assertEquals(recorderCursor, buffer.latestSeqNo());
 		assertFalse(buffer.query(recorderCursor).truncated());
-		buffer.append(2L, "motor.optimus3_shadow.session_closed", Map.of());
+		buffer.append(2L, "runtime.shutdown_finished", Map.of());
 
 		SemanticEventQueryResult result = buffer.query(recorderCursor);
 		assertEquals(2L, result.latestSeqNo());
 		assertEquals(1, result.events().size());
-		assertEquals("motor.optimus3_shadow.session_closed", result.events().getFirst().type());
+		assertEquals("runtime.shutdown_finished", result.events().getFirst().type());
 	}
 }

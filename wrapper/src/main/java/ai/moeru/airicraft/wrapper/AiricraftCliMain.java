@@ -1587,9 +1587,9 @@ public final class AiricraftCliMain {
 		private static Map<String, Object> reload(Map<String, Object> payload, boolean verbose) {
 			LinkedHashMap<String, Object> view = new LinkedHashMap<>();
 			copy(view, payload, "available", "reloaded", "agentStateReset", "sessionMode", "worldLoaded",
-				"plannerVisionMode", "llmConfigured", "visionConfigured", "observabilityEnabled", "motorShadowEnabled");
+				"plannerVisionMode", "llmConfigured", "visionConfigured", "observabilityEnabled");
 			if (verbose) {
-				copy(view, payload, "config", "llm", "observability", "motor");
+				copy(view, payload, "config", "llm", "observability");
 			}
 			return view;
 		}
@@ -1613,9 +1613,6 @@ public final class AiricraftCliMain {
 			}
 			if (payload.containsKey("reflex")) {
 				view.put("reflex", payload.get("reflex"));
-			}
-			if (payload.containsKey("motorShadow")) {
-				view.put("motorShadow", payload.get("motorShadow"));
 			}
 			if (verbose && payload.containsKey("evaluation")) {
 				view.put("evaluation", payload.get("evaluation"));
