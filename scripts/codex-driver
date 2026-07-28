@@ -8,8 +8,8 @@ usage() {
 		'Launch the Airicraft dev client with its embedded planner dormant.' \
 		'The current Codex task drives the client through the wrapper CLI.' \
 		'' \
-		'On the first launch in a new worktree, Minecraft may wait at the' \
-		'narrator/accessibility screen until Continue is clicked manually.'
+		'The launch prepares Minecraft options so a new worktree bypasses' \
+		'the narrator/accessibility onboarding screen unattended.'
 }
 
 if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
