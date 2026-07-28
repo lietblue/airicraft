@@ -39,6 +39,13 @@ class CraftingTaskExecutorTest {
 	}
 
 	@Test
+	void nearbyTableSearchCanReturnFromAShallowMine() {
+		assertTrue(CraftingTaskExecutor.craftingTableWithinSearchBounds(-8, 5, 5));
+		assertFalse(CraftingTaskExecutor.craftingTableWithinSearchBounds(-17, 0, 0));
+		assertFalse(CraftingTaskExecutor.craftingTableWithinSearchBounds(0, 9, 0));
+	}
+
+	@Test
 	void portableTablePlacementRequiresWorldSafetyReachAndVisibility() {
 		assertTrue(CraftingTaskExecutor.isSafeCraftingTablePlacement(true, true, true, true, true));
 		assertFalse(CraftingTaskExecutor.isSafeCraftingTablePlacement(true, true, false, true, true));

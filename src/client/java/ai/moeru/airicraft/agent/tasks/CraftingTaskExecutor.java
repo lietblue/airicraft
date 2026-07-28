@@ -37,7 +37,8 @@ import java.util.function.Supplier;
 public final class CraftingTaskExecutor implements WorldTaskExecutor {
 	private static final int WAIT_TIMEOUT_TICKS = 20;
 	static final int TABLE_NAVIGATION_TIMEOUT_TICKS = 200;
-	private static final int TABLE_SEARCH_RADIUS = 10;
+	private static final int TABLE_SEARCH_RADIUS = 16;
+	private static final int TABLE_SEARCH_VERTICAL_RADIUS = 8;
 	private static final double TABLE_INTERACTION_RANGE_SQUARED = 20.25D;
 
 	private final Supplier<MinecraftClient> clientSupplier;
@@ -566,11 +567,11 @@ public final class CraftingTaskExecutor implements WorldTaskExecutor {
 		TableTarget best = null;
 		double bestDistance = Double.MAX_VALUE;
 		for (int dx = -TABLE_SEARCH_RADIUS; dx <= TABLE_SEARCH_RADIUS; dx++) {
-			for (int dy = -4; dy <= 4; dy++) {
+			for (int dy = -TABLE_SEARCH_VERTICAL_RADIUS; dy <= TABLE_SEARCH_VERTICAL_RADIUS; dy++) {
 				for (int dz = -TABLE_SEARCH_RADIUS; dz <= TABLE_SEARCH_RADIUS; dz++) {
 					BlockPos pos = origin.add(dx, dy, dz);
 					double distance = origin.getSquaredDistance(pos);
-					if (distance > TABLE_SEARCH_RADIUS * TABLE_SEARCH_RADIUS || distance >= bestDistance || !client.world.isChunkLoaded(pos)) {
+					if (!craftingTableWithinSearchBounds(dx, dy, dz) || distance >= bestDistance || !client.world.isChunkLoaded(pos)) {
 						continue;
 					}
 					if (!client.world.getBlockState(pos).isOf(Blocks.CRAFTING_TABLE)) {
@@ -586,6 +587,12 @@ public final class CraftingTaskExecutor implements WorldTaskExecutor {
 			}
 		}
 		return Optional.ofNullable(best);
+	}
+
+	static boolean craftingTableWithinSearchBounds(int dx, int dy, int dz) {
+		long distanceSquared = (long) dx * dx + (long) dy * dy + (long) dz * dz;
+		return Math.abs(dy) <= TABLE_SEARCH_VERTICAL_RADIUS
+			&& distanceSquared <= (long) TABLE_SEARCH_RADIUS * TABLE_SEARCH_RADIUS;
 	}
 
 	private static Optional<GoalPosition> standPositionForTable(MinecraftClient client, ClientPlayerEntity player, BlockPos tablePos) {
