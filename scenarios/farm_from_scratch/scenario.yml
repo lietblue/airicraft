@@ -6,11 +6,11 @@ metadata:
 worldArchive: world.zip
 frozen: true
 prompt: >-
-  Build a 3x3 wheat farm from scratch at the JourneyMap waypoint named "Farm
-  here". Start from the empty inventory in this world; do not use commands,
-  creative-mode shortcuts, or unrelated preexisting items. First inspect the
-  waypoint and nearby terrain. The farm must be centered on the waypoint's
-  ground block: dig that center ground block into a one-block water hole, place
+  Build a 3x3 wheat farm from scratch centered on the ground block at
+  x=-31, y=63, z=-63. Start from the empty inventory in this world; do not use
+  commands, creative-mode shortcuts, or unrelated preexisting items. First
+  inspect the target coordinates and nearby terrain. Dig that center ground
+  block into a one-block water hole, place
   source water there, till the eight surrounding grass or dirt ground blocks,
   and plant wheat seeds above all eight farmland blocks.
 
@@ -28,7 +28,7 @@ prompt: >-
   After inspect_inventory confirms 3 iron ingots, use check_craftables and copy
   the exact craft_recipe recipeId for minecraft:bucket; do not use search_recipes
   recipe ids as craft_recipe inputs. Craft one bucket, fill it with source water
-  using use_block on a water source, then return to the Farm here waypoint area.
+  using use_block on a water source, then return to the farm center.
   Craft a hoe before tilling. Collect wheat seeds from grass until you have
   enough to plant all eight surrounding farm tiles. Stop only after a task
   update, inspect_inventory, or inspect_world confirms the center is source
@@ -69,14 +69,6 @@ checks:
   - type: inventory_contains
     itemId: minecraft:bucket
     count: 1
-waypoints:
-  - provider: journeymap
-    id: farm-here
-    name: Farm here
-    dimension: minecraft:overworld
-    x: -31
-    y: 63
-    z: -63
 evidence:
   includePlannerJournal: true
   includeDebugTimeline: true
