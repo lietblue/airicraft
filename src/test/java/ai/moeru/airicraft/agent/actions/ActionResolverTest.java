@@ -705,6 +705,65 @@ class ActionResolverTest {
 	}
 
 	@Test
+	void ironPickaxeRouteSurvivesReplanAfterFurnaceConsumesCobblestone() {
+		ActionFactStore facts = new ActionFactStore();
+		addSurvivalCraftFacts(facts);
+		addSurvivalSmeltFacts(facts);
+		CraftingOpportunity stonePickaxeRecipe = ActionGraphDomainKnowledge.survivalCrafts().stream()
+			.filter(craft -> "minecraft:stone_pickaxe".equals(craft.outputItemId()))
+			.findFirst()
+			.orElseThrow();
+		ActionFactIdentity stonePickaxeRecipeId = ActionFactIdentity.craftRecipe(
+			"world-a",
+			"bot",
+			stonePickaxeRecipe.recipeId()
+		);
+		facts.upsert(new ActionFact(
+			stonePickaxeRecipeId,
+			craftPayload(stonePickaxeRecipe),
+			ActionFactProvenance.OBSERVED,
+			98,
+			99
+		));
+		facts.upsert(new ActionFact(
+			stonePickaxeRecipeId,
+			craftPayload(stonePickaxeRecipe),
+			ActionFactProvenance.INFERRED,
+			100,
+			ActionFact.NEVER_STALE
+		));
+		Map<String, Integer> inventory = Map.of(
+			"minecraft:birch_planks", 7,
+			"minecraft:furnace", 1,
+			"minecraft:stick", 2,
+			"minecraft:wooden_pickaxe", 1
+		);
+		for (Map.Entry<String, Integer> entry : inventory.entrySet()) {
+			facts.upsert(new ActionFact(
+				ActionFactIdentity.inventoryItem("world-a", "bot", entry.getKey()),
+				Map.of("count", entry.getValue()),
+				ActionFactProvenance.OBSERVED,
+				90,
+				ActionFact.NEVER_STALE
+			));
+		}
+
+		ActionResolveResult result = new ActionResolver(ActionsetIndex.empty(), facts, CONTEXT)
+			.resolve(ActionGoal.inventoryItem("minecraft:iron_pickaxe", 1));
+
+		assertTrue(result.resolved(), () -> result.trace().toString());
+		assertTrue(result.route().steps().stream().anyMatch(step ->
+			"mine_block".equals(step.targetId())
+				&& "minecraft:cobblestone".equals(step.args().get("itemId"))
+		), () -> result.route().toString());
+		assertTrue(result.route().steps().stream().anyMatch(step ->
+			"craft_item".equals(step.targetId())
+				&& "minecraft:stone_pickaxe".equals(step.args().get("itemId"))
+		), () -> result.route().toString());
+		assertEquals("iron_ingot_x3_and_stick_x2_to_iron_pickaxe", result.route().steps().getLast().args().get("recipeId"));
+	}
+
+	@Test
 	void workbenchSetupPrefersObservedLogSpeciesWhenCarriedPlanksAreInsufficient() {
 		ActionFactStore facts = new ActionFactStore();
 		addSurvivalCraftFacts(facts);
@@ -1150,12 +1209,35 @@ class ActionResolverTest {
 		for (CraftingOpportunity craft : ActionGraphDomainKnowledge.survivalCrafts()) {
 			facts.upsert(new ActionFact(
 				ActionFactIdentity.craftRecipe("world-a", "bot", craft.recipeId()),
+				craftPayload(craft),
+				ActionFactProvenance.INFERRED,
+				90,
+				ActionFact.NEVER_STALE
+			));
+		}
+	}
+
+	private static Map<String, Object> craftPayload(CraftingOpportunity craft) {
+		return Map.of(
+			"outputItemId", craft.outputItemId(),
+			"outputCount", craft.outputCount(),
+			"inputItemIds", craft.inputItemIds(),
+			"inputCounts", inputCounts(craft.inputItemIds()),
+			"gridKind", craft.gridKind().name()
+		);
+	}
+
+	private static void addSurvivalSmeltFacts(ActionFactStore facts) {
+		for (ActionGraphDomainKnowledge.SmeltingRecipe recipe : ActionGraphDomainKnowledge.survivalSmelts()) {
+			facts.upsert(new ActionFact(
+				ActionFactIdentity.smeltRecipe("world-a", "bot", recipe.optionId()),
 				Map.of(
-					"outputItemId", craft.outputItemId(),
-					"outputCount", craft.outputCount(),
-					"inputItemIds", craft.inputItemIds(),
-					"inputCounts", inputCounts(craft.inputItemIds()),
-					"gridKind", craft.gridKind().name()
+					"inputItemId", recipe.inputItemId(),
+					"outputItemId", recipe.outputItemId(),
+					"outputCount", recipe.outputCount(),
+					"maxInputQuantity", recipe.maxInputQuantity(),
+					"stationItemId", recipe.stationItemId(),
+					"stationItemCount", recipe.stationItemCount()
 				),
 				ActionFactProvenance.INFERRED,
 				90,

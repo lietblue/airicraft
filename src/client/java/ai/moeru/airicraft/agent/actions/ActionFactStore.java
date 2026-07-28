@@ -48,6 +48,9 @@ public final class ActionFactStore {
 	}
 
 	private static boolean shouldReplace(ActionFact existing, ActionFact incoming) {
+		if (incoming.observedTick() >= existing.observedTick() && existing.isStaleAt(incoming.observedTick())) {
+			return true;
+		}
 		if (existing.provenance().authoritative() && !incoming.provenance().authoritative()) {
 			return false;
 		}

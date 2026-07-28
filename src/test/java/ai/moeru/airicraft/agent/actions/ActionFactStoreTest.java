@@ -122,6 +122,30 @@ class ActionFactStoreTest {
 	}
 
 	@Test
+	void freshInferenceReplacesExpiredAuthoritativeObservation() {
+		ActionFactStore store = new ActionFactStore();
+		ActionFactIdentity recipe = ActionFactIdentity.craftRecipe("world-a", "bot", "stone_pickaxe");
+
+		store.upsert(new ActionFact(
+			recipe,
+			Map.of("outputItemId", "minecraft:stone_pickaxe"),
+			ActionFactProvenance.OBSERVED,
+			100,
+			101
+		));
+		ActionFact replacement = store.upsert(new ActionFact(
+			recipe,
+			Map.of("outputItemId", "minecraft:stone_pickaxe"),
+			ActionFactProvenance.INFERRED,
+			101,
+			ActionFact.NEVER_STALE
+		));
+
+		assertEquals(ActionFactProvenance.INFERRED, replacement.provenance());
+		assertFalse(store.find(recipe).orElseThrow().isStaleAt(101));
+	}
+
+	@Test
 	void staleAfterTickControlsFreshnessWithoutChangingIdentity() {
 		ActionFact fact = new ActionFact(
 			ActionFactIdentity.inventoryItem("world-a", "bot", "minecraft:bread"),
