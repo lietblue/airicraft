@@ -26,6 +26,18 @@ Every wrapper command needs localhost network access. When Codex shell execution
 
 Require `codexDriverActive: true` before acting. A normally launched client must be restarted through `scripts/codex-driver`; there is no `agent.yml` switch and no live attach.
 
+For evaluator scenarios, launch `scripts/codex-driver-evaluator` instead. It builds the wrapper, loads the evaluator addon, and propagates external-driver mode to the production-style client. Use a fresh worktree when the run must not inherit an existing provider or observability config. Then start and drive a scenario explicitly:
+
+```bash
+$AIRICRAFT_DRIVER_CLI evaluation scenarios --verbose
+$AIRICRAFT_DRIVER_CLI evaluation run --scenario underground --output-dir /tmp/airicraft-underground --verbose
+$AIRICRAFT_DRIVER_CLI evaluation config --verbose
+$AIRICRAFT_DRIVER_CLI agent tools call --name return_to_surface --arguments '{"useTowering":true}'
+$AIRICRAFT_DRIVER_CLI evaluation results --verbose
+```
+
+External-driver evaluation does not submit the scenario prompt or heartbeats to an embedded LLM. Read the scenario config, own the tool loop, and wait for deterministic checks or the elapsed-time budget to terminate the report.
+
 ## Inspect and act
 
 List the complete tool schemas before guessing arguments:

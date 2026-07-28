@@ -430,13 +430,20 @@ public final class EvaluationAddonRuntime {
 		}
 
 		@Override
+		public boolean externalDriverActive() {
+			return runtime.codexDriverActive();
+		}
+
+		@Override
 		public boolean plannerInFlight() {
 			return runtime.plannerDebugSnapshot().inFlight();
 		}
 
 		@Override
 		public Optional<String> declaredFailure() {
-			return runtime.isDegraded() ? Optional.of("Planner entered degraded mode") : Optional.empty();
+			return runtime.codexDriverActive() || !runtime.isDegraded()
+				? Optional.empty()
+				: Optional.of("Planner entered degraded mode");
 		}
 
 		@Override

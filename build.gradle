@@ -72,6 +72,12 @@ tasks.named("runClient").configure {
 	systemProperty("airicraft.codexDriver", codexDriverEnabled.get())
 }
 
+allprojects {
+	tasks.withType(net.fabricmc.loom.task.prod.ClientProductionRunTask).configureEach {
+		jvmArgs.add("-Dairicraft.codexDriver=${codexDriverEnabled.get()}")
+	}
+}
+
 def arthasJavaExecutable = {
 	new File(System.getProperty("java.home"), "bin/java").absolutePath
 }

@@ -44,7 +44,7 @@ public final class ScenarioEvaluationRunner {
 			}
 			return;
 		}
-		if (!context.plannerConfigured()) {
+		if (!context.plannerConfigured() && !context.externalDriverActive()) {
 			finish(EvaluationStatus.FAILED, "Planner LLM is not configured", true, context.tick());
 			return;
 		}
@@ -56,9 +56,14 @@ public final class ScenarioEvaluationRunner {
 
 		if (status == EvaluationStatus.PENDING_WORLD) {
 			status = EvaluationStatus.RUNNING;
-			message = "Evaluation running";
-			context.emitInitialPrompt(scenario.prompt());
-			plannerTurns++;
+			if (context.externalDriverActive()) {
+				message = "Evaluation running under external driver";
+			}
+			else {
+				message = "Evaluation running";
+				context.emitInitialPrompt(scenario.prompt());
+				plannerTurns++;
+			}
 			lastTriggerTick = context.tick();
 		}
 
@@ -83,7 +88,9 @@ public final class ScenarioEvaluationRunner {
 			return;
 		}
 
-		if (!context.plannerInFlight() && context.tick() - lastTriggerTick >= scenario.budget().heartbeatIntervalTicks()) {
+		if (!context.externalDriverActive()
+			&& !context.plannerInFlight()
+			&& context.tick() - lastTriggerTick >= scenario.budget().heartbeatIntervalTicks()) {
 			context.emitHeartbeat(heartbeatMessage());
 			plannerTurns++;
 			lastTriggerTick = context.tick();
@@ -373,6 +380,8 @@ public final class ScenarioEvaluationRunner {
 		boolean worldLoaded();
 
 		boolean plannerConfigured();
+
+		boolean externalDriverActive();
 
 		boolean plannerInFlight();
 

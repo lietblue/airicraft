@@ -63,6 +63,51 @@ class ScenarioEvaluationRunnerTest {
 	}
 
 	@Test
+	void externalDriverRunsWithoutPlannerUntilDeterministicCheckPasses() {
+		ScenarioEvaluationRunner runner = new ScenarioEvaluationRunner();
+		FakeContext context = new FakeContext();
+		context.plannerConfigured = false;
+		context.externalDriverActive = true;
+		EvaluationScenario scenario = scenario(List.of(new EvaluationCheck("task_execution_state", Map.of(
+			"state", "COMPLETED"
+		))), new EvaluationBudget(1, 200, 0, 5));
+
+		runner.start(scenario, 0, 0);
+		runner.onTick(context);
+
+		EvaluationReport running = runner.report(context.tick);
+		assertEquals(EvaluationStatus.RUNNING, running.status());
+		assertEquals("Evaluation running under external driver", running.message());
+		assertEquals(0, running.plannerTurns());
+		assertTrue(context.triggers.isEmpty());
+
+		context.tick = 6;
+		context.taskExecutionState = "COMPLETED";
+		runner.onTick(context);
+
+		assertEquals(EvaluationStatus.PASSED, runner.report(context.tick).status());
+		assertTrue(context.triggers.isEmpty());
+	}
+
+	@Test
+	void failsWhenNeitherPlannerNorExternalDriverIsAvailable() {
+		ScenarioEvaluationRunner runner = new ScenarioEvaluationRunner();
+		FakeContext context = new FakeContext();
+		context.plannerConfigured = false;
+		EvaluationScenario scenario = scenario(List.of(new EvaluationCheck("task_execution_state", Map.of(
+			"state", "COMPLETED"
+		))), new EvaluationBudget(4, 200, 0, 5));
+
+		runner.start(scenario, 0, 0);
+		runner.onTick(context);
+
+		EvaluationReport report = runner.report(context.tick);
+		assertEquals(EvaluationStatus.FAILED, report.status());
+		assertEquals("Planner LLM is not configured", report.message());
+		assertTrue(context.triggers.isEmpty());
+	}
+
+	@Test
 	void failsWhenWorldLoadBudgetIsExhaustedBeforePrompt() {
 		ScenarioEvaluationRunner runner = new ScenarioEvaluationRunner();
 		FakeContext context = new FakeContext();
@@ -266,6 +311,8 @@ class ScenarioEvaluationRunnerTest {
 		private long tick;
 		private int inventoryCount;
 		private boolean plannerInFlight;
+		private boolean plannerConfigured = true;
+		private boolean externalDriverActive;
 		private boolean worldLoaded = true;
 		private int playerBlockX;
 		private int playerBlockY;
@@ -273,6 +320,7 @@ class ScenarioEvaluationRunnerTest {
 		private final Map<String, String> blocks = new HashMap<>();
 		private final Map<String, Map<String, String>> blockProperties = new HashMap<>();
 		private Optional<String> declaredFailure = Optional.empty();
+		private String taskExecutionState = "IDLE";
 		private final ArrayList<String> triggers = new ArrayList<>();
 
 		private void setBlock(int x, int y, int z, String blockId) {
@@ -302,7 +350,12 @@ class ScenarioEvaluationRunnerTest {
 
 		@Override
 		public boolean plannerConfigured() {
-			return true;
+			return plannerConfigured;
+		}
+
+		@Override
+		public boolean externalDriverActive() {
+			return externalDriverActive;
 		}
 
 		@Override
@@ -362,7 +415,7 @@ class ScenarioEvaluationRunnerTest {
 
 		@Override
 		public String taskExecutionState() {
-			return "IDLE";
+			return taskExecutionState;
 		}
 
 		@Override
