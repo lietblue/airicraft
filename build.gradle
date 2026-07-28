@@ -19,6 +19,7 @@ def arthasTargetIp = providers.gradleProperty("airicraft.arthas.targetIp").orEls
 def arthasDisabledCommands = providers.gradleProperty("airicraft.arthas.disabledCommands").orElse("")
 def arthasExtraArgs = providers.gradleProperty("airicraft.arthas.args").orElse("")
 def arthasBootJar = layout.buildDirectory.file("arthas/arthas-boot-${arthasVersion.get()}.jar")
+def minecraftRunOptionsFile = layout.projectDirectory.file("run/options.txt")
 
 base {
 	archivesName = project.archives_base_name
@@ -36,7 +37,35 @@ loom {
 
 }
 
+def prepareMinecraftRunOptions = tasks.register("prepareMinecraftRunOptions") {
+	group = "airicraft run"
+	description = "Disables Minecraft's first-run accessibility onboarding for unattended launches."
+	outputs.upToDateWhen { false }
+	doLast {
+		def optionsFile = minecraftRunOptionsFile.asFile
+		def existingLines = optionsFile.exists() ? optionsFile.readLines("UTF-8") : []
+		def foundOnboardingOption = false
+		def updatedLines = existingLines.collect { line ->
+			if (line.startsWith("onboardAccessibility:")) {
+				foundOnboardingOption = true
+				return "onboardAccessibility:false"
+			}
+			return line
+		}
+		if (!foundOnboardingOption) {
+			updatedLines.add("onboardAccessibility:false")
+		}
+		def updatedText = updatedLines.join("\n") + "\n"
+		def existingText = optionsFile.exists() ? optionsFile.getText("UTF-8") : null
+		if (existingText != updatedText) {
+			optionsFile.parentFile.mkdirs()
+			optionsFile.setText(updatedText, "UTF-8")
+		}
+	}
+}
+
 tasks.named("runClient").configure {
+	dependsOn prepareMinecraftRunOptions
 	jvmArgs(
 		"-agentlib:jdwp=transport=dt_socket,server=y,suspend=${runClientJdwpSuspend.get()},address=127.0.0.1:${runClientJdwpPort.get()}"
 	)

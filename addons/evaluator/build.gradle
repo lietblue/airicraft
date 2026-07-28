@@ -86,6 +86,7 @@ def journeyMapCompatProject = rootProject.findProject(":compat:journeymap")
 tasks.register("runClientEvaluator", net.fabricmc.loom.task.prod.ClientProductionRunTask) {
 	group = "airicraft evaluation"
 	description = "Runs a production-style Fabric client with Airicraft and the evaluator addon."
+	dependsOn rootProject.tasks.named("prepareMinecraftRunOptions")
 	dependsOn rootProject.tasks.named("remapJar")
 	dependsOn tasks.named("remapJar")
 	outputs.upToDateWhen { false }
@@ -113,6 +114,7 @@ if (journeyMapCompatProject != null) {
 	tasks.register("runClientCompatEvaluator", net.fabricmc.loom.task.prod.ClientProductionRunTask) {
 		group = "airicraft evaluation"
 		description = "Runs a production-style Fabric client with Airicraft, the evaluator addon, and evaluator-stable compatibility smoke mods."
+		dependsOn rootProject.tasks.named("prepareMinecraftRunOptions")
 		dependsOn tasks.named("remapJar")
 		dependsOn journeyMapCompatProject.tasks.named("syncJourneyMapCompatMods")
 		dependsOn journeyMapCompatProject.tasks.named("syncJourneyMapCompatLibraries")

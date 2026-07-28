@@ -157,6 +157,7 @@ tasks.register("syncJourneyMapCompatLibraries", Sync) {
 tasks.register("runClientJourneyMapCompat", net.fabricmc.loom.task.prod.ClientProductionRunTask) {
 	group = "airicraft compatibility"
 	description = "Runs a debug production-style Fabric client with Airicraft JourneyMap compat and REI when enabled."
+	dependsOn rootProject.tasks.named("prepareMinecraftRunOptions")
 	dependsOn tasks.named("syncJourneyMapCompatMods")
 	dependsOn tasks.named("syncJourneyMapCompatLibraries")
 	outputs.upToDateWhen { false }

@@ -11,7 +11,7 @@ Drive Airicraft from the Codex task that is already open. Never start, resume, o
 
 1. Work in the checkout whose code must run. Confirm no other Minecraft client owns `~/.airicraft/bridge-state.json`.
 2. Start `scripts/codex-driver` in a long-running terminal execution and retain its session ID. The script sources `.envrc`, builds the wrapper distribution, and runs Minecraft with only the embedded planner suppressed.
-3. On the first launch in a brand-new worktree, expect Minecraft to stop at the narrator/accessibility screen. Ask the user to click Continue if it appears; do not diagnose that pause as an agent failure.
+3. The launch task seeds `run/options.txt` with `onboardAccessibility:false`, so a brand-new worktree must reach the title screen and bridge without waiting for the narrator/accessibility screen.
 4. Wait for the localhost bridge, then set a task-specific shell variable:
 
 ```bash

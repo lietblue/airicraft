@@ -131,6 +131,7 @@ tasks.register("syncReiCompatLibraries", Sync) {
 tasks.register("runClientReiCompat", net.fabricmc.loom.task.prod.ClientProductionRunTask) {
 	group = "airicraft compatibility"
 	description = "Runs a debug production-style Fabric client with Airicraft REI compat."
+	dependsOn rootProject.tasks.named("prepareMinecraftRunOptions")
 	dependsOn tasks.named("syncReiCompatMods")
 	dependsOn tasks.named("syncReiCompatLibraries")
 	outputs.upToDateWhen { false }
