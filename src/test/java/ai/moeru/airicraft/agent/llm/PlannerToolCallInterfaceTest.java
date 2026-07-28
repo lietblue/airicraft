@@ -491,7 +491,7 @@ class PlannerToolCallInterfaceTest {
 		assertTrue(parameters.getAsJsonObject("properties").has("targetMaterial"));
 
 		PlannerToolCall areaCall = PlannerToolCatalog.parseToolCall(toolCall("inspect_world", """
-			{"mode":"inspect_area","scope":"self","horizontalRadius":6,"verticalRadius":2}
+			{"mode":"inspect_area","scope":"self","horizontalRadius":6,"verticalRadius":2,"maxResults":12}
 			"""));
 		PlannerToolCall boxCall = PlannerToolCatalog.parseToolCall(toolCall("inspect_world", """
 			{"mode":"inspect_area","scope":"box","x1":10,"y1":63,"z1":10,"x2":18,"y2":66,"z2":18}
@@ -504,6 +504,7 @@ class PlannerToolCallInterfaceTest {
 			"""));
 
 		assertEquals("inspect_world", areaCall.name());
+		assertEquals(12, areaCall.arguments().get("maxResults").getAsInt());
 		assertEquals("box", boxCall.arguments().get("scope").getAsString());
 		assertEquals("age=7", findBlocksCall.arguments().getAsJsonArray("stateFilters").get(0).getAsString());
 		assertEquals("air", placementCall.arguments().get("targetMaterial").getAsString());
@@ -539,6 +540,11 @@ class PlannerToolCallInterfaceTest {
 		assertThrows(com.google.gson.JsonParseException.class, () ->
 			PlannerToolCatalog.parseToolCall(toolCall("inspect_world", """
 				{"mode":"find_blocks","scope":"self","blockIds":["minecraft:wheat"],"horizontalRadius":17}
+				"""))
+		);
+		assertThrows(com.google.gson.JsonParseException.class, () ->
+			PlannerToolCatalog.parseToolCall(toolCall("inspect_world", """
+				{"mode":"inspect_area","scope":"self","maxResults":65}
 				"""))
 		);
 		assertThrows(com.google.gson.JsonParseException.class, () ->

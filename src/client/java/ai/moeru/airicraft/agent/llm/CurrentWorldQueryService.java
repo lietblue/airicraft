@@ -32,7 +32,6 @@ public final class CurrentWorldQueryService implements CurrentWorldQueryTool {
 	static final int DEFAULT_MAX_RESULTS = 32;
 	static final int MAX_RESULTS = 64;
 	static final int MAX_DISTANCE_FROM_PLAYER = 64;
-	static final int INSPECT_AREA_BLOCK_CAP = 2048;
 	static final int SEARCH_BLOCK_CAP = 20000;
 	private static final double INTERACTION_RANGE_SQUARED = 20.25D;
 
@@ -69,20 +68,18 @@ public final class CurrentWorldQueryService implements CurrentWorldQueryTool {
 		ensureWithinDistance(bounds, client.player.getBlockPos());
 		ensureWithinBlockCap(bounds);
 		return switch (mode) {
-			case "inspect_area" -> inspectArea(client.world, client.player, bounds);
+			case "inspect_area" -> inspectArea(client.world, client.player, bounds, arguments);
 			case "find_blocks" -> findBlocks(client.world, client.player, bounds, arguments);
 			case "find_placement_sites" -> findPlacementSites(client.world, client.player, bounds, arguments);
 			default -> throw new WorldQueryException("unsupported_mode " + mode);
 		};
 	}
 
-	private static WorldQueryResult inspectArea(World world, ClientPlayerEntity player, QueryBounds bounds) {
+	private static WorldQueryResult inspectArea(World world, ClientPlayerEntity player, QueryBounds bounds, JsonObject arguments) {
 		ArrayList<BlockRecord> records = new ArrayList<>();
-		ArrayList<BlockPos> observed = new ArrayList<>();
 		int scanned = 0;
 		for (BlockPos pos : bounds.positions()) {
 			scanned++;
-			observed.add(pos.toImmutable());
 			if (!world.isChunkLoaded(pos)) {
 				records.add(BlockRecord.unloaded(pos, distance(player.getBlockPos(), pos)));
 				continue;
@@ -92,15 +89,23 @@ public final class CurrentWorldQueryService implements CurrentWorldQueryTool {
 				records.add(BlockRecord.of(pos, state, distance(player.getBlockPos(), pos)));
 			}
 		}
-		records.sort(BlockRecord.ORDERING);
-		List<BlockRecord> limited = records.stream().limit(INSPECT_AREA_BLOCK_CAP).toList();
+		int maxResults = boundedInt(arguments, "maxResults", DEFAULT_MAX_RESULTS, 1, MAX_RESULTS);
+		return areaResult(bounds.scope(), bounds.compact(), scanned, records, maxResults);
+	}
+
+	static WorldQueryResult areaResult(String scope, String bounds, int scanned, List<BlockRecord> records, int maxResults) {
+		List<BlockRecord> safeRecords = records == null ? List.of() : records;
+		List<BlockRecord> limited = safeRecords.stream()
+			.sorted(BlockRecord.ORDERING)
+			.limit(maxResults)
+			.toList();
 		return new WorldQueryResult("Tool result for inspect_world: mode=inspect_area"
-			+ " scope=" + bounds.scope()
-			+ " bounds=" + bounds.compact()
+			+ " scope=" + scope
+			+ " bounds=" + bounds
 			+ " scanned=" + scanned
-			+ " matched=" + records.size()
+			+ " matched=" + safeRecords.size()
 			+ " returned=" + limited.size()
-			+ " blocks=" + formatRecords(limited, INSPECT_AREA_BLOCK_CAP), List.copyOf(observed));
+			+ " blocks=" + formatRecords(limited, maxResults), limited.stream().map(record -> record.pos().toImmutable()).toList());
 	}
 
 	private static boolean includeAreaRecord(World world, BlockPos pos, BlockState state) {

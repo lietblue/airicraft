@@ -97,7 +97,7 @@ public final class PlannerToolCatalog {
 				prop("z2", integer("Second box corner z coordinate for scope=box.")),
 				prop("horizontalRadius", integer("Horizontal radius for scope=self or scope=center. Default 8, maximum 16.")),
 				prop("verticalRadius", integer("Vertical radius for scope=self or scope=center. Default 4, maximum 8.")),
-				prop("maxResults", integer("Maximum search results. Default 32, maximum 64.")),
+				prop("maxResults", integer("Maximum returned blocks or sites. Default 32, maximum 64.")),
 				prop("blockIds", stringArray("Block ids for find_blocks.")),
 				prop("stateFilters", stringArray("Exact block-state filters for find_blocks, using key=value syntax.")),
 				prop("targetMaterial", enumString("Allowed target block material for find_placement_sites.", List.of("air", "replaceable", "air_or_replaceable"))),
@@ -747,7 +747,7 @@ public final class PlannerToolCatalog {
 		if ("inspect_area".equals(mode)) {
 			rejectAny(arguments, "blockIds", "stateFilters", "targetMaterial", "supportBlockIds", "supportStateFilters",
 				"requireSolidTopSupport", "requireAirAbove", "requireStandableAdjacent", "requireWithinInteractionRange",
-				"nearbyRequiredBlockIds", "nearbyRequiredHorizontalRadius", "nearbyRequiredVerticalRadius", "maxResults");
+				"nearbyRequiredBlockIds", "nearbyRequiredHorizontalRadius", "nearbyRequiredVerticalRadius");
 			return;
 		}
 		if ("find_blocks".equals(mode)) {
