@@ -105,6 +105,38 @@ class CraftingTaskExecutorTest {
 	}
 
 	@Test
+	void staleContainerWithEmptyCursorIsClosedBeforeCrafting() {
+		assertEquals(
+			CraftingTaskExecutor.CraftingScreenDisposition.CLOSE_OPEN_SCREEN,
+			CraftingTaskExecutor.craftingScreenDisposition(false, false, true, true)
+		);
+		assertEquals(
+			CraftingTaskExecutor.CraftingScreenDisposition.CLOSE_OPEN_SCREEN,
+			CraftingTaskExecutor.craftingScreenDisposition(false, true, false, true)
+		);
+	}
+
+	@Test
+	void craftingKeepsOnlyTheHandlerRequiredByItsGrid() {
+		assertEquals(
+			CraftingTaskExecutor.CraftingScreenDisposition.READY,
+			CraftingTaskExecutor.craftingScreenDisposition(true, false, false, true)
+		);
+		assertEquals(
+			CraftingTaskExecutor.CraftingScreenDisposition.READY,
+			CraftingTaskExecutor.craftingScreenDisposition(false, true, true, true)
+		);
+	}
+
+	@Test
+	void staleContainerWithCarriedCursorItemFailsSafely() {
+		assertEquals(
+			CraftingTaskExecutor.CraftingScreenDisposition.FAIL,
+			CraftingTaskExecutor.craftingScreenDisposition(false, false, true, false)
+		);
+	}
+
+	@Test
 	void craftPlanCarriesResolvedNetworkRecipeId() {
 		NetworkRecipeId networkRecipeId = new NetworkRecipeId(42);
 		CraftingOpportunityResolver.CraftingRecipeResolution resolution = new CraftingOpportunityResolver.CraftingRecipeResolution(

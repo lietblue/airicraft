@@ -404,7 +404,10 @@ public final class ActionGraphExecutionRuntime {
 		recoveryHistory.add(recovery);
 		trace("step_failed", actionId(currentStep), alternativeId(currentStep), stepId(currentStep), recovery);
 
-		if (fromTerminalEvent && "transient".equals(classified) && isBusyFailure(rawFailureCode, failureMessage)) {
+		if (fromTerminalEvent
+			&& "transient".equals(classified)
+			&& isBusyFailure(rawFailureCode, failureMessage)
+			&& stepAttempt <= MAX_STEP_RETRIES) {
 			activeTaskId = "";
 			observeNotBeforeTick = lastContext == null ? -1L : lastContext.currentTick() + 20L;
 			state = ActionGraphExecutionState.OBSERVING;

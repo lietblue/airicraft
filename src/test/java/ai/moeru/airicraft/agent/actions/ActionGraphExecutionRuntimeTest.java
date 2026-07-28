@@ -622,6 +622,35 @@ class ActionGraphExecutionRuntimeTest {
 		assertTerminalFailureWaitsBeforeRetry("crafting_grid_occupied");
 	}
 
+	@Test
+	void repeatedBusyTerminalFailuresExhaustRetryBudget() {
+		RecordingDispatcher dispatcher = new RecordingDispatcher();
+		ActionGraphExecutionRuntime runtime = new ActionGraphExecutionRuntime(defaultIndex(), dispatcher);
+		runtime.submit(ActionGoal.inventoryItem("minecraft:bread", 1), Map.of("minecraft:wheat", 3), CONTEXT, 100);
+		ActionGraphExecutionSnapshot snapshot = runtime.tick(input(Map.of("minecraft:wheat", 3), null, 101));
+		long tick = 101;
+
+		for (int failureCount = 0; failureCount < 40 && !terminal(snapshot.state()); failureCount++) {
+			String taskId = snapshot.activeTaskId();
+			assertFalse(taskId.isBlank(), snapshot.toString());
+			snapshot = runtime.tick(input(Map.of("minecraft:wheat", 3), failed(taskId, "crafting_busy"), ++tick));
+			if (!terminal(snapshot.state()) && snapshot.activeTaskId().isBlank()) {
+				tick += 20;
+				snapshot = runtime.tick(input(Map.of("minecraft:wheat", 3), null, tick));
+			}
+		}
+
+		assertEquals(ActionGraphExecutionState.FAILED, snapshot.state(), snapshot.toString());
+		assertEquals("budget_exceeded", snapshot.failureCode());
+		assertTrue(dispatcher.dispatchedSteps.size() < 40);
+	}
+
+	private static boolean terminal(ActionGraphExecutionState state) {
+		return state == ActionGraphExecutionState.SUCCEEDED
+			|| state == ActionGraphExecutionState.FAILED
+			|| state == ActionGraphExecutionState.CANCELLED;
+	}
+
 	private static void assertTerminalFailureWaitsBeforeRetry(String failureMessage) {
 		RecordingDispatcher dispatcher = new RecordingDispatcher();
 		ActionGraphExecutionRuntime runtime = new ActionGraphExecutionRuntime(defaultIndex(), dispatcher);

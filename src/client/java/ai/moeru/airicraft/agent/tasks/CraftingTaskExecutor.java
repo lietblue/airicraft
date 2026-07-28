@@ -114,6 +114,20 @@ public final class CraftingTaskExecutor implements WorldTaskExecutor {
 			}
 			progressTracker.reset();
 		}
+		CraftingScreenDisposition screenDisposition = craftingScreenDisposition(
+			player.currentScreenHandler == player.playerScreenHandler,
+			player.currentScreenHandler instanceof CraftingScreenHandler,
+			plan.gridKind() == CraftingGridKind.WORKBENCH_3X3,
+			player.currentScreenHandler.getCursorStack().isEmpty()
+		);
+		if (screenDisposition == CraftingScreenDisposition.CLOSE_OPEN_SCREEN) {
+			ScreenCloseSafety.closeHandledScreen(player, "crafting_blocking_screen_close");
+			snapshot = snapshot(TaskExecutionState.RUNNING, request, "closing_blocking_screen");
+			return Optional.empty();
+		}
+		if (screenDisposition == CraftingScreenDisposition.FAIL) {
+			return fail(request, "crafting_busy");
+		}
 
 		if (progressTracker.targetReached(plan.targetOutputCount())) {
 			return complete(request);
@@ -532,6 +546,18 @@ public final class CraftingTaskExecutor implements WorldTaskExecutor {
 		return false;
 	}
 
+	static CraftingScreenDisposition craftingScreenDisposition(
+		boolean playerScreenHandler,
+		boolean craftingScreenHandler,
+		boolean workbenchRequired,
+		boolean cursorEmpty
+	) {
+		if (playerScreenHandler || workbenchRequired && craftingScreenHandler) {
+			return CraftingScreenDisposition.READY;
+		}
+		return cursorEmpty ? CraftingScreenDisposition.CLOSE_OPEN_SCREEN : CraftingScreenDisposition.FAIL;
+	}
+
 	private static Optional<TableTarget> findNearbyCraftingTable(MinecraftClient client, ClientPlayerEntity player) {
 		if (client.world == null) {
 			return Optional.empty();
@@ -894,6 +920,12 @@ public final class CraftingTaskExecutor implements WorldTaskExecutor {
 		PLACING_INPUTS,
 		WAITING_FOR_RESULT,
 		WAITING_FOR_TAKE
+	}
+
+	enum CraftingScreenDisposition {
+		READY,
+		CLOSE_OPEN_SCREEN,
+		FAIL
 	}
 
 	enum TableNavigationOutcome {
