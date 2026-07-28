@@ -279,6 +279,18 @@ class BlockInteractionTaskExecutorTest {
 	}
 
 	@Test
+	void interactionRayEndUsesThePlayersEyeAndVanillaReach() {
+		assertEquals(
+			new Vec3d(10.0D, 65.62D, -5.5D),
+			BlockInteractionTaskExecutor.interactionRayEnd(
+				new Vec3d(10.0D, 65.62D, -10.0D),
+				new Vec3d(0.0D, 0.0D, 1.0D),
+				4.5D
+			)
+		);
+	}
+
+	@Test
 	void interactionBusyDispositionClosesEmptyOpenContainer() {
 		assertEquals(
 			BlockInteractionTaskExecutor.InteractionBusyDisposition.CLOSE_OPEN_SCREEN,

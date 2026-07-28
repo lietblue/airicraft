@@ -363,13 +363,15 @@ public final class BlockInteractionTaskExecutor implements WorldTaskExecutor {
 		Vec3d hitVec = Vec3d.ofCenter(target);
 		cameraController.lookAtNow(client, hitVec);
 		String beforeItemId = itemId(hand == Hand.OFF_HAND ? player.getOffHandStack() : player.getMainHandStack());
-		boolean itemFluidRaycastMatches = raycastMatchesTarget(
+		boolean itemFluidRaycastMatches = raycastMatchesPlayerView(
 			client,
 			player,
 			target,
-			hitVec,
-			RaycastContext.FluidHandling.ANY
+			RaycastContext.FluidHandling.SOURCE_ONLY
 		);
+		if (!itemFluidRaycastMatches) {
+			return navigateTowardTargetRange(tick, client, player, request, target, "fluid_target_out_of_view_reach");
+		}
 		ActionResult itemResult = client.interactionManager.interactItem(player, hand);
 		if (!itemResult.isAccepted()) {
 			return fail(request, targetFailure(target, "fluid_item_interaction_failed"
@@ -899,6 +901,27 @@ public final class BlockInteractionTaskExecutor implements WorldTaskExecutor {
 		RaycastContext.FluidHandling fluidHandling
 	) {
 		return raycastMatchesTarget(client, player, target, player == null ? null : player.getEyePos(), hitVec, fluidHandling);
+	}
+
+	private static boolean raycastMatchesPlayerView(
+		MinecraftClient client,
+		ClientPlayerEntity player,
+		BlockPos target,
+		RaycastContext.FluidHandling fluidHandling
+	) {
+		if (player == null) {
+			return false;
+		}
+		Vec3d start = player.getEyePos();
+		Vec3d end = interactionRayEnd(start, player.getRotationVec(1.0F), player.getBlockInteractionRange());
+		return raycastMatchesTarget(client, player, target, start, end, fluidHandling);
+	}
+
+	static Vec3d interactionRayEnd(Vec3d eyePos, Vec3d viewVector, double interactionRange) {
+		if (eyePos == null || viewVector == null) {
+			return eyePos;
+		}
+		return eyePos.add(viewVector.multiply(Math.max(0.0D, interactionRange)));
 	}
 
 	private static boolean raycastMatchesTarget(
