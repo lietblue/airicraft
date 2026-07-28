@@ -321,6 +321,39 @@ class BaritoneTaskExecutorTest {
 	}
 
 	@Test
+	void minePickupWaitsForInFlightNavigationWithoutRestartingOrTimingOut() {
+		FakeBaritoneFacade facade = new FakeBaritoneFacade();
+		GoalPosition dropPosition = new GoalPosition(10, 64, 20, true);
+		BaritoneTaskExecutor.MineDropTarget drop = new BaritoneTaskExecutor.MineDropTarget(22, dropPosition);
+		boolean[] dropPresent = {true};
+		BaritoneTaskExecutor executor = new BaritoneTaskExecutor(
+			() -> null,
+			facade,
+			request -> dropPresent[0] ? List.of(drop) : List.of()
+		);
+		GoalSnapshot goal = new GoalSnapshot(GoalType.MINE_BLOCKS, null, null, new GoalMineSpec(List.of("minecraft:short_grass"), 1), 20L, "planner_response");
+		WorldTaskRequest request = WorldTaskRequest.collectMine("mine-task", "mine-task", goal, dropPosition);
+
+		executor.tick(multiplayer(), Optional.of(request));
+		facade.pathEvents.add("AT_GOAL");
+		assertTrue(executor.tick(multiplayer(), Optional.of(request)).isEmpty());
+
+		for (int tick = 0; tick < 20; tick++) {
+			assertTrue(executor.tick(multiplayer(), Optional.of(request)).isEmpty());
+		}
+
+		assertEquals(List.of(dropPosition), facade.navigateCalls);
+		assertEquals(TaskExecutionState.RUNNING, executor.snapshot().state());
+		assertEquals("pickup_sweep", executor.snapshot().lastPathEvent());
+
+		dropPresent[0] = false;
+		Optional<TaskTerminalEvent> completed = executor.tick(multiplayer(), Optional.of(request));
+
+		assertTrue(completed.isPresent());
+		assertEquals(TaskExecutionState.COMPLETED, completed.orElseThrow().terminalState());
+	}
+
+	@Test
 	void mineTerminalWithoutMatchingDropCompletesImmediately() {
 		FakeBaritoneFacade facade = new FakeBaritoneFacade();
 		BaritoneTaskExecutor executor = new BaritoneTaskExecutor(() -> null, facade, request -> List.of());

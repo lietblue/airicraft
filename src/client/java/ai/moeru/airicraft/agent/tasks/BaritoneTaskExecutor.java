@@ -467,6 +467,18 @@ public final class BaritoneTaskExecutor implements WorldTaskExecutor {
 			.findFirst()
 			.orElse(matchingDrops.getFirst());
 		boolean sameTarget = mineDropPickupTarget != null && nextTarget.entityId() == mineDropPickupTarget.entityId();
+		if (sameTarget && currentOutcome.isEmpty() && mineDropPickupSettleTicks == 0) {
+			snapshot = new TaskExecutionSnapshot(
+				TaskExecutionState.RUNNING,
+				activeTask.taskId(),
+				activeTask.goal(),
+				facade.activeProcessName().orElse(null),
+				"pickup_sweep",
+				facade.estimatedTicksToGoal().orElse(null),
+				null
+			);
+			return MineDropPickupResult.handledWithoutEvent();
+		}
 		if (sameTarget && mineDropPickupAttempts >= MAX_MINE_DROP_PICKUP_ATTEMPTS_PER_TARGET) {
 			mineDropPickupSettleTicks++;
 			if (mineDropPickupSettleTicks > MAX_MINE_DROP_PICKUP_SETTLE_TICKS) {
