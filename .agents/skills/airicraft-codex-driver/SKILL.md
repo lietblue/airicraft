@@ -22,6 +22,8 @@ $AIRICRAFT_DRIVER_CLI agent status --verbose
 
 Shell executions may be independent. Redefine `AIRICRAFT_DRIVER_CLI` in each new shell call or use the wrapper path directly.
 
+Every wrapper command needs localhost network access. When Codex shell execution is sandboxed, authorize the wrapper CLI outside the sandbox before the first bridge call. A sandbox-blocked connection looks stale to the wrapper and removes `~/.airicraft/bridge-state.json`, forcing a client restart.
+
 Require `codexDriverActive: true` before acting. A normally launched client must be restarted through `scripts/codex-driver`; there is no `agent.yml` switch and no live attach.
 
 ## Inspect and act
