@@ -52,6 +52,20 @@ class SmeltingPlannerServiceTest {
 		assertEquals(List.of(gold, glass), merged);
 	}
 
+	@Test
+	void hiddenClientSlotsAreRenderedAsUnavailableInsteadOfEmpty() {
+		SmeltingStationObservation observation = new SmeltingStationObservation(
+			new SmeltingStationKey("minecraft:overworld", 1, 64, 1),
+			SmeltingStationKind.FURNACE,
+			new SmeltingSlotSnapshot(null, 0, null, 0, null, 0, 0, 200, true),
+			false,
+			1.0D,
+			false
+		);
+
+		assertEquals("unavailable burning=true", SmeltingPlannerService.slotSummary(observation));
+	}
+
 	private static SmeltingRecipeKnowledge recipe(String optionId, String inputItemId, String outputItemId) {
 		return new SmeltingRecipeKnowledge(
 			optionId,

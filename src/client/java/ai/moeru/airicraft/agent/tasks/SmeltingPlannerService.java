@@ -96,7 +96,7 @@ public final class SmeltingPlannerService {
 				.append(" state=")
 				.append(state.name())
 				.append(" slots=")
-				.append(slotSummary(observation.slots()));
+				.append(slotSummary(observation));
 			if (state == SmeltingStationState.OCCUPIED && observation.slots().outputCount() > 0) {
 				builder.append(" untrackedReadyOutput=true");
 			}
@@ -210,7 +210,8 @@ public final class SmeltingPlannerService {
 			kind,
 			slotSnapshot(inventory, world.getBlockState(pos)),
 			false,
-			player.squaredDistanceTo(Vec3d.ofCenter(pos))
+			player.squaredDistanceTo(Vec3d.ofCenter(pos)),
+			false
 		));
 	}
 
@@ -245,7 +246,8 @@ public final class SmeltingPlannerService {
 						kind,
 						slotSnapshot(inventory, world.getBlockState(pos)),
 						false,
-						player.squaredDistanceTo(Vec3d.ofCenter(pos))
+						player.squaredDistanceTo(Vec3d.ofCenter(pos)),
+						false
 					));
 				}
 			}
@@ -665,6 +667,14 @@ public final class SmeltingPlannerService {
 				.append(option.stationCandidate().confirmationRequired());
 		}
 		return builder.toString();
+	}
+
+	static String slotSummary(SmeltingStationObservation observation) {
+		if (observation == null || !observation.slotsVisible()) {
+			boolean burning = observation != null && observation.slots() != null && observation.slots().burning();
+			return "unavailable burning=" + burning;
+		}
+		return slotSummary(observation.slots());
 	}
 
 	private static String slotSummary(SmeltingSlotSnapshot slots) {

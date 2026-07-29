@@ -278,6 +278,34 @@ class SmeltingProcessManagerTest {
 	}
 
 	@Test
+	void trackedProcessRemainsOwnedWhenClosedClientViewHidesSlots() {
+		SmeltingProcessManager manager = new SmeltingProcessManager();
+		SmeltingStationObservation empty = emptyStation();
+		SmeltingActionResult started = manager.startProcess(
+			new SmeltItemsStepArgs("smelt:logs:nearby-1", 8, SmeltingFuelMode.AUTO, null, 0, null),
+			empty,
+			450L
+		);
+		manager.updateProcessFingerprint(
+			"smelt:logs:nearby-1",
+			empty.key(),
+			new SmeltingSlotSnapshot("minecraft:oak_log", 8, "minecraft:coal", 1, null, 0, 0, 200, true),
+			451L
+		);
+		SmeltingStationObservation hidden = new SmeltingStationObservation(
+			empty.key(),
+			empty.kind(),
+			new SmeltingSlotSnapshot(null, 0, null, 0, null, 0, 0, 200, true),
+			false,
+			1.0D,
+			false
+		);
+
+		assertTrue(started.accepted());
+		assertEquals(SmeltingStationState.AIRICRAFT_OWNED, manager.classify(hidden, 452L));
+	}
+
+	@Test
 	void carriedFurnaceProcessCanRelocateWhenPlacementCandidateGoesStale() {
 		SmeltingProcessManager manager = new SmeltingProcessManager();
 		SmeltingStationKey originalKey = new SmeltingStationKey("minecraft:overworld", 1, 64, 1);

@@ -287,6 +287,9 @@ public final class SmeltingProcessManager {
 		}
 		TrackedProcess process = processesByStation.get(observation.key());
 		if (process != null) {
+			if (!observation.slotsVisible()) {
+				return SmeltingStationState.AIRICRAFT_OWNED;
+			}
 			if (Objects.equals(process.slotFingerprint(), observation.slots().fingerprint())) {
 				return SmeltingStationState.AIRICRAFT_OWNED;
 			}
