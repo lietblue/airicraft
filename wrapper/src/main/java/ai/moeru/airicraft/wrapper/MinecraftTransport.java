@@ -85,9 +85,21 @@ interface MinecraftTransport {
 
 	Map<String, Object> getAgentActionGoal();
 
+	default Map<String, Object> getAgentActionGoal(String executionId) {
+		return getAgentActionGoal();
+	}
+
+	default Map<String, Object> listAgentActionGoals() {
+		return getAgentActionGoal();
+	}
+
 	Map<String, Object> startAgentActionGoal(Map<String, Object> goalPayload);
 
 	Map<String, Object> cancelAgentActionGoal();
+
+	default Map<String, Object> cancelAgentActionGoal(String executionId) {
+		return cancelAgentActionGoal();
+	}
 
 	Map<String, Object> listAgentActionFacts(String worldId, String type);
 

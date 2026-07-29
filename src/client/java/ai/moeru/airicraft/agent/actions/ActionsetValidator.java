@@ -190,10 +190,30 @@ public final class ActionsetValidator {
 			}
 			if (step.containsKey("watch")) {
 				validateFactMap(step.get("watch"), stepPath + ".watch", params, errors);
+				validateWatchProgress(objectMap(step.get("watch")), stepPath + ".watch", errors);
 			}
 			if (step.containsKey("args")) {
 				validateNestedExpressions(step.get("args"), stepPath + ".args", params, errors);
 			}
+		}
+	}
+
+	private void validateWatchProgress(
+		Map<String, Object> watch,
+		String path,
+		List<ActionsetValidationError> errors
+	) {
+		if (!watch.containsKey("progress")) {
+			return;
+		}
+		Map<String, Object> progress = objectMap(watch.get("progress"));
+		String kind = scalar(progress.get("kind"));
+		String anchor = scalar(progress.get("anchor"));
+		if (!"area_ticking".equals(kind)) {
+			errors.add(new ActionsetValidationError("unknown_watch_progress", path + ".progress.kind", "watch progress kind must be area_ticking"));
+		}
+		if (!"matched_fact".equals(anchor)) {
+			errors.add(new ActionsetValidationError("unknown_watch_anchor", path + ".progress.anchor", "watch progress anchor must be matched_fact"));
 		}
 	}
 

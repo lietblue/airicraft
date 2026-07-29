@@ -1,0 +1,38 @@
+id: bread-cooperative-watch
+name: Bread cooperative watch scheduling
+metadata:
+  minecraftVersion: 1.21.8
+  airicraftVersion: dev
+worldArchive: ../farm_easy/world.zip
+frozen: true
+prompt: >-
+  Exercise cooperative action-graph scheduling while making one
+  minecraft:bread. Inspect the prepared farm, plant at least three of the
+  supplied wheat seeds, and then start one inventory_item action graph goal for
+  minecraft:bread quantity 1 while the wheat is still growing. When the bread
+  goal suspends, start one resource_collection action graph goal for DIRT
+  quantity 1. Do not cancel the bread goal and do not use legacy mutation tools
+  while either graph goal is nonterminal. Let the dirt goal finish in the
+  foreground. Keep the planted farm inside simulation distance until the wheat
+  matures. The original bread goal must then resume automatically, harvest the
+  pinned wheat site, and craft the bread. Use list_action_goals and
+  inspect_action_goal only to confirm scheduler state. Stop after inventory
+  inspection confirms both one minecraft:dirt and one minecraft:bread.
+budget:
+  maxPlannerTurns: 30
+  maxElapsedTicks: 48000
+  maxElapsedMillis: 0
+  heartbeatIntervalTicks: 80
+checks:
+  - type: inventory_contains
+    itemId: minecraft:bread
+    count: 1
+  - type: inventory_contains
+    itemId: minecraft:dirt
+    count: 1
+evidence:
+  includePlannerJournal: true
+  includeDebugTimeline: true
+  includeRecentEvents: true
+  includeTaskState: true
+  includeWorldSnapshot: true

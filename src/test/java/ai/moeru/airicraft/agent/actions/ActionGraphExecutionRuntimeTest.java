@@ -852,7 +852,7 @@ class ActionGraphExecutionRuntimeTest {
 	private static ActionFact wheatCropGroup(int matureCount, int totalCount, long tick) {
 		return new ActionFact(
 			ActionFactIdentity.worldCropGroup(CONTEXT.worldId(), CONTEXT.dimension(), "farm-1", "minecraft:wheat"),
-			Map.of("matureCount", matureCount, "totalCount", totalCount),
+			Map.of("matureCount", matureCount, "totalCount", totalCount, "origin", Map.of("x", 0, "y", 64, "z", 0)),
 			ActionFactProvenance.OBSERVED,
 			tick,
 			ActionFact.NEVER_STALE

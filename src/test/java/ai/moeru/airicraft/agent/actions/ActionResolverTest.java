@@ -1156,7 +1156,7 @@ class ActionResolverTest {
 		ActionFactStore facts = new ActionFactStore();
 		facts.upsert(new ActionFact(
 			ActionFactIdentity.worldCropGroup("world-a", "minecraft:overworld", "farm-1", "minecraft:wheat"),
-			Map.of("matureCount", 3, "totalCount", 9),
+			Map.of("matureCount", 3, "totalCount", 9, "origin", Map.of("x", 0, "y", 64, "z", 0)),
 			ActionFactProvenance.INFERRED,
 			90,
 			ActionFact.NEVER_STALE

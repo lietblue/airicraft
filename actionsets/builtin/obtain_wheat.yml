@@ -53,6 +53,9 @@ actions:
               matureCountAtLeast:
                 expr: "params.quantity"
               timeoutTicks: 24000
+              progress:
+                kind: area_ticking
+                anchor: matched_fact
           - id: harvest_wheat
             primitive: mine_block
             args:

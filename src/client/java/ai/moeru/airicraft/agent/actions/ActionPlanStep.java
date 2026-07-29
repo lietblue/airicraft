@@ -10,8 +10,20 @@ public record ActionPlanStep(
 	String alternativeId,
 	String stepId,
 	String targetId,
-	Map<String, Object> args
+	Map<String, Object> args,
+	ActionWatchSpec watchSpec
 ) {
+	public ActionPlanStep(
+		ActionStepKind kind,
+		String actionId,
+		String alternativeId,
+		String stepId,
+		String targetId,
+		Map<String, Object> args
+	) {
+		this(kind, actionId, alternativeId, stepId, targetId, args, null);
+	}
+
 	public ActionPlanStep {
 		if (kind == null) {
 			throw new IllegalArgumentException("kind is required");

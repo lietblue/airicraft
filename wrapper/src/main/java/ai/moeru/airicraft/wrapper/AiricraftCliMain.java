@@ -73,6 +73,7 @@ public final class AiricraftCliMain {
 		agentActions.addSubcommand(new AgentActionsInspectCommand(context));
 		agentActions.addSubcommand("goal", new UsageCommand(out, "airicraft agent actions goal", "Action graph goal commands"));
 		CommandLine agentActionsGoal = agentActions.getSubcommands().get("goal");
+		agentActionsGoal.addSubcommand(new AgentActionsGoalListCommand(context));
 		agentActionsGoal.addSubcommand(new AgentActionsGoalInspectCommand(context));
 		agentActionsGoal.addSubcommand(new AgentActionsGoalStartCommand(context));
 		agentActionsGoal.addSubcommand(new AgentActionsGoalCancelCommand(context));
@@ -430,13 +431,28 @@ public final class AiricraftCliMain {
 
 	@Command(name = "inspect", mixinStandardHelpOptions = true, description = "Inspect the active action graph goal.")
 	private static final class AgentActionsGoalInspectCommand extends BaseCommand {
+		@Option(names = "--execution-id", description = "Specific action graph execution id.")
+		private String executionId;
+
 		private AgentActionsGoalInspectCommand(CliContext context) {
 			super(context, "agent actions goal inspect");
 		}
 
 		@Override
 		Map<String, Object> runCommand() {
-			return PayloadViews.agentActionGoal(transport().getAgentActionGoal(), verbose());
+			return PayloadViews.agentActionGoal(transport().getAgentActionGoal(executionId), verbose());
+		}
+	}
+
+	@Command(name = "list", mixinStandardHelpOptions = true, description = "List action graph goals in all scheduler residencies.")
+	private static final class AgentActionsGoalListCommand extends BaseCommand {
+		private AgentActionsGoalListCommand(CliContext context) {
+			super(context, "agent actions goal list");
+		}
+
+		@Override
+		Map<String, Object> runCommand() {
+			return PayloadViews.agentActionGoals(transport().listAgentActionGoals(), verbose());
 		}
 	}
 
@@ -475,13 +491,16 @@ public final class AiricraftCliMain {
 
 	@Command(name = "cancel", mixinStandardHelpOptions = true, description = "Cancel the active action graph goal.")
 	private static final class AgentActionsGoalCancelCommand extends BaseCommand {
+		@Option(names = "--execution-id", description = "Specific action graph execution id.")
+		private String executionId;
+
 		private AgentActionsGoalCancelCommand(CliContext context) {
 			super(context, "agent actions goal cancel");
 		}
 
 		@Override
 		Map<String, Object> runCommand() {
-			return PayloadViews.agentActionGoal(transport().cancelAgentActionGoal(), verbose());
+			return PayloadViews.agentActionGoal(transport().cancelAgentActionGoal(executionId), verbose());
 		}
 	}
 
@@ -526,7 +545,7 @@ public final class AiricraftCliMain {
 
 		@Override
 		Map<String, Object> runCommand() {
-			return PayloadViews.agentActionWatches(transport().getAgentActionGoal(), verbose());
+			return PayloadViews.agentActionWatches(transport().listAgentActionGoals(), verbose());
 		}
 	}
 
@@ -1810,7 +1829,7 @@ public final class AiricraftCliMain {
 
 		private static Map<String, Object> agentActionGoal(Map<String, Object> payload, boolean verbose) {
 			LinkedHashMap<String, Object> view = new LinkedHashMap<>();
-			copy(view, payload, "available", "executionId", "state", "resolved", "accepted", "cursor", "stepAttempt", "replanCount", "watchCount", "pendingWatch", "activeTaskId", "failureCode", "message", "traceEventCount");
+			copy(view, payload, "available", "admission", "foregroundExecutionId", "suspendedCount", "runnableCount", "residency", "executionId", "state", "resolved", "accepted", "cursor", "stepAttempt", "replanCount", "watchCount", "pendingWatch", "activeTaskId", "failureCode", "message", "traceEventCount");
 			copy(view, payload, "goal", "currentStep", "dispatch", "task", "taskExecution");
 			Map<String, Object> route = map(payload.get("route"));
 			if (!route.isEmpty()) {
@@ -1824,6 +1843,21 @@ public final class AiricraftCliMain {
 			}
 			if (verbose) {
 				copy(view, payload, "factSourceCounts", "trace", "recoveryHistory");
+			}
+			return view;
+		}
+
+		private static Map<String, Object> agentActionGoals(Map<String, Object> payload, boolean verbose) {
+			LinkedHashMap<String, Object> view = new LinkedHashMap<>();
+			copy(view, payload, "available", "foregroundExecutionId", "executionCount", "nonterminalCount", "suspendedCount", "runnableCount", "watchCount");
+			view.put("executions", filterItems(
+				maps(payload.get("executions")),
+				verbose,
+				List.of("executionId", "state", "residency", "goal", "watchCount", "activeTaskId", "failureCode", "message", "updatedTick"),
+				List.of("route", "currentStep", "trace", "recoveryHistory", "factSourceCounts")
+			));
+			if (verbose) {
+				view.put("watches", maps(payload.get("watches")));
 			}
 			return view;
 		}
@@ -1844,10 +1878,13 @@ public final class AiricraftCliMain {
 
 		private static Map<String, Object> agentActionWatches(Map<String, Object> payload, boolean verbose) {
 			LinkedHashMap<String, Object> view = new LinkedHashMap<>();
-			copy(view, payload, "available", "executionId", "state", "watchCount", "pendingWatch", "activeTaskId", "traceEventCount");
-			if (verbose) {
-				copy(view, payload, "trace", "recoveryHistory");
-			}
+			copy(view, payload, "available", "foregroundExecutionId", "executionCount", "nonterminalCount", "suspendedCount", "runnableCount", "watchCount");
+			view.put("watches", filterItems(
+				maps(payload.get("watches")),
+				verbose,
+				List.of("executionId", "watchId", "stepId", "progressKind", "consumedEligibleTicks", "timeoutTicks", "progressEligible", "pauseReason"),
+				List.of("condition", "sourceFactIdentity", "anchor")
+			));
 			return view;
 		}
 

@@ -82,7 +82,19 @@ public final class ActionGraphExecutionRuntime {
 		ActionResolverContext context,
 		long tick
 	) {
-		this.executionId = "action-graph-" + UUID.randomUUID();
+		return submit(goal, assumedInventory, context, tick, "action-graph-" + UUID.randomUUID());
+	}
+
+	public synchronized ActionGraphExecutionSnapshot submit(
+		ActionGoal goal,
+		Map<String, Integer> assumedInventory,
+		ActionResolverContext context,
+		long tick,
+		String executionId
+	) {
+		this.executionId = executionId == null || executionId.isBlank()
+			? "action-graph-" + UUID.randomUUID()
+			: executionId;
 		this.goal = Objects.requireNonNull(goal, "goal");
 		this.route = ActionRoute.empty();
 		this.cursor = 0;
@@ -115,6 +127,10 @@ public final class ActionGraphExecutionRuntime {
 	}
 
 	public synchronized ActionGraphExecutionSnapshot tick(ActionGraphExecutionInput input) {
+		return tickForeground(input);
+	}
+
+	public synchronized ActionGraphExecutionSnapshot tickForeground(ActionGraphExecutionInput input) {
 		Objects.requireNonNull(input, "input");
 		lastContext = input.context();
 		ingestObservedFacts(input);
@@ -151,7 +167,12 @@ public final class ActionGraphExecutionRuntime {
 			}
 			switch (state) {
 				case RESOLVING, REPLANNING -> resolveRoute(input.context());
-				case READY, OBSERVING -> advance(input);
+				case READY, OBSERVING -> {
+					advance(input);
+					if (state == ActionGraphExecutionState.WATCHING) {
+						return snapshot();
+					}
+				}
 				case DISPATCHING -> dispatchCurrentStep(input);
 				case WATCHING -> {
 					pollWatch(input);
@@ -174,6 +195,16 @@ public final class ActionGraphExecutionRuntime {
 			}
 		}
 		fail("budget_exceeded", "Action graph tick transition budget exceeded");
+		return snapshot();
+	}
+
+	public synchronized ActionGraphExecutionSnapshot tickPassive(ActionGraphExecutionInput input) {
+		Objects.requireNonNull(input, "input");
+		lastContext = input.context();
+		ingestObservedFacts(input);
+		if (state == ActionGraphExecutionState.WATCHING) {
+			pollWatch(input);
+		}
 		return snapshot();
 	}
 
@@ -259,6 +290,20 @@ public final class ActionGraphExecutionRuntime {
 
 	public synchronized boolean active() {
 		return state != ActionGraphExecutionState.IDLE && !terminal();
+	}
+
+	public synchronized List<ActionGraphWatchSnapshot> pendingWatches() {
+		return watches.values().stream()
+			.map(watch -> new ActionGraphWatchSnapshot(
+				executionId,
+				watch.watchId,
+				watch.step.stepId(),
+				watch.spec,
+				watch.consumedEligibleTicks,
+				watch.progressEligible,
+				watch.pauseReason
+			))
+			.toList();
 	}
 
 	private void resolveRoute(ActionResolverContext context) {
@@ -464,14 +509,34 @@ public final class ActionGraphExecutionRuntime {
 
 	private void registerWatch(ActionGraphExecutionInput input) {
 		String watchId = executionId + ":" + currentStep.stepId();
-		PendingWatch watch = new PendingWatch(watchId, currentStep, input.context().currentTick(), longArg(currentStep.args(), "timeoutTicks", 24000L));
+		ActionWatchSpec spec = currentStep.watchSpec() == null
+			? legacyWatchSpec(currentStep.args(), input.context())
+			: currentStep.watchSpec();
+		if (spec.progressKind() == ActionWatchProgressKind.AREA_TICKING && spec.anchor() == null && input.agentPosition() != null) {
+			ActionGraphAgentPosition position = input.agentPosition();
+			spec = new ActionWatchSpec(
+				spec.condition(),
+				spec.sourceFactIdentity(),
+				spec.timeoutTicks(),
+				spec.progressKind(),
+				new ActionWatchAnchor(position.worldId(), position.dimension(), position.x(), position.y(), position.z(), true)
+			);
+			trace("watch_anchor_fallback", currentStep.actionId(), currentStep.alternativeId(), currentStep.stepId(), Map.of(
+				"watchId", watchId,
+				"reason", "matched_fact_missing_origin",
+				"origin", Map.of("x", position.x(), "y", position.y(), "z", position.z())
+			));
+		}
+		PendingWatch watch = new PendingWatch(watchId, currentStep, spec, input.context().currentTick());
 		watches.put(currentStep.stepId(), watch);
+		activeTaskId = "";
 		state = ActionGraphExecutionState.WATCHING;
 		trace("watch_registered", currentStep.actionId(), currentStep.alternativeId(), currentStep.stepId(), Map.of(
 			"watchId", watchId,
-			"timeoutTick", watch.timeoutTick()
+			"timeoutTicks", watch.spec.timeoutTicks(),
+			"sourceFactIdentity", watch.spec.sourceFactIdentity() == null ? Map.of() : watch.spec.sourceFactIdentity().keys(),
+			"progressKind", watch.spec.progressKind().name()
 		));
-		pollWatch(input);
 	}
 
 	private void pollWatch(ActionGraphExecutionInput input) {
@@ -484,18 +549,99 @@ public final class ActionGraphExecutionRuntime {
 			state = ActionGraphExecutionState.READY;
 			return;
 		}
-		if (goalSatisfied(input.context()) || factSpecSatisfied(currentStep.args(), input.context())) {
+		if (goalSatisfied(input.context()) || watchSatisfied(watch, input.context())) {
 			watches.remove(currentStep.stepId());
 			trace("watch_fulfilled", currentStep.actionId(), currentStep.alternativeId(), currentStep.stepId(), Map.of("watchId", watch.watchId()));
 			cursor++;
 			state = ActionGraphExecutionState.OBSERVING;
 			return;
 		}
-		if (input.context().currentTick() >= watch.timeoutTick()) {
+		updateWatchEligibility(watch, input);
+		if (watch.consumedEligibleTicks >= watch.spec.timeoutTicks()) {
 			watches.remove(currentStep.stepId());
-			trace("watch_timed_out", currentStep.actionId(), currentStep.alternativeId(), currentStep.stepId(), Map.of("watchId", watch.watchId()));
+			trace("watch_timed_out", currentStep.actionId(), currentStep.alternativeId(), currentStep.stepId(), Map.of(
+				"watchId", watch.watchId(),
+				"consumedEligibleTicks", watch.consumedEligibleTicks
+			));
 			handleStepFailure("missing_fact", "watch timed out", false);
 		}
+	}
+
+	private void updateWatchEligibility(PendingWatch watch, ActionGraphExecutionInput input) {
+		long currentTick = input.context().currentTick();
+		long elapsed = Math.max(0L, currentTick - watch.lastCheckedTick);
+		watch.lastCheckedTick = currentTick;
+		ActionWatchProgressObservation observation = watch.spec.progressKind() == ActionWatchProgressKind.NONE
+			? ActionWatchProgressObservation.active()
+			: input.watchProgress().get(watch.watchId);
+		if (observation == null) {
+			observation = input.agentPosition() == null
+				? ActionWatchProgressObservation.active()
+				: ActionWatchProgressObservation.paused("progress_unknown");
+		}
+		if (observation.eligible()) {
+			watch.consumedEligibleTicks += elapsed;
+		}
+		if (watch.eligibilityInitialized
+			&& watch.progressEligible == observation.eligible()
+			&& Objects.equals(watch.pauseReason, observation.pauseReason())) {
+			return;
+		}
+		watch.eligibilityInitialized = true;
+		watch.progressEligible = observation.eligible();
+		watch.pauseReason = observation.pauseReason();
+		trace(
+			observation.eligible() ? "watch_progress_resumed" : "watch_progress_paused",
+			watch.step.actionId(),
+			watch.step.alternativeId(),
+			watch.step.stepId(),
+			Map.of(
+				"watchId", watch.watchId,
+				"reason", observation.pauseReason(),
+				"consumedEligibleTicks", watch.consumedEligibleTicks
+			)
+		);
+	}
+
+	private boolean watchSatisfied(PendingWatch watch, ActionResolverContext context) {
+		ActionFactCondition condition = watch.spec.condition();
+		return facts.query(condition.factType(), condition.queryKeys()).stream()
+			.filter(fact -> fact.provenance().authoritative())
+			.filter(fact -> !fact.isStaleAt(context.currentTick()))
+			.anyMatch(condition::satisfiedBy);
+	}
+
+	private static ActionWatchSpec legacyWatchSpec(Map<String, Object> factSpec, ActionResolverContext context) {
+		ActionFactType type = ActionFactType.fromId(String.valueOf(factSpec.getOrDefault("fact", "")))
+			.orElseThrow(() -> new IllegalArgumentException("watch fact type is required"));
+		LinkedHashMap<String, String> keys = new LinkedHashMap<>();
+		keys.put("worldId", context.worldId());
+		if (worldDimensionScoped(type)) {
+			keys.put("dimension", context.dimension());
+		}
+		for (String key : List.of("itemId", "toolTag", "cropId", "siteId", "plotId", "candidateId", "sourceId", "sampleId", "entityId", "recipeId")) {
+			Object value = factSpec.get(key);
+			if (value != null && !String.valueOf(value).isBlank()) {
+				keys.put(key, String.valueOf(value));
+			}
+		}
+		LinkedHashMap<String, Integer> minimums = new LinkedHashMap<>();
+		for (Map.Entry<String, Object> entry : factSpec.entrySet()) {
+			if (entry.getKey().endsWith("AtLeast") && entry.getValue() instanceof Number number) {
+				minimums.put(payloadKeyForMinimum(entry.getKey()), number.intValue());
+			}
+		}
+		return new ActionWatchSpec(
+			new ActionFactCondition(type, keys, minimums),
+			null,
+			longArg(factSpec, "timeoutTicks", 24000L),
+			ActionWatchProgressKind.NONE,
+			null
+		);
+	}
+
+	private static boolean worldDimensionScoped(ActionFactType type) {
+		return type.name().startsWith("WORLD_");
 	}
 
 	private void block(String code, String blockMessage) {
@@ -804,30 +950,6 @@ public final class ActionGraphExecutionRuntime {
 			.anyMatch(fact -> minimumsSatisfied(goal.minimums(), fact.payload()));
 	}
 
-	private boolean factSpecSatisfied(Map<String, Object> factSpec, ActionResolverContext context) {
-		ActionFactType type = ActionFactType.fromId(String.valueOf(factSpec.getOrDefault("fact", ""))).orElse(null);
-		if (type == null) {
-			return false;
-		}
-		LinkedHashMap<String, String> keys = new LinkedHashMap<>();
-		for (String key : List.of("itemId", "toolTag", "cropId", "siteId", "plotId", "candidateId", "sourceId", "sampleId", "entityId", "recipeId")) {
-			Object value = factSpec.get(key);
-			if (value != null && !String.valueOf(value).isBlank()) {
-				keys.put(key, String.valueOf(value));
-			}
-		}
-		LinkedHashMap<String, Integer> minimums = new LinkedHashMap<>();
-		for (Map.Entry<String, Object> entry : factSpec.entrySet()) {
-			if (entry.getKey().endsWith("AtLeast") && entry.getValue() instanceof Number number) {
-				minimums.put(entry.getKey(), number.intValue());
-			}
-		}
-		return facts.query(type, keys).stream()
-			.filter(fact -> fact.provenance().authoritative())
-			.filter(fact -> !fact.isStaleAt(context.currentTick()))
-			.anyMatch(fact -> minimumsSatisfied(minimums, fact.payload()));
-	}
-
 	private static boolean minimumsSatisfied(Map<String, Integer> minimums, Map<String, Object> payload) {
 		for (Map.Entry<String, Integer> entry : minimums.entrySet()) {
 			String payloadKey = payloadKeyForMinimum(entry.getKey());
@@ -930,9 +1052,25 @@ public final class ActionGraphExecutionRuntime {
 		return step == null ? "" : step.stepId();
 	}
 
-	private record PendingWatch(String watchId, ActionPlanStep step, long startedTick, long timeoutTicks) {
-		long timeoutTick() {
-			return startedTick + Math.max(1L, timeoutTicks);
+	private static final class PendingWatch {
+		private final String watchId;
+		private final ActionPlanStep step;
+		private final ActionWatchSpec spec;
+		private long lastCheckedTick;
+		private long consumedEligibleTicks;
+		private boolean eligibilityInitialized;
+		private boolean progressEligible;
+		private String pauseReason = "";
+
+		private PendingWatch(String watchId, ActionPlanStep step, ActionWatchSpec spec, long registeredTick) {
+			this.watchId = watchId;
+			this.step = step;
+			this.spec = spec;
+			this.lastCheckedTick = registeredTick;
+		}
+
+		private String watchId() {
+			return watchId;
 		}
 	}
 

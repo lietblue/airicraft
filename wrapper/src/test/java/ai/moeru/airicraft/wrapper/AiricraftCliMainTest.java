@@ -769,6 +769,39 @@ class AiricraftCliMainTest {
 	}
 
 	@Test
+	void agentActionsGoalListAndIdSpecificOperationsUseSchedulerSurface() {
+		TestTransport transport = new TestTransport();
+		transport.agentActionGoalsPayload = linkedMap(
+			"available", true,
+			"foregroundExecutionId", "graph-foreground",
+			"executionCount", 2,
+			"nonterminalCount", 2,
+			"suspendedCount", 1,
+			"runnableCount", 0,
+			"watchCount", 1,
+			"executions", List.of(
+				linkedMap("executionId", "graph-suspended", "state", "WATCHING", "residency", "SUSPENDED", "watchCount", 1, "updatedTick", 10),
+				linkedMap("executionId", "graph-foreground", "state", "WAITING_PRIMITIVE", "residency", "FOREGROUND", "watchCount", 0, "updatedTick", 11)
+			),
+			"watches", List.of(linkedMap("executionId", "graph-suspended", "watchId", "watch-1", "stepId", "wait", "progressKind", "AREA_TICKING", "consumedEligibleTicks", 4, "timeoutTicks", 20, "progressEligible", true, "pauseReason", ""))
+		);
+		transport.agentActionGoalPayload = actionGoalPayload("graph-suspended", "WATCHING");
+		transport.agentActionGoalCancelPayload = actionGoalPayload("graph-suspended", "CANCELLED");
+
+		CliResult list = execute(transport, "agent", "actions", "goal", "list");
+		CliResult inspect = execute(transport, "agent", "actions", "goal", "inspect", "--execution-id", "graph-suspended");
+		CliResult cancel = execute(transport, "agent", "actions", "goal", "cancel", "--execution-id", "graph-suspended");
+
+		assertEquals(0, list.exitCode());
+		assertTrue(list.output().contains("executionCount: 2\n"));
+		assertTrue(list.output().contains("residency: SUSPENDED\n"));
+		assertEquals("graph-suspended", transport.lastActionGoalInspectExecutionId);
+		assertEquals("graph-suspended", transport.lastActionGoalCancelExecutionId);
+		assertEquals(0, inspect.exitCode());
+		assertEquals(0, cancel.exitCode());
+	}
+
+	@Test
 	void agentActionsFactsListPassesFiltersAndRendersFacts() {
 		TestTransport transport = new TestTransport();
 		transport.agentActionFactsPayload = linkedMap(
@@ -828,23 +861,32 @@ class AiricraftCliMainTest {
 	@Test
 	void agentActionsWatchesListRendersActiveWatchSummary() {
 		TestTransport transport = new TestTransport();
-		transport.agentActionGoalPayload = linkedMap(
+		transport.agentActionGoalsPayload = linkedMap(
 			"available", true,
-			"executionId", "action-graph-watch",
-			"state", "WATCHING",
+			"foregroundExecutionId", "",
+			"executionCount", 1,
+			"nonterminalCount", 1,
+			"suspendedCount", 1,
+			"runnableCount", 0,
 			"watchCount", 1,
-			"pendingWatch", "action-graph-watch:wait_for_bread",
-			"activeTaskId", "",
-			"traceEventCount", 3
+			"watches", List.of(linkedMap(
+				"executionId", "action-graph-watch",
+				"watchId", "action-graph-watch:wait_for_bread",
+				"stepId", "wait_for_bread",
+				"progressKind", "AREA_TICKING",
+				"consumedEligibleTicks", 3,
+				"timeoutTicks", 20,
+				"progressEligible", true,
+				"pauseReason", ""
+			))
 		);
 
 		CliResult result = execute(transport, "agent", "actions", "watches", "list");
 
 		assertEquals(0, result.exitCode());
 		assertTrue(result.output().contains("command: agent actions watches list\n"));
-		assertTrue(result.output().contains("state: WATCHING\n"));
 		assertTrue(result.output().contains("watchCount: 1\n"));
-		assertTrue(result.output().contains("pendingWatch: action-graph-watch:wait_for_bread\n"));
+		assertTrue(result.output().contains("watchId: action-graph-watch:wait_for_bread\n"));
 	}
 
 	@Test
@@ -1430,8 +1472,11 @@ class AiricraftCliMainTest {
 		private Map<String, Object> agentStepExecutionPayload = Map.of();
 		private Map<String, Object> agentActionGraphInspectPayload = Map.of();
 		private Map<String, Object> agentActionGoalPayload = Map.of();
+		private Map<String, Object> agentActionGoalsPayload = Map.of("executions", List.of(), "watches", List.of());
 		private Map<String, Object> agentActionGoalStartPayload = Map.of();
 		private Map<String, Object> agentActionGoalCancelPayload = Map.of();
+		private String lastActionGoalInspectExecutionId;
+		private String lastActionGoalCancelExecutionId;
 		private Map<String, Object> agentActionFactsPayload = Map.of("facts", List.of());
 		private Map<String, Object> agentActionFactsClearPayload = Map.of();
 		private Map<String, Object> agentTaskSubmitPayload = Map.of();
@@ -1762,6 +1807,17 @@ class AiricraftCliMainTest {
 		}
 
 		@Override
+		public Map<String, Object> getAgentActionGoal(String executionId) {
+			lastActionGoalInspectExecutionId = executionId;
+			return agentActionGoalPayload;
+		}
+
+		@Override
+		public Map<String, Object> listAgentActionGoals() {
+			return agentActionGoalsPayload;
+		}
+
+		@Override
 		public Map<String, Object> startAgentActionGoal(Map<String, Object> goalPayload) {
 			lastActionGoalPayload = goalPayload;
 			return agentActionGoalStartPayload;
@@ -1769,6 +1825,12 @@ class AiricraftCliMainTest {
 
 		@Override
 		public Map<String, Object> cancelAgentActionGoal() {
+			return agentActionGoalCancelPayload;
+		}
+
+		@Override
+		public Map<String, Object> cancelAgentActionGoal(String executionId) {
+			lastActionGoalCancelExecutionId = executionId;
 			return agentActionGoalCancelPayload;
 		}
 

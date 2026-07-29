@@ -331,6 +331,19 @@ final class HttpBridgeTransport implements MinecraftTransport {
 	}
 
 	@Override
+	public Map<String, Object> getAgentActionGoal(String executionId) {
+		if (executionId == null || executionId.isBlank()) {
+			return getAgentActionGoal();
+		}
+		return get("/v1/agent/action-goals?execution-id=" + URLEncoder.encode(executionId, java.nio.charset.StandardCharsets.UTF_8));
+	}
+
+	@Override
+	public Map<String, Object> listAgentActionGoals() {
+		return get("/v1/agent/action-goals?list=true");
+	}
+
+	@Override
 	public Map<String, Object> startAgentActionGoal(Map<String, Object> goalPayload) {
 		return send("POST", "/v1/agent/action-goals", goalPayload);
 	}
@@ -338,6 +351,14 @@ final class HttpBridgeTransport implements MinecraftTransport {
 	@Override
 	public Map<String, Object> cancelAgentActionGoal() {
 		return send("DELETE", "/v1/agent/action-goals", Map.of());
+	}
+
+	@Override
+	public Map<String, Object> cancelAgentActionGoal(String executionId) {
+		if (executionId == null || executionId.isBlank()) {
+			return cancelAgentActionGoal();
+		}
+		return send("DELETE", "/v1/agent/action-goals?execution-id=" + URLEncoder.encode(executionId, java.nio.charset.StandardCharsets.UTF_8), Map.of());
 	}
 
 	@Override

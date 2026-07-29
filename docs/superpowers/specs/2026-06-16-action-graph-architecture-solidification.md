@@ -125,6 +125,7 @@ provider uses equivalent craftability evidence to route an inventory-item goal.
 The primary action surface becomes graph-oriented:
 
 - `start_action_goal`
+- `list_action_goals`
 - `inspect_action_goal`
 - `cancel_action_goal`
 - `inspect_action_trace`
@@ -229,9 +230,11 @@ A normal graph-backed action follows this flow:
 7. Resolver continues, replans, suspends on a watch, asks for planner review,
    or marks the goal terminal.
 
-Only one foreground primitive may own movement/input at a time. Background
-watches may coexist with foreground goals, but they do not own the bot body
-unless a policy schedules a foreground primitive to keep an area loaded.
+Only one foreground execution may own movement/input at a time. Suspended
+watches coexist with foreground work but never dispatch primitives. Fulfilled
+watches enter a deterministic FIFO runnable queue and resume only after current
+foreground work finishes. The scheduler never invents work and never preempts a
+foreground goal on watch fulfillment.
 
 Cancellation is unified: cancelling a graph goal must cancel the active
 foreground primitive, clear pending graph-owned state for that goal, and record

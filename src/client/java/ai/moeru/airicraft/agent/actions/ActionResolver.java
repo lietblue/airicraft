@@ -194,11 +194,12 @@ public final class ActionResolver {
 					Map.of("goal", goal.normalizedKey(), "cost", cost(alternative))
 				));
 
-				if (!guardsSatisfied(alternative, params, trace, entry.actionId(), alternativeId)) {
+				List<ActionFact> matchedGuards = matchedGuards(alternative, params, trace, entry.actionId(), alternativeId);
+				if (matchedGuards == null) {
 					continue;
 				}
 
-				Optional<ActionRoute> expanded = expandAlternative(entry, alternative, params, depth, resolving, trace);
+				Optional<ActionRoute> expanded = expandAlternative(entry, alternative, params, matchedGuards, depth, resolving, trace);
 				if (expanded.isPresent()) {
 					trace.add(event("route_selected", entry.actionId(), alternativeId, "", Map.of("goal", goal.normalizedKey())));
 					return expanded;
@@ -910,6 +911,7 @@ public final class ActionResolver {
 		ActionsetEntry entry,
 		Map<String, Object> alternative,
 		Map<String, Integer> params,
+		List<ActionFact> matchedGuards,
 		int depth,
 		LinkedHashSet<String> resolving,
 		List<ActionTraceEvent> trace
@@ -957,7 +959,8 @@ public final class ActionResolver {
 			}
 			if (step.containsKey("watch")) {
 				Map<String, Object> watch = evaluateArgs(objectMap(step.get("watch")), params);
-				steps.add(new ActionPlanStep(ActionStepKind.WATCH, entry.actionId(), alternativeId, stepId, "watch", watch));
+				ActionWatchSpec watchSpec = watchSpec(watch, matchedGuards);
+				steps.add(new ActionPlanStep(ActionStepKind.WATCH, entry.actionId(), alternativeId, stepId, "watch", watch, watchSpec));
 				trace.add(event("watch_registered", entry.actionId(), alternativeId, stepId, watch));
 			}
 		}
@@ -965,19 +968,22 @@ public final class ActionResolver {
 		return Optional.of(new ActionRoute(steps, routeCost));
 	}
 
-	private boolean guardsSatisfied(
+	private List<ActionFact> matchedGuards(
 		Map<String, Object> alternative,
 		Map<String, Integer> params,
 		List<ActionTraceEvent> trace,
 		String actionId,
 		String alternativeId
 	) {
+		ArrayList<ActionFact> matched = new ArrayList<>();
 		for (Object guardObject : objectList(alternative.get("guards"))) {
-			if (!factSatisfied(objectMap(guardObject), params, trace, actionId, alternativeId)) {
-				return false;
+			Optional<ActionFact> fact = matchingFact(objectMap(guardObject), params, trace, actionId, alternativeId);
+			if (fact.isEmpty()) {
+				return null;
 			}
+			matched.add(fact.get());
 		}
-		return true;
+		return List.copyOf(matched);
 	}
 
 	private boolean goalSatisfied(ActionGoal goal, List<ActionTraceEvent> trace) {
@@ -985,7 +991,7 @@ public final class ActionResolver {
 		factSpec.put("fact", goal.factType().id());
 		factSpec.putAll(goal.keys());
 		goal.minimums().forEach((key, value) -> factSpec.put(key, value));
-		return factSatisfied(factSpec, Map.of(), trace, "", "");
+		return matchingFact(factSpec, Map.of(), trace, "", "").isPresent();
 	}
 
 	private boolean factSatisfied(
@@ -995,11 +1001,25 @@ public final class ActionResolver {
 		String actionId,
 		String alternativeId
 	) {
-		FactRequirement requirement = requirementFromSpec(factSpec, params);
+		return matchingFact(factSpec, params, trace, actionId, alternativeId).isPresent();
+	}
+
+	private Optional<ActionFact> matchingFact(
+		Map<String, Object> factSpec,
+		Map<String, Integer> params,
+		List<ActionTraceEvent> trace,
+		String actionId,
+		String alternativeId
+	) {
+		ActionFactCondition requirement = requirementFromSpec(factSpec, params);
 		List<ActionFact> matches = facts.query(requirement.factType(), requirement.queryKeys());
-		boolean satisfied = matches.stream()
+		Optional<ActionFact> matched = matches.stream()
 			.filter(this::usableFact)
-			.anyMatch(requirement::satisfiedBy);
+			.filter(requirement::satisfiedBy)
+			.sorted(Comparator
+				.comparingLong(ActionFact::observedTick).reversed()
+				.thenComparing(fact -> fact.identity().keys().toString()))
+			.findFirst();
 		trace.add(event(
 			"fact_query",
 			actionId,
@@ -1008,10 +1028,61 @@ public final class ActionResolver {
 			Map.of(
 				"fact", requirement.factType().id(),
 				"keys", requirement.queryKeys(),
-				"satisfied", satisfied
+				"satisfied", matched.isPresent(),
+				"matchedIdentity", matched.map(fact -> fact.identity().keys()).orElse(Map.of())
 			)
 		));
-		return satisfied;
+		return matched;
+	}
+
+	private ActionWatchSpec watchSpec(Map<String, Object> watch, List<ActionFact> matchedGuards) {
+		ActionFactCondition condition = requirementFromSpec(watch, Map.of());
+		ActionFactCondition initialCondition = condition;
+		Map<String, Object> progress = objectMap(watch.get("progress"));
+		ActionWatchProgressKind progressKind = "area_ticking".equals(scalar(progress.get("kind"), ""))
+			? ActionWatchProgressKind.AREA_TICKING
+			: ActionWatchProgressKind.NONE;
+		ActionFact sourceFact = null;
+		if ("matched_fact".equals(scalar(progress.get("anchor"), ""))) {
+			sourceFact = matchedGuards.stream()
+				.filter(fact -> fact.identity().type() == initialCondition.factType())
+				.filter(fact -> initialCondition.queryKeys().entrySet().stream()
+					.allMatch(entry -> entry.getValue().equals(fact.identity().keys().get(entry.getKey()))))
+				.findFirst()
+				.orElse(null);
+		}
+		if (sourceFact != null) {
+			LinkedHashMap<String, String> exactKeys = new LinkedHashMap<>(condition.queryKeys());
+			exactKeys.putAll(sourceFact.identity().keys());
+			condition = new ActionFactCondition(condition.factType(), exactKeys, condition.minimums());
+		}
+		return new ActionWatchSpec(
+			condition,
+			sourceFact == null ? null : sourceFact.identity(),
+			longValue(watch.get("timeoutTicks"), 24000L),
+			progressKind,
+			anchorFromFact(sourceFact)
+		);
+	}
+
+	private static ActionWatchAnchor anchorFromFact(ActionFact fact) {
+		if (fact == null || !(fact.payload().get("origin") instanceof Map<?, ?> origin)) {
+			return null;
+		}
+		Object x = origin.get("x");
+		Object y = origin.get("y");
+		Object z = origin.get("z");
+		if (!(x instanceof Number xNumber) || !(y instanceof Number yNumber) || !(z instanceof Number zNumber)) {
+			return null;
+		}
+		return new ActionWatchAnchor(
+			fact.identity().keys().getOrDefault("worldId", ""),
+			fact.identity().keys().getOrDefault("dimension", ""),
+			xNumber.intValue(),
+			yNumber.intValue(),
+			zNumber.intValue(),
+			false
+		);
 	}
 
 	private boolean usableFact(ActionFact fact) {
@@ -1178,7 +1249,7 @@ public final class ActionResolver {
 		return new ActionGoal(factType, keys, minimums);
 	}
 
-	private FactRequirement requirementFromSpec(Map<String, Object> factSpec, Map<String, Integer> params) {
+	private ActionFactCondition requirementFromSpec(Map<String, Object> factSpec, Map<String, Integer> params) {
 		ActionFactType factType = ActionFactType.fromId(scalar(factSpec.get("fact"), ""))
 			.orElseThrow(() -> new IllegalArgumentException("unknown fact type " + factSpec.get("fact")));
 		LinkedHashMap<String, String> queryKeys = new LinkedHashMap<>();
@@ -1202,7 +1273,11 @@ public final class ActionResolver {
 		if (factSpec.containsKey("matureCountAtLeast")) {
 			minimums.put("matureCount", evaluateInt(factSpec.get("matureCountAtLeast"), params));
 		}
-		return new FactRequirement(factType, queryKeys, minimums);
+		return new ActionFactCondition(factType, queryKeys, minimums);
+	}
+
+	private static long longValue(Object value, long fallback) {
+		return value instanceof Number number ? number.longValue() : fallback;
 	}
 
 	private static Map<String, Integer> recipeInputCounts(ActionFact recipe) {
@@ -1335,22 +1410,6 @@ public final class ActionResolver {
 
 	private static String scalar(Object value, String fallback) {
 		return value == null ? fallback : String.valueOf(value);
-	}
-
-	private record FactRequirement(
-		ActionFactType factType,
-		Map<String, String> queryKeys,
-		Map<String, Integer> minimums
-	) {
-		boolean satisfiedBy(ActionFact fact) {
-			for (Map.Entry<String, Integer> minimum : minimums.entrySet()) {
-				Object value = fact.payload().get(minimum.getKey());
-				if (!(value instanceof Number number) || number.intValue() < minimum.getValue()) {
-					return false;
-				}
-			}
-			return true;
-		}
 	}
 
 	private record FuelCandidate(String itemId, int fuelTicks) {

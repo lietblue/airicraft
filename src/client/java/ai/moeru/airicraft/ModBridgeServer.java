@@ -879,14 +879,26 @@ public final class ModBridgeServer {
 		}
 		String method = exchange.getRequestMethod();
 		if ("GET".equalsIgnoreCase(method)) {
-			writeJson(exchange, 200, createAgentActionGoalResponse(true));
+			String executionId = getQuery(exchange, "execution-id");
+			boolean list = "true".equalsIgnoreCase(getQuery(exchange, "list"));
+			writeJson(exchange, 200, list
+				? createAgentActionGoalsResponse(true)
+				: createAgentActionGoalResponse(executionId, true));
 			return;
 		}
 		if ("DELETE".equalsIgnoreCase(method)) {
-			Map<String, Object> response = onClientThread(() -> agentRuntime()
-				.cancelActionGoal("bridge_debug_cancel")
-				.toPayload(true));
-			writeJson(exchange, 200, response);
+			try {
+				String executionId = getQuery(exchange, "execution-id");
+				Map<String, Object> response = onClientThread(() -> (executionId == null || executionId.isBlank()
+					? agentRuntime().cancelActionGoal("bridge_debug_cancel")
+					: agentRuntime().cancelActionGoal(executionId, "bridge_debug_cancel"))
+					.toPayload(true));
+				writeJson(exchange, 200, response);
+			}
+			catch (IllegalArgumentException exception) {
+				String code = "execution_id_required".equals(exception.getMessage()) ? exception.getMessage() : "invalid_request";
+				writeJson(exchange, 409, Map.of("error", code, "message", exception.getMessage()));
+			}
 			return;
 		}
 		if (!"POST".equalsIgnoreCase(method)) {
@@ -897,7 +909,7 @@ public final class ModBridgeServer {
 			ActionGoalRequest request = GSON.fromJson(reader, ActionGoalRequest.class);
 			ActionGoal goal = actionGoalFromRequest(request);
 			Map<String, Object> response = onClientThread(() -> agentRuntime()
-				.startActionGoal(goal, "bridge_debug")
+				.startActionGoalDetailed(goal, "bridge_debug")
 				.toPayload(true));
 			writeJson(exchange, 200, response);
 		}
@@ -1450,8 +1462,17 @@ public final class ModBridgeServer {
 		});
 	}
 
-	private Object createAgentActionGoalResponse(boolean verbose) {
-		return onClientThread(() -> agentRuntime().actionGraphExecutionSnapshot().toPayload(verbose));
+	private Object createAgentActionGoalResponse(String executionId, boolean verbose) {
+		return onClientThread(() -> {
+			var view = agentRuntime().actionGraphExecution(executionId);
+			return view == null
+				? Map.of("available", true, "executionId", executionId == null ? "" : executionId, "state", "IDLE", "error", "execution_not_found")
+				: view.toPayload(verbose);
+		});
+	}
+
+	private Object createAgentActionGoalsResponse(boolean verbose) {
+		return onClientThread(() -> agentRuntime().actionGraphGoalsPayload(verbose));
 	}
 
 	private Object createAgentEventPolicyResponse() {

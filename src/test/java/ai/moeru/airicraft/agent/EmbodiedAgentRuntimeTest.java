@@ -4,8 +4,16 @@ import ai.moeru.airicraft.AiricraftConfig;
 import ai.moeru.airicraft.BridgeUnavailableException;
 import ai.moeru.airicraft.FirstPersonScreenshotService;
 import ai.moeru.airicraft.agent.actions.ActionGoal;
+import ai.moeru.airicraft.agent.actions.ActionFact;
+import ai.moeru.airicraft.agent.actions.ActionFactIdentity;
+import ai.moeru.airicraft.agent.actions.ActionFactProvenance;
+import ai.moeru.airicraft.agent.actions.ActionGraphAgentPosition;
+import ai.moeru.airicraft.agent.actions.ActionGraphCoordinator;
+import ai.moeru.airicraft.agent.actions.ActionGraphExecutionInput;
 import ai.moeru.airicraft.agent.actions.ActionGraphExecutionSnapshot;
 import ai.moeru.airicraft.agent.actions.ActionGraphExecutionState;
+import ai.moeru.airicraft.agent.actions.ActionGraphResidency;
+import ai.moeru.airicraft.agent.actions.ActionResolverContext;
 import ai.moeru.airicraft.agent.goals.GoalMineSpec;
 import ai.moeru.airicraft.agent.goals.GoalPosition;
 import ai.moeru.airicraft.agent.goals.GoalSnapshot;
@@ -136,24 +144,21 @@ class EmbodiedAgentRuntimeTest {
 	}
 
 	@Test
-	void replacementAndCancellationReleaseHeldActionGraph() throws Exception {
+	void foregroundGraphRemainsBusyAcrossSafetyHoldUntilExplicitCancellation() throws Exception {
 		EmbodiedAgentRuntime runtime = EmbodiedAgentRuntime.createForTests(new FakeWorldTaskExecutor());
 		ActionGraphExecutionSnapshot first = runtime.startActionGoal(ActionGoal.inventoryItem("minecraft:bread", 1), "test");
 		setReflexSnapshot(runtime, reflexSnapshot(SurvivalReflexState.AWAITING_PLANNER, "hold-1", null, first.executionId()));
 
-		ActionGraphExecutionSnapshot replacement = runtime.startActionGoal(
+		ActionGraphExecutionSnapshot busy = runtime.startActionGoal(
 			ActionGoal.inventoryItem("minecraft:iron_pickaxe", 1),
 			"test"
 		);
 
-		assertNotEquals(first.executionId(), replacement.executionId());
-		assertEquals(SurvivalReflexState.IDLE, runtime.survivalReflexSnapshot().state());
-		assertTrue(runtime.recentEvents(null).events().stream().anyMatch(event ->
-			"reflex.hold_released".equals(event.type()) && "action_graph_replaced".equals(event.payload().get("reason"))
-		));
+		assertEquals(first.executionId(), busy.executionId());
+		assertEquals(SurvivalReflexState.AWAITING_PLANNER, runtime.survivalReflexSnapshot().state());
 
 		setReflexSnapshot(runtime, reflexSnapshot(
-			SurvivalReflexState.AWAITING_PLANNER, "hold-2", null, replacement.executionId()
+			SurvivalReflexState.AWAITING_PLANNER, "hold-2", null, first.executionId()
 		));
 		ActionGraphExecutionSnapshot cancelled = runtime.cancelActionGoal("operator_cancelled");
 		assertEquals(ActionGraphExecutionState.CANCELLED, cancelled.state());
@@ -176,6 +181,12 @@ class EmbodiedAgentRuntimeTest {
 		Field field = EmbodiedAgentRuntime.class.getDeclaredField("activeJobRuntime");
 		field.setAccessible(true);
 		return (ActiveJobRuntime) field.get(runtime);
+	}
+
+	private static ActionGraphCoordinator actionGraphCoordinator(EmbodiedAgentRuntime runtime) throws Exception {
+		Field field = EmbodiedAgentRuntime.class.getDeclaredField("actionGraphCoordinator");
+		field.setAccessible(true);
+		return (ActionGraphCoordinator) field.get(runtime);
 	}
 
 	private static void setReflexSnapshot(EmbodiedAgentRuntime runtime, SurvivalReflexSnapshot snapshot) throws Exception {
@@ -324,8 +335,8 @@ class EmbodiedAgentRuntimeTest {
 		ActionGraphExecutionSnapshot blocked = runtime.actionGraphExecutionSnapshot();
 
 		assertEquals(ActionGraphExecutionState.RESOLVING, started.state());
-		assertEquals(ActionGraphExecutionState.BLOCKED, blocked.state());
-		assertEquals("world_not_loaded", blocked.failureCode());
+		assertEquals(ActionGraphExecutionState.CANCELLED, blocked.state());
+		assertEquals("world_left", blocked.message());
 		assertTrue(runtime.recentEvents(null).events().stream().anyMatch(event ->
 			"action_graph.goal_started".equals(event.type())
 				&& started.executionId().equals(event.payload().get("executionId"))
@@ -423,7 +434,7 @@ class EmbodiedAgentRuntimeTest {
 	}
 
 	@Test
-	void startActionGoalPlannerToolReusesActiveGraphGoal() {
+	void startActionGoalPlannerToolRejectsDifferentGoalWhileForegroundBusy() {
 		EmbodiedAgentRuntime runtime = EmbodiedAgentRuntime.createForTests(new FakeWorldTaskExecutor());
 		ActionGraphExecutionSnapshot first = runtime.startActionGoal(ActionGoal.inventoryItem("minecraft:bread", 1), "test");
 
@@ -437,13 +448,14 @@ class EmbodiedAgentRuntimeTest {
 			null
 		));
 
-		assertTrue(result.contains("Tool result for start_action_goal: state=RESOLVING"));
+		assertTrue(result.contains("Tool result for start_action_goal: state=RESOLVING admission=busy"));
 		assertTrue(result.contains("executionId=" + first.executionId()));
 		assertTrue(result.contains("minecraft:bread"));
+		assertTrue(result.contains("failureCode=foreground_busy"));
 		assertEquals(first.executionId(), runtime.actionGraphExecutionSnapshot().executionId());
 		assertTrue(runtime.recentEvents(null).events().stream().anyMatch(event ->
-			"action_graph.goal_reused".equals(event.type())
-				&& first.executionId().equals(event.payload().get("executionId"))
+			"action_graph.goal_admission".equals(event.type())
+				&& "busy".equals(event.payload().get("admission"))
 		));
 	}
 
@@ -474,13 +486,86 @@ class EmbodiedAgentRuntimeTest {
 	}
 
 	@Test
+	void plannerLegacyMutationRemainsDeniedWhileGraphIsOnlySuspended() throws Exception {
+		EmbodiedAgentRuntime runtime = EmbodiedAgentRuntime.createForTests(new FakeWorldTaskExecutor());
+		runtime.overrideSessionSnapshotForTests(loadedRemoteSession());
+		ActionGraphExecutionSnapshot wheat = runtime.startActionGoal(ActionGoal.inventoryItem("minecraft:wheat", 1), "test");
+		ActionGraphCoordinator coordinator = actionGraphCoordinator(runtime);
+		ActionResolverContext context = new ActionResolverContext("world-a", "bot", "minecraft:overworld", 20L);
+		ActionFact growingWheat = new ActionFact(
+			ActionFactIdentity.worldCropGroup("world-a", "minecraft:overworld", "farm-1", "minecraft:wheat"),
+			Map.of("matureCount", 0, "totalCount", 3, "origin", Map.of("x", 0, "y", 64, "z", 0)),
+			ActionFactProvenance.OBSERVED,
+			20L,
+			ActionFact.NEVER_STALE
+		);
+		coordinator.tick(new ActionGraphExecutionInput(
+			context,
+			Map.of(),
+			Map.of(),
+			true,
+			true,
+			null,
+			List.of(),
+			List.of(),
+			List.of(),
+			List.of(),
+			List.of(growingWheat),
+			new ActionGraphAgentPosition("world-a", "minecraft:overworld", 0, 64, 0),
+			Map.of()
+		), true);
+
+		String legacy = runtime.executePlannerToolCallForTests(new PlannerToolCall(
+			"call_follow",
+			PlannerToolCatalog.FOLLOW_PLAYER,
+			JsonParser.parseString("""
+				{"targetPlayer":"Alice"}
+				""").getAsJsonObject(),
+			null,
+			null
+		));
+		runtime.injectDialogueResponseForTests(new DialogueResponse(
+			"I'll follow Alice.",
+			new DialogueIntent(DialogueIntentType.JOB_UPDATE, ActiveJobProposal.followPlayer("Alice")),
+			21L
+		));
+		String secondGraph = runtime.executePlannerToolCallForTests(new PlannerToolCall(
+			"call_dirt",
+			PlannerToolCatalog.START_ACTION_GOAL,
+			JsonParser.parseString("""
+				{"kind":"resource_collection","resourceKind":"DIRT","quantity":1}
+				""").getAsJsonObject(),
+			null,
+			null
+		));
+
+		assertEquals(ActionGraphResidency.SUSPENDED, coordinator.inspect(wheat.executionId()).residency());
+		assertTrue(legacy.contains("denied reason=active_action_graph_in_progress"));
+		assertTrue(runtime.recentEvents(null).events().stream().anyMatch(event ->
+			"player.action_rejected".equals(event.type())
+				&& "active_action_graph_in_progress".equals(event.payload().get("reason"))
+		));
+		assertTrue(secondGraph.contains("admission=started"));
+	}
+
+	@Test
 	void inspectAndCancelActionGoalPlannerToolsUseGraphPath() {
 		EmbodiedAgentRuntime runtime = EmbodiedAgentRuntime.createForTests(new FakeWorldTaskExecutor());
-		runtime.startActionGoal(ActionGoal.inventoryItem("minecraft:bread", 1), "test");
+		ActionGraphExecutionSnapshot started = runtime.startActionGoal(ActionGoal.inventoryItem("minecraft:bread", 1), "test");
+		String selection = """
+			{"executionId":"%s"}
+			""".formatted(started.executionId());
 
 		String inspect = runtime.executePlannerToolCallForTests(new PlannerToolCall(
 			"call_inspect",
 			PlannerToolCatalog.INSPECT_ACTION_GOAL,
+			JsonParser.parseString(selection).getAsJsonObject(),
+			null,
+			null
+		));
+		String list = runtime.executePlannerToolCallForTests(new PlannerToolCall(
+			"call_list",
+			PlannerToolCatalog.LIST_ACTION_GOALS,
 			new com.google.gson.JsonObject(),
 			null,
 			null
@@ -488,7 +573,7 @@ class EmbodiedAgentRuntimeTest {
 		String trace = runtime.executePlannerToolCallForTests(new PlannerToolCall(
 			"call_trace",
 			PlannerToolCatalog.INSPECT_ACTION_TRACE,
-			new com.google.gson.JsonObject(),
+			JsonParser.parseString(selection).getAsJsonObject(),
 			null,
 			null
 		));
@@ -496,13 +581,14 @@ class EmbodiedAgentRuntimeTest {
 			"call_cancel",
 			PlannerToolCatalog.CANCEL_ACTION_GOAL,
 			JsonParser.parseString("""
-				{"reason":"user_changed_task"}
-				""").getAsJsonObject(),
+				{"executionId":"%s","reason":"user_changed_task"}
+				""".formatted(started.executionId())).getAsJsonObject(),
 			null,
 			null
 		));
 
 		assertTrue(inspect.contains("Tool result for inspect_action_goal: state=RESOLVING"));
+		assertTrue(list.contains("Tool result for list_action_goals: count=1"));
 		assertTrue(trace.contains("Tool result for inspect_action_trace: state=RESOLVING"));
 		assertTrue(trace.contains("trace="));
 		assertTrue(cancel.contains("Tool result for cancel_action_goal: state=CANCELLED"));
@@ -1178,6 +1264,30 @@ class EmbodiedAgentRuntimeTest {
 			"Smelting output ready: processId=smelt-process-1 output=minecraft:iron_ingotx1 station=minecraft:overworld@1,64,1.",
 			trigger.text()
 		);
+	}
+
+	@Test
+	void actionGraphSuspensionTriggerPermitsUsefulWorkChatOrNoActionWithoutFiller() {
+		EmbodiedAgentRuntime runtime = EmbodiedAgentRuntime.createForTests(new FakeWorldTaskExecutor());
+
+		PlannerTrigger trigger = runtime.createPlannerTriggerForTests(new SemanticEvent(
+			1L,
+			20L,
+			1000L,
+			"action_graph.goal_suspended",
+			Map.of(
+				"executionId", "action-graph-wheat",
+				"pendingWatch", "wait_for_wheat_maturity"
+			)
+		), new EventRoutingProfile("action_graph.goal_suspended", true, PlannerTriggerType.SYSTEM, true));
+
+		assertEquals(PlannerTriggerType.SYSTEM, trigger.type());
+		assertEquals("action_graph", trigger.speaker());
+		assertTrue(trigger.text().contains("one short chat message"));
+		assertTrue(trigger.text().contains("start at most one useful new high-level goal"));
+		assertTrue(trigger.text().contains("simply acknowledge without taking action"));
+		assertTrue(trigger.text().contains("Do not invent filler work"));
+		assertEquals("action_graph_suspended:action-graph-wheat", trigger.coalescingKey());
 	}
 
 	@Test
@@ -2515,11 +2625,13 @@ class EmbodiedAgentRuntimeTest {
 		runtime.overrideSessionSnapshotForTests(loadedRemoteSession());
 		runtime.submitTask(new TaskSpec(TaskType.COLLECT_RESOURCE, TaskResourceKind.WOOD_LOGS, 2), "test");
 		runtime.onClientTick(null);
+		ActionGraphExecutionSnapshot graph = runtime.startActionGoal(ActionGoal.inventoryItem("minecraft:bread", 1), "test");
 
 		runtime.overrideSessionSnapshotForTests(deadRemoteSession());
 		runtime.onClientTick(null);
 
 		assertEquals(TaskState.CANCELLED, runtime.taskSnapshot().state());
+		assertEquals(ActionGraphExecutionState.CANCELLED, runtime.actionGraphExecution(graph.executionId()).execution().state());
 		assertEquals(1, executor.onWorldLeaveCalls);
 		assertEquals(List.of("Root", "WaitForRespawn"), runtime.behaviorTreeSnapshot().activeNodePath());
 		assertTrue(runtime.recentEvents(null).events().stream().anyMatch(event -> "player.actions_cancelled".equals(event.type())));

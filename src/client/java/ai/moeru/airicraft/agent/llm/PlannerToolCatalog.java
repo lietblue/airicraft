@@ -30,6 +30,7 @@ public final class PlannerToolCatalog {
 	public static final String INSPECT_SMELTING = "inspect_smelting";
 	public static final String INSPECT_NEARBY_ENTITIES = "inspect_nearby_entities";
 	public static final String START_ACTION_GOAL = "start_action_goal";
+	public static final String LIST_ACTION_GOALS = "list_action_goals";
 	public static final String INSPECT_ACTION_GOAL = "inspect_action_goal";
 	public static final String CANCEL_ACTION_GOAL = "cancel_action_goal";
 	public static final String INSPECT_ACTION_TRACE = "inspect_action_trace";
@@ -153,15 +154,21 @@ public final class PlannerToolCatalog {
 				prop("entityTypeId", optionalString("Entity type id for entity interaction goals.")),
 				prop("operation", optionalString("Goal operation, for example move_to, place, use, break, attack, give, collect."))
 			), List.of("kind")), PlannerToolCatalog::validateStartActionGoalArguments),
-		builtInTool(INSPECT_ACTION_GOAL, true, tool(INSPECT_ACTION_GOAL, "Inspect the currently active action graph goal status.", properties(
+		builtInTool(LIST_ACTION_GOALS, true, tool(LIST_ACTION_GOALS, "List foreground, suspended, runnable, and recent terminal action graph executions.", properties(
 				prop("narration", optionalString("Optional visible narration before using the tool. Omit this field when no narration is needed."))
 			), List.of()), NO_ARGUMENT_VALIDATION),
-		builtInTool(CANCEL_ACTION_GOAL, false, tool(CANCEL_ACTION_GOAL, "Cancel the active action graph goal and any foreground primitive through the unified graph cancellation path.", properties(
+		builtInTool(INSPECT_ACTION_GOAL, true, tool(INSPECT_ACTION_GOAL, "Inspect an action graph goal. Without executionId, selects foreground or the most recently updated nonterminal execution.", properties(
 				prop("narration", optionalString("Optional visible narration before using the tool. Omit this field when no narration is needed.")),
+				prop("executionId", optionalString("Optional action graph execution id."))
+			), List.of()), NO_ARGUMENT_VALIDATION),
+		builtInTool(CANCEL_ACTION_GOAL, false, tool(CANCEL_ACTION_GOAL, "Cancel an action graph goal and its foreground primitive, if any. executionId is required when multiple suspended goals make the target ambiguous.", properties(
+				prop("narration", optionalString("Optional visible narration before using the tool. Omit this field when no narration is needed.")),
+				prop("executionId", optionalString("Optional action graph execution id.")),
 				prop("reason", optionalString("Optional cancellation reason."))
 			), List.of()), NO_ARGUMENT_VALIDATION),
-		builtInTool(INSPECT_ACTION_TRACE, true, tool(INSPECT_ACTION_TRACE, "Inspect the current action graph trace, route, facts, watches, and terminal status.", properties(
-				prop("narration", optionalString("Optional visible narration before using the tool. Omit this field when no narration is needed."))
+		builtInTool(INSPECT_ACTION_TRACE, true, tool(INSPECT_ACTION_TRACE, "Inspect an action graph trace, route, facts, watches, and terminal status.", properties(
+				prop("narration", optionalString("Optional visible narration before using the tool. Omit this field when no narration is needed.")),
+				prop("executionId", optionalString("Optional action graph execution id."))
 			), List.of()), NO_ARGUMENT_VALIDATION),
 		builtInTool(LIST_ACTION_CAPABILITIES, true, tool(LIST_ACTION_CAPABILITIES, "List runtime action graph capabilities, primitives, providers, and supported goal kinds.", properties(
 				prop("narration", optionalString("Optional visible narration before using the tool. Omit this field when no narration is needed."))

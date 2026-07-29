@@ -21,13 +21,23 @@ import ai.moeru.airicraft.agent.debug.LlmFlightRecordQueryResult;
 import ai.moeru.airicraft.agent.debug.LlmFlightRecorder;
 import ai.moeru.airicraft.agent.debug.PlannerAttemptDebugSnapshot;
 import ai.moeru.airicraft.agent.actions.ActionGraphExecutionInput;
-import ai.moeru.airicraft.agent.actions.ActionGraphExecutionRuntime;
 import ai.moeru.airicraft.agent.actions.ActionGraphExecutionSnapshot;
+import ai.moeru.airicraft.agent.actions.ActionGraphAdmission;
+import ai.moeru.airicraft.agent.actions.ActionGraphCoordinator;
+import ai.moeru.airicraft.agent.actions.ActionGraphCoordinatorEvent;
+import ai.moeru.airicraft.agent.actions.ActionGraphExecutionView;
+import ai.moeru.airicraft.agent.actions.ActionGraphStartResult;
+import ai.moeru.airicraft.agent.actions.ActionGraphAgentPosition;
+import ai.moeru.airicraft.agent.actions.ActionGraphWatchSnapshot;
+import ai.moeru.airicraft.agent.actions.ActionWatchAnchor;
+import ai.moeru.airicraft.agent.actions.ActionWatchProgressKind;
+import ai.moeru.airicraft.agent.actions.ActionWatchProgressObservation;
 import ai.moeru.airicraft.agent.actions.ActionGraphDebugService;
 import ai.moeru.airicraft.agent.actions.ActionGraphPrimitiveDispatch;
 import ai.moeru.airicraft.agent.actions.ActionGraphPrimitiveDispatchResult;
 import ai.moeru.airicraft.agent.actions.ActionGraphPrimitiveMapper;
 import ai.moeru.airicraft.agent.actions.ActionFact;
+import ai.moeru.airicraft.agent.actions.ActionFactIdentity;
 import ai.moeru.airicraft.agent.actions.ActionFactType;
 import ai.moeru.airicraft.agent.actions.ActionGoal;
 import ai.moeru.airicraft.agent.actions.ActionPlanStep;
@@ -230,7 +240,7 @@ public final class EmbodiedAgentRuntime {
 	private final SmeltingPlannerService smeltingPlannerService = new SmeltingPlannerService();
 	private final WorldReadLedger worldReadLedger = new WorldReadLedger();
 	private final CurrentWorldQueryService guardedWorldQueryService = new CurrentWorldQueryService(MinecraftClient::getInstance);
-	private final ActionGraphExecutionRuntime actionGraphRuntime;
+	private final ActionGraphCoordinator actionGraphCoordinator;
 	private final SurvivalReflexRuntime survivalReflexRuntime;
 	private final PersistentActionFactStore persistentActionFactStore = PersistentActionFactStore.defaults();
 	private final boolean codexDriverActive;
@@ -308,7 +318,7 @@ public final class EmbodiedAgentRuntime {
 		this.worldTaskExecutor = Objects.requireNonNull(worldTaskExecutor, "worldTaskExecutor");
 		this.observability = new FlightRecordingObservability(Objects.requireNonNull(observability, "observability"), llmFlightRecorder);
 		this.smeltingProcessManager = Objects.requireNonNull(smeltingProcessManager, "smeltingProcessManager");
-		this.actionGraphRuntime = new ActionGraphExecutionRuntime(ActionsetLibraryPaths.defaultRoot(), this::dispatchActionGraphPrimitive);
+		this.actionGraphCoordinator = new ActionGraphCoordinator(ActionsetLibraryPaths.defaultRoot(), this::dispatchActionGraphPrimitive);
 		CameraController effectiveCameraController = Objects.requireNonNull(cameraController, "cameraController");
 		this.behaviorTreeRuntime = new BehaviorTreeRuntime(effectiveCameraController);
 		this.nearbyPlayerTracker = new NearbyPlayerTracker(resolveNearbyPlayerTrackingRadius(airicraftConfig));
@@ -438,7 +448,8 @@ public final class EmbodiedAgentRuntime {
 		worldTaskExecutor.onWorldLeave();
 		surfaceMemory.clear();
 		worldReadLedger.clear();
-		actionGraphRuntime.clear();
+		actionGraphCoordinator.cancelAll("world_left", tickCount);
+		actionGraphCoordinator.clear();
 		pendingActionGraphTerminalEvent = null;
 		activeJobRuntime.clear();
 		idleIdeaScheduler.reset();
@@ -521,6 +532,7 @@ public final class EmbodiedAgentRuntime {
 		}
 		debugRecorder.recordDialogueState(dialogueRuntime.snapshot());
 		if (survivalReflexRuntime.snapshot().holdsNormalTasks()) {
+			tickActionGraph(worldEvidence, false);
 			pauseNormalWorkForReflex(client);
 			drainEventPipeline();
 			lastKnownPlayerHealth = currentPlayerHealth(client);
@@ -528,7 +540,7 @@ public final class EmbodiedAgentRuntime {
 		}
 
 		TaskSnapshot previousTaskSnapshot = taskSnapshot;
-		tickActionGraph(worldEvidence);
+		tickActionGraph(worldEvidence, true);
 		activeJobRuntime.tick(
 			taskExecutionSnapshot,
 			worldEvidence,
@@ -604,10 +616,10 @@ public final class EmbodiedAgentRuntime {
 
 	private void tickSurvivalReflex(MinecraftClient client) {
 		ActiveJob activeJob = activeJobRuntime.current();
-		ActionGraphExecutionSnapshot graph = actionGraphRuntime.snapshot();
+		ActionGraphExecutionSnapshot graph = actionGraphExecutionSnapshot();
 		SurvivalReflexRuntime.InterruptedWork interruptedWork = new SurvivalReflexRuntime.InterruptedWork(
 			activeJob == null || activeJob.isIdle() || activeJob.status().terminal() ? null : activeJob.jobId(),
-			actionGraphRuntime.active() ? graph.executionId() : null
+			actionGraphCoordinator.hasForeground() ? graph.executionId() : null
 		);
 		GoalPosition surfaceTarget = surfaceMemory.bestTarget()
 			.map(SurfaceMemory.SurfaceTarget::position)
@@ -635,7 +647,7 @@ public final class EmbodiedAgentRuntime {
 		TaskSnapshot previousTask = taskSnapshot;
 		TaskExecutionSnapshot previousExecution = taskExecutionSnapshot;
 		activeJobRuntime.pauseForReflex(tickCount);
-		actionGraphRuntime.pauseForReflex(tickCount);
+		actionGraphCoordinator.pauseForegroundForReflex(tickCount);
 		taskSnapshot = activeJobRuntime.taskSnapshot();
 		missionExecutionSnapshot = activeJobRuntime.missionExecutionSnapshot();
 		Optional<WorldTaskRequest> activeRequest = activeJobRuntime.activeTaskRequest();
@@ -719,9 +731,9 @@ public final class EmbodiedAgentRuntime {
 	}
 
 	private void cancelActionsForPlayerDeath(MinecraftClient client) {
-		ActionGraphExecutionSnapshot graphSnapshot = actionGraphRuntime.snapshot();
+		ActionGraphExecutionSnapshot graphSnapshot = actionGraphExecutionSnapshot();
 		ActiveJob activeJob = activeJobRuntime.current();
-		boolean graphCancelled = actionGraphRuntime.active();
+		boolean graphCancelled = actionGraphCoordinator.hasNonterminal();
 		boolean jobCancelled = !activeJob.isIdle() && !activeJob.status().terminal();
 
 		survivalReflexRuntime.reset(client);
@@ -730,7 +742,7 @@ public final class EmbodiedAgentRuntime {
 		followCapability.clear();
 		followState = FollowState.idle();
 		if (graphCancelled) {
-			actionGraphRuntime.cancel("player_died", tickCount);
+			actionGraphCoordinator.cancelAll("player_died", tickCount);
 		}
 		pendingActionGraphTerminalEvent = null;
 		if (jobCancelled) {
@@ -802,7 +814,8 @@ public final class EmbodiedAgentRuntime {
 		visionService.shutdown();
 		worldTaskExecutor.shutdown();
 		surfaceMemory.clear();
-		actionGraphRuntime.clear();
+		actionGraphCoordinator.cancelAll("runtime_shutdown", tickCount);
+		actionGraphCoordinator.clear();
 		pendingActionGraphTerminalEvent = null;
 		activeJobRuntime.clear();
 		followCapability.clear();
@@ -870,13 +883,21 @@ public final class EmbodiedAgentRuntime {
 	}
 
 	private void releaseSafetyHoldForReplacement(String reason) {
+		releaseSafetyHold(reason, true);
+	}
+
+	private void releaseSafetyHoldForActionGraphStart(String reason) {
+		releaseSafetyHold(reason, false);
+	}
+
+	private void releaseSafetyHold(String reason, boolean cancelActionGraphs) {
 		if (survivalReflexRuntime.snapshot().state() != SurvivalReflexState.AWAITING_PLANNER) {
 			return;
 		}
 		TaskSnapshot previousTask = taskSnapshot;
 		TaskExecutionSnapshot previousExecution = taskExecutionSnapshot;
-		if (actionGraphRuntime.active()) {
-			actionGraphRuntime.cancel(reason, tickCount);
+		if (cancelActionGraphs && actionGraphCoordinator.hasNonterminal()) {
+			actionGraphCoordinator.cancelAll(reason, tickCount);
 			pendingActionGraphTerminalEvent = null;
 		}
 		ActiveJob interruptedJob = activeJobRuntime.current();
@@ -919,54 +940,132 @@ public final class EmbodiedAgentRuntime {
 	}
 
 	public ActionGraphExecutionSnapshot startActionGoal(ActionGoal goal, String source) {
+		ActionGraphStartResult result = startActionGoalDetailed(goal, source);
+		return result.execution() == null ? ActionGraphExecutionSnapshot.idle() : result.execution().execution();
+	}
+
+	public ActionGraphStartResult startActionGoalDetailed(ActionGoal goal, String source) {
 		Objects.requireNonNull(goal, "goal");
 		requireLivingPlayerForAction();
-		releaseSafetyHoldForReplacement("action_graph_replaced");
-		ActionGraphExecutionSnapshot activeSnapshot = actionGraphRuntime.snapshot();
-		if (actionGraphRuntime.active()) {
-			eventBuffer.append(tickCount, "action_graph.goal_reused", Map.of(
-				"executionId", activeSnapshot.executionId(),
-				"goal", activeSnapshot.goal() == null ? "" : activeSnapshot.goal().normalizedKey(),
-				"requestedGoal", goal.normalizedKey(),
-				"source", source == null || source.isBlank() ? "unknown" : source
-			));
-			return activeSnapshot;
-		}
 		WorldEvidence evidence = currentWorldEvidence(MinecraftClient.getInstance());
-		ActionGraphExecutionSnapshot snapshot = actionGraphRuntime.submit(
+		ActionGraphStartResult result = actionGraphCoordinator.submit(
 			goal,
 			evidence.itemCounts(),
 			actionResolverContext(evidence),
 			tickCount
 		);
-		eventBuffer.append(tickCount, "action_graph.goal_started", Map.of(
-			"executionId", snapshot.executionId(),
-			"goal", goal.normalizedKey(),
-			"source", source == null || source.isBlank() ? "bridge_debug" : source
-		));
-		return snapshot;
+		if (result.admission() == ActionGraphAdmission.STARTED) {
+			releaseSafetyHoldForActionGraphStart("action_graph_started");
+		}
+		Map<String, Object> payload = new LinkedHashMap<>(result.toPayload(false));
+		payload.put("requestedGoal", goal.normalizedKey());
+		payload.put("source", source == null || source.isBlank() ? "bridge_debug" : source);
+		eventBuffer.append(tickCount, "action_graph.goal_admission", payload);
+		drainActionGraphCoordinatorEvents();
+		return result;
 	}
 
 	public ActionGraphExecutionSnapshot actionGraphExecutionSnapshot() {
-		return actionGraphRuntime.snapshot();
+		ActionGraphExecutionView selected = actionGraphCoordinator.inspect(null);
+		return selected == null ? ActionGraphExecutionSnapshot.idle() : selected.execution();
+	}
+
+	public List<ActionGraphExecutionView> actionGraphExecutions() {
+		return actionGraphCoordinator.list();
+	}
+
+	public ActionGraphExecutionView actionGraphExecution(String executionId) {
+		return actionGraphCoordinator.inspect(executionId);
+	}
+
+	public Map<String, Object> actionGraphGoalsPayload(boolean verbose) {
+		List<ActionGraphExecutionView> executions = actionGraphCoordinator.list();
+		List<ActionGraphWatchSnapshot> watches = actionGraphCoordinator.pendingWatches();
+		LinkedHashMap<String, Object> payload = new LinkedHashMap<>();
+		payload.put("available", true);
+		payload.put("foregroundExecutionId", actionGraphCoordinator.foregroundExecutionId());
+		payload.put("executionCount", executions.size());
+		payload.put("nonterminalCount", actionGraphCoordinator.nonterminalExecutions().size());
+		payload.put("suspendedCount", executions.stream().filter(view -> view.residency().name().equals("SUSPENDED")).count());
+		payload.put("runnableCount", executions.stream().filter(view -> view.residency().name().equals("RUNNABLE")).count());
+		payload.put("executions", executions.stream().map(view -> view.toPayload(verbose)).toList());
+		payload.put("watchCount", watches.size());
+		payload.put("watches", watches.stream().map(EmbodiedAgentRuntime::actionGraphWatchPayload).toList());
+		return payload;
+	}
+
+	private static Map<String, Object> actionGraphWatchPayload(ActionGraphWatchSnapshot watch) {
+		LinkedHashMap<String, Object> payload = new LinkedHashMap<>();
+		payload.put("executionId", watch.executionId());
+		payload.put("watchId", watch.watchId());
+		payload.put("stepId", watch.stepId());
+		payload.put("consumedEligibleTicks", watch.consumedEligibleTicks());
+		payload.put("progressEligible", watch.progressEligible());
+		payload.put("pauseReason", watch.pauseReason());
+		if (watch.spec() != null) {
+			payload.put("timeoutTicks", watch.spec().timeoutTicks());
+			payload.put("progressKind", watch.spec().progressKind().name());
+			payload.put("condition", Map.of(
+				"fact", watch.spec().condition().factType().id(),
+				"keys", watch.spec().condition().queryKeys(),
+				"minimums", watch.spec().condition().minimums()
+			));
+			if (watch.spec().sourceFactIdentity() != null) {
+				payload.put("sourceFactIdentity", Map.of(
+					"fact", watch.spec().sourceFactIdentity().type().id(),
+					"keys", watch.spec().sourceFactIdentity().keys()
+				));
+			}
+			if (watch.spec().anchor() != null) {
+				ActionWatchAnchor anchor = watch.spec().anchor();
+				payload.put("anchor", Map.of(
+					"worldId", anchor.worldId(),
+					"dimension", anchor.dimension(),
+					"x", anchor.x(),
+					"y", anchor.y(),
+					"z", anchor.z(),
+					"fallback", anchor.fallback()
+				));
+			}
+		}
+		return payload;
 	}
 
 	public ActionGraphExecutionSnapshot cancelActionGoal(String reason) {
-		ActionGraphExecutionSnapshot previous = actionGraphRuntime.snapshot();
-		ActionGraphExecutionSnapshot snapshot = actionGraphRuntime.cancel(reason, tickCount);
-		pendingActionGraphTerminalEvent = null;
-		if (!previous.activeTaskId().isBlank()) {
-			cancelTask(reason == null || reason.isBlank() ? "action_graph_cancelled" : reason);
+		ActionGraphExecutionSnapshot previous = actionGraphExecutionSnapshot();
+		ActionGraphExecutionView cancelled = actionGraphCoordinator.cancelSelected(reason, tickCount);
+		return finishActionGraphCancellation(previous, cancelled, reason);
+	}
+
+	public ActionGraphExecutionSnapshot cancelActionGoal(String executionId, String reason) {
+		ActionGraphExecutionView previousView = actionGraphCoordinator.inspect(executionId);
+		ActionGraphExecutionSnapshot previous = previousView == null ? ActionGraphExecutionSnapshot.idle() : previousView.execution();
+		ActionGraphExecutionView cancelled = actionGraphCoordinator.cancel(executionId, reason, tickCount);
+		return finishActionGraphCancellation(previous, cancelled, reason);
+	}
+
+	private ActionGraphExecutionSnapshot finishActionGraphCancellation(
+		ActionGraphExecutionSnapshot previous,
+		ActionGraphExecutionView cancelled,
+		String reason
+	) {
+		ActionGraphExecutionSnapshot snapshot = cancelled == null ? previous : cancelled.execution();
+		if (pendingActionGraphTerminalEvent != null
+			&& !previous.activeTaskId().isBlank()
+			&& Objects.equals(previous.activeTaskId(), pendingActionGraphTerminalEvent.taskId())) {
+			pendingActionGraphTerminalEvent = null;
 		}
-		else {
+		if (!previous.activeTaskId().isBlank()) {
+			cancelActiveJobOnly(reason == null || reason.isBlank() ? "action_graph_cancelled" : reason);
+		}
+		else if (Objects.equals(
+			previous.executionId(),
+			survivalReflexRuntime.snapshot().interruptedActionExecutionId()
+		)) {
 			survivalReflexRuntime.discardHold("action_graph_cancelled", tickCount);
 			processSurvivalReflexEvents();
 		}
-		eventBuffer.append(tickCount, "action_graph.goal_cancelled", Map.of(
-			"executionId", previous.executionId(),
-			"activeTaskId", previous.activeTaskId(),
-			"reason", reason == null || reason.isBlank() ? "cancelled" : reason
-		));
+		drainActionGraphCoordinatorEvents();
 		return snapshot;
 	}
 
@@ -1149,7 +1248,8 @@ public final class EmbodiedAgentRuntime {
 		eventPipeline.clearPlannerFeed();
 		completePendingCraftToolResult("Tool result for craft_recipe: cancelled reason=evaluation_finished");
 		dialogueRuntime.clear();
-		actionGraphRuntime.clear();
+		actionGraphCoordinator.cancelAll("runtime_reset", tickCount);
+		actionGraphCoordinator.clear();
 		pendingActionGraphTerminalEvent = null;
 		activeJobRuntime.clear();
 		worldTaskExecutor.onWorldLeave();
@@ -1512,10 +1612,14 @@ public final class EmbodiedAgentRuntime {
 	}
 
 	public TaskSnapshot cancelTask(String reason) {
-		if (actionGraphRuntime.active()) {
-			actionGraphRuntime.cancel(reason == null || reason.isBlank() ? "cancelled" : reason, tickCount);
+		if (actionGraphCoordinator.hasNonterminal()) {
+			actionGraphCoordinator.cancelAll(reason == null || reason.isBlank() ? "cancelled" : reason, tickCount);
 			pendingActionGraphTerminalEvent = null;
 		}
+		return cancelActiveJobOnly(reason == null || reason.isBlank() ? "cancelled" : reason);
+	}
+
+	private TaskSnapshot cancelActiveJobOnly(String reason) {
 		survivalReflexRuntime.discardHold("task_cancelled", tickCount);
 		processSurvivalReflexEvents();
 		TaskSnapshot previousTaskSnapshot = taskSnapshot;
@@ -1546,14 +1650,36 @@ public final class EmbodiedAgentRuntime {
 		return taskSnapshot;
 	}
 
-	private void tickActionGraph(WorldEvidence worldEvidence) {
-		if (!actionGraphRuntime.active() && pendingActionGraphTerminalEvent == null) {
+	private void tickActionGraph(WorldEvidence worldEvidence, boolean foregroundAllowed) {
+		if (!actionGraphCoordinator.hasNonterminal() && pendingActionGraphTerminalEvent == null) {
 			return;
 		}
 		TaskTerminalEvent terminalEvent = pendingActionGraphTerminalEvent;
-		pendingActionGraphTerminalEvent = null;
+		if (foregroundAllowed) {
+			pendingActionGraphTerminalEvent = null;
+		}
+		else {
+			terminalEvent = null;
+		}
 		ActionResolverContext context = actionResolverContext(worldEvidence);
-		actionGraphRuntime.tick(new ActionGraphExecutionInput(
+		MinecraftClient client = MinecraftClient.getInstance();
+		ActionGraphAgentPosition agentPosition = client != null && client.player != null
+			? new ActionGraphAgentPosition(context.worldId(), context.dimension(), client.player.getBlockX(), client.player.getBlockY(), client.player.getBlockZ())
+			: null;
+		List<ActionGraphWatchSnapshot> pendingWatches = actionGraphCoordinator.pendingWatches();
+		Map<String, ActionWatchProgressObservation> watchProgress = actionGraphWatchProgress(client, context, agentPosition, pendingWatches);
+		ArrayList<ActionFact> observedFacts = new ArrayList<>(FarmBootstrapFactProvider.fromWorldEvidence(context, worldEvidence));
+		boolean discoverNearbyCrops = actionGraphCoordinator.nonterminalExecutions().stream()
+			.map(ActionGraphExecutionView::execution)
+			.anyMatch(execution -> execution.state() == ai.moeru.airicraft.agent.actions.ActionGraphExecutionState.RESOLVING
+				|| execution.state() == ai.moeru.airicraft.agent.actions.ActionGraphExecutionState.REPLANNING);
+		List<ActionGraphWatchSnapshot> cropWatches = pendingWatches.stream()
+			.filter(watch -> watch.spec() != null && watch.spec().condition().factType() == ActionFactType.WORLD_CROP_GROUP)
+			.toList();
+		if (discoverNearbyCrops || (!cropWatches.isEmpty() && tickCount % 10L == 0L)) {
+			observedFacts.addAll(observeCropGroupFacts(client, context, cropWatches, discoverNearbyCrops));
+		}
+		actionGraphCoordinator.tick(new ActionGraphExecutionInput(
 			context,
 			worldEvidence.itemCounts(),
 			resourceCountsForGraph(worldEvidence.inventoryCounts()),
@@ -1564,8 +1690,169 @@ public final class EmbodiedAgentRuntime {
 			worldEvidence.knownCrafts(),
 			worldEvidence.availableSmelts(),
 			worldEvidence.knownSmelts(),
-			FarmBootstrapFactProvider.fromWorldEvidence(context, worldEvidence)
-		));
+			observedFacts,
+			agentPosition,
+			watchProgress
+		), foregroundAllowed);
+		drainActionGraphCoordinatorEvents();
+	}
+
+	private static List<ActionFact> observeCropGroupFacts(
+		MinecraftClient client,
+		ActionResolverContext context,
+		List<ActionGraphWatchSnapshot> watches,
+		boolean discoverNearby
+	) {
+		if (client == null || client.world == null || client.player == null || context == null) {
+			return List.of();
+		}
+		BlockPos playerPos = client.player.getBlockPos();
+		LinkedHashMap<Long, CropGroupObservation> groups = new LinkedHashMap<>();
+		LinkedHashMap<Long, Integer> chunksToScan = new LinkedHashMap<>();
+		if (discoverNearby) {
+			int playerChunkX = playerPos.getX() >> 4;
+			int playerChunkZ = playerPos.getZ() >> 4;
+			for (int dx = -1; dx <= 1; dx++) {
+				for (int dz = -1; dz <= 1; dz++) {
+					chunksToScan.put(chunkKey(playerChunkX + dx, playerChunkZ + dz), playerPos.getY());
+				}
+			}
+		}
+		if (watches != null) {
+			for (ActionGraphWatchSnapshot watch : watches) {
+				ActionWatchAnchor anchor = watch.spec() == null ? null : watch.spec().anchor();
+				if (anchor != null && Objects.equals(anchor.worldId(), context.worldId()) && Objects.equals(anchor.dimension(), context.dimension())) {
+					chunksToScan.put(chunkKey(anchor.chunkX(), anchor.chunkZ()), anchor.y());
+				}
+			}
+		}
+		for (Map.Entry<Long, Integer> chunk : chunksToScan.entrySet()) {
+			int chunkX = (int) (chunk.getKey() >> 32);
+			int chunkZ = (int) (long) chunk.getKey();
+			int baseY = chunk.getValue();
+			if (!client.world.isChunkLoaded(chunkX, chunkZ)) {
+				continue;
+			}
+			for (int localX = 0; localX < 16; localX++) {
+				for (int dy = -6; dy <= 6; dy++) {
+					for (int localZ = 0; localZ < 16; localZ++) {
+						BlockPos pos = new BlockPos((chunkX << 4) + localX, baseY + dy, (chunkZ << 4) + localZ);
+						BlockState state = client.world.getBlockState(pos);
+						if (!"minecraft:wheat".equals(Registries.BLOCK.getId(state.getBlock()).toString())) {
+							continue;
+						}
+						groups.computeIfAbsent(chunk.getKey(), ignored -> new CropGroupObservation(pos.toImmutable()))
+							.observe(pos, cropAge(state) >= 7);
+					}
+				}
+			}
+		}
+		ArrayList<ActionFact> facts = new ArrayList<>();
+		for (CropGroupObservation group : groups.values()) {
+			BlockPos origin = group.origin;
+			String siteId = "crop-group:minecraft:wheat:" + (origin.getX() >> 4) + "," + (origin.getZ() >> 4);
+			facts.add(new ActionFact(
+				ActionFactIdentity.worldCropGroup(context.worldId(), context.dimension(), siteId, "minecraft:wheat"),
+				Map.of(
+					"matureCount", group.matureCount,
+					"totalCount", group.totalCount,
+					"origin", Map.of("x", origin.getX(), "y", origin.getY(), "z", origin.getZ())
+				),
+				ai.moeru.airicraft.agent.actions.ActionFactProvenance.OBSERVED,
+				context.currentTick(),
+				context.currentTick() + 20L
+			));
+		}
+		return List.copyOf(facts);
+	}
+
+	private static long chunkKey(int chunkX, int chunkZ) {
+		return ((long) chunkX << 32) ^ (chunkZ & 0xffffffffL);
+	}
+
+	private static int cropAge(BlockState state) {
+		for (Property<?> property : state.getProperties()) {
+			if (!"age".equals(property.getName())) {
+				continue;
+			}
+			try {
+				return Integer.parseInt(propertyValue(state, property));
+			}
+			catch (NumberFormatException ignored) {
+				return 0;
+			}
+		}
+		return 0;
+	}
+
+	private static final class CropGroupObservation {
+		private BlockPos origin;
+		private int matureCount;
+		private int totalCount;
+
+		private CropGroupObservation(BlockPos origin) {
+			this.origin = origin;
+		}
+
+		private void observe(BlockPos pos, boolean mature) {
+			totalCount++;
+			if (mature) {
+				matureCount++;
+			}
+			if (pos.getX() < origin.getX()
+				|| (pos.getX() == origin.getX() && pos.getZ() < origin.getZ())
+				|| (pos.getX() == origin.getX() && pos.getZ() == origin.getZ() && pos.getY() < origin.getY())) {
+				origin = pos.toImmutable();
+			}
+		}
+	}
+
+	private Map<String, ActionWatchProgressObservation> actionGraphWatchProgress(
+		MinecraftClient client,
+		ActionResolverContext context,
+		ActionGraphAgentPosition agentPosition,
+		List<ActionGraphWatchSnapshot> pendingWatches
+	) {
+		LinkedHashMap<String, ActionWatchProgressObservation> progress = new LinkedHashMap<>();
+		for (ActionGraphWatchSnapshot watch : pendingWatches) {
+			if (watch.spec() == null || watch.spec().progressKind() != ActionWatchProgressKind.AREA_TICKING) {
+				continue;
+			}
+			ActionWatchAnchor anchor = watch.spec().anchor();
+			if (anchor == null) {
+				progress.put(watch.watchId(), ActionWatchProgressObservation.paused("anchor_unavailable"));
+				continue;
+			}
+			if (!Objects.equals(anchor.worldId(), context.worldId()) || !Objects.equals(anchor.dimension(), context.dimension())) {
+				progress.put(watch.watchId(), ActionWatchProgressObservation.paused("world_or_dimension_mismatch"));
+				continue;
+			}
+			if (client == null || client.world == null || agentPosition == null) {
+				progress.put(watch.watchId(), ActionWatchProgressObservation.paused("world_unavailable"));
+				continue;
+			}
+			if (!client.world.isChunkLoaded(anchor.chunkX(), anchor.chunkZ())) {
+				progress.put(watch.watchId(), ActionWatchProgressObservation.paused("anchor_chunk_unloaded"));
+				continue;
+			}
+			int agentChunkX = agentPosition.x() >> 4;
+			int agentChunkZ = agentPosition.z() >> 4;
+			int chunkDistance = Math.max(Math.abs(anchor.chunkX() - agentChunkX), Math.abs(anchor.chunkZ() - agentChunkZ));
+			if (chunkDistance > client.world.getSimulationDistance()) {
+				progress.put(watch.watchId(), ActionWatchProgressObservation.paused("outside_simulation_distance"));
+				continue;
+			}
+			progress.put(watch.watchId(), ActionWatchProgressObservation.active());
+		}
+		return Map.copyOf(progress);
+	}
+
+	private void drainActionGraphCoordinatorEvents() {
+		for (ActionGraphCoordinatorEvent event : actionGraphCoordinator.drainEvents()) {
+			LinkedHashMap<String, Object> payload = new LinkedHashMap<>(event.payload());
+			payload.put("executionId", event.executionId());
+			eventBuffer.append(tickCount, event.type(), payload);
+		}
 	}
 
 	private ActionGraphPrimitiveDispatchResult dispatchActionGraphPrimitive(ActionPlanStep step) {
@@ -1635,7 +1922,8 @@ public final class EmbodiedAgentRuntime {
 	}
 
 	private void captureActionGraphTerminalEvent(TaskTerminalEvent event) {
-		ActionGraphExecutionSnapshot snapshot = actionGraphRuntime.snapshot();
+		ActionGraphExecutionView foreground = actionGraphCoordinator.inspect(actionGraphCoordinator.foregroundExecutionId());
+		ActionGraphExecutionSnapshot snapshot = foreground == null ? ActionGraphExecutionSnapshot.idle() : foreground.execution();
 		if (event == null || snapshot.activeTaskId().isBlank() || !Objects.equals(snapshot.activeTaskId(), event.taskId())) {
 			return;
 		}
@@ -1851,6 +2139,13 @@ public final class EmbodiedAgentRuntime {
 		};
 	}
 
+	private static boolean legacyIntentWouldMutateGraphBoundary(DialogueIntentType type) {
+		return switch (type) {
+			case SET_GOAL, JOB_UPDATE, MISSION_UPDATE, SUBMIT_TASK, CLEAR_GOAL, CANCEL_TASK -> true;
+			case REPLY_ONLY, ASK_CLARIFICATION, ACKNOWLEDGE_FAILURE, NONE -> false;
+		};
+	}
+
 	private static boolean blockModificationToolWaitsForTerminalResult(String normalizedToolName) {
 		return PlannerToolCatalog.PLACE_BLOCK.equals(normalizedToolName)
 			|| PlannerToolCatalog.USE_BLOCK.equals(normalizedToolName)
@@ -1878,18 +2173,28 @@ public final class EmbodiedAgentRuntime {
 					+ " taskState=" + taskSnapshot.state().name();
 			}
 			case PlannerToolCatalog.START_ACTION_GOAL -> {
-				ActionGraphExecutionSnapshot snapshot = startActionGoal(parseActionGoalArgs(args), "planner_tool");
-				yield actionGraphToolResult("start_action_goal", snapshot, false);
+				ActionGraphStartResult result = startActionGoalDetailed(parseActionGoalArgs(args), "planner_tool");
+				yield actionGraphStartToolResult(result);
+			}
+			case PlannerToolCatalog.LIST_ACTION_GOALS -> {
+				yield actionGraphListToolResult(actionGraphExecutions(), false);
 			}
 			case PlannerToolCatalog.INSPECT_ACTION_GOAL -> {
-				yield actionGraphToolResult("inspect_action_goal", actionGraphExecutionSnapshot(), false);
+				String executionId = stringArg(args, "executionId").orElse(null);
+				ActionGraphExecutionView view = actionGraphCoordinator.inspect(executionId);
+				yield actionGraphViewToolResult("inspect_action_goal", view, false);
 			}
 			case PlannerToolCatalog.CANCEL_ACTION_GOAL -> {
+				String executionId = stringArg(args, "executionId").orElse(null);
 				String reason = stringArg(args, "reason").orElse("planner_tool_cancelled");
-				yield actionGraphToolResult("cancel_action_goal", cancelActionGoal(reason), false);
+				yield actionGraphToolResult("cancel_action_goal", executionId == null
+					? cancelActionGoal(reason)
+					: cancelActionGoal(executionId, reason), false);
 			}
 			case PlannerToolCatalog.INSPECT_ACTION_TRACE -> {
-				yield actionGraphToolResult("inspect_action_trace", actionGraphExecutionSnapshot(), true);
+				String executionId = stringArg(args, "executionId").orElse(null);
+				ActionGraphExecutionView view = actionGraphCoordinator.inspect(executionId);
+				yield actionGraphViewToolResult("inspect_action_trace", view, true);
 			}
 			case PlannerToolCatalog.LIST_ACTION_CAPABILITIES -> {
 				yield actionGraphCapabilitiesToolResult();
@@ -2189,7 +2494,8 @@ public final class EmbodiedAgentRuntime {
 			ActiveJob activeJob = activeJobRuntime.current();
 			return activeJob == null || activeJob.type() != ActiveJobType.SMELT_ITEMS;
 		}
-		return PlannerToolCatalog.FOLLOW_PLAYER.equals(normalizedToolName)
+		return PlannerToolCatalog.START_ACTION_GOAL.equals(normalizedToolName)
+			|| PlannerToolCatalog.FOLLOW_PLAYER.equals(normalizedToolName)
 			|| PlannerToolCatalog.NAVIGATE_TO.equals(normalizedToolName)
 			|| PlannerToolCatalog.RETURN_TO_SURFACE.equals(normalizedToolName)
 			|| PlannerToolCatalog.MINE_BLOCKS.equals(normalizedToolName)
@@ -2206,10 +2512,7 @@ public final class EmbodiedAgentRuntime {
 	}
 
 	private boolean plannerToolWouldPreemptActiveGraph(String normalizedToolName) {
-		if (!actionGraphRuntime.active()) {
-			return false;
-		}
-		if (survivalReflexRuntime.snapshot().state() == SurvivalReflexState.AWAITING_PLANNER) {
+		if (!actionGraphCoordinator.hasNonterminal()) {
 			return false;
 		}
 		return legacyActionToolWouldPreemptGraph(normalizedToolName)
@@ -2269,12 +2572,12 @@ public final class EmbodiedAgentRuntime {
 	}
 
 	private String plannerActiveGraphPreemptionError(String toolName) {
-		ActionGraphExecutionSnapshot snapshot = actionGraphRuntime.snapshot();
+		ActionGraphExecutionSnapshot snapshot = actionGraphExecutionSnapshot();
 		return "TOOL_ERROR: " + toolName + " denied reason=active_action_graph_in_progress"
 			+ " graphState=" + snapshot.state().name()
 			+ " executionId=" + snapshot.executionId()
 			+ " activeTaskId=" + snapshot.activeTaskId()
-			+ ". The action graph owns execution. Use inspect_action_goal or inspect_action_trace to observe progress, start_action_goal to reuse the active graph, or cancel_action_goal only if the user explicitly changes tasks.";
+			+ ". A graph execution owns the mutation boundary. Use list_action_goals, inspect_action_goal, or inspect_action_trace to observe progress. Additional productive work must use start_action_goal; it is accepted only when the foreground lane is free. Cancel only if the user explicitly changes tasks.";
 	}
 
 	private static String queuedActionToolResult(String toolName, String details) {
@@ -2292,6 +2595,35 @@ public final class EmbodiedAgentRuntime {
 			+ " traceEventCount=" + payload.get("traceEventCount")
 			+ " failureCode=" + payload.get("failureCode")
 			+ " payload=" + payload;
+	}
+
+	private static String actionGraphStartToolResult(ActionGraphStartResult result) {
+		Map<String, Object> payload = result == null ? Map.of("admission", "busy") : result.toPayload(false);
+		return "Tool result for start_action_goal: state=" + payload.getOrDefault("state", "IDLE")
+			+ " admission=" + payload.get("admission")
+			+ " executionId=" + payload.getOrDefault("executionId", "")
+			+ " foregroundExecutionId=" + payload.getOrDefault("foregroundExecutionId", "")
+			+ " suspendedCount=" + payload.getOrDefault("suspendedCount", 0)
+			+ " runnableCount=" + payload.getOrDefault("runnableCount", 0)
+			+ " failureCode=" + payload.getOrDefault("failureCode", "")
+			+ " payload=" + payload;
+	}
+
+	private static String actionGraphViewToolResult(String toolName, ActionGraphExecutionView view, boolean verbose) {
+		if (view == null) {
+			return "TOOL_ERROR: " + toolName + " execution_not_found";
+		}
+		Map<String, Object> payload = view.toPayload(verbose);
+		return "Tool result for " + toolName + ": state=" + payload.get("state")
+			+ " executionId=" + payload.get("executionId")
+			+ " payload=" + payload;
+	}
+
+	private static String actionGraphListToolResult(List<ActionGraphExecutionView> executions, boolean verbose) {
+		List<Map<String, Object>> goals = executions == null
+			? List.of()
+			: executions.stream().map(execution -> execution.toPayload(verbose)).toList();
+		return "Tool result for list_action_goals: count=" + goals.size() + " goals=" + goals;
 	}
 
 	private static String actionGraphCapabilitiesToolResult() {
@@ -2551,8 +2883,8 @@ public final class EmbodiedAgentRuntime {
 	}
 
 	private void applyPlannerClearGoalTool() {
-		if (actionGraphRuntime.active()) {
-			actionGraphRuntime.cancel("planner_tool_cleared", tickCount);
+		if (actionGraphCoordinator.hasNonterminal()) {
+			actionGraphCoordinator.cancelAll("planner_tool_cleared", tickCount);
 			pendingActionGraphTerminalEvent = null;
 		}
 		survivalReflexRuntime.discardHold("goal_cleared", tickCount);
@@ -2574,6 +2906,14 @@ public final class EmbodiedAgentRuntime {
 
 	private void applyTaskIntent(DialogueResponse response, WorldEvidence worldEvidence, String source) {
 		if (response == null || response.intent() == null || response.intent().type() == null) {
+			return;
+		}
+		if (actionGraphCoordinator.hasNonterminal() && legacyIntentWouldMutateGraphBoundary(response.intent().type())) {
+			eventBuffer.append(tickCount, "player.action_rejected", Map.of(
+				"reason", "active_action_graph_in_progress",
+				"intentType", response.intent().type().name(),
+				"source", source == null || source.isBlank() ? "planner_response" : source
+			));
 			return;
 		}
 		if (sessionSnapshot.requiresRespawn() && intentRequiresLivingPlayer(response.intent().type())) {
@@ -2600,8 +2940,8 @@ public final class EmbodiedAgentRuntime {
 			releasedForReplacement = true;
 		}
 		if (response.intent().type() == DialogueIntentType.CANCEL_TASK || response.intent().type() == DialogueIntentType.CLEAR_GOAL) {
-			if (actionGraphRuntime.active()) {
-				actionGraphRuntime.cancel("planner_cancelled", tickCount);
+			if (actionGraphCoordinator.hasNonterminal()) {
+				actionGraphCoordinator.cancelAll("planner_cancelled", tickCount);
 				pendingActionGraphTerminalEvent = null;
 			}
 			survivalReflexRuntime.discardHold("planner_cancelled", tickCount);
@@ -3309,7 +3649,10 @@ public final class EmbodiedAgentRuntime {
 	}
 
 	private void maybeFireIdleIdeaTrigger(Optional<GoalSnapshot> activeGoal) {
-		if (evaluationPlannerSuppressed || !sessionSnapshot.companionActuationAllowed() || !config.llm().isConfigured()) {
+		if (evaluationPlannerSuppressed
+			|| actionGraphCoordinator.hasNonterminal()
+			|| !sessionSnapshot.companionActuationAllowed()
+			|| !config.llm().isConfigured()) {
 			idleIdeaScheduler.reset();
 			return;
 		}
@@ -3363,6 +3706,7 @@ public final class EmbodiedAgentRuntime {
 			case "reflex.resolved" -> createReflexResolvedTrigger(event);
 			case "smelting.output_ready" -> createSmeltingOutputReadyTrigger(event);
 			case "task.blocked" -> createTaskBlockedTrigger(event);
+			case "action_graph.goal_suspended" -> createActionGraphSuspendedTrigger(event);
 			default -> null;
 		};
 	}
@@ -3375,7 +3719,8 @@ public final class EmbodiedAgentRuntime {
 				"crafting.item_crafted",
 				"combat.damage_taken",
 				"smelting.output_ready",
-				"task.blocked" -> true;
+				"task.blocked",
+				"action_graph.goal_suspended" -> true;
 			default -> false;
 		};
 	}
@@ -3431,6 +3776,27 @@ public final class EmbodiedAgentRuntime {
 			return null;
 		}
 		return PlannerTrigger.autonomous(PlannerTriggerType.SYSTEM, "server", message, event.tick(), event.timestampMs(), "system_message");
+	}
+
+	private ai.moeru.airicraft.agent.llm.PlannerTrigger createActionGraphSuspendedTrigger(SemanticEvent event) {
+		String executionId = stringPayloadValue(event.payload(), "executionId");
+		String pendingWatch = stringPayloadValue(event.payload(), "pendingWatch");
+		if (executionId == null) {
+			return null;
+		}
+		String message = "ACTION GRAPH SUSPENDED: executionId=" + executionId
+			+ " pendingWatch=" + (pendingWatch == null ? "" : pendingWatch)
+			+ ". The goal released foreground actuation while it waits for a world condition. "
+			+ "You may send one short chat message explaining the wait, start at most one useful new high-level goal with start_action_goal, or simply acknowledge without taking action. "
+			+ "Do not invent filler work. The suspended goal will resume automatically after its condition is fulfilled and current foreground work finishes.";
+		return PlannerTrigger.autonomous(
+			PlannerTriggerType.SYSTEM,
+			"action_graph",
+			message,
+			event.tick(),
+			event.timestampMs(),
+			"action_graph_suspended:" + executionId
+		);
 	}
 
 	private ai.moeru.airicraft.agent.llm.PlannerTrigger createPickupTrigger(SemanticEvent event) {
@@ -3751,6 +4117,7 @@ public final class EmbodiedAgentRuntime {
 		profiles.put("planner.degraded_cleared", new EventRoutingProfile("planner.degraded_cleared", true, null, false));
 		profiles.put("planner.reset_requested", new EventRoutingProfile("planner.reset_requested", true, null, true));
 		profiles.put("task.blocked", new EventRoutingProfile("task.blocked", true, PlannerTriggerType.SYSTEM, true));
+		profiles.put("action_graph.goal_suspended", new EventRoutingProfile("action_graph.goal_suspended", true, PlannerTriggerType.SYSTEM, true));
 		profiles.put("policy.event_intervened", EventRoutingProfile.rawOnly("policy.event_intervened"));
 		profiles.put("policy.rule_rejected", EventRoutingProfile.rawOnly("policy.rule_rejected"));
 		return Map.copyOf(profiles);
@@ -3904,7 +4271,8 @@ public final class EmbodiedAgentRuntime {
 	}
 
 	private Optional<String> actionGraphActiveTaskIdFor(TaskSnapshot current) {
-		ActionGraphExecutionSnapshot snapshot = actionGraphRuntime.snapshot();
+		ActionGraphExecutionView foreground = actionGraphCoordinator.inspect(actionGraphCoordinator.foregroundExecutionId());
+		ActionGraphExecutionSnapshot snapshot = foreground == null ? ActionGraphExecutionSnapshot.idle() : foreground.execution();
 		if (snapshot.activeTaskId().isBlank() || current == null || current.mission() == null) {
 			return Optional.empty();
 		}

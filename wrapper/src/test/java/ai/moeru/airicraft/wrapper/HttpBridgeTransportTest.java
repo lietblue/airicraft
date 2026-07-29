@@ -487,6 +487,26 @@ class HttpBridgeTransportTest {
 	}
 
 	@Test
+	void actionGoalListingAndIdOperationsUseQueryParameters(@TempDir Path tempDir) throws Exception {
+		try (TestBridgeServer server = TestBridgeServer.start()) {
+			server.respondJson("/v1/agent/action-goals", 0, 200, """
+				{"available":true,"executions":[],"watches":[]}
+				""");
+			writeBridgeState(tempDir, server.port());
+			System.setProperty("user.home", tempDir.toString());
+
+			HttpBridgeTransport transport = new HttpBridgeTransport();
+			transport.listAgentActionGoals();
+			assertEquals("list=true", server.lastQuery("/v1/agent/action-goals"));
+			transport.getAgentActionGoal("graph one");
+			assertEquals("execution-id=graph+one", server.lastQuery("/v1/agent/action-goals"));
+			transport.cancelAgentActionGoal("graph one");
+			assertEquals("DELETE", server.lastMethod("/v1/agent/action-goals"));
+			assertEquals("execution-id=graph+one", server.lastQuery("/v1/agent/action-goals"));
+		}
+	}
+
+	@Test
 	void agentDebugCompactUsesLongerTimeout(@TempDir Path tempDir) throws Exception {
 		try (TestBridgeServer server = TestBridgeServer.start()) {
 			server.respondJson("/v1/agent/debug/compact", 2500, 200, """
@@ -728,6 +748,7 @@ class HttpBridgeTransportTest {
 		private final Map<String, Integer> requestCounts = new java.util.concurrent.ConcurrentHashMap<>();
 		private final Map<String, String> lastMethods = new java.util.concurrent.ConcurrentHashMap<>();
 		private final Map<String, String> lastRequestBodies = new java.util.concurrent.ConcurrentHashMap<>();
+		private final Map<String, String> lastQueries = new java.util.concurrent.ConcurrentHashMap<>();
 
 		private TestBridgeServer(HttpServer server) {
 			this.server = server;
@@ -749,6 +770,7 @@ class HttpBridgeTransportTest {
 				requestCounts.merge(path, 1, Integer::sum);
 				lastMethods.put(path, exchange.getRequestMethod());
 				lastRequestBodies.put(path, new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
+				lastQueries.put(path, exchange.getRequestURI().getRawQuery() == null ? "" : exchange.getRequestURI().getRawQuery());
 				if (!"Bearer test-token".equals(exchange.getRequestHeaders().getFirst("Authorization"))) {
 					writeResponse(exchange, 401, "{\"error\":\"unauthorized\"}");
 					return;
@@ -775,6 +797,10 @@ class HttpBridgeTransportTest {
 
 		private String lastRequestBody(String path) {
 			return lastRequestBodies.get(path);
+		}
+
+		private String lastQuery(String path) {
+			return lastQueries.get(path);
 		}
 
 		@Override
