@@ -38,6 +38,8 @@ public final class SmeltingPlannerService {
 	private static final int STATION_SEARCH_RADIUS = 10;
 	private static final int STATION_SEARCH_VERTICAL_RADIUS = 4;
 	private static final int DEFAULT_COOK_TIME_TICKS = 200;
+	private ServerRecipeDisplayCatalog.Snapshot cachedKnownCatalog;
+	private List<SmeltingRecipeKnowledge> cachedKnownServerSmelts = List.of();
 
 	public String checkSmeltables(MinecraftClient client, SmeltingProcessManager manager, long tick) {
 		Objects.requireNonNull(manager, "manager");
@@ -48,7 +50,8 @@ public final class SmeltingPlannerService {
 			return "Tool result for check_smeltables: SMELTING_UNAVAILABLE world_not_loaded";
 		}
 
-		List<SmeltableInput> inputs = smeltableInputs(player, world);
+		ServerRecipeDisplayCatalog.Snapshot recipeCatalog = ServerRecipeDisplayCatalog.current();
+		List<SmeltableInput> inputs = smeltableInputs(player, world, recipeCatalog);
 		List<SmeltingStationCandidate> candidates = manager.rankCandidates(stationCandidates(client, manager, tick));
 		List<SmeltingOption> options = buildOptions(inputs, candidates, observeStations(client), manager, tick);
 		FuelInventorySummary fuelSummary = fuelInventorySummary(player, world);
@@ -57,18 +60,23 @@ public final class SmeltingPlannerService {
 	}
 
 	public List<SmeltingOption> availableSmeltingOptions(MinecraftClient client, SmeltingProcessManager manager, long tick) {
+		return inspectOpportunities(client, manager, tick).availableSmelts();
+	}
+
+	public SmeltingOpportunitySnapshot inspectOpportunities(MinecraftClient client, SmeltingProcessManager manager, long tick) {
 		Objects.requireNonNull(manager, "manager");
 		ClientPlayerEntity player = client == null ? null : client.player;
 		ClientWorld world = client == null ? null : client.world;
 		if (player == null || world == null) {
 			manager.registerOptions(List.of());
-			return List.of();
+			return SmeltingOpportunitySnapshot.empty();
 		}
-		List<SmeltableInput> inputs = smeltableInputs(player, world);
+		ServerRecipeDisplayCatalog.Snapshot recipeCatalog = ServerRecipeDisplayCatalog.current();
+		List<SmeltableInput> inputs = smeltableInputs(player, world, recipeCatalog);
 		List<SmeltingStationCandidate> candidates = manager.rankCandidates(stationCandidates(client, manager, tick));
 		List<SmeltingOption> options = buildOptions(inputs, candidates, observeStations(client), manager, tick);
 		manager.registerOptions(options);
-		return options;
+		return new SmeltingOpportunitySnapshot(options, knownSmeltingRecipes(player, world, recipeCatalog));
 	}
 
 	public String inspectSmelting(MinecraftClient client, SmeltingProcessManager manager, long tick) {
@@ -303,6 +311,9 @@ public final class SmeltingPlannerService {
 				);
 			}
 			for (SmeltableInput input : inputs) {
+				if (input.stationKind() != candidate.kind()) {
+					continue;
+				}
 				String optionId = "smelt:" + optionSegment(input.inputItemId()) + "_to_" + optionSegment(input.outputItemId())
 					+ ":" + sourceSegment(candidate.source()) + "-" + candidateIndex;
 				options.add(new SmeltingOption(
@@ -320,42 +331,163 @@ public final class SmeltingPlannerService {
 		return List.copyOf(options);
 	}
 
-	private List<SmeltableInput> smeltableInputs(ClientPlayerEntity player, ClientWorld world) {
+	private List<SmeltableInput> smeltableInputs(
+		ClientPlayerEntity player,
+		ClientWorld world,
+		ServerRecipeDisplayCatalog.Snapshot recipeCatalog
+	) {
 		Map<Item, Integer> inventoryCounts = inventoryCounts(player);
 		if (inventoryCounts.isEmpty()) {
 			return List.of();
 		}
 		Map<String, SmeltableInput> inputs = new LinkedHashMap<>();
 		var context = SlotDisplayContexts.createParameters(world);
-		for (RecipeResultCollection collection : player.getRecipeBook().getOrderedResults()) {
-			for (RecipeDisplayEntry entry : collection.getAllRecipes()) {
-				if (!(entry.display() instanceof FurnaceRecipeDisplay display)) {
+		for (RecipeDisplayEntry entry : recipeEntries(player, recipeCatalog)) {
+			if (!(entry.display() instanceof FurnaceRecipeDisplay display)) {
+				continue;
+			}
+			SmeltingStationKind stationKind = stationKind(display, context).orElse(null);
+			ItemStack result = display.result().getFirst(context);
+			if (stationKind == null || result.isEmpty()) {
+				continue;
+			}
+			for (ItemStack ingredient : display.ingredient().getStacks(context)) {
+				if (ingredient.isEmpty()) {
 					continue;
 				}
-				ItemStack result = display.result().getFirst(context);
-				if (result.isEmpty()) {
+				int available = inventoryCounts.getOrDefault(ingredient.getItem(), 0);
+				if (available <= 0) {
 					continue;
 				}
-				for (ItemStack ingredient : display.ingredient().getStacks(context)) {
-					if (ingredient.isEmpty()) {
-						continue;
-					}
-					int available = inventoryCounts.getOrDefault(ingredient.getItem(), 0);
-					if (available <= 0) {
-						continue;
-					}
-					String inputItemId = itemId(ingredient);
-					inputs.putIfAbsent(inputItemId, new SmeltableInput(
-						inputItemId,
-						itemId(result),
-						result.getCount(),
-						available,
-						display.duration() <= 0 ? DEFAULT_COOK_TIME_TICKS : display.duration()
-					));
-				}
+				String inputItemId = itemId(ingredient);
+				String key = stationKind.name() + "|" + inputItemId + "|" + itemId(result);
+				inputs.putIfAbsent(key, new SmeltableInput(
+					inputItemId,
+					itemId(result),
+					result.getCount(),
+					available,
+					display.duration() <= 0 ? DEFAULT_COOK_TIME_TICKS : display.duration(),
+					stationKind
+				));
 			}
 		}
 		return List.copyOf(inputs.values());
+	}
+
+	private List<SmeltingRecipeKnowledge> knownSmeltingRecipes(
+		ClientPlayerEntity player,
+		ClientWorld world,
+		ServerRecipeDisplayCatalog.Snapshot recipeCatalog
+	) {
+		List<SmeltingRecipeKnowledge> serverKnowledge;
+		if (recipeCatalog == cachedKnownCatalog) {
+			serverKnowledge = cachedKnownServerSmelts;
+		}
+		else {
+			serverKnowledge = extractKnownSmeltingRecipes(recipeCatalog.entries(), world);
+			cachedKnownCatalog = recipeCatalog;
+			cachedKnownServerSmelts = serverKnowledge;
+		}
+		return mergeKnownSmelts(
+			extractKnownSmeltingRecipes(recipeBookEntries(player), world),
+			serverKnowledge
+		);
+	}
+
+	@SafeVarargs
+	static List<SmeltingRecipeKnowledge> mergeKnownSmelts(List<SmeltingRecipeKnowledge>... sources) {
+		Map<String, SmeltingRecipeKnowledge> merged = new LinkedHashMap<>();
+		if (sources == null) {
+			return List.of();
+		}
+		for (List<SmeltingRecipeKnowledge> source : sources) {
+			if (source == null) {
+				continue;
+			}
+			for (SmeltingRecipeKnowledge recipe : source) {
+				if (recipe != null) {
+					merged.putIfAbsent(recipe.optionId(), recipe);
+				}
+			}
+		}
+		return List.copyOf(merged.values());
+	}
+
+	private static List<SmeltingRecipeKnowledge> extractKnownSmeltingRecipes(
+		List<RecipeDisplayEntry> entries,
+		ClientWorld world
+	) {
+		if (entries == null || entries.isEmpty() || world == null) {
+			return List.of();
+		}
+		Map<String, SmeltingRecipeKnowledge> recipes = new LinkedHashMap<>();
+		var context = SlotDisplayContexts.createParameters(world);
+		for (RecipeDisplayEntry entry : entries) {
+			if (!(entry.display() instanceof FurnaceRecipeDisplay display)
+				|| stationKind(display, context).orElse(null) != SmeltingStationKind.FURNACE) {
+				continue;
+			}
+			ItemStack result = display.result().getFirst(context);
+			if (result.isEmpty()) {
+				continue;
+			}
+			for (ItemStack ingredient : display.ingredient().getStacks(context)) {
+				if (ingredient.isEmpty()) {
+					continue;
+				}
+				String inputItemId = itemId(ingredient);
+				String outputItemId = itemId(result);
+				String optionId = "inferred:" + optionSegment(inputItemId) + "_to_" + optionSegment(outputItemId);
+				recipes.putIfAbsent(optionId, new SmeltingRecipeKnowledge(
+					optionId,
+					inputItemId,
+					outputItemId,
+					result.getCount(),
+					ingredient.getMaxCount(),
+					display.duration() <= 0 ? DEFAULT_COOK_TIME_TICKS : display.duration(),
+					"minecraft:furnace",
+					1
+				));
+			}
+		}
+		return List.copyOf(recipes.values());
+	}
+
+	private static List<RecipeDisplayEntry> recipeEntries(
+		ClientPlayerEntity player,
+		ServerRecipeDisplayCatalog.Snapshot recipeCatalog
+	) {
+		ArrayList<RecipeDisplayEntry> entries = new ArrayList<>(recipeBookEntries(player));
+		if (recipeCatalog != null) {
+			entries.addAll(recipeCatalog.entries());
+		}
+		return List.copyOf(entries);
+	}
+
+	private static List<RecipeDisplayEntry> recipeBookEntries(ClientPlayerEntity player) {
+		if (player == null) {
+			return List.of();
+		}
+		ArrayList<RecipeDisplayEntry> entries = new ArrayList<>();
+		for (RecipeResultCollection collection : player.getRecipeBook().getOrderedResults()) {
+			entries.addAll(collection.getAllRecipes());
+		}
+		return List.copyOf(entries);
+	}
+
+	private static Optional<SmeltingStationKind> stationKind(FurnaceRecipeDisplay display, net.minecraft.util.context.ContextParameterMap context) {
+		for (ItemStack station : display.craftingStation().getStacks(context)) {
+			if (station.isOf(Items.FURNACE)) {
+				return Optional.of(SmeltingStationKind.FURNACE);
+			}
+			if (station.isOf(Items.BLAST_FURNACE)) {
+				return Optional.of(SmeltingStationKind.BLAST_FURNACE);
+			}
+			if (station.isOf(Items.SMOKER)) {
+				return Optional.of(SmeltingStationKind.SMOKER);
+			}
+		}
+		return Optional.empty();
 	}
 
 	private static SmeltingStationObservation openScreenObservation(ClientPlayerEntity player, ClientWorld world, AbstractFurnaceScreenHandler handler) {
@@ -575,7 +707,8 @@ public final class SmeltingPlannerService {
 		String outputItemId,
 		int outputCount,
 		int availableCount,
-		int cookTimeTicks
+		int cookTimeTicks,
+		SmeltingStationKind stationKind
 	) {
 	}
 

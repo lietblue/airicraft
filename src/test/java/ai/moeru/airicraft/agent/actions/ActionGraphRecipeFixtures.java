@@ -2,6 +2,7 @@ package ai.moeru.airicraft.agent.actions;
 
 import ai.moeru.airicraft.agent.tasks.CraftingGridKind;
 import ai.moeru.airicraft.agent.tasks.CraftingOpportunity;
+import ai.moeru.airicraft.agent.tasks.SmeltingRecipeKnowledge;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -40,6 +41,19 @@ final class ActionGraphRecipeFixtures {
 
 	static List<CraftingOpportunity> survivalCrafts() {
 		return SURVIVAL_CRAFTS;
+	}
+
+	static List<SmeltingRecipeKnowledge> survivalSmelts() {
+		return List.of(new SmeltingRecipeKnowledge(
+			"inferred:minecraft_raw_iron_to_minecraft_iron_ingot",
+			"minecraft:raw_iron",
+			"minecraft:iron_ingot",
+			1,
+			64,
+			200,
+			"minecraft:furnace",
+			1
+		));
 	}
 
 	private static List<CraftingOpportunity> buildSurvivalCrafts() {

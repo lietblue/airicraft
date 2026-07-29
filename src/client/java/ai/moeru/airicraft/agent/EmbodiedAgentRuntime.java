@@ -148,6 +148,7 @@ import ai.moeru.airicraft.agent.tasks.SmeltingFuelMode;
 import ai.moeru.airicraft.agent.tasks.SmeltingOption;
 import ai.moeru.airicraft.agent.tasks.SmeltingOutputReadyEvent;
 import ai.moeru.airicraft.agent.tasks.SmeltingPlannerService;
+import ai.moeru.airicraft.agent.tasks.SmeltingOpportunitySnapshot;
 import ai.moeru.airicraft.agent.tasks.SmeltingProcessManager;
 import ai.moeru.airicraft.agent.tasks.SurfaceMemory;
 import ai.moeru.airicraft.agent.tasks.WorldTaskType;
@@ -1562,6 +1563,7 @@ public final class EmbodiedAgentRuntime {
 			worldEvidence.availableCrafts(),
 			worldEvidence.knownCrafts(),
 			worldEvidence.availableSmelts(),
+			worldEvidence.knownSmelts(),
 			FarmBootstrapFactProvider.fromWorldEvidence(context, worldEvidence)
 		));
 	}
@@ -2993,13 +2995,15 @@ public final class EmbodiedAgentRuntime {
 		BlockPos origin = client.player.getBlockPos();
 		Map<String, Integer> itemCounts = inventoryItemCounter.count(client.player.getInventory());
 		CraftingOpportunitySnapshot crafting = CraftingOpportunityResolver.inspect(client.player);
+		SmeltingOpportunitySnapshot smelting = smeltingPlannerService.inspectOpportunities(client, smeltingProcessManager, tickCount);
 		return new WorldEvidence(
 			resourceCounts,
 			itemCounts,
 			collectNearbyBlocks(client, origin),
 			crafting.availableCrafts(),
 			crafting.knownCrafts(),
-			smeltingPlannerService.availableSmeltingOptions(client, smeltingProcessManager, tickCount),
+			smelting.availableSmelts(),
+			smelting.knownSmelts(),
 			client.world == null ? null : client.world.getRegistryKey().getValue().toString(),
 			origin.getX(),
 			origin.getY(),

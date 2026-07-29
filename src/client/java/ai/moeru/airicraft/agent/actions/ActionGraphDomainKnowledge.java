@@ -25,23 +25,7 @@ final class ActionGraphDomainKnowledge {
 		"minecraft:cherry_log",
 		"minecraft:pale_oak_log"
 	);
-	private static final List<SmeltingRecipe> SURVIVAL_SMELTS = List.of(
-		new SmeltingRecipe(
-			"inferred:minecraft_raw_iron_to_minecraft_iron_ingot",
-			"minecraft:raw_iron",
-			"minecraft:iron_ingot",
-			1,
-			64,
-			"minecraft:furnace",
-			1
-		)
-	);
-
 	private ActionGraphDomainKnowledge() {
-	}
-
-	static List<SmeltingRecipe> survivalSmelts() {
-		return SURVIVAL_SMELTS;
 	}
 
 	static List<String> plankItemIds() {
@@ -52,14 +36,4 @@ final class ActionGraphDomainKnowledge {
 		return LOG_ITEM_IDS;
 	}
 
-	record SmeltingRecipe(
-		String optionId,
-		String inputItemId,
-		String outputItemId,
-		int outputCount,
-		int maxInputQuantity,
-		String stationItemId,
-		int stationItemCount
-	) {
-	}
 }

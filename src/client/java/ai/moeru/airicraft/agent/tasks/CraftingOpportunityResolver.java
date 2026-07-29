@@ -1,18 +1,14 @@
 package ai.moeru.airicraft.agent.tasks;
 
-import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.gui.screen.recipebook.RecipeResultCollection;
 import net.minecraft.client.network.ClientPlayerEntity;
-import net.minecraft.server.integrated.IntegratedServer;
 import net.minecraft.item.Item;
 import net.minecraft.item.ItemStack;
 import net.minecraft.item.Items;
 import net.minecraft.recipe.Ingredient;
 import net.minecraft.recipe.NetworkRecipeId;
-import net.minecraft.recipe.RecipeEntry;
 import net.minecraft.recipe.RecipeDisplayEntry;
 import net.minecraft.recipe.RecipeFinder;
-import net.minecraft.recipe.ServerRecipeManager;
 import net.minecraft.recipe.display.RecipeDisplay;
 import net.minecraft.recipe.display.ShapedCraftingRecipeDisplay;
 import net.minecraft.recipe.display.ShapelessCraftingRecipeDisplay;
@@ -31,16 +27,13 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.TreeMap;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.TimeUnit;
 
 public final class CraftingOpportunityResolver {
 	private static final int PLAYER_GRID_INPUT_COUNT = PlayerScreenHandler.CRAFTING_INPUT_COUNT;
 	private static final int WORKBENCH_GRID_INPUT_COUNT = 9;
 	static final int MAX_PLACEMENT_VARIANTS_PER_RECIPE = 24;
 	private static final Object RECIPE_CATALOG_LOCK = new Object();
-	private static IntegratedServer cachedCatalogServer;
-	private static ServerRecipeManager cachedRecipeManager;
+	private static ServerRecipeDisplayCatalog.Snapshot cachedDisplayCatalog;
 	private static RecipeCatalog cachedRecipeCatalog = RecipeCatalog.empty();
 
 	private CraftingOpportunityResolver() {
@@ -294,60 +287,21 @@ public final class CraftingOpportunityResolver {
 	}
 
 	private static RecipeCatalog integratedServerRecipeCatalog() {
-		MinecraftClient client = MinecraftClient.getInstance();
-		if (client == null || !client.isIntegratedServerRunning()) {
-			clearRecipeCatalogCache();
-			return RecipeCatalog.empty();
-		}
-		IntegratedServer server = client.getServer();
-		if (server == null) {
-			clearRecipeCatalogCache();
-			return RecipeCatalog.empty();
-		}
-		ServerRecipeManager recipeManager = server.getRecipeManager();
+		ServerRecipeDisplayCatalog.Snapshot displayCatalog = ServerRecipeDisplayCatalog.current();
 		synchronized (RECIPE_CATALOG_LOCK) {
-			if (server == cachedCatalogServer && recipeManager == cachedRecipeManager) {
+			if (displayCatalog == cachedDisplayCatalog) {
 				return cachedRecipeCatalog;
 			}
 		}
-		CompletableFuture<List<RecipeDisplayEntry>> future = new CompletableFuture<>();
-		server.executeSync(() -> {
-			try {
-				List<RecipeEntry<?>> recipes = List.copyOf(recipeManager.values());
-				List<RecipeDisplayEntry> entries = new ArrayList<>();
-				for (RecipeEntry<?> recipe : recipes) {
-					recipeManager.forEachRecipeDisplay(recipe.id(), entries::add);
-				}
-				future.complete(List.copyOf(entries));
-			}
-			catch (Throwable throwable) {
-				future.completeExceptionally(throwable);
-			}
-		});
-		try {
-			List<RecipeDisplayEntry> entries = future.get(2L, TimeUnit.SECONDS);
-			List<RecipeResultCollection> collections = entries.isEmpty()
-				? List.of()
-				: List.of(new RecipeResultCollection(entries));
-			RecipeCatalog catalog = new RecipeCatalog(collections, knownOptions(collections));
-			synchronized (RECIPE_CATALOG_LOCK) {
-				cachedCatalogServer = server;
-				cachedRecipeManager = recipeManager;
-				cachedRecipeCatalog = catalog;
-			}
-			return catalog;
-		}
-		catch (Exception exception) {
-			return RecipeCatalog.empty();
-		}
-	}
-
-	private static void clearRecipeCatalogCache() {
+		List<RecipeResultCollection> collections = displayCatalog.entries().isEmpty()
+			? List.of()
+			: List.of(new RecipeResultCollection(displayCatalog.entries()));
+		RecipeCatalog catalog = new RecipeCatalog(collections, knownOptions(collections));
 		synchronized (RECIPE_CATALOG_LOCK) {
-			cachedCatalogServer = null;
-			cachedRecipeManager = null;
-			cachedRecipeCatalog = RecipeCatalog.empty();
+			cachedDisplayCatalog = displayCatalog;
+			cachedRecipeCatalog = catalog;
 		}
+		return catalog;
 	}
 
 	private static List<ResolvedCraftingOption> resolvedOptions(List<RecipeResultCollection> collections, RecipeFinder finder, Map<Item, Integer> availableItems) {

@@ -3,6 +3,7 @@ package ai.moeru.airicraft.agent.actions;
 import org.junit.jupiter.api.Test;
 
 import ai.moeru.airicraft.agent.tasks.CraftingOpportunity;
+import ai.moeru.airicraft.agent.tasks.SmeltingRecipeKnowledge;
 
 import java.nio.file.Path;
 import java.util.LinkedHashMap;
@@ -1249,7 +1250,7 @@ class ActionResolverTest {
 	}
 
 	private static void addSurvivalSmeltFacts(ActionFactStore facts) {
-		for (ActionGraphDomainKnowledge.SmeltingRecipe recipe : ActionGraphDomainKnowledge.survivalSmelts()) {
+		for (SmeltingRecipeKnowledge recipe : ActionGraphRecipeFixtures.survivalSmelts()) {
 			facts.upsert(new ActionFact(
 				ActionFactIdentity.smeltRecipe("world-a", "bot", recipe.optionId()),
 				Map.of(
@@ -1257,6 +1258,7 @@ class ActionResolverTest {
 					"outputItemId", recipe.outputItemId(),
 					"outputCount", recipe.outputCount(),
 					"maxInputQuantity", recipe.maxInputQuantity(),
+					"cookTimeTicks", recipe.cookTimeTicks(),
 					"stationItemId", recipe.stationItemId(),
 					"stationItemCount", recipe.stationItemCount()
 				),

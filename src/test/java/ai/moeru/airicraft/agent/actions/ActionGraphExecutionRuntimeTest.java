@@ -1,6 +1,7 @@
 package ai.moeru.airicraft.agent.actions;
 
 import ai.moeru.airicraft.agent.tasks.CraftingOpportunity;
+import ai.moeru.airicraft.agent.tasks.SmeltingRecipeKnowledge;
 import ai.moeru.airicraft.agent.tasks.TaskExecutionState;
 import ai.moeru.airicraft.agent.tasks.TaskTerminalEvent;
 import org.junit.jupiter.api.Test;
@@ -240,11 +241,12 @@ class ActionGraphExecutionRuntimeTest {
 		ActionGraphExecutionRuntime runtime = new ActionGraphExecutionRuntime(ActionsetIndex.empty(), dispatcher);
 		runtime.submit(ActionGoal.inventoryItem("minecraft:iron_pickaxe", 1), Map.of("minecraft:birch_planks", 3), CONTEXT, 100);
 
-		ActionGraphExecutionSnapshot dispatched = runtime.tick(inputWithKnownCrafts(
+		ActionGraphExecutionSnapshot dispatched = runtime.tick(inputWithKnownCraftsAndSmelts(
 			Map.of("minecraft:birch_planks", 3),
 			null,
 			101,
-			ActionGraphRecipeFixtures.survivalCrafts()
+			ActionGraphRecipeFixtures.survivalCrafts(),
+			ActionGraphRecipeFixtures.survivalSmelts()
 		));
 
 		assertEquals(ActionGraphExecutionState.WAITING_PRIMITIVE, dispatched.state());
@@ -264,6 +266,47 @@ class ActionGraphExecutionRuntimeTest {
 				&& "smelting_provider".equals(event.actionId())
 				&& event.alternativeId().startsWith("inferred:")
 			), () -> dispatched.trace().toString());
+	}
+
+	@Test
+	void genericKnownSmeltRecipeEnablesNonIronRoute() {
+		RecordingDispatcher dispatcher = new RecordingDispatcher();
+		ActionGraphExecutionRuntime runtime = new ActionGraphExecutionRuntime(ActionsetIndex.empty(), dispatcher);
+		runtime.submit(
+			ActionGoal.inventoryItem("minecraft:glass", 1),
+			Map.of("minecraft:sand", 1, "minecraft:furnace", 1, "minecraft:coal", 1),
+			CONTEXT,
+			100
+		);
+		SmeltingRecipeKnowledge glass = new SmeltingRecipeKnowledge(
+			"inferred:minecraft_sand_to_minecraft_glass",
+			"minecraft:sand",
+			"minecraft:glass",
+			1,
+			64,
+			200,
+			"minecraft:furnace",
+			1
+		);
+
+		ActionGraphExecutionSnapshot dispatched = runtime.tick(inputWithKnownCraftsAndSmelts(
+			Map.of("minecraft:sand", 1, "minecraft:furnace", 1, "minecraft:coal", 1),
+			null,
+			101,
+			List.of(),
+			List.of(glass)
+		));
+
+		assertEquals(ActionGraphExecutionState.WAITING_PRIMITIVE, dispatched.state());
+		assertEquals(1, dispatcher.dispatchedSteps.size());
+		ActionPlanStep smelt = dispatched.route().steps().stream()
+			.filter(step -> "smelt_item".equals(step.targetId()))
+			.findFirst()
+			.orElseThrow(() -> new AssertionError(dispatched.route().toString()));
+		assertEquals("smelt_item", smelt.targetId());
+		assertEquals("minecraft:sand", smelt.args().get("inputItemId"));
+		assertEquals("minecraft:glass", smelt.args().get("itemId"));
+		assertEquals(glass.optionId(), smelt.args().get("optionId"));
 	}
 
 	@Test
@@ -780,6 +823,28 @@ class ActionGraphExecutionRuntimeTest {
 			List.of(),
 			knownCrafts,
 			List.of(),
+			List.of()
+		);
+	}
+
+	private static ActionGraphExecutionInput inputWithKnownCraftsAndSmelts(
+		Map<String, Integer> observedInventory,
+		TaskTerminalEvent terminalEvent,
+		long tick,
+		List<CraftingOpportunity> knownCrafts,
+		List<SmeltingRecipeKnowledge> knownSmelts
+	) {
+		return new ActionGraphExecutionInput(
+			new ActionResolverContext(CONTEXT.worldId(), CONTEXT.actorId(), CONTEXT.dimension(), tick),
+			observedInventory,
+			Map.of(),
+			true,
+			true,
+			terminalEvent,
+			List.of(),
+			knownCrafts,
+			List.of(),
+			knownSmelts,
 			List.of()
 		);
 	}

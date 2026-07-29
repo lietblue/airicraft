@@ -25,4 +25,43 @@ class SmeltingPlannerServiceTest {
 		assertTrue(candidates.contains(new BlockPos(15, 61, 9)));
 		assertTrue(candidates.contains(new BlockPos(15, 63, 9)));
 	}
+
+	@Test
+	void knownRecipeMergeKeepsGenericSmeltingRecipesAndDeduplicatesByOptionId() {
+		SmeltingRecipeKnowledge gold = recipe(
+			"inferred:minecraft_raw_gold_to_minecraft_gold_ingot",
+			"minecraft:raw_gold",
+			"minecraft:gold_ingot"
+		);
+		SmeltingRecipeKnowledge duplicateGold = recipe(
+			"inferred:minecraft_raw_gold_to_minecraft_gold_ingot",
+			"minecraft:raw_gold",
+			"minecraft:gold_ingot"
+		);
+		SmeltingRecipeKnowledge glass = recipe(
+			"inferred:minecraft_sand_to_minecraft_glass",
+			"minecraft:sand",
+			"minecraft:glass"
+		);
+
+		List<SmeltingRecipeKnowledge> merged = SmeltingPlannerService.mergeKnownSmelts(
+			List.of(gold),
+			List.of(duplicateGold, glass)
+		);
+
+		assertEquals(List.of(gold, glass), merged);
+	}
+
+	private static SmeltingRecipeKnowledge recipe(String optionId, String inputItemId, String outputItemId) {
+		return new SmeltingRecipeKnowledge(
+			optionId,
+			inputItemId,
+			outputItemId,
+			1,
+			64,
+			200,
+			"minecraft:furnace",
+			1
+		);
+	}
 }

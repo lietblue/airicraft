@@ -2,6 +2,7 @@ package ai.moeru.airicraft.agent.actions;
 
 import ai.moeru.airicraft.agent.tasks.CraftingOpportunity;
 import ai.moeru.airicraft.agent.tasks.SmeltingOption;
+import ai.moeru.airicraft.agent.tasks.SmeltingRecipeKnowledge;
 import ai.moeru.airicraft.agent.tasks.TaskExecutionState;
 import ai.moeru.airicraft.agent.tasks.TaskTerminalEvent;
 
@@ -557,7 +558,7 @@ public final class ActionGraphExecutionRuntime {
 		addCraftRecipeFacts(input.availableCrafts(), ActionFactProvenance.OBSERVED, input.context());
 		addCraftRecipeFacts(input.knownCrafts(), ActionFactProvenance.INFERRED, input.context());
 		addSmeltRecipeFacts(input.availableSmelts(), input.context());
-		addInferredSmeltRecipeFacts(ActionGraphDomainKnowledge.survivalSmelts(), input.context());
+		addInferredSmeltRecipeFacts(input.knownSmelts(), input.context());
 		addObservedFacts(input.observedFacts());
 	}
 
@@ -662,13 +663,13 @@ public final class ActionGraphExecutionRuntime {
 	}
 
 	private void addInferredSmeltRecipeFacts(
-		List<ActionGraphDomainKnowledge.SmeltingRecipe> inferredSmelts,
+		List<SmeltingRecipeKnowledge> inferredSmelts,
 		ActionResolverContext context
 	) {
 		if (inferredSmelts == null || inferredSmelts.isEmpty()) {
 			return;
 		}
-		for (ActionGraphDomainKnowledge.SmeltingRecipe recipe : inferredSmelts) {
+		for (SmeltingRecipeKnowledge recipe : inferredSmelts) {
 			ActionFact fact = new ActionFact(
 				ActionFactIdentity.smeltRecipe(context.worldId(), context.actorId(), recipe.optionId()),
 				Map.of(
@@ -676,6 +677,7 @@ public final class ActionGraphExecutionRuntime {
 					"outputItemId", recipe.outputItemId(),
 					"outputCount", recipe.outputCount(),
 					"maxInputQuantity", recipe.maxInputQuantity(),
+					"cookTimeTicks", recipe.cookTimeTicks(),
 					"stationItemId", recipe.stationItemId(),
 					"stationItemCount", recipe.stationItemCount()
 				),
