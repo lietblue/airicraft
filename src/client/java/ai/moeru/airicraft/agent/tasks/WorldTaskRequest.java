@@ -97,6 +97,10 @@ public record WorldTaskRequest(
 		return new WorldTaskRequest(taskId, sourceJobId, WorldTaskType.MINE, goal, null, null, null, null, null, null, null, null, null, pickupSweepPositions, false);
 	}
 
+	public static WorldTaskRequest boundedHarvest(String taskId, String sourceJobId, GoalSnapshot goal) {
+		return new WorldTaskRequest(taskId, sourceJobId, WorldTaskType.BOUNDED_HARVEST, goal, null, null, null, null, null, null, null, null, null, List.of(), false);
+	}
+
 	public static WorldTaskRequest craftRecipe(String taskId, String sourceJobId, CraftRecipeStepArgs craftRecipe) {
 		return new WorldTaskRequest(taskId, sourceJobId, WorldTaskType.CRAFT_RECIPE, null, craftRecipe, null, null, null, null, null, null, null, null);
 	}

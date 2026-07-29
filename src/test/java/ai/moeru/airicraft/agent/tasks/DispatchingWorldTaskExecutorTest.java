@@ -3,6 +3,8 @@ package ai.moeru.airicraft.agent.tasks;
 import ai.moeru.airicraft.agent.session.SessionMode;
 import ai.moeru.airicraft.agent.session.SessionSnapshot;
 import ai.moeru.airicraft.agent.goals.GoalPosition;
+import ai.moeru.airicraft.agent.goals.GoalMineSpec;
+import ai.moeru.airicraft.agent.goals.BlockAcquisitionMode;
 import ai.moeru.airicraft.agent.goals.GoalSnapshot;
 import ai.moeru.airicraft.agent.goals.GoalType;
 import org.junit.jupiter.api.Test;
@@ -232,6 +234,43 @@ class DispatchingWorldTaskExecutorTest {
 		assertEquals(Optional.empty(), smelting.lastTask);
 		assertEquals(Optional.empty(), returnToSurface.lastTask);
 		assertEquals(Optional.empty(), blockInteraction.lastTask);
+	}
+
+	@Test
+	void boundedHarvestRequestsRouteToDedicatedExecutorAndResetBaritone() {
+		RecordingExecutor baritone = new RecordingExecutor();
+		RecordingExecutor crafting = new RecordingExecutor();
+		RecordingExecutor dropItems = new RecordingExecutor();
+		RecordingExecutor entityInteraction = new RecordingExecutor();
+		RecordingExecutor smelting = new RecordingExecutor();
+		RecordingExecutor returnToSurface = new RecordingExecutor();
+		RecordingExecutor blockInteraction = new RecordingExecutor();
+		RecordingExecutor blockBreak = new RecordingExecutor();
+		RecordingExecutor boundedHarvest = new RecordingExecutor();
+		DispatchingWorldTaskExecutor executor = new DispatchingWorldTaskExecutor(
+			baritone,
+			crafting,
+			dropItems,
+			entityInteraction,
+			smelting,
+			returnToSurface,
+			blockInteraction,
+			blockBreak,
+			boundedHarvest
+		);
+		GoalSnapshot goal = new GoalSnapshot(
+			GoalType.MINE_BLOCKS,
+			null,
+			null,
+			new GoalMineSpec(List.of("minecraft:seagrass"), 20, List.of("minecraft:seagrass"), List.of("minecraft:shears"), BlockAcquisitionMode.BOUNDED_LOCAL),
+			1L,
+			"action_graph"
+		);
+
+		executor.tick(snapshot(), Optional.of(WorldTaskRequest.boundedHarvest("harvest-1", "job-1", goal)));
+
+		assertEquals(WorldTaskType.BOUNDED_HARVEST, boundedHarvest.lastTask.orElseThrow().type());
+		assertEquals(Optional.empty(), baritone.lastTask);
 	}
 
 	private static SessionSnapshot snapshot() {

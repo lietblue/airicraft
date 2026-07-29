@@ -5,6 +5,7 @@ import ai.moeru.airicraft.agent.actions.BlockAcquisitionIndex;
 import ai.moeru.airicraft.agent.dialogue.DialogueIntentType;
 import ai.moeru.airicraft.agent.dialogue.DialogueResponse;
 import ai.moeru.airicraft.agent.goals.GoalMineSpec;
+import ai.moeru.airicraft.agent.goals.BlockAcquisitionMode;
 import ai.moeru.airicraft.agent.goals.GoalPosition;
 import ai.moeru.airicraft.agent.goals.GoalSnapshot;
 import ai.moeru.airicraft.agent.goals.GoalType;
@@ -532,17 +533,16 @@ public final class ActiveJobRuntime {
 				requestedSpec.blockIds(),
 				absoluteInventoryTarget,
 				requestedSpec.matchingItemIds(),
-				requestedSpec.requiredToolItemIds()
+				requestedSpec.requiredToolItemIds(),
+				requestedSpec.acquisitionMode()
 			),
 			tick,
 			activeJob.directGoal().source()
 		);
-		desiredPrimitiveTask = WorldTaskRequest.collectMine(
-			activeJob.jobId() + ":mine:" + mineAttemptSequence,
-			activeJob.jobId(),
-			executionGoal,
-			minePickupSweepPositions()
-		);
+		String taskId = activeJob.jobId() + ":mine:" + mineAttemptSequence;
+		desiredPrimitiveTask = requestedSpec.acquisitionMode() == BlockAcquisitionMode.BOUNDED_LOCAL
+			? WorldTaskRequest.boundedHarvest(taskId, activeJob.jobId(), executionGoal)
+			: WorldTaskRequest.collectMine(taskId, activeJob.jobId(), executionGoal, minePickupSweepPositions());
 	}
 
 	private void startCollectAttempt(int remainingQuantity, long tick) {

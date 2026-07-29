@@ -11,6 +11,7 @@ import ai.moeru.airicraft.agent.idle.IdleIdeasLoader;
 import ai.moeru.airicraft.agent.tasks.BaritoneTaskExecutor;
 import ai.moeru.airicraft.agent.tasks.BlockBreakTaskExecutor;
 import ai.moeru.airicraft.agent.tasks.BlockInteractionTaskExecutor;
+import ai.moeru.airicraft.agent.tasks.BoundedBlockHarvestTaskExecutor;
 import ai.moeru.airicraft.agent.tasks.CraftingTaskExecutor;
 import ai.moeru.airicraft.agent.tasks.DispatchingWorldTaskExecutor;
 import ai.moeru.airicraft.agent.tasks.DropItemsTaskExecutor;
@@ -218,7 +219,8 @@ public final class ClientRuntimeController {
 			new SmeltingTaskExecutor(smeltingProcessManager, baritoneFacade),
 			new ReturnToSurfaceTaskExecutor(baritoneFacade),
 			new BlockInteractionTaskExecutor(airicraftConfig.blockInteractionDelayTicks(), cameraController, baritoneFacade),
-			new BlockBreakTaskExecutor()
+			new BlockBreakTaskExecutor(),
+			new BoundedBlockHarvestTaskExecutor(baritoneFacade, cameraController)
 		);
 		return new EmbodiedAgentRuntime(
 			airicraftConfig,

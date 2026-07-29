@@ -4,6 +4,7 @@ public enum WorldTaskType {
 	FOLLOW,
 	NAVIGATE,
 	MINE,
+	BOUNDED_HARVEST,
 	CRAFT_RECIPE,
 	DROP_ITEMS,
 	SMELT_ITEMS,
