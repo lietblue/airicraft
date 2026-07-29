@@ -40,8 +40,8 @@ public final class SmeltingProcessManager {
 			return null;
 		}
 		String normalizedOptionId = optionId.trim();
-		SmeltingOption option = optionsById.get(normalizedOptionId);
-		return option == null ? processOptionsById.get(normalizedOptionId) : option;
+		SmeltingOption processOption = processOptionsById.get(normalizedOptionId);
+		return processOption == null ? optionsById.get(normalizedOptionId) : processOption;
 	}
 
 	public SmeltingStationKey processStationKey(String processId) {

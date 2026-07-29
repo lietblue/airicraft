@@ -204,6 +204,30 @@ class SmeltingProcessManagerTest {
 	}
 
 	@Test
+	void acceptedProcessKeepsOriginalStationWhenDiscoveryRenumbersOption() {
+		SmeltingProcessManager manager = new SmeltingProcessManager();
+		SmeltingStationObservation originalStation = emptyStation();
+		SmeltingOption original = option("smelt:iron:nearby-1", originalStation);
+		manager.registerOptions(java.util.List.of(original));
+		SmeltingActionResult started = manager.startRegisteredProcess(
+			new SmeltItemsStepArgs(original.optionId(), 1, SmeltingFuelMode.AUTO, null, 0, null),
+			376L
+		);
+		SmeltingStationObservation renumberedStation = new SmeltingStationObservation(
+			new SmeltingStationKey("minecraft:overworld", 20, 64, 20),
+			SmeltingStationKind.FURNACE,
+			new SmeltingSlotSnapshot(null, 0, null, 0, null, 0, 0, 200, false),
+			false,
+			2.0D
+		);
+		manager.registerOptions(java.util.List.of(option(original.optionId(), renumberedStation)));
+
+		assertTrue(started.accepted());
+		assertEquals(originalStation.key(), manager.registeredOption(original.optionId()).stationObservation().key());
+		assertEquals(originalStation.key(), manager.processStationKey(started.processId()));
+	}
+
+	@Test
 	void preferredCollectionProcessChoosesTrackedReadyProcessFirst() {
 		SmeltingProcessManager manager = new SmeltingProcessManager();
 		SmeltingStationObservation empty = emptyStation();
