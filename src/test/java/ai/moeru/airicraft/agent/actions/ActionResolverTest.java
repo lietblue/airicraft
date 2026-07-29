@@ -324,6 +324,27 @@ class ActionResolverTest {
 	}
 
 	@Test
+	void recipeProviderResolvesWoodenHoeForFarmBootstrap() {
+		ActionFactStore facts = new ActionFactStore();
+		addSurvivalCraftFacts(facts);
+		facts.upsert(new ActionFact(
+			ActionFactIdentity.inventoryItem("world-a", "bot", "minecraft:oak_planks"),
+			Map.of("count", 7),
+			ActionFactProvenance.OBSERVED,
+			90,
+			ActionFact.NEVER_STALE
+		));
+
+		ActionResolveResult result = new ActionResolver(ActionsetIndex.empty(), facts, CONTEXT)
+			.resolve(ActionGoal.inventoryItem("minecraft:wooden_hoe", 1));
+
+		assertTrue(result.resolved(), () -> result.trace().toString());
+		assertEquals(List.of("craft_item", "craft_item"), result.route().steps().stream().map(ActionPlanStep::targetId).toList());
+		assertEquals("oak_planks_x2_to_stick", result.route().steps().getFirst().args().get("recipeId"));
+		assertEquals("oak_planks_x2_and_stick_x2_to_wooden_hoe", result.route().steps().getLast().args().get("recipeId"));
+	}
+
+	@Test
 	void recipeProviderDoesNotBindUnobservedPlankVariantWhenPartialPlanksNeedMoreWood() {
 		ActionFactStore facts = new ActionFactStore();
 		addSurvivalCraftFacts(facts);

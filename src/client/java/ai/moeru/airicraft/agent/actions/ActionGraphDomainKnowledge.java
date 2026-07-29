@@ -83,6 +83,15 @@ final class ActionGraphDomainKnowledge {
 				"minecraft:stick",
 				"minecraft:stick"
 			));
+			crafts.add(recipe(
+				"minecraft:wooden_hoe",
+				1,
+				CraftingGridKind.WORKBENCH_3X3,
+				planks,
+				planks,
+				"minecraft:stick",
+				"minecraft:stick"
+			));
 		}
 		crafts.add(recipe(
 			"minecraft:stone_pickaxe",
