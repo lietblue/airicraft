@@ -290,7 +290,7 @@ public final class SurvivalReflexRuntime {
 				cancelSafeLandNavigation();
 				movementController.stop(client);
 			}
-			else if (!hasInterruptedWork && !player.isSubmergedInWater()) {
+			else if (shouldUseSafeLandNavigation(hasInterruptedWork)) {
 				tickSafeLandNavigation(client, surfaceTarget, tick);
 			}
 			else {
@@ -501,6 +501,10 @@ public final class SurvivalReflexRuntime {
 
 	static boolean shouldNavigateToSafeLand(boolean targetAvailable, boolean baritoneLoaded) {
 		return targetAvailable && baritoneLoaded;
+	}
+
+	static boolean shouldUseSafeLandNavigation(boolean hasInterruptedWork) {
+		return !hasInterruptedWork;
 	}
 
 	static boolean shouldBeginReflex(SurvivalReflexState state, boolean dangerPresent) {
