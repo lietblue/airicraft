@@ -1,0 +1,38 @@
+id: sea_grass
+name: Gather seagrass underwater
+metadata:
+  minecraftVersion: 1.21.8
+  airicraftVersion: dev
+worldArchive: world.zip
+frozen: true
+prompt: >-
+  Obtain 20 minecraft:seagrass from the nearby river. You already have
+  minecraft:shears in your inventory; preserve and use them so broken
+  seagrass drops as an item. Treat the requested inventory as the high-level
+  intent and start one action graph inventory_item goal for
+  minecraft:seagrass with quantity 20. Let the action graph own target
+  discovery, tool equipping, water navigation, underwater harvesting, and
+  dropped-item pickup. Do not decompose the request into direct mine_blocks,
+  ensure_blocks_in_inventory, or movement calls. If the graph returns a
+  terminal unknown_acquisition_method, unsupported_resource_kind, or no_route
+  failure, report that exact failure and stop without starting legacy actions.
+  Safe read tools such as
+  inspect_action_goal, inspect_action_trace, inspect_inventory, and
+  inspect_world may be used to diagnose graph state. Do not use commands,
+  creative-mode shortcuts, or unrelated resources. Stop only after a task
+  update or inventory inspection confirms at least 20 minecraft:seagrass.
+budget:
+  maxPlannerTurns: 24
+  maxElapsedTicks: 24000
+  maxElapsedMillis: 0
+  heartbeatIntervalTicks: 80
+checks:
+  - type: inventory_contains
+    itemId: minecraft:seagrass
+    count: 20
+evidence:
+  includePlannerJournal: true
+  includeDebugTimeline: true
+  includeRecentEvents: true
+  includeTaskState: true
+  includeWorldSnapshot: true
