@@ -29,6 +29,16 @@ class SurvivalReflexRuntimeTest {
 	}
 
 	@Test
+	void idleDrowningRequiresSafeLandButInterruptedWorkOnlyRequiresAir() {
+		assertEquals(SurvivalReflexAction.REACH_SAFE_LAND, SurvivalReflexRuntime.drowningAction(false));
+		assertEquals(SurvivalReflexAction.SWIM_TO_AIR, SurvivalReflexRuntime.drowningAction(true));
+		assertFalse(SurvivalReflexRuntime.stableDrowningRecovery(false, true, false));
+		assertTrue(SurvivalReflexRuntime.stableDrowningRecovery(false, true, true));
+		assertTrue(SurvivalReflexRuntime.stableDrowningRecovery(true, true, false));
+		assertFalse(SurvivalReflexRuntime.stableDrowningRecovery(true, false, true));
+	}
+
+	@Test
 	void defendRequiresHighHealthOneCloseVisibleThreat() {
 		assertTrue(SurvivalReflexRuntime.shouldDefend(0.75D, 1, 4.5D, true, 0.5D));
 		assertFalse(SurvivalReflexRuntime.shouldDefend(0.5D, 1, 4.0D, true, 0.5D));

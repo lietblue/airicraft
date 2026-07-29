@@ -5,6 +5,7 @@ import ai.moeru.airicraft.agent.control.CameraController;
 import ai.moeru.airicraft.agent.control.MovementController;
 import ai.moeru.airicraft.agent.goals.GoalPosition;
 import ai.moeru.airicraft.agent.tasks.ReturnToSurfaceTaskExecutor;
+import ai.moeru.airicraft.agent.tasks.SurfaceMemory;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.network.ClientPlayerEntity;
 import net.minecraft.entity.Entity;
@@ -100,7 +101,10 @@ public final class SurvivalReflexRuntime {
 		boolean mobDanger = !threats.isEmpty() || recentlyDamagedByMob(tick, lastMobDamageTick, config.threatCooldownTicks());
 		if (shouldBeginReflex(snapshot.state(), drowningDanger || mobDanger)) {
 			SurvivalReflexCause cause = drowningDanger ? SurvivalReflexCause.DROWNING : SurvivalReflexCause.MOB_ATTACK;
-			SurvivalReflexAction action = drowningDanger ? SurvivalReflexAction.SWIM_TO_AIR : chooseMobAction(healthRatio(player), threats);
+			boolean hasInterruptedWork = interruptedWork != null && interruptedWork.hasInterruptedWork();
+			SurvivalReflexAction action = drowningDanger
+				? drowningAction(hasInterruptedWork)
+				: chooseMobAction(healthRatio(player), threats);
 			begin(cause, action, interruptedWork, player, threats, tick, releaseNormalActuators);
 		}
 
@@ -245,24 +249,31 @@ public final class SurvivalReflexRuntime {
 		List<ResolvedThreat> threats,
 		long tick
 	) {
-		if (snapshot.cause() != SurvivalReflexCause.DROWNING || snapshot.action() != SurvivalReflexAction.SWIM_TO_AIR) {
-			changeAction(SurvivalReflexCause.DROWNING, SurvivalReflexAction.SWIM_TO_AIR, tick);
+		boolean hasInterruptedWork = snapshot.holdId() != null;
+		SurvivalReflexAction desiredAction = drowningAction(hasInterruptedWork);
+		if (snapshot.cause() != SurvivalReflexCause.DROWNING || snapshot.action() != desiredAction) {
+			changeAction(SurvivalReflexCause.DROWNING, desiredAction, tick);
 		}
 		boolean breathable = breathableAndRecovering(player, lastAir);
-		int breathableTicks = breathable ? snapshot.breathableTicks() + 1 : 0;
-		if (drowningResolved(breathableTicks)) {
+		boolean safeLand = player.isOnGround() && SurfaceMemory.isSurfaceStandingPosition(client, player.getBlockPos());
+		boolean stable = stableDrowningRecovery(hasInterruptedWork, breathable, safeLand);
+		int stableTicks = stable ? snapshot.breathableTicks() + 1 : 0;
+		if (drowningResolved(stableTicks)) {
 			if (!mobThreatsResolved(threats.size(), tick, lastMobDamageTick, config.threatCooldownTicks())) {
 				changeAction(SurvivalReflexCause.MOB_ATTACK, chooseMobAction(healthRatio(player), threats), tick);
 				refreshSnapshot(player, threats, lastMobDamageTick, 0, null);
 				return;
 			}
-			resolve(client, player, threats, tick, "breathing_restored");
+			resolve(client, player, threats, tick, hasInterruptedWork ? "breathing_restored" : "safe_land_reached");
 			return;
 		}
 
 		try {
-			if (breathable) {
+			if (stable) {
 				movementController.stop(client);
+			}
+			else if (!hasInterruptedWork && !player.isSubmergedInWater()) {
+				tickSafeLandApproach(client, player, surfaceTarget, tick);
 			}
 			else {
 				boolean stuck = movementController.snapshot().stuck();
@@ -280,12 +291,47 @@ public final class SurvivalReflexRuntime {
 				}
 				movementController.swimUp(client, keys.forward(), keys.sprint(), keys.left(), keys.right(), keys.back(), tick);
 			}
-			refreshSnapshot(player, threats, danger ? tick : snapshot.lastDangerTick(), breathableTicks, null);
+			refreshSnapshot(player, threats, danger ? tick : snapshot.lastDangerTick(), stableTicks, null);
 		}
 		catch (RuntimeException exception) {
-			recordActuatorFailure("swim_to_air", exception, tick);
-			refreshSnapshot(player, threats, danger ? tick : snapshot.lastDangerTick(), breathableTicks, failureText(exception));
+			String operation = hasInterruptedWork ? "swim_to_air" : "reach_safe_land";
+			recordActuatorFailure(operation, exception, tick);
+			refreshSnapshot(player, threats, danger ? tick : snapshot.lastDangerTick(), stableTicks, failureText(exception));
 		}
+	}
+
+	private void tickSafeLandApproach(
+		MinecraftClient client,
+		ClientPlayerEntity player,
+		GoalPosition surfaceTarget,
+		long tick
+	) {
+		if (surfaceTarget == null) {
+			if (player.isTouchingWater()) {
+				movementController.swimUp(client, false, false, tick);
+			}
+			else {
+				movementController.stop(client);
+			}
+			return;
+		}
+		cameraController.lookAtNow(
+			client,
+			new Vec3d(surfaceTarget.x() + 0.5D, surfaceTarget.y() + 1.0D, surfaceTarget.z() + 0.5D)
+		);
+		boolean stuck = movementController.snapshot().stuck();
+		stuckTicks = stuck ? stuckTicks + 1 : 0;
+		EscapeKeys keys = escapeKeys(stuck, stuckTicks);
+		movementController.moveDirectional(
+			client,
+			keys.forward(),
+			keys.back(),
+			keys.left(),
+			keys.right(),
+			keys.sprint(),
+			keys.jump(),
+			tick
+		);
 	}
 
 	private void tickMobAttack(MinecraftClient client, ClientPlayerEntity player, List<ResolvedThreat> threats, long tick) {
@@ -446,6 +492,14 @@ public final class SurvivalReflexRuntime {
 
 	static boolean drowningResolved(int breathableTicks) {
 		return breathableTicks >= BREATHABLE_STABLE_TICKS;
+	}
+
+	static SurvivalReflexAction drowningAction(boolean hasInterruptedWork) {
+		return hasInterruptedWork ? SurvivalReflexAction.SWIM_TO_AIR : SurvivalReflexAction.REACH_SAFE_LAND;
+	}
+
+	static boolean stableDrowningRecovery(boolean hasInterruptedWork, boolean breathable, boolean safeLand) {
+		return hasInterruptedWork ? breathable : safeLand;
 	}
 
 	static boolean shouldBeginReflex(SurvivalReflexState state, boolean dangerPresent) {

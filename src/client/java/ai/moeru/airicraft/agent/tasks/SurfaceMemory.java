@@ -116,7 +116,7 @@ public final class SurfaceMemory {
 		return Optional.ofNullable(best);
 	}
 
-	static boolean isSurfaceStandingPosition(MinecraftClient client, BlockPos feetPos) {
+	public static boolean isSurfaceStandingPosition(MinecraftClient client, BlockPos feetPos) {
 		return isSkyVisible(client, feetPos)
 			&& isSafeStandingPosition(client, feetPos)
 			&& hasEnoughSurfaceEscapeDirections(surfaceEscapeDirections(client, feetPos));
