@@ -15,6 +15,11 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.CancellationException;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Executor;
+import java.util.concurrent.Future;
+import java.util.concurrent.FutureTask;
 import java.util.function.Supplier;
 
 public final class ActionGraphExecutionRuntime {
@@ -25,6 +30,7 @@ public final class ActionGraphExecutionRuntime {
 	private final Supplier<ActionsetLoadResult> actionsetLoader;
 	private final ActionGraphPrimitiveDispatcher primitiveDispatcher;
 	private final boolean preferActionsetRoutes;
+	private final Executor resolutionExecutor;
 
 	private ActionGraphExecutionState state = ActionGraphExecutionState.IDLE;
 	private String executionId = "";
@@ -54,9 +60,23 @@ public final class ActionGraphExecutionRuntime {
 	private long observeNotBeforeTick = -1L;
 	private boolean refreshRouteAfterObservation;
 	private String boundSmeltingProcessId = "";
+	private Future<ActionResolveResult> resolutionTask;
 
 	public ActionGraphExecutionRuntime(Path actionsetRoot, ActionGraphPrimitiveDispatcher primitiveDispatcher) {
-		this(() -> ActionsetLibraryLoader.defaults().load(actionsetRoot == null ? ActionsetLibraryPaths.defaultRoot() : actionsetRoot), primitiveDispatcher, false);
+		this(actionsetRoot, primitiveDispatcher, Runnable::run);
+	}
+
+	ActionGraphExecutionRuntime(
+		Path actionsetRoot,
+		ActionGraphPrimitiveDispatcher primitiveDispatcher,
+		Executor resolutionExecutor
+	) {
+		this(
+			() -> ActionsetLibraryLoader.defaults().load(actionsetRoot == null ? ActionsetLibraryPaths.defaultRoot() : actionsetRoot),
+			primitiveDispatcher,
+			false,
+			resolutionExecutor
+		);
 	}
 
 	public ActionGraphExecutionRuntime(ActionsetIndex index, ActionGraphPrimitiveDispatcher primitiveDispatcher) {
@@ -64,17 +84,28 @@ public final class ActionGraphExecutionRuntime {
 	}
 
 	public ActionGraphExecutionRuntime(ActionsetIndex index, ActionGraphPrimitiveDispatcher primitiveDispatcher, boolean preferActionsetRoutes) {
-		this(() -> new ActionsetLoadResult(index, List.of()), primitiveDispatcher, preferActionsetRoutes);
+		this(index, primitiveDispatcher, preferActionsetRoutes, Runnable::run);
+	}
+
+	ActionGraphExecutionRuntime(
+		ActionsetIndex index,
+		ActionGraphPrimitiveDispatcher primitiveDispatcher,
+		boolean preferActionsetRoutes,
+		Executor resolutionExecutor
+	) {
+		this(() -> new ActionsetLoadResult(index, List.of()), primitiveDispatcher, preferActionsetRoutes, resolutionExecutor);
 	}
 
 	private ActionGraphExecutionRuntime(
 		Supplier<ActionsetLoadResult> actionsetLoader,
 		ActionGraphPrimitiveDispatcher primitiveDispatcher,
-		boolean preferActionsetRoutes
+		boolean preferActionsetRoutes,
+		Executor resolutionExecutor
 	) {
 		this.actionsetLoader = Objects.requireNonNull(actionsetLoader, "actionsetLoader");
 		this.primitiveDispatcher = Objects.requireNonNull(primitiveDispatcher, "primitiveDispatcher");
 		this.preferActionsetRoutes = preferActionsetRoutes;
+		this.resolutionExecutor = Objects.requireNonNull(resolutionExecutor, "resolutionExecutor");
 	}
 
 	public synchronized ActionGraphExecutionSnapshot submit(
@@ -93,6 +124,7 @@ public final class ActionGraphExecutionRuntime {
 		long tick,
 		String executionId
 	) {
+		cancelResolution();
 		this.executionId = executionId == null || executionId.isBlank()
 			? "action-graph-" + UUID.randomUUID()
 			: executionId;
@@ -168,7 +200,11 @@ public final class ActionGraphExecutionRuntime {
 				return snapshot();
 			}
 			switch (state) {
-				case RESOLVING, REPLANNING -> resolveRoute(input.context());
+				case RESOLVING, REPLANNING -> {
+					if (!resolveRoute(input.context())) {
+						return snapshot();
+					}
+				}
 				case READY, OBSERVING -> {
 					advance(input);
 					if (state == ActionGraphExecutionState.WATCHING) {
@@ -214,6 +250,7 @@ public final class ActionGraphExecutionRuntime {
 		if (state == ActionGraphExecutionState.IDLE || terminal()) {
 			return snapshot();
 		}
+		cancelResolution();
 		state = ActionGraphExecutionState.CANCELLED;
 		message = reason == null || reason.isBlank() ? "cancelled" : reason;
 		trace("execution_cancelled", actionId(currentStep), alternativeId(currentStep), stepId(currentStep), Map.of("tick", tick, "reason", message));
@@ -232,6 +269,7 @@ public final class ActionGraphExecutionRuntime {
 	}
 
 	public synchronized void clear() {
+		cancelResolution();
 		state = ActionGraphExecutionState.IDLE;
 		executionId = "";
 		goal = null;
@@ -309,17 +347,76 @@ public final class ActionGraphExecutionRuntime {
 			.toList();
 	}
 
-	private void resolveRoute(ActionResolverContext context) {
-		ActionsetLoadResult loadResult = actionsetLoader.get();
-		if (!loadResult.valid()) {
-			fail("actionset_validation_failed", "Actionset library validation failed");
-			return;
+	private boolean resolveRoute(ActionResolverContext context) {
+		if (resolutionTask == null) {
+			ActionGoal resolutionGoal = goal;
+			List<ActionFact> factSnapshot = facts.queryAll();
+			Set<String> blockedSnapshot = Set.copyOf(blockedAlternatives);
+			FutureTask<ActionResolveResult> task = new FutureTask<>(() -> {
+				ActionsetLoadResult loadResult = actionsetLoader.get();
+				if (!loadResult.valid()) {
+					return ActionResolveResult.failure(
+						"actionset_validation_failed",
+						"Actionset library validation failed",
+						List.of()
+					);
+				}
+				return ActionResolver.resolve(new ActionResolutionRequest(
+					loadResult.index(),
+					factSnapshot,
+					context,
+					resolutionGoal,
+					ActionResolutionRequest.DEFAULT_MAX_DEPTH,
+					ActionResolutionRequest.DEFAULT_EXPLORATION_BUDGET,
+					blockedSnapshot,
+					preferActionsetRoutes
+				));
+			});
+			resolutionTask = task;
+			trace("resolution_scheduled", "", "", "", Map.of(
+				"executionId", executionId,
+				"factCount", factSnapshot.size(),
+				"state", state.name()
+			));
+			try {
+				resolutionExecutor.execute(task);
+			}
+			catch (RuntimeException exception) {
+				resolutionTask = null;
+				fail("resolution_dispatch_failed", nonEmpty(exception.getMessage(), exception.getClass().getSimpleName()));
+				return true;
+			}
 		}
-		ActionResolveResult result = new ActionResolver(loadResult.index(), facts, context, 8, blockedAlternatives, preferActionsetRoutes).resolve(goal);
+		if (!resolutionTask.isDone()) {
+			return false;
+		}
+
+		ActionResolveResult result;
+		try {
+			result = resolutionTask.get();
+		}
+		catch (CancellationException exception) {
+			resolutionTask = null;
+			fail("resolution_cancelled", "Route resolution was cancelled");
+			return true;
+		}
+		catch (InterruptedException exception) {
+			Thread.currentThread().interrupt();
+			resolutionTask = null;
+			fail("resolution_interrupted", "Interrupted while applying route resolution");
+			return true;
+		}
+		catch (ExecutionException exception) {
+			resolutionTask = null;
+			Throwable cause = exception.getCause() == null ? exception : exception.getCause();
+			fail("resolution_failed", nonEmpty(cause.getMessage(), cause.getClass().getSimpleName()));
+			return true;
+		}
+		resolutionTask = null;
 		trace.addAll(result.trace());
 		if (!result.resolved()) {
 			fail(result.failureCode(), result.message());
-			return;
+			return true;
 		}
 		route = result.route();
 		cursor = 0;
@@ -335,6 +432,14 @@ public final class ActionGraphExecutionRuntime {
 			"stepCount", route.steps().size(),
 			"replanCount", replanCount
 		));
+		return true;
+	}
+
+	private void cancelResolution() {
+		if (resolutionTask != null) {
+			resolutionTask.cancel(true);
+			resolutionTask = null;
+		}
 	}
 
 	private void advance(ActionGraphExecutionInput input) {

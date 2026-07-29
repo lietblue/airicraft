@@ -10,6 +10,8 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.PriorityQueue;
 import java.util.UUID;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.function.Supplier;
 
 public final class ActionGraphCoordinator {
@@ -17,6 +19,7 @@ public final class ActionGraphCoordinator {
 	public static final int MAX_TERMINAL_EXECUTIONS = 32;
 
 	private final Supplier<ActionGraphExecutionRuntime> runtimeFactory;
+	private final ExecutorService resolutionExecutor;
 	private final Map<String, ManagedExecution> executions = new LinkedHashMap<>();
 	private final PriorityQueue<RunnableEntry> runnable = new PriorityQueue<>(Comparator
 		.comparingLong(RunnableEntry::fulfilledTick)
@@ -26,19 +29,23 @@ public final class ActionGraphCoordinator {
 	private long nextCreationOrder;
 
 	public ActionGraphCoordinator(Path actionsetRoot, ActionGraphPrimitiveDispatcher dispatcher) {
-		this(() -> new ActionGraphExecutionRuntime(actionsetRoot, dispatcher));
+		this.resolutionExecutor = Executors.newSingleThreadExecutor(
+			Thread.ofPlatform().name("airicraft-action-resolver").daemon(true).factory()
+		);
+		this.runtimeFactory = () -> new ActionGraphExecutionRuntime(actionsetRoot, dispatcher, resolutionExecutor);
 	}
 
 	public ActionGraphCoordinator(ActionsetIndex index, ActionGraphPrimitiveDispatcher dispatcher) {
-		this(() -> new ActionGraphExecutionRuntime(index, dispatcher));
+		this(() -> new ActionGraphExecutionRuntime(index, dispatcher), null);
 	}
 
 	public ActionGraphCoordinator(ActionsetIndex index, ActionGraphPrimitiveDispatcher dispatcher, boolean preferActionsetRoutes) {
-		this(() -> new ActionGraphExecutionRuntime(index, dispatcher, preferActionsetRoutes));
+		this(() -> new ActionGraphExecutionRuntime(index, dispatcher, preferActionsetRoutes), null);
 	}
 
-	private ActionGraphCoordinator(Supplier<ActionGraphExecutionRuntime> runtimeFactory) {
+	private ActionGraphCoordinator(Supplier<ActionGraphExecutionRuntime> runtimeFactory, ExecutorService resolutionExecutor) {
 		this.runtimeFactory = Objects.requireNonNull(runtimeFactory, "runtimeFactory");
+		this.resolutionExecutor = resolutionExecutor;
 	}
 
 	public synchronized ActionGraphStartResult submit(
@@ -222,10 +229,18 @@ public final class ActionGraphCoordinator {
 	}
 
 	public synchronized void clear() {
+		executions.values().forEach(managed -> managed.runtime.clear());
 		executions.clear();
 		foregroundExecutionId = "";
 		runnable.clear();
 		events.clear();
+	}
+
+	public synchronized void shutdown() {
+		clear();
+		if (resolutionExecutor != null) {
+			resolutionExecutor.shutdownNow();
+		}
 	}
 
 	public synchronized void pauseForegroundForReflex(long tick) {

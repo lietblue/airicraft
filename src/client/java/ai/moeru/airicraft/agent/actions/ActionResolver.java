@@ -5,6 +5,7 @@ import ai.moeru.airicraft.agent.tasks.ResourceGatheringCatalog;
 
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -14,7 +15,6 @@ import java.util.Optional;
 import java.util.Set;
 
 public final class ActionResolver {
-	private static final int DEFAULT_MAX_DEPTH = 8;
 	private static final int DEFAULT_SMELT_COOK_TICKS = 200;
 	private static final int FUEL_TICKS_PLANKS = 300;
 	private static final int FUEL_TICKS_LOGS = 300;
@@ -33,9 +33,29 @@ public final class ActionResolver {
 	private final int maxDepth;
 	private final Set<String> blockedAlternativeKeys;
 	private final boolean preferActionsetRoutes;
+	private final int explorationBudget;
+	private final Map<String, List<ActionFact>> craftRecipesByOutput;
+	private final Map<String, List<ActionFact>> smeltRecipesByOutput;
+	private final Map<String, ActionRoute> successfulRoutes = new HashMap<>();
+	private int expandedGoals;
+	private int routeCacheHits;
+	private boolean budgetExceeded;
+
+	public static ActionResolveResult resolve(ActionResolutionRequest request) {
+		Objects.requireNonNull(request, "request");
+		return new ActionResolver(
+			request.actionsets(),
+			new ActionFactStore(request.facts()),
+			request.context(),
+			request.maxDepth(),
+			request.blockedAlternativeKeys(),
+			request.preferActionsetRoutes(),
+			request.explorationBudget()
+		).resolve(request.goal());
+	}
 
 	public ActionResolver(ActionsetIndex index, ActionFactStore facts, ActionResolverContext context) {
-		this(index, facts, context, DEFAULT_MAX_DEPTH);
+		this(index, facts, context, ActionResolutionRequest.DEFAULT_MAX_DEPTH);
 	}
 
 	public ActionResolver(ActionsetIndex index, ActionFactStore facts, ActionResolverContext context, int maxDepth) {
@@ -60,17 +80,53 @@ public final class ActionResolver {
 		Set<String> blockedAlternativeKeys,
 		boolean preferActionsetRoutes
 	) {
+		this(
+			index,
+			facts,
+			context,
+			maxDepth,
+			blockedAlternativeKeys,
+			preferActionsetRoutes,
+			ActionResolutionRequest.DEFAULT_EXPLORATION_BUDGET
+		);
+	}
+
+	private ActionResolver(
+		ActionsetIndex index,
+		ActionFactStore facts,
+		ActionResolverContext context,
+		int maxDepth,
+		Set<String> blockedAlternativeKeys,
+		boolean preferActionsetRoutes,
+		int explorationBudget
+	) {
 		this.index = Objects.requireNonNull(index, "index");
 		this.facts = Objects.requireNonNull(facts, "facts");
 		this.context = Objects.requireNonNull(context, "context");
 		this.maxDepth = Math.max(1, maxDepth);
 		this.blockedAlternativeKeys = blockedAlternativeKeys == null ? Set.of() : Set.copyOf(blockedAlternativeKeys);
 		this.preferActionsetRoutes = preferActionsetRoutes;
+		this.explorationBudget = Math.max(1, explorationBudget);
+		this.craftRecipesByOutput = providerFactsByOutput(ActionFactType.CRAFT_RECIPE, "outputItemId", "recipeId");
+		this.smeltRecipesByOutput = providerFactsByOutput(ActionFactType.SMELT_RECIPE, "outputItemId", "optionId");
 	}
 
 	public ActionResolveResult resolve(ActionGoal goal) {
 		ArrayList<ActionTraceEvent> trace = new ArrayList<>();
 		Optional<ActionRoute> route = resolveGoal(goal, 0, new LinkedHashSet<>(), trace);
+		trace.add(event("resolution_stats", "", "", "", Map.of(
+			"expandedGoals", expandedGoals,
+			"routeCacheHits", routeCacheHits,
+			"explorationBudget", explorationBudget
+		)));
+		if (budgetExceeded) {
+			trace.add(event("goal_failed", "", "", "", Map.of("goal", goal.normalizedKey(), "failureCode", "resolution_budget_exceeded")));
+			return ActionResolveResult.failure(
+				"resolution_budget_exceeded",
+				"route resolution exceeded its deterministic exploration budget of " + explorationBudget,
+				trace
+			);
+		}
 		if (route.isPresent()) {
 			trace.add(event("goal_succeeded", "", "", "", Map.of("goal", goal.normalizedKey())));
 			return ActionResolveResult.success(route.get(), trace);
@@ -86,84 +142,73 @@ public final class ActionResolver {
 		List<ActionTraceEvent> trace
 	) {
 		trace.add(event("goal_started", "", "", "", Map.of("goal", goal.normalizedKey(), "depth", depth)));
+		if (++expandedGoals > explorationBudget) {
+			budgetExceeded = true;
+			trace.add(event("goal_failed", "", "", "", Map.of("goal", goal.normalizedKey(), "failureCode", "resolution_budget_exceeded")));
+			return Optional.empty();
+		}
 		if (depth > maxDepth) {
 			trace.add(event("goal_failed", "", "", "", Map.of("goal", goal.normalizedKey(), "failureCode", "max_depth_exceeded")));
 			return Optional.empty();
 		}
-		if (!resolving.add(goal.normalizedKey())) {
+		String goalKey = goal.normalizedKey();
+		if (resolving.contains(goalKey)) {
 			trace.add(event("goal_failed", "", "", "", Map.of("goal", goal.normalizedKey(), "failureCode", "cycle_detected")));
 			return Optional.empty();
 		}
-
-		if (goalSatisfied(goal, trace)) {
-			resolving.remove(goal.normalizedKey());
-			return Optional.of(ActionRoute.empty());
+		ActionRoute cached = successfulRoutes.get(goalKey);
+		if (cached != null) {
+			routeCacheHits++;
+			trace.add(event("route_cache_hit", "", "", "", Map.of("goal", goalKey, "cost", cached.cost())));
+			return Optional.of(cached);
 		}
-
-		if (!preferActionsetRoutes) {
-			Optional<ActionRoute> resourceRoute = resolveResourceProviderGoal(goal, depth, resolving, trace);
-			if (resourceRoute.isPresent()) {
-				resolving.remove(goal.normalizedKey());
-				return resourceRoute;
+		resolving.add(goalKey);
+		try {
+			Optional<ActionRoute> route;
+			if (goalSatisfied(goal, trace)) {
+				route = Optional.of(ActionRoute.empty());
 			}
-			Optional<ActionRoute> logItemRoute = resolveLogItemProviderGoal(goal, trace);
-			if (logItemRoute.isPresent()) {
-				resolving.remove(goal.normalizedKey());
-				return logItemRoute;
+			else {
+				route = preferActionsetRoutes
+					? resolveActionsetGoal(goal, depth, resolving, trace)
+					: resolveDomainProviderGoal(goal, depth, resolving, trace);
+				if (route.isEmpty()) {
+					route = preferActionsetRoutes
+						? resolveDomainProviderGoal(goal, depth, resolving, trace)
+						: resolveActionsetGoal(goal, depth, resolving, trace);
+				}
 			}
-			Optional<ActionRoute> smeltingRoute = resolveSmeltingProviderGoal(goal, depth, resolving, trace);
-			if (smeltingRoute.isPresent()) {
-				resolving.remove(goal.normalizedKey());
-				return smeltingRoute;
-			}
-			Optional<ActionRoute> miningRoute = resolveMiningProviderGoal(goal, depth, resolving, trace);
-			if (miningRoute.isPresent()) {
-				resolving.remove(goal.normalizedKey());
-				return miningRoute;
-			}
-			Optional<ActionRoute> providerRoute = resolveRecipeProviderGoal(goal, depth, resolving, trace);
-			if (providerRoute.isPresent()) {
-				resolving.remove(goal.normalizedKey());
-				return providerRoute;
-			}
+			route.ifPresent(resolved -> successfulRoutes.put(goalKey, resolved));
+			return route;
 		}
-
-		Optional<ActionRoute> actionsetRoute = resolveActionsetGoal(goal, depth, resolving, trace);
-		if (actionsetRoute.isPresent()) {
-			resolving.remove(goal.normalizedKey());
-			return actionsetRoute;
+		finally {
+			resolving.remove(goalKey);
 		}
+	}
 
-		if (preferActionsetRoutes) {
-			Optional<ActionRoute> resourceRoute = resolveResourceProviderGoal(goal, depth, resolving, trace);
-			if (resourceRoute.isPresent()) {
-				resolving.remove(goal.normalizedKey());
-				return resourceRoute;
-			}
-			Optional<ActionRoute> logItemRoute = resolveLogItemProviderGoal(goal, trace);
-			if (logItemRoute.isPresent()) {
-				resolving.remove(goal.normalizedKey());
-				return logItemRoute;
-			}
-			Optional<ActionRoute> smeltingRoute = resolveSmeltingProviderGoal(goal, depth, resolving, trace);
-			if (smeltingRoute.isPresent()) {
-				resolving.remove(goal.normalizedKey());
-				return smeltingRoute;
-			}
-			Optional<ActionRoute> miningRoute = resolveMiningProviderGoal(goal, depth, resolving, trace);
-			if (miningRoute.isPresent()) {
-				resolving.remove(goal.normalizedKey());
-				return miningRoute;
-			}
-			Optional<ActionRoute> providerRoute = resolveRecipeProviderGoal(goal, depth, resolving, trace);
-			if (providerRoute.isPresent()) {
-				resolving.remove(goal.normalizedKey());
-				return providerRoute;
-			}
+	private Optional<ActionRoute> resolveDomainProviderGoal(
+		ActionGoal goal,
+		int depth,
+		LinkedHashSet<String> resolving,
+		List<ActionTraceEvent> trace
+	) {
+		Optional<ActionRoute> route = resolveResourceProviderGoal(goal, depth, resolving, trace);
+		if (route.isPresent() || budgetExceeded) {
+			return route;
 		}
-
-		resolving.remove(goal.normalizedKey());
-		return Optional.empty();
+		route = resolveLogItemProviderGoal(goal, trace);
+		if (route.isPresent() || budgetExceeded) {
+			return route;
+		}
+		route = resolveSmeltingProviderGoal(goal, depth, resolving, trace);
+		if (route.isPresent() || budgetExceeded) {
+			return route;
+		}
+		route = resolveMiningProviderGoal(goal, depth, resolving, trace);
+		if (route.isPresent() || budgetExceeded) {
+			return route;
+		}
+		return resolveRecipeProviderGoal(goal, depth, resolving, trace);
 	}
 
 	private Optional<ActionRoute> resolveActionsetGoal(
@@ -350,16 +395,9 @@ public final class ActionResolver {
 			return Optional.of(ActionRoute.empty());
 		}
 
-		Map<String, String> recipeQuery = new LinkedHashMap<>();
-		recipeQuery.put("worldId", context.worldId());
-		recipeQuery.put("actorId", context.actorId());
 		ActionRoute bestRoute = null;
 		String bestRecipeId = "";
-		for (ActionFact recipe : facts.query(ActionFactType.CRAFT_RECIPE, recipeQuery).stream()
-			.filter(this::usableFact)
-			.filter(fact -> outputItemId.equals(scalar(fact.payload().get("outputItemId"), "")))
-			.sorted(Comparator.comparing(fact -> fact.identity().keys().getOrDefault("recipeId", "")))
-			.toList()) {
+		for (ActionFact recipe : craftRecipesByOutput.getOrDefault(outputItemId, List.of())) {
 			String recipeId = recipe.identity().keys().getOrDefault("recipeId", "");
 			String alternativeKey = "recipe_provider:" + recipeId;
 			if (blockedAlternativeKeys.contains(alternativeKey)) {
@@ -695,17 +733,10 @@ public final class ActionResolver {
 			return Optional.of(ActionRoute.empty());
 		}
 
-		Map<String, String> recipeQuery = new LinkedHashMap<>();
-		recipeQuery.put("worldId", context.worldId());
-		recipeQuery.put("actorId", context.actorId());
 		ActionRoute bestRoute = null;
 		String bestOptionId = "";
 		int bestProvenanceRank = Integer.MAX_VALUE;
-		for (ActionFact recipe : facts.query(ActionFactType.SMELT_RECIPE, recipeQuery).stream()
-			.filter(this::usableFact)
-			.filter(fact -> outputItemId.equals(scalar(fact.payload().get("outputItemId"), "")))
-			.sorted(Comparator.comparing(fact -> fact.identity().keys().getOrDefault("optionId", "")))
-			.toList()) {
+		for (ActionFact recipe : smeltRecipesByOutput.getOrDefault(outputItemId, List.of())) {
 			String optionId = recipe.identity().keys().getOrDefault("optionId", "");
 			String alternativeKey = "smelting_provider:" + optionId;
 			if (blockedAlternativeKeys.contains(alternativeKey)) {
@@ -1136,6 +1167,30 @@ public final class ActionResolver {
 
 	private boolean usableFact(ActionFact fact) {
 		return GUARD_USABLE_PROVENANCE.contains(fact.provenance()) && !fact.isStaleAt(context.currentTick());
+	}
+
+	private Map<String, List<ActionFact>> providerFactsByOutput(
+		ActionFactType factType,
+		String outputPayloadKey,
+		String identitySortKey
+	) {
+		Map<String, String> query = Map.of(
+			"worldId", context.worldId(),
+			"actorId", context.actorId()
+		);
+		LinkedHashMap<String, List<ActionFact>> indexed = new LinkedHashMap<>();
+		for (ActionFact fact : facts.query(factType, query).stream()
+			.filter(this::usableFact)
+			.sorted(Comparator.comparing(candidate -> candidate.identity().keys().getOrDefault(identitySortKey, "")))
+			.toList()) {
+			String outputItemId = scalar(fact.payload().get(outputPayloadKey), "");
+			if (!outputItemId.isBlank()) {
+				indexed.computeIfAbsent(outputItemId, ignored -> new ArrayList<>()).add(fact);
+			}
+		}
+		LinkedHashMap<String, List<ActionFact>> immutable = new LinkedHashMap<>();
+		indexed.forEach((itemId, candidates) -> immutable.put(itemId, List.copyOf(candidates)));
+		return Map.copyOf(immutable);
 	}
 
 	private List<ActionsetEntry> matchingActionsets(ActionGoal goal) {

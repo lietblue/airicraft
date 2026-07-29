@@ -816,7 +816,7 @@ public final class EmbodiedAgentRuntime {
 		worldTaskExecutor.shutdown();
 		surfaceMemory.clear();
 		actionGraphCoordinator.cancelAll("runtime_shutdown", tickCount);
-		actionGraphCoordinator.clear();
+		actionGraphCoordinator.shutdown();
 		pendingActionGraphTerminalEvent = null;
 		activeJobRuntime.clear();
 		followCapability.clear();

@@ -6,12 +6,14 @@ import ai.moeru.airicraft.agent.tasks.CraftingOpportunity;
 import ai.moeru.airicraft.agent.tasks.SmeltingRecipeKnowledge;
 
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class ActionResolverTest {
@@ -21,6 +23,61 @@ class ActionResolverTest {
 		"minecraft:overworld",
 		100
 	);
+
+	@Test
+	void pureResolutionPlansDiamondFromEmptyInventoryWithFullRecipeNoise() {
+		ActionFactStore facts = new ActionFactStore();
+		addSurvivalCraftFacts(facts);
+		addSurvivalSmeltFacts(facts);
+		for (int index = 0; index < 1_407; index++) {
+			facts.upsert(new ActionFact(
+				ActionFactIdentity.craftRecipe("world-a", "bot", "noise_recipe_" + index),
+				Map.of(
+					"outputItemId", "minecraft:noise_" + index,
+					"outputCount", 1,
+					"inputCounts", Map.of("minecraft:noise_input_" + index, 1)
+				),
+				ActionFactProvenance.INFERRED,
+				90,
+				ActionFact.NEVER_STALE
+			));
+		}
+		ActionResolutionRequest request = ActionResolutionRequest.defaults(
+			ActionsetIndex.empty(),
+			facts.queryAll(),
+			CONTEXT,
+			ActionGoal.inventoryItem("minecraft:diamond", 1)
+		);
+
+		ActionResolveResult result = assertTimeoutPreemptively(
+			Duration.ofSeconds(1),
+			() -> ActionResolver.resolve(request)
+		);
+
+		assertTrue(result.resolved(), () -> result.trace().toString());
+		assertEquals("mine_block", result.route().steps().getLast().targetId());
+		assertEquals("minecraft:diamond", result.route().steps().getLast().args().get("itemId"));
+		assertTrue(result.trace().stream().anyMatch(event -> "route_cache_hit".equals(event.eventType())));
+	}
+
+	@Test
+	void pureResolutionStopsAtDeterministicExplorationBudget() {
+		ActionResolutionRequest request = new ActionResolutionRequest(
+			ActionsetIndex.empty(),
+			List.of(),
+			CONTEXT,
+			ActionGoal.inventoryItem("minecraft:diamond", 1),
+			8,
+			1,
+			java.util.Set.of(),
+			false
+		);
+
+		ActionResolveResult result = ActionResolver.resolve(request);
+
+		assertFalse(result.resolved());
+		assertEquals("resolution_budget_exceeded", result.failureCode());
+	}
 
 	@Test
 	void resolvesResourceCollectionThroughResourceProvider() {

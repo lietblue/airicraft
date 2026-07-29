@@ -7,13 +7,19 @@ import ai.moeru.airicraft.agent.tasks.TaskTerminalEvent;
 import org.junit.jupiter.api.Test;
 
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class ActionGraphExecutionRuntimeTest {
@@ -23,6 +29,56 @@ class ActionGraphExecutionRuntimeTest {
 		"minecraft:overworld",
 		100
 	);
+
+	@Test
+	void dedicatedResolutionExecutorNeverBlocksForegroundTick() throws Exception {
+		ExecutorService executor = Executors.newSingleThreadExecutor();
+		CountDownLatch workerOccupied = new CountDownLatch(1);
+		CountDownLatch releaseWorker = new CountDownLatch(1);
+		try {
+			executor.submit(() -> {
+				workerOccupied.countDown();
+				try {
+					releaseWorker.await();
+				}
+				catch (InterruptedException exception) {
+					Thread.currentThread().interrupt();
+				}
+			});
+			assertTrue(workerOccupied.await(1, TimeUnit.SECONDS));
+
+			RecordingDispatcher dispatcher = new RecordingDispatcher();
+			ActionGraphExecutionRuntime runtime = new ActionGraphExecutionRuntime(
+				defaultIndex(),
+				dispatcher,
+				false,
+				executor
+			);
+			runtime.submit(ActionGoal.inventoryItem("minecraft:bread", 1), Map.of("minecraft:wheat", 3), CONTEXT, 100);
+
+			ActionGraphExecutionSnapshot resolving = assertTimeoutPreemptively(
+				Duration.ofMillis(200),
+				() -> runtime.tick(input(Map.of("minecraft:wheat", 3), null, 101))
+			);
+
+			assertEquals(ActionGraphExecutionState.RESOLVING, resolving.state());
+			assertTrue(dispatcher.dispatchedSteps.isEmpty());
+			assertTrace(resolving.trace(), "resolution_scheduled");
+
+			releaseWorker.countDown();
+			ActionGraphExecutionSnapshot completedResolution = resolving;
+			for (int attempt = 0; attempt < 100 && completedResolution.state() == ActionGraphExecutionState.RESOLVING; attempt++) {
+				Thread.sleep(5L);
+				completedResolution = runtime.tick(input(Map.of("minecraft:wheat", 3), null, 102 + attempt));
+			}
+			assertEquals(ActionGraphExecutionState.WAITING_PRIMITIVE, completedResolution.state());
+			assertEquals(1, dispatcher.dispatchedSteps.size());
+		}
+		finally {
+			releaseWorker.countDown();
+			executor.shutdownNow();
+		}
+	}
 
 	@Test
 	void verbosePayloadCapsTraceAndRecoveryHistory() {

@@ -514,6 +514,26 @@ class EmbodiedAgentRuntimeTest {
 			new ActionGraphAgentPosition("world-a", "minecraft:overworld", 0, 64, 0),
 			Map.of()
 		), true);
+		for (int attempt = 0;
+			attempt < 100 && coordinator.inspect(wheat.executionId()).residency() == ActionGraphResidency.FOREGROUND;
+			attempt++) {
+			Thread.sleep(5L);
+			coordinator.tick(new ActionGraphExecutionInput(
+				new ActionResolverContext("world-a", "bot", "minecraft:overworld", 21L + attempt),
+				Map.of(),
+				Map.of(),
+				true,
+				true,
+				null,
+				List.of(),
+				List.of(),
+				List.of(),
+				List.of(),
+				List.of(growingWheat),
+				new ActionGraphAgentPosition("world-a", "minecraft:overworld", 0, 64, 0),
+				Map.of()
+			), true);
+		}
 
 		String legacy = runtime.executePlannerToolCallForTests(new PlannerToolCall(
 			"call_follow",

@@ -1,5 +1,6 @@
 package ai.moeru.airicraft.agent.actions;
 
+import java.util.EnumMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -8,12 +9,24 @@ import java.util.Optional;
 
 public final class ActionFactStore {
 	private final Map<ActionFactIdentity, ActionFact> facts = new LinkedHashMap<>();
+	private final Map<ActionFactType, Map<ActionFactIdentity, ActionFact>> factsByType = new EnumMap<>(ActionFactType.class);
+
+	public ActionFactStore() {
+	}
+
+	public ActionFactStore(List<ActionFact> initialFacts) {
+		if (initialFacts != null) {
+			initialFacts.forEach(this::upsert);
+		}
+	}
 
 	public synchronized ActionFact upsert(ActionFact fact) {
 		Objects.requireNonNull(fact, "fact");
 		ActionFact existing = facts.get(fact.identity());
 		if (existing == null || shouldReplace(existing, fact)) {
 			facts.put(fact.identity(), fact);
+			factsByType.computeIfAbsent(fact.identity().type(), ignored -> new LinkedHashMap<>())
+				.put(fact.identity(), fact);
 			return fact;
 		}
 		return existing;
@@ -30,7 +43,7 @@ public final class ActionFactStore {
 	public synchronized List<ActionFact> query(ActionFactType type, Map<String, String> requiredKeys) {
 		Objects.requireNonNull(type, "type");
 		Map<String, String> keys = requiredKeys == null ? Map.of() : requiredKeys;
-		return facts.values().stream()
+		return factsByType.getOrDefault(type, Map.of()).values().stream()
 			.filter(fact -> fact.identity().matches(type, keys))
 			.toList();
 	}
@@ -45,6 +58,7 @@ public final class ActionFactStore {
 
 	public synchronized void clear() {
 		facts.clear();
+		factsByType.clear();
 	}
 
 	private static boolean shouldReplace(ActionFact existing, ActionFact incoming) {
