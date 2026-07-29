@@ -160,6 +160,7 @@ import ai.moeru.airicraft.agent.tasks.SmeltingOutputReadyEvent;
 import ai.moeru.airicraft.agent.tasks.SmeltingPlannerService;
 import ai.moeru.airicraft.agent.tasks.SmeltingOpportunitySnapshot;
 import ai.moeru.airicraft.agent.tasks.SmeltingProcessManager;
+import ai.moeru.airicraft.agent.tasks.SmeltingProcessSnapshot;
 import ai.moeru.airicraft.agent.tasks.SurfaceMemory;
 import ai.moeru.airicraft.agent.tasks.WorldTaskType;
 import net.minecraft.block.BlockState;
@@ -1669,6 +1670,7 @@ public final class EmbodiedAgentRuntime {
 		List<ActionGraphWatchSnapshot> pendingWatches = actionGraphCoordinator.pendingWatches();
 		Map<String, ActionWatchProgressObservation> watchProgress = actionGraphWatchProgress(client, context, agentPosition, pendingWatches);
 		ArrayList<ActionFact> observedFacts = new ArrayList<>(FarmBootstrapFactProvider.fromWorldEvidence(context, worldEvidence));
+		observedFacts.addAll(observeSmeltingProcessFacts(context));
 		boolean discoverNearbyCrops = actionGraphCoordinator.nonterminalExecutions().stream()
 			.map(ActionGraphExecutionView::execution)
 			.anyMatch(execution -> execution.state() == ai.moeru.airicraft.agent.actions.ActionGraphExecutionState.RESOLVING
@@ -1761,6 +1763,37 @@ public final class EmbodiedAgentRuntime {
 				ai.moeru.airicraft.agent.actions.ActionFactProvenance.OBSERVED,
 				context.currentTick(),
 				context.currentTick() + 20L
+			));
+		}
+		return List.copyOf(facts);
+	}
+
+	private List<ActionFact> observeSmeltingProcessFacts(ActionResolverContext context) {
+		ArrayList<ActionFact> facts = new ArrayList<>();
+		for (SmeltingProcessSnapshot process : smeltingProcessManager.processSnapshots()) {
+			if (process.stationKey() == null || process.outputItemId() == null || process.outputItemId().isBlank()) {
+				continue;
+			}
+			facts.add(new ActionFact(
+				ActionFactIdentity.smeltingProcess(
+					context.worldId(),
+					context.actorId(),
+					process.processId(),
+					process.optionId(),
+					process.outputItemId()
+				),
+				Map.of(
+					"ready", process.outputReady() ? 1 : 0,
+					"expectedOutputCount", process.expectedOutputCount(),
+					"origin", Map.of(
+						"x", process.stationKey().x(),
+						"y", process.stationKey().y(),
+						"z", process.stationKey().z()
+					)
+				),
+				ai.moeru.airicraft.agent.actions.ActionFactProvenance.OBSERVED,
+				context.currentTick(),
+				context.currentTick() + SMELTING_OUTPUT_READY_POLL_INTERVAL_TICKS + 1L
 			));
 		}
 		return List.copyOf(facts);
@@ -1865,8 +1898,8 @@ public final class EmbodiedAgentRuntime {
 				dispatch.payload()
 			);
 		}
-		ActiveJobProposal proposal = prepareActionGraphPrimitiveProposal(dispatch.proposal());
-		if (proposal == null) {
+		ActionGraphPrimitivePreflight preflight = prepareActionGraphPrimitiveProposal(dispatch.proposal());
+		if (preflight == null) {
 			return ActionGraphPrimitiveDispatchResult.failed(
 				"primitive_preflight_failed",
 				"Action graph primitive preflight failed",
@@ -1874,21 +1907,23 @@ public final class EmbodiedAgentRuntime {
 			);
 		}
 		TaskSnapshot submittedTask = submitActiveJobProposal(
-			proposal,
+			preflight.proposal(),
 			"action_graph",
 			actionGraphSubmittedPayload(dispatch)
 		);
 		Optional<WorldTaskRequest> activeTask = activeJobRuntime.activeTaskRequest();
 		String taskId = activeTask.map(WorldTaskRequest::taskId).orElse(activeJobRuntime.current().jobId());
+		LinkedHashMap<String, Object> resultPayload = new LinkedHashMap<>(dispatch.payload());
+		resultPayload.putAll(preflight.payload());
 		return ActionGraphPrimitiveDispatchResult.accepted(
 			taskId,
-			dispatch.payload(),
+			resultPayload,
 			actionGraphTaskPayload(submittedTask, activeTask),
 			Map.of("taskId", taskId, "state", TaskExecutionState.RUNNING.name())
 		);
 	}
 
-	private ActiveJobProposal prepareActionGraphPrimitiveProposal(ActiveJobProposal proposal) {
+	private ActionGraphPrimitivePreflight prepareActionGraphPrimitiveProposal(ActiveJobProposal proposal) {
 		if (proposal == null) {
 			return null;
 		}
@@ -1899,7 +1934,9 @@ public final class EmbodiedAgentRuntime {
 				proposal.smeltItems(),
 				tickCount
 			);
-			return result.accepted() && !result.confirmationRequired() ? proposal : null;
+			return result.accepted() && !result.confirmationRequired()
+				? new ActionGraphPrimitivePreflight(proposal, processPayload(result.processId()))
+				: null;
 		}
 		if (proposal.type() == ActiveJobType.COLLECT_SMELTED_ITEMS && proposal.collectSmeltedItems() != null) {
 			SmeltingActionResult result = smeltingPlannerService.collectSmelted(
@@ -1912,13 +1949,24 @@ public final class EmbodiedAgentRuntime {
 				return null;
 			}
 			if (proposal.collectSmeltedItems().processId() == null && result.processId() != null) {
-				return ActiveJobProposal.collectSmeltedItems(new CollectSmeltedItemsStepArgs(
-					result.processId(),
-					proposal.collectSmeltedItems().confirmationToken()
-				));
+				return new ActionGraphPrimitivePreflight(
+					ActiveJobProposal.collectSmeltedItems(new CollectSmeltedItemsStepArgs(
+						result.processId(),
+						proposal.collectSmeltedItems().confirmationToken()
+					)),
+					processPayload(result.processId())
+				);
 			}
+			return new ActionGraphPrimitivePreflight(proposal, processPayload(result.processId()));
 		}
-		return proposal;
+		return new ActionGraphPrimitivePreflight(proposal, Map.of());
+	}
+
+	private record ActionGraphPrimitivePreflight(ActiveJobProposal proposal, Map<String, Object> payload) {
+	}
+
+	private static Map<String, Object> processPayload(String processId) {
+		return processId == null || processId.isBlank() ? Map.of() : Map.of("processId", processId);
 	}
 
 	private void captureActionGraphTerminalEvent(TaskTerminalEvent event) {

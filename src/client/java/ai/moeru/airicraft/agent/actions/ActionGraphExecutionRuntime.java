@@ -53,6 +53,7 @@ public final class ActionGraphExecutionRuntime {
 	private int assumedInventoryFactCount;
 	private long observeNotBeforeTick = -1L;
 	private boolean refreshRouteAfterObservation;
+	private String boundSmeltingProcessId = "";
 
 	public ActionGraphExecutionRuntime(Path actionsetRoot, ActionGraphPrimitiveDispatcher primitiveDispatcher) {
 		this(() -> ActionsetLibraryLoader.defaults().load(actionsetRoot == null ? ActionsetLibraryPaths.defaultRoot() : actionsetRoot), primitiveDispatcher, false);
@@ -121,6 +122,7 @@ public final class ActionGraphExecutionRuntime {
 		this.assumedInventoryFactCount = 0;
 		this.observeNotBeforeTick = -1L;
 		this.refreshRouteAfterObservation = false;
+		this.boundSmeltingProcessId = "";
 		addInventoryFacts(assumedInventory, ActionFactProvenance.EXECUTOR_REPORTED, context, false);
 		trace("execution_started", "", "", "", Map.of("goal", goal.normalizedKey(), "executionId", executionId));
 		return snapshot();
@@ -257,6 +259,7 @@ public final class ActionGraphExecutionRuntime {
 		assumedInventoryFactCount = 0;
 		observeNotBeforeTick = -1L;
 		refreshRouteAfterObservation = false;
+		boundSmeltingProcessId = "";
 	}
 
 	public synchronized ActionGraphExecutionSnapshot snapshot() {
@@ -384,7 +387,8 @@ public final class ActionGraphExecutionRuntime {
 			block("session_gate", "Actuation is currently blocked by session gate");
 			return;
 		}
-		ActionGraphPrimitiveDispatchResult result = primitiveDispatcher.dispatch(currentStep);
+		ActionPlanStep dispatchStep = bindPrimitiveStep(currentStep);
+		ActionGraphPrimitiveDispatchResult result = primitiveDispatcher.dispatch(dispatchStep);
 		if (!result.accepted()) {
 			stepAttempt++;
 			handleStepFailure(nonEmpty(result.failureCode(), "dispatch_failed"), result.message(), false);
@@ -393,6 +397,15 @@ public final class ActionGraphExecutionRuntime {
 		stepAttempt++;
 		activeTaskId = result.taskId();
 		dispatchPayload = result.payload();
+		if ("smelt_item".equals(currentStep.targetId())) {
+			String processId = stringPayload(result.payload(), "processId");
+			if (!processId.isBlank()) {
+				boundSmeltingProcessId = processId;
+				trace("smelting_process_bound", currentStep.actionId(), currentStep.alternativeId(), currentStep.stepId(), Map.of(
+					"processId", processId
+				));
+			}
+		}
 		taskPayload = result.task();
 		taskExecutionPayload = result.taskExecution().isEmpty()
 			? Map.of("taskId", activeTaskId, "state", TaskExecutionState.RUNNING.name())
@@ -512,6 +525,7 @@ public final class ActionGraphExecutionRuntime {
 		ActionWatchSpec spec = currentStep.watchSpec() == null
 			? legacyWatchSpec(currentStep.args(), input.context())
 			: currentStep.watchSpec();
+		spec = bindSmeltingWatch(spec, input);
 		if (spec.progressKind() == ActionWatchProgressKind.AREA_TICKING && spec.anchor() == null && input.agentPosition() != null) {
 			ActionGraphAgentPosition position = input.agentPosition();
 			spec = new ActionWatchSpec(
@@ -537,6 +551,71 @@ public final class ActionGraphExecutionRuntime {
 			"sourceFactIdentity", watch.spec.sourceFactIdentity() == null ? Map.of() : watch.spec.sourceFactIdentity().keys(),
 			"progressKind", watch.spec.progressKind().name()
 		));
+	}
+
+	private ActionPlanStep bindPrimitiveStep(ActionPlanStep step) {
+		if (step == null || boundSmeltingProcessId.isBlank() || !"collect_smelted_item".equals(step.targetId())) {
+			return step;
+		}
+		LinkedHashMap<String, Object> args = new LinkedHashMap<>(step.args());
+		args.put("processId", boundSmeltingProcessId);
+		return new ActionPlanStep(
+			step.kind(),
+			step.actionId(),
+			step.alternativeId(),
+			step.stepId(),
+			step.targetId(),
+			args,
+			step.watchSpec()
+		);
+	}
+
+	private ActionWatchSpec bindSmeltingWatch(ActionWatchSpec spec, ActionGraphExecutionInput input) {
+		if (spec.condition().factType() != ActionFactType.SMELTING_PROCESS || boundSmeltingProcessId.isBlank()) {
+			return spec;
+		}
+		LinkedHashMap<String, String> exactKeys = new LinkedHashMap<>(spec.condition().queryKeys());
+		exactKeys.put("processId", boundSmeltingProcessId);
+		ActionFact source = facts.query(ActionFactType.SMELTING_PROCESS, exactKeys).stream()
+			.filter(fact -> fact.provenance().authoritative())
+			.filter(fact -> !fact.isStaleAt(input.context().currentTick()))
+			.findFirst()
+			.orElse(null);
+		ActionWatchAnchor anchor = smeltingAnchor(source, input.context());
+		return new ActionWatchSpec(
+			new ActionFactCondition(ActionFactType.SMELTING_PROCESS, exactKeys, spec.condition().minimums()),
+			source == null ? null : source.identity(),
+			spec.timeoutTicks(),
+			spec.progressKind(),
+			anchor
+		);
+	}
+
+	private static ActionWatchAnchor smeltingAnchor(ActionFact source, ActionResolverContext context) {
+		if (source == null || !(source.payload().get("origin") instanceof Map<?, ?> origin)) {
+			return null;
+		}
+		Object x = origin.get("x");
+		Object y = origin.get("y");
+		Object z = origin.get("z");
+		if (!(x instanceof Number xNumber) || !(y instanceof Number yNumber) || !(z instanceof Number zNumber)) {
+			return null;
+		}
+		return new ActionWatchAnchor(
+			context.worldId(),
+			context.dimension(),
+			xNumber.intValue(),
+			yNumber.intValue(),
+			zNumber.intValue(),
+			false
+		);
+	}
+
+	private static String stringPayload(Map<String, Object> payload, String key) {
+		if (payload == null || payload.get(key) == null) {
+			return "";
+		}
+		return String.valueOf(payload.get(key)).trim();
 	}
 
 	private void pollWatch(ActionGraphExecutionInput input) {

@@ -166,12 +166,14 @@ class ActionGraphPrimitiveMapperTest {
 	@Test
 	void mapsCollectSmeltedItemToCollectionJob() {
 		ActionGraphPrimitiveDispatch dispatch = ActionGraphPrimitiveMapper.map(primitive("collect_smelted_item", Map.of(
-			"itemId", "minecraft:iron_ingot"
+			"itemId", "minecraft:iron_ingot",
+			"processId", "smelt-process-test"
 		)), List.of(), List.of());
 
 		assertTrue(dispatch.dispatchable());
 		assertEquals(ActiveJobType.COLLECT_SMELTED_ITEMS, dispatch.proposal().type());
-		assertEquals(null, dispatch.proposal().collectSmeltedItems().processId());
+		assertEquals("smelt-process-test", dispatch.proposal().collectSmeltedItems().processId());
+		assertEquals("smelt-process-test", dispatch.payload().get("processId"));
 	}
 
 	@Test

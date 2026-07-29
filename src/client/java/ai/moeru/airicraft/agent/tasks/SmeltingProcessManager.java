@@ -82,6 +82,20 @@ public final class SmeltingProcessManager {
 		return !processesById.isEmpty();
 	}
 
+	public List<SmeltingProcessSnapshot> processSnapshots() {
+		return processesById.values().stream()
+			.sorted(Comparator.comparing(TrackedProcess::processId))
+			.map(process -> new SmeltingProcessSnapshot(
+				process.processId(),
+				process.optionId(),
+				process.stationKey(),
+				process.expectedOutputItemId(),
+				process.expectedOutputCount(),
+				process.outputReadyNotified()
+			))
+			.toList();
+	}
+
 	public List<SmeltingStationKey> trackedStationKeys() {
 		return List.copyOf(processesByStation.keySet());
 	}

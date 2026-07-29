@@ -140,7 +140,7 @@ public final class ActionsetValidator {
 				errors.add(new ActionsetValidationError("unknown_fact", factPath + ".fact", "unknown fact type " + factType));
 			}
 			for (Map.Entry<String, Object> entry : fact.entrySet()) {
-				if ("countAtLeast".equals(entry.getKey()) || "matureCountAtLeast".equals(entry.getKey())) {
+				if ("countAtLeast".equals(entry.getKey()) || "matureCountAtLeast".equals(entry.getKey()) || "readyAtLeast".equals(entry.getKey())) {
 					validateExpressionValue(entry.getValue(), factPath + "." + entry.getKey(), params, errors);
 				}
 			}

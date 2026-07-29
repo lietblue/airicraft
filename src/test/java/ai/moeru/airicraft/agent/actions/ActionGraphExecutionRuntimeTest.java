@@ -310,7 +310,7 @@ class ActionGraphExecutionRuntimeTest {
 	}
 
 	@Test
-	void smeltStartCompletionContinuesToCollectStepWithoutRouteRefresh() {
+	void smeltStartSuspendsUntilExactProcessIsReadyThenCollectsIt() {
 		RecordingDispatcher dispatcher = new RecordingDispatcher();
 		ActionGraphExecutionRuntime runtime = new ActionGraphExecutionRuntime(ActionsetIndex.empty(), dispatcher);
 		runtime.submit(
@@ -342,17 +342,43 @@ class ActionGraphExecutionRuntimeTest {
 
 		assertEquals(ActionGraphExecutionState.OBSERVING, observing.state());
 
-		ActionGraphExecutionSnapshot collectDispatched = runtime.tick(input(
+		ActionGraphExecutionSnapshot suspended = runtime.tick(input(
 			Map.of("minecraft:raw_iron", 3, "minecraft:furnace", 1, "minecraft:coal", 1, "minecraft:stone_pickaxe", 1),
 			null,
 			122,
 			List.of(),
-			List.of(ironIngotSmeltRecipe(122))
+			List.of(ironIngotSmeltRecipe(122), smeltingProcess(false, 122))
 		));
 
+		assertEquals(ActionGraphExecutionState.WATCHING, suspended.state());
+		assertEquals(1, dispatcher.dispatchedSteps.size());
+		assertEquals("wait_for_smelted_item", suspended.pendingWatch());
+		ActionGraphWatchSnapshot watch = runtime.pendingWatches().getFirst();
+		assertEquals("smelt-process-test", watch.spec().condition().queryKeys().get("processId"));
+		assertEquals("smelt-process-test", watch.spec().sourceFactIdentity().keys().get("processId"));
+		assertEquals(10, watch.spec().anchor().x());
+
+		ActionGraphExecutionSnapshot fulfilled = runtime.tickPassive(input(
+			Map.of("minecraft:raw_iron", 3, "minecraft:furnace", 1, "minecraft:coal", 1, "minecraft:stone_pickaxe", 1),
+			null,
+			200,
+			List.of(),
+			List.of(ironIngotSmeltRecipe(200), smeltingProcess(true, 200))
+		));
+		assertEquals(ActionGraphExecutionState.OBSERVING, fulfilled.state());
+
+		ActionGraphExecutionSnapshot collectDispatched = runtime.tick(input(
+			Map.of("minecraft:raw_iron", 3, "minecraft:furnace", 1, "minecraft:coal", 1, "minecraft:stone_pickaxe", 1),
+			null,
+			201,
+			List.of(),
+			List.of(ironIngotSmeltRecipe(201), smeltingProcess(true, 201))
+		));
 		assertEquals(ActionGraphExecutionState.WAITING_PRIMITIVE, collectDispatched.state());
 		assertEquals(2, dispatcher.dispatchedSteps.size());
-		assertEquals("collect_smelted_item", dispatcher.dispatchedSteps.get(1).targetId());
+		ActionPlanStep collect = dispatcher.dispatchedSteps.get(1);
+		assertEquals("collect_smelted_item", collect.targetId());
+		assertEquals("smelt-process-test", collect.args().get("processId"));
 		assertEquals(1, countTrace(collectDispatched.trace(), "route_started"));
 	}
 
@@ -875,6 +901,26 @@ class ActionGraphExecutionRuntimeTest {
 		);
 	}
 
+	private static ActionFact smeltingProcess(boolean ready, long tick) {
+		return new ActionFact(
+			ActionFactIdentity.smeltingProcess(
+				CONTEXT.worldId(),
+				CONTEXT.actorId(),
+				"smelt-process-test",
+				"smelt:minecraft_raw_iron_to_minecraft_iron_ingot:test",
+				"minecraft:iron_ingot"
+			),
+			Map.of(
+				"ready", ready ? 1 : 0,
+				"expectedOutputCount", 3,
+				"origin", Map.of("x", 10, "y", 64, "z", 20)
+			),
+			ActionFactProvenance.OBSERVED,
+			tick,
+			tick + 20
+		);
+	}
+
 	private static TaskTerminalEvent failed(String taskId, String message) {
 		return new TaskTerminalEvent(taskId, null, TaskExecutionState.FAILED, message, null);
 	}
@@ -935,9 +981,14 @@ class ActionGraphExecutionRuntimeTest {
 		@Override
 		public ActionGraphPrimitiveDispatchResult dispatch(ActionPlanStep step) {
 			dispatchedSteps.add(step);
+			LinkedHashMap<String, Object> payload = new LinkedHashMap<>();
+			payload.put("targetId", step.targetId());
+			if ("smelt_item".equals(step.targetId())) {
+				payload.put("processId", "smelt-process-test");
+			}
 			return ActionGraphPrimitiveDispatchResult.accepted(
 				"task-" + dispatchedSteps.size(),
-				Map.of("targetId", step.targetId())
+				payload
 			);
 		}
 	}

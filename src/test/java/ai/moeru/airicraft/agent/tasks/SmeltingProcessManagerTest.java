@@ -235,6 +235,14 @@ class SmeltingProcessManagerTest {
 		assertTrue(first.accepted());
 		assertTrue(second.accepted());
 		assertEquals(second.processId(), manager.preferredCollectionProcessId());
+		assertEquals(2, manager.processSnapshots().size());
+		SmeltingProcessSnapshot ready = manager.processSnapshots().stream()
+			.filter(snapshot -> second.processId().equals(snapshot.processId()))
+			.findFirst()
+			.orElseThrow();
+		assertEquals(secondOption.stationObservation().key(), ready.stationKey());
+		assertEquals("minecraft:iron_ingot", ready.outputItemId());
+		assertTrue(ready.outputReady());
 	}
 
 	@Test

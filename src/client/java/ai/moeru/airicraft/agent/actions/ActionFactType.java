@@ -22,6 +22,7 @@ public enum ActionFactType {
 	WORLD_ENTITY("world.entity"),
 	CRAFT_RECIPE("craft.recipe"),
 	SMELT_RECIPE("smelt.recipe"),
+	SMELTING_PROCESS("smelting.process"),
 	WATCH_PENDING("watch.pending"),
 	WATCH_FULFILLED("watch.fulfilled"),
 	ROUTE_FAILURE("route.failure");

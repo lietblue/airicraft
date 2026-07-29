@@ -147,6 +147,22 @@ public record ActionFactIdentity(
 		));
 	}
 
+	public static ActionFactIdentity smeltingProcess(
+		String worldId,
+		String actorId,
+		String processId,
+		String optionId,
+		String itemId
+	) {
+		return new ActionFactIdentity(ActionFactType.SMELTING_PROCESS, keys(
+			"worldId", worldId,
+			"actorId", actorId,
+			"processId", processId,
+			"optionId", optionId,
+			"itemId", itemId
+		));
+	}
+
 	public static ActionFactIdentity watchPending(String worldId, String watchId) {
 		return watch(ActionFactType.WATCH_PENDING, worldId, watchId);
 	}

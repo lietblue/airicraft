@@ -167,14 +167,21 @@ public final class ActionGraphPrimitiveMapper {
 
 	private static ActionGraphPrimitiveDispatch collectSmeltedItem(ActionPlanStep step) {
 		String itemId = stringArg(step, "itemId");
+		String processId = stringArg(step, "processId");
 		LinkedHashMap<String, Object> payload = new LinkedHashMap<>();
 		payload.put("jobType", "COLLECT_SMELTED_ITEMS");
 		if (!itemId.isBlank()) {
 			payload.put("outputItemId", itemId);
 		}
+		if (!processId.isBlank()) {
+			payload.put("processId", processId);
+		}
 		return ActionGraphPrimitiveDispatch.dispatchable(
 			step,
-			ActiveJobProposal.collectSmeltedItems(new CollectSmeltedItemsStepArgs(null, null)),
+			ActiveJobProposal.collectSmeltedItems(new CollectSmeltedItemsStepArgs(
+				processId.isBlank() ? null : processId,
+				null
+			)),
 			payload
 		);
 	}

@@ -800,6 +800,40 @@ public final class ActionResolver {
 				"inputItemId", inputItemId
 			)));
 
+			ActionWatchSpec readyWatch = new ActionWatchSpec(
+				new ActionFactCondition(
+					ActionFactType.SMELTING_PROCESS,
+					Map.of(
+						"worldId", context.worldId(),
+						"actorId", context.actorId(),
+						"optionId", optionId,
+						"itemId", outputItemId
+					),
+					Map.of("ready", 1)
+				),
+				null,
+				Math.max(1200L, (long) cookTimeTicks * inputQuantity + 1200L),
+				ActionWatchProgressKind.AREA_TICKING,
+				null
+			);
+			Map<String, Object> watchArgs = Map.of(
+				"fact", ActionFactType.SMELTING_PROCESS.id(),
+				"optionId", optionId,
+				"itemId", outputItemId,
+				"readyAtLeast", 1,
+				"timeoutTicks", readyWatch.timeoutTicks()
+			);
+			steps.add(new ActionPlanStep(
+				ActionStepKind.WATCH,
+				"smelting_provider",
+				optionId,
+				"wait_for_smelted_item",
+				"watch",
+				watchArgs,
+				readyWatch
+			));
+			trace.add(event("watch_planned", "smelting_provider", optionId, "wait_for_smelted_item", watchArgs));
+
 			LinkedHashMap<String, Object> collectArgs = new LinkedHashMap<>();
 			collectArgs.put("itemId", outputItemId);
 			collectArgs.put("quantity", deficitCount);
@@ -1261,6 +1295,9 @@ public final class ActionResolver {
 		if (factSpec.containsKey("matureCountAtLeast")) {
 			minimums.put("matureCountAtLeast", evaluateInt(factSpec.get("matureCountAtLeast"), params));
 		}
+		if (factSpec.containsKey("readyAtLeast")) {
+			minimums.put("readyAtLeast", evaluateInt(factSpec.get("readyAtLeast"), params));
+		}
 		return new ActionGoal(factType, keys, minimums);
 	}
 
@@ -1269,7 +1306,7 @@ public final class ActionResolver {
 			.orElseThrow(() -> new IllegalArgumentException("unknown fact type " + factSpec.get("fact")));
 		LinkedHashMap<String, String> queryKeys = new LinkedHashMap<>();
 		queryKeys.put("worldId", context.worldId());
-		if (factType == ActionFactType.INVENTORY_ITEM || factType == ActionFactType.INVENTORY_RESOURCE || factType == ActionFactType.INVENTORY_TOOL || factType == ActionFactType.CRAFT_RECIPE || factType == ActionFactType.SMELT_RECIPE) {
+		if (factType == ActionFactType.INVENTORY_ITEM || factType == ActionFactType.INVENTORY_RESOURCE || factType == ActionFactType.INVENTORY_TOOL || factType == ActionFactType.CRAFT_RECIPE || factType == ActionFactType.SMELT_RECIPE || factType == ActionFactType.SMELTING_PROCESS) {
 			queryKeys.put("actorId", context.actorId());
 		}
 		if (worldDimensionScopedFact(factType)) {
@@ -1287,6 +1324,9 @@ public final class ActionResolver {
 		}
 		if (factSpec.containsKey("matureCountAtLeast")) {
 			minimums.put("matureCount", evaluateInt(factSpec.get("matureCountAtLeast"), params));
+		}
+		if (factSpec.containsKey("readyAtLeast")) {
+			minimums.put("ready", evaluateInt(factSpec.get("readyAtLeast"), params));
 		}
 		return new ActionFactCondition(factType, queryKeys, minimums);
 	}
@@ -1388,7 +1428,7 @@ public final class ActionResolver {
 	}
 
 	private static List<String> identityKeyNames() {
-		return List.of("itemId", "resourceKind", "toolTag", "dimension", "blockPos", "cropId", "siteId", "siteType", "plotId", "candidateId", "sourceId", "sampleId", "entityTypeId", "entityId", "recipeId", "optionId", "watchId", "goalId");
+		return List.of("itemId", "resourceKind", "toolTag", "dimension", "blockPos", "cropId", "siteId", "siteType", "plotId", "candidateId", "sourceId", "sampleId", "entityTypeId", "entityId", "recipeId", "optionId", "processId", "watchId", "goalId");
 	}
 
 	private static boolean worldDimensionScopedFact(ActionFactType factType) {
