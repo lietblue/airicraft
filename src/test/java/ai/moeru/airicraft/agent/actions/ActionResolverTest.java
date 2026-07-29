@@ -429,6 +429,68 @@ class ActionResolverTest {
 	}
 
 	@Test
+	void smeltingProviderPrefersAvailableObservedInputOverAlphabeticallyEarlierInferredRecipe() {
+		ActionFactStore facts = new ActionFactStore();
+		facts.upsert(new ActionFact(
+			ActionFactIdentity.inventoryItem("world-a", "bot", "minecraft:oak_log"),
+			Map.of("count", 8),
+			ActionFactProvenance.OBSERVED,
+			90,
+			ActionFact.NEVER_STALE
+		));
+		facts.upsert(new ActionFact(
+			ActionFactIdentity.inventoryItem("world-a", "bot", "minecraft:coal"),
+			Map.of("count", 1),
+			ActionFactProvenance.OBSERVED,
+			90,
+			ActionFact.NEVER_STALE
+		));
+		facts.upsert(new ActionFact(
+			ActionFactIdentity.inventoryItem("world-a", "bot", "minecraft:furnace"),
+			Map.of("count", 1),
+			ActionFactProvenance.OBSERVED,
+			90,
+			ActionFact.NEVER_STALE
+		));
+		facts.upsert(new ActionFact(
+			ActionFactIdentity.smeltRecipe("world-a", "bot", "inferred:minecraft_acacia_log_to_minecraft_charcoal"),
+			Map.of(
+				"inputItemId", "minecraft:acacia_log",
+				"outputItemId", "minecraft:charcoal",
+				"outputCount", 1,
+				"maxInputQuantity", 64,
+				"cookTimeTicks", 200,
+				"stationItemId", "minecraft:furnace",
+				"stationItemCount", 1
+			),
+			ActionFactProvenance.INFERRED,
+			90,
+			ActionFact.NEVER_STALE
+		));
+		facts.upsert(new ActionFact(
+			ActionFactIdentity.smeltRecipe("world-a", "bot", "smelt:minecraft_oak_log_to_minecraft_charcoal:nearby-1"),
+			Map.of(
+				"inputItemId", "minecraft:oak_log",
+				"outputItemId", "minecraft:charcoal",
+				"outputCount", 1,
+				"maxInputQuantity", 8,
+				"cookTimeTicks", 200
+			),
+			ActionFactProvenance.OBSERVED,
+			90,
+			ActionFact.NEVER_STALE
+		));
+
+		ActionResolveResult result = new ActionResolver(ActionsetIndex.empty(), facts, CONTEXT)
+			.resolve(ActionGoal.inventoryItem("minecraft:charcoal", 8));
+
+		assertTrue(result.resolved(), () -> result.trace().toString());
+		assertEquals(List.of("smelt_item", "collect_smelted_item"), result.route().steps().stream().map(ActionPlanStep::targetId).toList());
+		assertEquals("smelt:minecraft_oak_log_to_minecraft_charcoal:nearby-1", result.route().steps().getFirst().args().get("optionId"));
+		assertTrace(result.trace(), "route_selected", "smelting_provider", "smelt:minecraft_oak_log_to_minecraft_charcoal:nearby-1");
+	}
+
+	@Test
 	void smeltingProviderPlansFuelSubgoalWhenFuelIsCraftable() {
 		ActionFactStore facts = new ActionFactStore();
 		addSurvivalCraftFacts(facts);

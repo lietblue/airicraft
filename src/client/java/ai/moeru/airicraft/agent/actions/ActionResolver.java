@@ -698,6 +698,9 @@ public final class ActionResolver {
 		Map<String, String> recipeQuery = new LinkedHashMap<>();
 		recipeQuery.put("worldId", context.worldId());
 		recipeQuery.put("actorId", context.actorId());
+		ActionRoute bestRoute = null;
+		String bestOptionId = "";
+		int bestProvenanceRank = Integer.MAX_VALUE;
 		for (ActionFact recipe : facts.query(ActionFactType.SMELT_RECIPE, recipeQuery).stream()
 			.filter(this::usableFact)
 			.filter(fact -> outputItemId.equals(scalar(fact.payload().get("outputItemId"), "")))
@@ -725,14 +728,6 @@ public final class ActionResolver {
 			if (inputQuantity > maxInputQuantity) {
 				continue;
 			}
-			trace.add(event(
-				"route_candidate_built",
-				"smelting_provider",
-				optionId,
-				"",
-				Map.of("goal", goal.normalizedKey(), "cost", 25, "outputItemId", outputItemId)
-			));
-
 			ArrayList<ActionPlanStep> steps = new ArrayList<>();
 			int routeCost = 25;
 			String stationItemId = scalar(recipe.payload().get("stationItemId"), "");
@@ -785,6 +780,7 @@ public final class ActionResolver {
 					"",
 					Map.of("goal", goal.normalizedKey(), "reason", "missing_fuel_subgoal")
 				));
+				continue;
 			}
 
 			LinkedHashMap<String, Object> smeltArgs = new LinkedHashMap<>();
@@ -812,11 +808,30 @@ public final class ActionResolver {
 				"primitive", "collect_smelted_item",
 				"itemId", outputItemId
 			)));
-			trace.add(event("route_selected", "smelting_provider", optionId, "", Map.of("goal", goal.normalizedKey())));
-			return Optional.of(new ActionRoute(steps, routeCost));
+			trace.add(event(
+				"route_candidate_built",
+				"smelting_provider",
+				optionId,
+				"",
+				Map.of("goal", goal.normalizedKey(), "cost", routeCost, "outputItemId", outputItemId)
+			));
+			ActionRoute candidateRoute = new ActionRoute(steps, routeCost);
+			int provenanceRank = recipe.provenance().authoritative() ? 0 : 1;
+			if (bestRoute == null
+				|| candidateRoute.cost() < bestRoute.cost()
+				|| candidateRoute.cost() == bestRoute.cost() && provenanceRank < bestProvenanceRank
+				|| candidateRoute.cost() == bestRoute.cost() && provenanceRank == bestProvenanceRank && optionId.compareTo(bestOptionId) < 0) {
+				bestRoute = candidateRoute;
+				bestOptionId = optionId;
+				bestProvenanceRank = provenanceRank;
+			}
 		}
 
-		return Optional.empty();
+		if (bestRoute == null) {
+			return Optional.empty();
+		}
+		trace.add(event("route_selected", "smelting_provider", bestOptionId, "", Map.of("goal", goal.normalizedKey())));
+		return Optional.of(bestRoute);
 	}
 
 	private Optional<FuelPlan> resolveSmeltingFuel(
