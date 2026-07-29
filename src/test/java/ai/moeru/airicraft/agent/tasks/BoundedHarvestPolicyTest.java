@@ -77,6 +77,18 @@ class BoundedHarvestPolicyTest {
 		);
 	}
 
+	@Test
+	void steersTowardCenterOfBlockContainingDrop() {
+		assertEquals(
+			new BoundedHarvestPolicy.PickupTarget(34.5D, 60.5D, 58.5D),
+			BoundedHarvestPolicy.pickupTarget(34.9D, 60.0D, 58.1D)
+		);
+		assertEquals(
+			new BoundedHarvestPolicy.PickupTarget(-0.5D, 10.5D, -1.5D),
+			BoundedHarvestPolicy.pickupTarget(-0.1D, 10.9D, -2.0D)
+		);
+	}
+
 	private static BoundedHarvestPolicy.Target target(int x, int y, int z) {
 		return new BoundedHarvestPolicy.Target(
 			new BoundedHarvestPolicy.Position(x, y, z),

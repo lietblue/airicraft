@@ -279,7 +279,13 @@ public final class BoundedBlockHarvestTaskExecutor implements WorldTaskExecutor 
 		}
 		pickupTicksRemaining--;
 		if (decision == BoundedHarvestPolicy.PickupDecision.APPROACH) {
-			Vec3d target = drop.orElseThrow().getPos();
+			Vec3d itemPos = drop.orElseThrow().getPos();
+			BoundedHarvestPolicy.PickupTarget blockCenter = BoundedHarvestPolicy.pickupTarget(
+				itemPos.x,
+				itemPos.y,
+				itemPos.z
+			);
+			Vec3d target = new Vec3d(blockCenter.x(), blockCenter.y(), blockCenter.z());
 			camera.lookAtNow(client, target);
 			movement.moveDirectional(client, true, false, false, false, false, false, tick);
 			snapshot = snapshot(TaskExecutionState.RUNNING, request, "collecting_drop itemCount=" + inventoryCount + " targetCount=" + spec.quantity());

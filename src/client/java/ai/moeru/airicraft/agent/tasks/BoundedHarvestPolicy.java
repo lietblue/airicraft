@@ -68,6 +68,14 @@ public final class BoundedHarvestPolicy {
 		return matchingDropPresent ? PickupDecision.APPROACH : PickupDecision.WAIT;
 	}
 
+	public static PickupTarget pickupTarget(double itemX, double itemY, double itemZ) {
+		return new PickupTarget(
+			Math.floor(itemX) + 0.5D,
+			Math.floor(itemY) + 0.5D,
+			Math.floor(itemZ) + 0.5D
+		);
+	}
+
 	private static boolean inBounds(Position target, Position origin) {
 		return Math.abs(target.x() - origin.x()) <= HORIZONTAL_RADIUS
 			&& Math.abs(target.z() - origin.z()) <= HORIZONTAL_RADIUS
@@ -105,6 +113,9 @@ public final class BoundedHarvestPolicy {
 	}
 
 	public record Position(int x, int y, int z) {
+	}
+
+	public record PickupTarget(double x, double y, double z) {
 	}
 
 	public record Target(Position position, String blockId, SourceEnvironment environment) {
