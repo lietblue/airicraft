@@ -138,6 +138,13 @@ class BlockInteractionTaskExecutorTest {
 	}
 
 	@Test
+	void directInteractionApproachDefersWhenMovementCannotCloseTheGap() {
+		assertFalse(BlockInteractionTaskExecutor.shouldUseDirectInteractionApproach(16.0D, false, true, 0L));
+		assertFalse(BlockInteractionTaskExecutor.shouldUseDirectInteractionApproach(16.0D, false, false, 81L));
+		assertTrue(BlockInteractionTaskExecutor.shouldUseDirectInteractionApproach(16.0D, false, false, 80L));
+	}
+
+	@Test
 	void directInteractionApproachDefersWhenTargetIsNotVisible() {
 		assertFalse(BlockInteractionTaskExecutor.allowsDirectInteractionApproach("target_not_visible supportPos=1,64,1"));
 		assertFalse(BlockInteractionTaskExecutor.allowsDirectInteractionApproach("target_not_visible supportPos=1,64,1 navigationEvent=CANCELED"));

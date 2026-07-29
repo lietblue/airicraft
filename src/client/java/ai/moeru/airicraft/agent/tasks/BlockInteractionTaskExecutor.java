@@ -49,6 +49,7 @@ public final class BlockInteractionTaskExecutor implements WorldTaskExecutor {
 	private static final int INTERACTION_NAVIGATION_RADIUS_BLOCKS = 3;
 	private static final long INTERACTION_NAVIGATION_TIMEOUT_TICKS = 160L;
 	private static final double DIRECT_INTERACTION_APPROACH_RANGE_SQUARED = 100.0D;
+	private static final long DIRECT_INTERACTION_APPROACH_TIMEOUT_TICKS = 80L;
 	private static final double SUPPORT_RAYCAST_INSET_BLOCKS = 0.01D;
 	private static final long PLACEMENT_CONFIRMATION_TIMEOUT_TICKS = 20L;
 	private static final List<Direction> DEFAULT_SUPPORT_ORDER = List.of(
@@ -77,6 +78,9 @@ public final class BlockInteractionTaskExecutor implements WorldTaskExecutor {
 	private BlockPos navigationTarget;
 	private GoalPosition navigationGoal;
 	private long navigationStartTick;
+	private int directApproachTargetIndex = -1;
+	private BlockPos directApproachTarget;
+	private long directApproachStartTick;
 	private final Set<BlockPos> attemptedPlacementStandPositions = new HashSet<>();
 	private PendingPlacementConfirmation pendingPlacementConfirmation;
 
@@ -359,7 +363,6 @@ public final class BlockInteractionTaskExecutor implements WorldTaskExecutor {
 			return navigateTowardTargetRange(tick, client, player, request, target, "target_out_of_range");
 		}
 		movementController.stop(client);
-		clearNavigation();
 		Vec3d hitVec = Vec3d.ofCenter(target);
 		cameraController.lookAtNow(client, hitVec);
 		String beforeItemId = itemId(hand == Hand.OFF_HAND ? player.getOffHandStack() : player.getMainHandStack());
@@ -372,6 +375,7 @@ public final class BlockInteractionTaskExecutor implements WorldTaskExecutor {
 		if (!itemFluidRaycastMatches) {
 			return navigateTowardTargetRange(tick, client, player, request, target, "fluid_target_out_of_view_reach");
 		}
+		clearNavigation();
 		ActionResult itemResult = client.interactionManager.interactItem(player, hand);
 		if (!itemResult.isAccepted()) {
 			return fail(request, targetFailure(target, "fluid_item_interaction_failed"
@@ -609,11 +613,22 @@ public final class BlockInteractionTaskExecutor implements WorldTaskExecutor {
 		String outOfRangeReason
 	) {
 		double squaredDistance = player == null || aimPoint == null ? Double.MAX_VALUE : player.squaredDistanceTo(aimPoint);
-		if (!allowsDirectInteractionApproach(outOfRangeReason) || !shouldUseDirectInteractionApproach(squaredDistance, movementController.snapshot().stuck())) {
-			if (movementController.snapshot().stuck()) {
+		boolean continuing = directApproachTargetIndex == targetIndex && target.equals(directApproachTarget);
+		long elapsedTicks = continuing ? tick - directApproachStartTick : 0L;
+		boolean sameTargetColumn = player != null
+			&& player.getBlockPos().getX() == target.getX()
+			&& player.getBlockPos().getZ() == target.getZ();
+		if (!allowsDirectInteractionApproach(outOfRangeReason)
+			|| !shouldUseDirectInteractionApproach(squaredDistance, movementController.snapshot().stuck(), sameTargetColumn, elapsedTicks)) {
+			if (continuing || movementController.snapshot().stuck()) {
 				movementController.stop(client);
 			}
 			return false;
+		}
+		if (!continuing) {
+			directApproachTargetIndex = targetIndex;
+			directApproachTarget = target;
+			directApproachStartTick = tick;
 		}
 		if (navigationStarted && baritoneFacade != null && baritoneFacade.isLoaded()) {
 			baritoneFacade.cancel();
@@ -632,7 +647,19 @@ public final class BlockInteractionTaskExecutor implements WorldTaskExecutor {
 	}
 
 	static boolean shouldUseDirectInteractionApproach(double squaredDistance, boolean movementStuck) {
-		return !movementStuck && squaredDistance <= DIRECT_INTERACTION_APPROACH_RANGE_SQUARED;
+		return shouldUseDirectInteractionApproach(squaredDistance, movementStuck, false, 0L);
+	}
+
+	static boolean shouldUseDirectInteractionApproach(
+		double squaredDistance,
+		boolean movementStuck,
+		boolean sameTargetColumn,
+		long elapsedTicks
+	) {
+		return !movementStuck
+			&& !sameTargetColumn
+			&& elapsedTicks <= DIRECT_INTERACTION_APPROACH_TIMEOUT_TICKS
+			&& squaredDistance <= DIRECT_INTERACTION_APPROACH_RANGE_SQUARED;
 	}
 
 	static boolean allowsDirectInteractionApproach(String reason) {
@@ -1183,6 +1210,7 @@ public final class BlockInteractionTaskExecutor implements WorldTaskExecutor {
 	}
 
 	private Optional<TaskTerminalEvent> completeTarget(long tick, WorldTaskRequest request, String message) {
+		clearDirectApproach();
 		attemptedPlacementStandPositions.clear();
 		completedTargets++;
 		targetIndex++;
@@ -1199,6 +1227,7 @@ public final class BlockInteractionTaskExecutor implements WorldTaskExecutor {
 
 	private Optional<TaskTerminalEvent> fail(WorldTaskRequest request, String reason) {
 		clearNavigation();
+		clearDirectApproach();
 		movementController.stop(clientSupplier.get());
 		snapshot = snapshot(TaskExecutionState.FAILED, request, reason);
 		if (terminalEventEmitted) {
@@ -1327,6 +1356,7 @@ public final class BlockInteractionTaskExecutor implements WorldTaskExecutor {
 
 	private void reset() {
 		clearNavigation();
+		clearDirectApproach();
 		movementController.stop(clientSupplier.get());
 		appliedTask = null;
 		terminalEventEmitted = false;
@@ -1347,6 +1377,12 @@ public final class BlockInteractionTaskExecutor implements WorldTaskExecutor {
 		navigationTarget = null;
 		navigationGoal = null;
 		navigationStartTick = 0L;
+	}
+
+	private void clearDirectApproach() {
+		directApproachTargetIndex = -1;
+		directApproachTarget = null;
+		directApproachStartTick = 0L;
 	}
 
 	private enum TargetMaterial {
