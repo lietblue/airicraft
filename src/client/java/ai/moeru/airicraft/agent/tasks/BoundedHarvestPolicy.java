@@ -53,6 +53,21 @@ public final class BoundedHarvestPolicy {
 		return remainingTargets <= 0 ? TerminalDecision.RESOURCE_NOT_FOUND_NEARBY : TerminalDecision.CONTINUE;
 	}
 
+	public static PickupDecision pickupDecision(
+		int inventoryBeforeBreak,
+		int inventoryCount,
+		int remainingPickupTicks,
+		boolean matchingDropPresent
+	) {
+		if (inventoryCount > inventoryBeforeBreak) {
+			return PickupDecision.COLLECTED;
+		}
+		if (remainingPickupTicks <= 0) {
+			return PickupDecision.UNREACHABLE;
+		}
+		return matchingDropPresent ? PickupDecision.APPROACH : PickupDecision.WAIT;
+	}
+
 	private static boolean inBounds(Position target, Position origin) {
 		return Math.abs(target.x() - origin.x()) <= HORIZONTAL_RADIUS
 			&& Math.abs(target.z() - origin.z()) <= HORIZONTAL_RADIUS
@@ -80,6 +95,13 @@ public final class BoundedHarvestPolicy {
 		CONTINUE,
 		COMPLETE,
 		RESOURCE_NOT_FOUND_NEARBY
+	}
+
+	public enum PickupDecision {
+		APPROACH,
+		WAIT,
+		COLLECTED,
+		UNREACHABLE
 	}
 
 	public record Position(int x, int y, int z) {

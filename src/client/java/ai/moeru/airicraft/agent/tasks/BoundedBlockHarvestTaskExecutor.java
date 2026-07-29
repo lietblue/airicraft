@@ -27,6 +27,7 @@ import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.UUID;
 import java.util.function.Supplier;
 
 /**
@@ -37,7 +38,6 @@ import java.util.function.Supplier;
 public final class BoundedBlockHarvestTaskExecutor implements WorldTaskExecutor {
 	private static final double INTERACTION_RANGE_SQUARED = 20.25D;
 	private static final double DIRECT_APPROACH_RANGE_SQUARED = 64.0D;
-	private static final double DROP_REACHED_DISTANCE_SQUARED = 2.25D;
 	private static final int NAVIGATION_RADIUS_BLOCKS = 2;
 	private static final int BREAK_TIMEOUT_TICKS = 200;
 	private static final int PICKUP_TIMEOUT_TICKS = 80;
@@ -55,7 +55,8 @@ public final class BoundedBlockHarvestTaskExecutor implements WorldTaskExecutor 
 	private int batchCursor;
 	private BlockPos breakingTarget;
 	private long breakStartedTick = -1L;
-	private long pickupUntilTick = -1L;
+	private int pickupTicksRemaining = -1;
+	private final Set<UUID> unreachableDropIds = new HashSet<>();
 	private int inventoryBeforeBreak;
 	private boolean navigationStarted;
 	private boolean surfacing;
@@ -119,9 +120,9 @@ public final class BoundedBlockHarvestTaskExecutor implements WorldTaskExecutor 
 		if (searchOrigin == null) {
 			searchOrigin = player.getBlockPos().toImmutable();
 		}
-		if (pickupUntilTick >= 0L) {
+		if (pickupTicksRemaining >= 0) {
 			Optional<TaskTerminalEvent> pickup = tickPickup(request, client, player, spec, tick);
-			if (pickup.isPresent() || pickupUntilTick >= 0L) {
+			if (pickup.isPresent() || pickupTicksRemaining >= 0) {
 				return pickup;
 			}
 		}
@@ -173,7 +174,7 @@ public final class BoundedBlockHarvestTaskExecutor implements WorldTaskExecutor 
 			harvestedBlocks++;
 			clearBreak(client);
 			batchCursor++;
-			pickupUntilTick = tick + PICKUP_TIMEOUT_TICKS;
+			pickupTicksRemaining = PICKUP_TIMEOUT_TICKS;
 			snapshot = snapshot(TaskExecutionState.RUNNING, request, "target_broken targetPos=" + compactPos(target.pos())
 				+ " environment=" + target.environment().name().toLowerCase());
 			return Optional.empty();
@@ -253,28 +254,38 @@ public final class BoundedBlockHarvestTaskExecutor implements WorldTaskExecutor 
 	) {
 		int inventoryCount = matchingInventoryCount(player, spec.matchingItemIds());
 		if (inventoryCount >= spec.quantity()) {
-			pickupUntilTick = -1L;
+			pickupTicksRemaining = -1;
 			return complete(request, "bounded_harvest_succeeded itemCount=" + inventoryCount + " targetCount=" + spec.quantity() + " harvestedBlocks=" + harvestedBlocks);
 		}
-		Optional<ItemEntity> drop = nearestMatchingDrop(client, player, spec.matchingItemIds());
-		if (drop.isPresent()) {
-			Vec3d target = drop.get().getPos();
-			if (player.squaredDistanceTo(target) <= DROP_REACHED_DISTANCE_SQUARED) {
-				movement.stop(client);
-			}
-			else {
-				camera.lookAtNow(client, target);
-				movement.moveDirectional(client, true, false, false, false, false, false, tick);
-			}
+		Optional<ItemEntity> drop = nearestMatchingDrop(client, player, spec.matchingItemIds(), unreachableDropIds);
+		BoundedHarvestPolicy.PickupDecision decision = BoundedHarvestPolicy.pickupDecision(
+			inventoryBeforeBreak,
+			inventoryCount,
+			pickupTicksRemaining,
+			drop.isPresent()
+		);
+		if (decision == BoundedHarvestPolicy.PickupDecision.COLLECTED) {
+			movement.stop(client);
+			pickupTicksRemaining = -1;
+			snapshot = snapshot(TaskExecutionState.RUNNING, request, "pickup_collected itemCount=" + inventoryCount + " targetCount=" + spec.quantity());
+			return Optional.empty();
+		}
+		if (decision == BoundedHarvestPolicy.PickupDecision.UNREACHABLE) {
+			movement.stop(client);
+			drop.ifPresent(entity -> unreachableDropIds.add(entity.getUuid()));
+			pickupTicksRemaining = -1;
+			snapshot = snapshot(TaskExecutionState.RUNNING, request, "pickup_unreachable itemCount=" + inventoryCount + " targetCount=" + spec.quantity());
+			return Optional.empty();
+		}
+		pickupTicksRemaining--;
+		if (decision == BoundedHarvestPolicy.PickupDecision.APPROACH) {
+			Vec3d target = drop.orElseThrow().getPos();
+			camera.lookAtNow(client, target);
+			movement.moveDirectional(client, true, false, false, false, false, false, tick);
 			snapshot = snapshot(TaskExecutionState.RUNNING, request, "collecting_drop itemCount=" + inventoryCount + " targetCount=" + spec.quantity());
 			return Optional.empty();
 		}
 		movement.stop(client);
-		if (inventoryCount > inventoryBeforeBreak || tick >= pickupUntilTick) {
-			pickupUntilTick = -1L;
-			snapshot = snapshot(TaskExecutionState.RUNNING, request, "pickup_reassess itemCount=" + inventoryCount + " targetCount=" + spec.quantity());
-			return Optional.empty();
-		}
 		snapshot = snapshot(TaskExecutionState.RUNNING, request, "waiting_for_drop itemCount=" + inventoryCount);
 		return Optional.empty();
 	}
@@ -320,12 +331,17 @@ public final class BoundedBlockHarvestTaskExecutor implements WorldTaskExecutor 
 			.toList();
 	}
 
-	private static Optional<ItemEntity> nearestMatchingDrop(MinecraftClient client, ClientPlayerEntity player, List<String> matchingItemIds) {
+	private static Optional<ItemEntity> nearestMatchingDrop(
+		MinecraftClient client,
+		ClientPlayerEntity player,
+		List<String> matchingItemIds,
+		Set<UUID> excludedDropIds
+	) {
 		Set<String> ids = new HashSet<>(matchingItemIds);
 		return client.world.getEntitiesByClass(
 			ItemEntity.class,
 			new Box(player.getBlockPos()).expand(8.0D),
-			entity -> ids.contains(itemId(entity.getStack()))
+			entity -> ids.contains(itemId(entity.getStack())) && !excludedDropIds.contains(entity.getUuid())
 		).stream().min(java.util.Comparator.comparingDouble(player::squaredDistanceTo));
 	}
 
@@ -428,7 +444,8 @@ public final class BoundedBlockHarvestTaskExecutor implements WorldTaskExecutor 
 		searchOrigin = null;
 		batch = List.of();
 		batchCursor = 0;
-		pickupUntilTick = -1L;
+		pickupTicksRemaining = -1;
+		unreachableDropIds.clear();
 		inventoryBeforeBreak = 0;
 		surfacing = false;
 		harvestedBlocks = 0;

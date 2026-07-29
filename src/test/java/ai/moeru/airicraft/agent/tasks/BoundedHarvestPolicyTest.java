@@ -49,6 +49,34 @@ class BoundedHarvestPolicyTest {
 		assertEquals(BoundedHarvestPolicy.TerminalDecision.CONTINUE, BoundedHarvestPolicy.terminalDecision(19, 20, 1));
 	}
 
+	@Test
+	void approachesDropsUntilInventoryConfirmsCollection() {
+		assertEquals(
+			BoundedHarvestPolicy.PickupDecision.APPROACH,
+			BoundedHarvestPolicy.pickupDecision(0, 0, 1, true)
+		);
+		assertEquals(
+			BoundedHarvestPolicy.PickupDecision.COLLECTED,
+			BoundedHarvestPolicy.pickupDecision(0, 4, 0, true)
+		);
+	}
+
+	@Test
+	void timesOutVisibleOrMissingDropsAsUnreachable() {
+		assertEquals(
+			BoundedHarvestPolicy.PickupDecision.UNREACHABLE,
+			BoundedHarvestPolicy.pickupDecision(0, 0, 0, true)
+		);
+		assertEquals(
+			BoundedHarvestPolicy.PickupDecision.WAIT,
+			BoundedHarvestPolicy.pickupDecision(0, 0, 1, false)
+		);
+		assertEquals(
+			BoundedHarvestPolicy.PickupDecision.UNREACHABLE,
+			BoundedHarvestPolicy.pickupDecision(0, 0, 0, false)
+		);
+	}
+
 	private static BoundedHarvestPolicy.Target target(int x, int y, int z) {
 		return new BoundedHarvestPolicy.Target(
 			new BoundedHarvestPolicy.Position(x, y, z),
