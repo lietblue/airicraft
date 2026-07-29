@@ -21,6 +21,18 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class BaritoneTaskExecutorTest {
 	@Test
+	void miningToolPreflightPrefersFasterEligibleToolForOptionalToolBlocks() {
+		assertTrue(BaritoneTaskExecutor.MiningToolPreflight.isBetterMiningTool(
+			new BaritoneTaskExecutor.MiningToolPreflight.ToolScore(true, 4.0F),
+			new BaritoneTaskExecutor.MiningToolPreflight.ToolScore(true, 1.0F)
+		));
+		assertTrue(BaritoneTaskExecutor.MiningToolPreflight.isBetterMiningTool(
+			new BaritoneTaskExecutor.MiningToolPreflight.ToolScore(true, 4.0F),
+			new BaritoneTaskExecutor.MiningToolPreflight.ToolScore(false, 8.0F)
+		));
+	}
+
+	@Test
 	void navigateGoalStartsOnceAndReportsRunning() {
 		FakeBaritoneFacade facade = new FakeBaritoneFacade();
 		BaritoneTaskExecutor executor = new BaritoneTaskExecutor(facade);

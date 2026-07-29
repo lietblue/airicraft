@@ -231,16 +231,13 @@ public final class BaritoneTaskExecutor implements WorldTaskExecutor {
 		}
 
 		static Result ensureSelected(MinecraftClient client, ClientPlayerEntity player, java.util.List<BlockState> targetStates) {
-			if (!needsSuitableTool(targetStates)) {
-				return Result.success();
-			}
-			if (isSuitableForAllRequiredBlocks(player.getInventory().getSelectedStack(), targetStates)) {
-				return Result.success();
-			}
 			ScreenHandler handler = player.currentScreenHandler;
-			int sourceSlot = findSuitableToolSlot(handler, targetStates);
+			ItemStack selectedStack = player.getInventory().getSelectedStack();
+			int sourceSlot = findPreferredToolSlot(handler, selectedStack, targetStates);
 			if (sourceSlot < 0) {
-				return Result.failed("missing_suitable_tool blockIds=" + requiredBlockIds(targetStates));
+				return needsSuitableTool(targetStates) && !isSuitableForAllRequiredBlocks(selectedStack, targetStates)
+					? Result.failed("missing_suitable_tool blockIds=" + requiredBlockIds(targetStates))
+					: Result.success();
 			}
 			int selectedHotbarSlot = player.getInventory().getSelectedSlot();
 			if (sourceSlot >= PlayerScreenHandler.HOTBAR_START && sourceSlot < PlayerScreenHandler.HOTBAR_END) {
@@ -250,7 +247,7 @@ public final class BaritoneTaskExecutor implements WorldTaskExecutor {
 				client.interactionManager.clickSlot(handler.syncId, sourceSlot, selectedHotbarSlot, SlotActionType.SWAP, player);
 				selectAndSyncHotbarSlot(client, player, selectedHotbarSlot);
 			}
-			return isSuitableForAllRequiredBlocks(player.getInventory().getSelectedStack(), targetStates)
+			return !needsSuitableTool(targetStates) || isSuitableForAllRequiredBlocks(player.getInventory().getSelectedStack(), targetStates)
 				? Result.success()
 				: Result.failed("tool_selection_failed blockIds=" + requiredBlockIds(targetStates));
 		}
@@ -260,32 +257,67 @@ public final class BaritoneTaskExecutor implements WorldTaskExecutor {
 		}
 
 		static boolean isSuitableForAllRequiredBlocks(ItemStack stack, java.util.List<BlockState> targetStates) {
-			if (stack == null || stack.isEmpty()) {
-				return false;
+			if (targetStates == null || targetStates.isEmpty()) {
+				return true;
 			}
 			for (BlockState state : targetStates) {
-				if (state.isToolRequired() && !stack.isSuitableFor(state)) {
+				if (state.isToolRequired() && (stack == null || stack.isEmpty() || !stack.isSuitableFor(state))) {
 					return false;
 				}
 			}
 			return true;
 		}
 
-		private static int findSuitableToolSlot(ScreenHandler handler, java.util.List<BlockState> targetStates) {
+		private static int findPreferredToolSlot(ScreenHandler handler, ItemStack selectedStack, java.util.List<BlockState> targetStates) {
 			if (!(handler instanceof PlayerScreenHandler)) {
 				return -1;
 			}
+			ItemStack bestStack = selectedStack == null ? ItemStack.EMPTY : selectedStack;
+			int bestSlot = -1;
 			for (int slot = PlayerScreenHandler.HOTBAR_START; slot < PlayerScreenHandler.HOTBAR_END; slot++) {
-				if (isSuitableForAllRequiredBlocks(handler.getSlot(slot).getStack(), targetStates)) {
-					return slot;
+				ItemStack candidate = handler.getSlot(slot).getStack();
+				if (isBetterMiningTool(candidate, bestStack, targetStates)) {
+					bestStack = candidate;
+					bestSlot = slot;
 				}
 			}
 			for (int slot = PlayerScreenHandler.INVENTORY_START; slot < PlayerScreenHandler.HOTBAR_START; slot++) {
-				if (isSuitableForAllRequiredBlocks(handler.getSlot(slot).getStack(), targetStates)) {
-					return slot;
+				ItemStack candidate = handler.getSlot(slot).getStack();
+				if (isBetterMiningTool(candidate, bestStack, targetStates)) {
+					bestStack = candidate;
+					bestSlot = slot;
 				}
 			}
-			return -1;
+			return bestSlot;
+		}
+
+		static boolean isBetterMiningTool(ItemStack candidate, ItemStack current, java.util.List<BlockState> targetStates) {
+			if (candidate == null || candidate.isEmpty()) {
+				return false;
+			}
+			return isBetterMiningTool(toolScore(candidate, targetStates), toolScore(current, targetStates));
+		}
+
+		static boolean isBetterMiningTool(ToolScore candidate, ToolScore current) {
+			return candidate != null
+				&& candidate.eligible()
+				&& (current == null || !current.eligible() || candidate.speed() > current.speed());
+		}
+
+		private static ToolScore toolScore(ItemStack stack, java.util.List<BlockState> targetStates) {
+			boolean eligible = isSuitableForAllRequiredBlocks(stack, targetStates);
+			return new ToolScore(eligible, miningSpeed(stack, targetStates));
+		}
+
+		private static float miningSpeed(ItemStack stack, java.util.List<BlockState> targetStates) {
+			if (stack == null || stack.isEmpty() || targetStates == null || targetStates.isEmpty()) {
+				return 1.0F;
+			}
+			float speed = Float.MAX_VALUE;
+			for (BlockState state : targetStates) {
+				speed = Math.min(speed, stack.getMiningSpeedMultiplier(state));
+			}
+			return speed == Float.MAX_VALUE ? 1.0F : speed;
 		}
 
 		private static void selectAndSyncHotbarSlot(MinecraftClient client, ClientPlayerEntity player, int hotbarSlot) {
@@ -302,6 +334,9 @@ public final class BaritoneTaskExecutor implements WorldTaskExecutor {
 				.distinct()
 				.toList()
 				.toString();
+		}
+
+		record ToolScore(boolean eligible, float speed) {
 		}
 
 		record Result(boolean ok, String message) {
