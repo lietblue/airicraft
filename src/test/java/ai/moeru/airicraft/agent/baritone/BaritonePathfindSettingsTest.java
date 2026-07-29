@@ -2,6 +2,7 @@ package ai.moeru.airicraft.agent.baritone;
 
 import org.junit.jupiter.api.Test;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class BaritonePathfindSettingsTest {
@@ -13,5 +14,11 @@ class BaritonePathfindSettingsTest {
 
 		assertTrue(properties.containsKey("allowDownward"));
 		assertTrue(properties.containsKey("allowParkour"));
+	}
+
+	@Test
+	void normalizesCamelCaseNamesForBaritoneParserLookup() {
+		assertEquals("walkonwateronepenalty",
+			BaritonePathfindSettings.parserSettingName("walkOnWaterOnePenalty"));
 	}
 }

@@ -137,7 +137,7 @@ public final class BaritonePathfindSettings {
 		}
 		try {
 			for (Map.Entry<Settings.Setting<?>, String> entry : parsed.entrySet()) {
-				SettingsUtil.parseAndApply(settings, entry.getKey().getName(), entry.getValue());
+				SettingsUtil.parseAndApply(settings, parserSettingName(entry.getKey().getName()), entry.getValue());
 			}
 		}
 		catch (RuntimeException exception) {
@@ -152,6 +152,10 @@ public final class BaritonePathfindSettings {
 			changed.add(setting.getName() + "=" + SettingsUtil.settingValueToString(setting));
 		}
 		return ApplyResult.accepted(changed);
+	}
+
+	static String parserSettingName(String settingName) {
+		return Objects.requireNonNull(settingName, "settingName").toLowerCase(Locale.ROOT);
 	}
 
 	private static Map<String, Object> schemaFor(Settings.Setting<?> setting) {
