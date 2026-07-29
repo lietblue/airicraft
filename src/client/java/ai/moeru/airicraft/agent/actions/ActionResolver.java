@@ -131,8 +131,54 @@ public final class ActionResolver {
 			trace.add(event("goal_succeeded", "", "", "", Map.of("goal", goal.normalizedKey())));
 			return ActionResolveResult.success(route.get(), trace);
 		}
-		trace.add(event("goal_failed", "", "", "", Map.of("goal", goal.normalizedKey(), "failureCode", "no_route")));
-		return ActionResolveResult.failure("no_route", "no route can satisfy " + goal.normalizedKey(), trace);
+		ResolutionFailure failure = classifyUnresolvedGoal(goal);
+		LinkedHashMap<String, Object> failurePayload = new LinkedHashMap<>(failure.payload());
+		failurePayload.put("goal", goal.normalizedKey());
+		failurePayload.put("failureCode", failure.code());
+		trace.add(event("goal_failed", "", "", "", failurePayload));
+		return ActionResolveResult.failure(failure.code(), failure.message(), trace);
+	}
+
+	private ResolutionFailure classifyUnresolvedGoal(ActionGoal goal) {
+		if (goal.factType() == ActionFactType.INVENTORY_ITEM) {
+			String itemId = goal.keys().getOrDefault("itemId", "");
+			if (!itemId.isBlank() && !hasKnownInventoryAcquisitionMethod(goal, itemId)) {
+				return new ResolutionFailure(
+					"unknown_acquisition_method",
+					"no registered acquisition method for inventory item " + itemId + "; no target search was started",
+					Map.of("itemId", itemId, "searchStarted", false)
+				);
+			}
+		}
+		if (goal.factType() == ActionFactType.INVENTORY_RESOURCE) {
+			String resourceKind = goal.keys().getOrDefault("resourceKind", "");
+			if (ResourceGatheringCatalog.entry(resourceKind).isEmpty()) {
+				return new ResolutionFailure(
+					"unsupported_resource_kind",
+					"unsupported resource kind " + resourceKind + "; no target search was started",
+					Map.of("resourceKind", resourceKind, "searchStarted", false)
+				);
+			}
+		}
+		return new ResolutionFailure(
+			"no_route",
+			"no route can satisfy " + goal.normalizedKey(),
+			Map.of("searchStarted", false)
+		);
+	}
+
+	private boolean hasKnownInventoryAcquisitionMethod(ActionGoal goal, String itemId) {
+		return !matchingActionsets(goal).isEmpty()
+			|| ActionGraphDomainKnowledge.logItemIds().contains(itemId)
+			|| !MinedBlockDropMapper.sourceBlockIdsForInventoryItem(itemId).isEmpty()
+			|| craftRecipesByOutput.containsKey(itemId)
+			|| smeltRecipesByOutput.containsKey(itemId);
+	}
+
+	private record ResolutionFailure(String code, String message, Map<String, Object> payload) {
+		private ResolutionFailure {
+			payload = payload == null ? Map.of() : Map.copyOf(payload);
+		}
 	}
 
 	private Optional<ActionRoute> resolveGoal(

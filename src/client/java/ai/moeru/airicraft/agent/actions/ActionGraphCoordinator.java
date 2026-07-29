@@ -168,7 +168,12 @@ public final class ActionGraphCoordinator {
 			managed.residency = ActionGraphResidency.TERMINAL;
 			managed.updatedTick = tick;
 			foregroundExecutionId = "";
-			events.add(new ActionGraphCoordinatorEvent("action_graph.goal_terminal", snapshot.executionId(), Map.of("state", snapshot.state().name())));
+			LinkedHashMap<String, Object> payload = new LinkedHashMap<>();
+			payload.put("state", snapshot.state().name());
+			payload.put("goal", snapshot.goal() == null ? "" : snapshot.goal().normalizedKey());
+			payload.put("failureCode", snapshot.failureCode());
+			payload.put("message", snapshot.message());
+			events.add(new ActionGraphCoordinatorEvent("action_graph.goal_terminal", snapshot.executionId(), payload));
 		}
 	}
 

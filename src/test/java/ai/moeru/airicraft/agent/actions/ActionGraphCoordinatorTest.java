@@ -88,6 +88,34 @@ class ActionGraphCoordinatorTest {
 	}
 
 	@Test
+	void terminalFailureEventCarriesCapabilityReasonExactlyOnce() {
+		ActionGraphCoordinator coordinator = new ActionGraphCoordinator(ActionsetIndex.empty(), step -> {
+			throw new AssertionError("unknown acquisition must not dispatch");
+		}, true);
+		ActionGraphStartResult started = coordinator.submit(
+			ActionGoal.inventoryItem("minecraft:seagrass", 20),
+			Map.of(),
+			context(100),
+			100
+		);
+
+		coordinator.tick(input(101, Map.of(), Map.of(), null, List.of()), true);
+
+		List<ActionGraphCoordinatorEvent> terminal = coordinator.drainEvents().stream()
+			.filter(event -> "action_graph.goal_terminal".equals(event.type()))
+			.toList();
+		assertEquals(1, terminal.size());
+		assertEquals(started.execution().execution().executionId(), terminal.getFirst().executionId());
+		assertEquals("FAILED", terminal.getFirst().payload().get("state"));
+		assertEquals("unknown_acquisition_method", terminal.getFirst().payload().get("failureCode"));
+		assertTrue(String.valueOf(terminal.getFirst().payload().get("message")).contains("no target search was started"));
+
+		coordinator.tick(input(102, Map.of(), Map.of(), null, List.of()), true);
+		assertTrue(coordinator.drainEvents().stream()
+			.noneMatch(event -> "action_graph.goal_terminal".equals(event.type())));
+	}
+
+	@Test
 	void fulfilledWatchesResumeInFulfillmentThenCreationOrder() {
 		ActionGraphCoordinator coordinator = new ActionGraphCoordinator(twoWatchIndex(), step -> {
 			throw new AssertionError("passive watches must not dispatch");

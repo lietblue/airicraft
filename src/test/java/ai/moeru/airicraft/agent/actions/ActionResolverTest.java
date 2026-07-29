@@ -137,8 +137,19 @@ class ActionResolverTest {
 			.resolve(ActionGoal.resourceCollection("OBSIDIAN", 1));
 
 		assertFalse(result.resolved());
-		assertEquals("no_route", result.failureCode());
+		assertEquals("unsupported_resource_kind", result.failureCode());
+		assertTrue(result.message().contains("no target search was started"));
 		assertTrace(result.trace(), "route_candidate_rejected", "resource_provider", "OBSIDIAN");
+	}
+
+	@Test
+	void knownMiningAcquisitionDoesNotRequireAnObservedTarget() {
+		ActionResolveResult result = new ActionResolver(ActionsetIndex.empty(), new ActionFactStore(), CONTEXT)
+			.resolve(ActionGoal.inventoryItem("minecraft:dirt", 1));
+
+		assertTrue(result.resolved(), () -> result.trace().toString());
+		assertEquals("mine_block", result.route().steps().getLast().targetId());
+		assertEquals(List.of("minecraft:dirt", "minecraft:grass_block"), result.route().steps().getLast().args().get("blockIds"));
 	}
 
 	@Test
@@ -1342,11 +1353,13 @@ class ActionResolverTest {
 	}
 
 	@Test
-	void returnsNoRouteWhenNoActionsetCanSatisfyGoal() {
-		ActionResolveResult result = resolver(new ActionFactStore()).resolve(ActionGoal.inventoryItem("minecraft:netherite_ingot", 1));
+	void returnsUnknownAcquisitionMethodWhenNoProviderIsRegistered() {
+		ActionResolveResult result = resolver(new ActionFactStore()).resolve(ActionGoal.inventoryItem("minecraft:seagrass", 20));
 
 		assertFalse(result.resolved());
-		assertEquals("no_route", result.failureCode());
+		assertEquals("unknown_acquisition_method", result.failureCode());
+		assertTrue(result.message().contains("minecraft:seagrass"));
+		assertTrue(result.message().contains("no target search was started"));
 		assertTrue(result.route().steps().isEmpty());
 		assertTrace(result.trace(), "goal_started", null, null);
 		assertTrace(result.trace(), "goal_failed", null, null);

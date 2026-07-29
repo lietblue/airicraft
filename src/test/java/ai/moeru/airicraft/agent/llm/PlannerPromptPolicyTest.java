@@ -29,6 +29,8 @@ class PlannerPromptPolicyTest {
 		assertTrue(prompt.contains("terminal TASK UPDATE"));
 		assertTrue(prompt.contains("Terminal updates are authoritative"));
 		assertTrue(prompt.contains("same-client admin messages"));
+		assertTrue(prompt.contains("unknown_acquisition_method"));
+		assertTrue(prompt.contains("must not start exploration"));
 	}
 
 	@Test

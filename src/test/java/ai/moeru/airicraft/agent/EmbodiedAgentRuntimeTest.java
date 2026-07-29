@@ -1311,6 +1311,47 @@ class EmbodiedAgentRuntimeTest {
 	}
 
 	@Test
+	void unknownActionGraphAcquisitionTriggersExplicitUnsupportedReplyWithoutFallback() {
+		EmbodiedAgentRuntime runtime = EmbodiedAgentRuntime.createForTests(new FakeWorldTaskExecutor());
+
+		PlannerTrigger trigger = runtime.createPlannerTriggerForTests(new SemanticEvent(
+			1L,
+			20L,
+			1000L,
+			"action_graph.goal_terminal",
+			Map.of(
+				"executionId", "action-graph-seagrass",
+				"state", "FAILED",
+				"goal", "inventory.item|itemId=minecraft:seagrass|countAtLeast>=20",
+				"failureCode", "unknown_acquisition_method",
+				"message", "no registered acquisition method for inventory item minecraft:seagrass; no target search was started"
+			)
+		), new EventRoutingProfile("action_graph.goal_terminal", true, PlannerTriggerType.SYSTEM, true));
+
+		assertEquals(PlannerTriggerType.SYSTEM, trigger.type());
+		assertEquals("action_graph", trigger.speaker());
+		assertTrue(trigger.text().contains("unknown_acquisition_method"));
+		assertTrue(trigger.text().contains("Do not substitute mine_blocks"));
+		assertTrue(trigger.text().contains("acquisition is unsupported"));
+		assertEquals("action_graph_terminal:action-graph-seagrass", trigger.coalescingKey());
+	}
+
+	@Test
+	void successfulActionGraphTerminalDoesNotRetriggerPlanner() {
+		EmbodiedAgentRuntime runtime = EmbodiedAgentRuntime.createForTests(new FakeWorldTaskExecutor());
+
+		PlannerTrigger trigger = runtime.createPlannerTriggerForTests(new SemanticEvent(
+			1L,
+			20L,
+			1000L,
+			"action_graph.goal_terminal",
+			Map.of("executionId", "action-graph-dirt", "state", "SUCCEEDED")
+		), new EventRoutingProfile("action_graph.goal_terminal", true, PlannerTriggerType.SYSTEM, true));
+
+		assertEquals(null, trigger);
+	}
+
+	@Test
 	void finishEvaluationSuppressesAutonomousPlannerTriggersUntilNextEvaluationStarts() {
 		EmbodiedAgentRuntime runtime = EmbodiedAgentRuntime.createForTests(new FakeWorldTaskExecutor());
 

@@ -108,7 +108,7 @@ class ActionGraphDebugServiceTest {
 
 		assertEquals(true, payload.get("available"));
 		assertEquals(false, payload.get("resolved"));
-		assertEquals("no_route", payload.get("failureCode"));
+		assertEquals("unknown_acquisition_method", payload.get("failureCode"));
 	}
 
 	@SuppressWarnings("unchecked")

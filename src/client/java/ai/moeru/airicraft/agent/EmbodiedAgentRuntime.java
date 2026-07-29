@@ -3755,6 +3755,7 @@ public final class EmbodiedAgentRuntime {
 			case "smelting.output_ready" -> createSmeltingOutputReadyTrigger(event);
 			case "task.blocked" -> createTaskBlockedTrigger(event);
 			case "action_graph.goal_suspended" -> createActionGraphSuspendedTrigger(event);
+			case "action_graph.goal_terminal" -> createActionGraphTerminalTrigger(event);
 			default -> null;
 		};
 	}
@@ -3768,7 +3769,8 @@ public final class EmbodiedAgentRuntime {
 				"combat.damage_taken",
 				"smelting.output_ready",
 				"task.blocked",
-				"action_graph.goal_suspended" -> true;
+				"action_graph.goal_suspended",
+				"action_graph.goal_terminal" -> true;
 			default -> false;
 		};
 	}
@@ -3844,6 +3846,37 @@ public final class EmbodiedAgentRuntime {
 			event.tick(),
 			event.timestampMs(),
 			"action_graph_suspended:" + executionId
+		);
+	}
+
+	private ai.moeru.airicraft.agent.llm.PlannerTrigger createActionGraphTerminalTrigger(SemanticEvent event) {
+		String executionId = stringPayloadValue(event.payload(), "executionId");
+		String state = stringPayloadValue(event.payload(), "state");
+		if (executionId == null || !"FAILED".equals(state)) {
+			return null;
+		}
+		String goal = stringPayloadValue(event.payload(), "goal");
+		String failureCode = stringPayloadValue(event.payload(), "failureCode");
+		String failureMessage = stringPayloadValue(event.payload(), "message");
+		String normalizedCode = failureCode == null ? "failed" : failureCode;
+		String message = "ACTION GRAPH FAILED: executionId=" + executionId
+			+ " goal=" + (goal == null ? "" : goal)
+			+ " failureCode=" + normalizedCode
+			+ " message=" + (failureMessage == null ? "" : failureMessage)
+			+ ". Explain the terminal failure accurately. ";
+		if ("unknown_acquisition_method".equals(normalizedCode) || "unsupported_resource_kind".equals(normalizedCode)) {
+			message += "Airicraft has no registered acquisition method for this request. Do not substitute mine_blocks, ensure_blocks_in_inventory, collect_resource, or another legacy action; tell the user that this acquisition is unsupported.";
+		}
+		else {
+			message += "Do not claim completion. Use another action only when the failure itself identifies a safe supported recovery or the user changes the task.";
+		}
+		return PlannerTrigger.autonomous(
+			PlannerTriggerType.SYSTEM,
+			"action_graph",
+			message,
+			event.tick(),
+			event.timestampMs(),
+			"action_graph_terminal:" + executionId
 		);
 	}
 
@@ -4166,6 +4199,7 @@ public final class EmbodiedAgentRuntime {
 		profiles.put("planner.reset_requested", new EventRoutingProfile("planner.reset_requested", true, null, true));
 		profiles.put("task.blocked", new EventRoutingProfile("task.blocked", true, PlannerTriggerType.SYSTEM, true));
 		profiles.put("action_graph.goal_suspended", new EventRoutingProfile("action_graph.goal_suspended", true, PlannerTriggerType.SYSTEM, true));
+		profiles.put("action_graph.goal_terminal", new EventRoutingProfile("action_graph.goal_terminal", true, PlannerTriggerType.SYSTEM, true));
 		profiles.put("policy.event_intervened", EventRoutingProfile.rawOnly("policy.event_intervened"));
 		profiles.put("policy.rule_rejected", EventRoutingProfile.rawOnly("policy.rule_rejected"));
 		return Map.copyOf(profiles);
