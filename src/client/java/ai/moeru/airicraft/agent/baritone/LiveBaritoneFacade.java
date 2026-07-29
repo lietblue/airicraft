@@ -50,6 +50,16 @@ public final class LiveBaritoneFacade implements BaritoneFacade {
 	}
 
 	@Override
+	public double walkOnWaterPenalty() {
+		return BaritoneAPI.getSettings().walkOnWaterOnePenalty.value;
+	}
+
+	@Override
+	public void setWalkOnWaterPenalty(double value) {
+		BaritoneAPI.getSettings().walkOnWaterOnePenalty.value = value;
+	}
+
+	@Override
 	public void startFollow(String playerName) {
 		if (!isLoaded() || playerName == null || playerName.isBlank()) {
 			return;

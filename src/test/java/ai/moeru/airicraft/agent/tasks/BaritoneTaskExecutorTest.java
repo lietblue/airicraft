@@ -14,12 +14,82 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class BaritoneTaskExecutorTest {
+	@Test
+	void waterStallTemporarilyRaisesPenaltyReplansAndRestoresAfterProgress() {
+		FakeBaritoneFacade facade = new FakeBaritoneFacade();
+		AtomicReference<Optional<WaterStallRecovery.Sample>> waterSample = new AtomicReference<>(Optional.of(
+			new WaterStallRecovery.Sample(true, 4.0D, 62.0D, -8.0D)
+		));
+		BaritoneTaskExecutor executor = new BaritoneTaskExecutor(
+			() -> null,
+			facade,
+			request -> List.of(),
+			waterSample::get
+		);
+		GoalSnapshot goal = new GoalSnapshot(
+			GoalType.MINE_BLOCKS,
+			null,
+			null,
+			new GoalMineSpec(List.of("minecraft:diamond_ore"), 1),
+			0L,
+			"action_graph"
+		);
+		WorldTaskRequest request = request("diamond-task", goal);
+
+		executor.tick(multiplayerAt(0L), Optional.of(request));
+		executor.tick(multiplayerAt(WaterStallRecovery.STALL_TICKS - 1L), Optional.of(request));
+		assertTrue(facade.waterPenaltyChanges.isEmpty());
+
+		executor.tick(multiplayerAt(WaterStallRecovery.STALL_TICKS), Optional.of(request));
+
+		assertEquals(List.of(12.0D), facade.waterPenaltyChanges);
+		assertEquals(1, facade.cancelCalls);
+		assertEquals(2, facade.mineCalls.size());
+		assertEquals("WATER_STALL_REPLAN", executor.snapshot().lastPathEvent());
+
+		waterSample.set(Optional.of(new WaterStallRecovery.Sample(true, 6.0D, 62.0D, -8.0D)));
+		executor.tick(multiplayerAt(WaterStallRecovery.STALL_TICKS + 1L), Optional.of(request));
+
+		assertEquals(List.of(12.0D, 3.0D), facade.waterPenaltyChanges);
+		assertEquals("WATER_STALL_RECOVERED", executor.snapshot().lastPathEvent());
+	}
+
+	@Test
+	void taskRemovalRestoresTemporaryWaterPenaltyWithoutWaitingForMovement() {
+		FakeBaritoneFacade facade = new FakeBaritoneFacade();
+		AtomicReference<Optional<WaterStallRecovery.Sample>> waterSample = new AtomicReference<>(Optional.of(
+			new WaterStallRecovery.Sample(true, 4.0D, 62.0D, -8.0D)
+		));
+		BaritoneTaskExecutor executor = new BaritoneTaskExecutor(
+			() -> null,
+			facade,
+			request -> List.of(),
+			waterSample::get
+		);
+		GoalSnapshot goal = new GoalSnapshot(
+			GoalType.NAVIGATE_TO,
+			null,
+			new GoalPosition(10, 40, 20, true),
+			null,
+			0L,
+			"planner_response"
+		);
+		WorldTaskRequest request = request("nav-task", goal);
+
+		executor.tick(multiplayerAt(0L), Optional.of(request));
+		executor.tick(multiplayerAt(WaterStallRecovery.STALL_TICKS), Optional.of(request));
+		executor.tick(multiplayerAt(WaterStallRecovery.STALL_TICKS + 1L), Optional.empty());
+
+		assertEquals(List.of(12.0D, 3.0D), facade.waterPenaltyChanges);
+	}
+
 	@Test
 	void miningToolPreflightPrefersFasterEligibleToolForOptionalToolBlocks() {
 		assertTrue(BaritoneTaskExecutor.MiningToolPreflight.isBetterMiningTool(
@@ -799,7 +869,11 @@ class BaritoneTaskExecutorTest {
 	}
 
 	private static SessionSnapshot multiplayer() {
-		return new SessionSnapshot(SessionMode.REMOTE_MULTIPLAYER, true, true, "minecraft:overworld", false, 0, 30L);
+		return multiplayerAt(30L);
+	}
+
+	private static SessionSnapshot multiplayerAt(long tick) {
+		return new SessionSnapshot(SessionMode.REMOTE_MULTIPLAYER, true, true, "minecraft:overworld", false, 0, tick);
 	}
 
 	private static SessionSnapshot singleplayerLocal() {
@@ -830,6 +904,8 @@ class BaritoneTaskExecutorTest {
 		private int cancelCalls;
 		private RuntimeException startMineFailure;
 		private boolean loaded = true;
+		private double waterPenalty = 3.0D;
+		private final List<Double> waterPenaltyChanges = new ArrayList<>();
 
 		@Override
 		public boolean isLoaded() {
@@ -839,6 +915,17 @@ class BaritoneTaskExecutorTest {
 		@Override
 		public void applySettings() {
 			applySettingsCalls++;
+		}
+
+		@Override
+		public double walkOnWaterPenalty() {
+			return waterPenalty;
+		}
+
+		@Override
+		public void setWalkOnWaterPenalty(double value) {
+			waterPenalty = value;
+			waterPenaltyChanges.add(value);
 		}
 
 		@Override

@@ -35,10 +35,15 @@ public final class BaritoneTaskExecutor implements WorldTaskExecutor {
 	private static final int MAX_MINE_DROP_PICKUP_ATTEMPTS_PER_TARGET = 2;
 	private static final int MAX_MINE_DROP_PICKUP_SETTLE_TICKS = 10;
 	private static final double MINE_DROP_PICKUP_RADIUS_BLOCKS = 4.0D;
+	private static final double MIN_RECOVERY_WATER_PENALTY = 12.0D;
+	private static final double RECOVERY_WATER_PENALTY_MULTIPLIER = 4.0D;
+	private static final double MAX_RECOVERY_WATER_PENALTY = 48.0D;
 
 	private final BaritoneFacade facade;
 	private final Supplier<MinecraftClient> clientSupplier;
 	private final MineDropObserver mineDropObserver;
+	private final WaterProgressObserver waterProgressObserver;
+	private final WaterStallRecovery waterStallRecovery = new WaterStallRecovery();
 
 	private WorldTaskRequest appliedTask;
 	private String terminalEventTaskId;
@@ -50,6 +55,7 @@ public final class BaritoneTaskExecutor implements WorldTaskExecutor {
 	private int mineDropPickupAttempts;
 	private int mineDropPickupSettleTicks;
 	private TerminalOutcome pendingMineTerminalOutcome;
+	private Double temporaryWaterPenaltyBase;
 	private TaskExecutionSnapshot snapshot = TaskExecutionSnapshot.idle();
 
 	public BaritoneTaskExecutor(BaritoneFacade facade) {
@@ -57,13 +63,28 @@ public final class BaritoneTaskExecutor implements WorldTaskExecutor {
 	}
 
 	BaritoneTaskExecutor(Supplier<MinecraftClient> clientSupplier, BaritoneFacade facade) {
-		this(clientSupplier, facade, request -> matchingMineDropsNearby(clientSupplier.get(), request));
+		this(
+			clientSupplier,
+			facade,
+			request -> matchingMineDropsNearby(clientSupplier.get(), request),
+			() -> waterProgressSample(clientSupplier.get())
+		);
 	}
 
 	BaritoneTaskExecutor(Supplier<MinecraftClient> clientSupplier, BaritoneFacade facade, MineDropObserver mineDropObserver) {
+		this(clientSupplier, facade, mineDropObserver, () -> waterProgressSample(clientSupplier.get()));
+	}
+
+	BaritoneTaskExecutor(
+		Supplier<MinecraftClient> clientSupplier,
+		BaritoneFacade facade,
+		MineDropObserver mineDropObserver,
+		WaterProgressObserver waterProgressObserver
+	) {
 		this.clientSupplier = Objects.requireNonNull(clientSupplier, "clientSupplier");
 		this.facade = Objects.requireNonNull(facade, "facade");
 		this.mineDropObserver = Objects.requireNonNull(mineDropObserver, "mineDropObserver");
+		this.waterProgressObserver = Objects.requireNonNull(waterProgressObserver, "waterProgressObserver");
 		this.facade.applySettings();
 	}
 
@@ -71,6 +92,7 @@ public final class BaritoneTaskExecutor implements WorldTaskExecutor {
 	public Optional<TaskTerminalEvent> tick(SessionSnapshot sessionSnapshot, Optional<WorldTaskRequest> activeTask) {
 		if (!facade.isLoaded()) {
 			if (activeTask.isPresent()) {
+				clearWaterRecovery();
 				return failUnavailable(activeTask.get());
 			}
 			reset();
@@ -87,6 +109,7 @@ public final class BaritoneTaskExecutor implements WorldTaskExecutor {
 		}
 
 		if (!sessionSnapshot.companionActuationAllowed()) {
+			clearWaterRecovery();
 			if (sessionSnapshot.requiresRespawn() && appliedTask != null) {
 				pendingInternalCancelTaskId = appliedTask.taskId();
 				facade.cancel();
@@ -109,6 +132,7 @@ public final class BaritoneTaskExecutor implements WorldTaskExecutor {
 		boolean taskTargetChanged = !sameTaskTarget(activeTask.get(), appliedTask);
 		boolean mineGoalJustSatisfied = mineGoalJustSatisfied(activeTask.get(), appliedTask);
 		if (taskTargetChanged) {
+			clearWaterRecovery();
 			clearMineDropPickupState();
 			if (appliedTask != null) {
 				pendingInternalCancelTaskId = appliedTask.taskId();
@@ -138,12 +162,28 @@ public final class BaritoneTaskExecutor implements WorldTaskExecutor {
 			? MineDropPickupResult.notHandled()
 			: terminalMineDropPickupEvent(pathEvent, appliedTask);
 		if (mineDropPickupResult.handled()) {
+			if (mineDropPickupResult.event().isPresent()) {
+				clearWaterRecovery();
+			}
 			return mineDropPickupResult.event();
 		}
 		if (continueFollow(pathEvent, appliedTask)) {
 			return Optional.empty();
 		}
 		Optional<TerminalOutcome> terminalOutcome = terminalOutcomeFor(pathEvent, appliedTask);
+		Optional<String> effectivePathEvent = pathEvent;
+		if (terminalOutcome.isPresent()) {
+			clearWaterRecovery();
+		}
+		else if (pathEvent.isEmpty()) {
+			try {
+				effectivePathEvent = waterRecoveryEvent(sessionSnapshot.tickCount(), appliedTask);
+			}
+			catch (RuntimeException exception) {
+				clearWaterRecovery();
+				return failTaskStart(appliedTask, exception);
+			}
+		}
 		TaskExecutionState state = terminalOutcome
 			.map(TerminalOutcome::state)
 			.orElseGet(() -> taskTargetChanged || !isTerminal(snapshot.state()) ? TaskExecutionState.RUNNING : snapshot.state());
@@ -153,7 +193,7 @@ public final class BaritoneTaskExecutor implements WorldTaskExecutor {
 			appliedTask.taskId(),
 			appliedTask.goal(),
 			facade.activeProcessName().orElse(null),
-			pathEvent.orElse(null),
+			effectivePathEvent.orElse(null),
 			facade.estimatedTicksToGoal().orElse(null),
 			terminationCause
 		);
@@ -175,6 +215,62 @@ public final class BaritoneTaskExecutor implements WorldTaskExecutor {
 			terminalOutcome.get().state(),
 			messageFor(terminalOutcome.get().state()),
 			terminalOutcome.get().cause()
+		));
+	}
+
+	private Optional<String> waterRecoveryEvent(long tick, WorldTaskRequest request) {
+		WaterStallRecovery.Decision decision = waterStallRecovery.observe(
+			tick,
+			waterProgressObserver.observe().orElse(null),
+			facade.estimatedTicksToGoal().isPresent()
+		);
+		if (decision == WaterStallRecovery.Decision.NONE) {
+			return Optional.empty();
+		}
+		if (decision == WaterStallRecovery.Decision.RESTORE) {
+			restoreTemporaryWaterPenalty();
+			return Optional.of("WATER_STALL_RECOVERED");
+		}
+
+		double currentPenalty = facade.walkOnWaterPenalty();
+		if (temporaryWaterPenaltyBase == null) {
+			temporaryWaterPenaltyBase = currentPenalty;
+		}
+		double recoveryPenalty = Math.min(
+			MAX_RECOVERY_WATER_PENALTY,
+			Math.max(MIN_RECOVERY_WATER_PENALTY, currentPenalty * RECOVERY_WATER_PENALTY_MULTIPLIER)
+		);
+		facade.setWalkOnWaterPenalty(recoveryPenalty);
+		pendingInternalCancelTaskId = request.taskId();
+		facade.cancel();
+		applyGoal(request.goal());
+		return Optional.of("WATER_STALL_REPLAN");
+	}
+
+	private void clearWaterRecovery() {
+		waterStallRecovery.clear();
+		restoreTemporaryWaterPenalty();
+	}
+
+	private void restoreTemporaryWaterPenalty() {
+		if (temporaryWaterPenaltyBase == null) {
+			return;
+		}
+		double baseline = temporaryWaterPenaltyBase;
+		facade.setWalkOnWaterPenalty(baseline);
+		temporaryWaterPenaltyBase = null;
+	}
+
+	private static Optional<WaterStallRecovery.Sample> waterProgressSample(MinecraftClient client) {
+		ClientPlayerEntity player = client == null ? null : client.player;
+		if (player == null) {
+			return Optional.empty();
+		}
+		return Optional.of(new WaterStallRecovery.Sample(
+			player.isTouchingWater(),
+			player.getX(),
+			player.getY(),
+			player.getZ()
 		));
 	}
 
@@ -730,6 +826,11 @@ public final class BaritoneTaskExecutor implements WorldTaskExecutor {
 		List<MineDropTarget> matchingNearbyDrops(WorldTaskRequest request);
 	}
 
+	@FunctionalInterface
+	interface WaterProgressObserver {
+		Optional<WaterStallRecovery.Sample> observe();
+	}
+
 	record MineDropTarget(int entityId, GoalPosition position) {
 		MineDropTarget {
 			Objects.requireNonNull(position, "position");
@@ -759,6 +860,7 @@ public final class BaritoneTaskExecutor implements WorldTaskExecutor {
 	}
 
 	private void reset() {
+		clearWaterRecovery();
 		appliedTask = null;
 		terminalEventTaskId = null;
 		terminalEventState = null;

@@ -10,6 +10,10 @@ public interface BaritoneFacade {
 
 	void applySettings();
 
+	double walkOnWaterPenalty();
+
+	void setWalkOnWaterPenalty(double value);
+
 	void startFollow(String playerName);
 
 	void startNavigate(GoalPosition position);
