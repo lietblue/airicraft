@@ -863,11 +863,18 @@ class ActionGraphExecutionRuntimeTest {
 		return new ActionGraphExecutionInput(
 			new ActionResolverContext(CONTEXT.worldId(), CONTEXT.actorId(), CONTEXT.dimension(), tick),
 			observedInventory,
+			Map.of(),
 			true,
 			true,
 			terminalEvent,
 			availableCrafts,
-			observedFacts
+			List.of(),
+			List.of(),
+			List.of(),
+			observedFacts,
+			null,
+			Map.of(),
+			BlockAcquisitionTestFixtures.survival()
 		);
 	}
 
@@ -885,7 +892,12 @@ class ActionGraphExecutionRuntimeTest {
 			terminalEvent,
 			List.of(),
 			List.of(),
-			List.of()
+			List.of(),
+			List.of(),
+			List.of(),
+			null,
+			Map.of(),
+			BlockAcquisitionTestFixtures.survival()
 		);
 	}
 
@@ -905,7 +917,11 @@ class ActionGraphExecutionRuntimeTest {
 			List.of(),
 			knownCrafts,
 			List.of(),
-			List.of()
+			List.of(),
+			List.of(),
+			null,
+			Map.of(),
+			BlockAcquisitionTestFixtures.survival()
 		);
 	}
 
@@ -927,7 +943,10 @@ class ActionGraphExecutionRuntimeTest {
 			knownCrafts,
 			List.of(),
 			knownSmelts,
-			List.of()
+			List.of(),
+			null,
+			Map.of(),
+			BlockAcquisitionTestFixtures.survival()
 		);
 	}
 

@@ -1,6 +1,7 @@
 package ai.moeru.airicraft.agent.job;
 
 import ai.moeru.airicraft.agent.debug.CollectResourceTaskDebugSnapshot;
+import ai.moeru.airicraft.agent.actions.BlockAcquisitionIndex;
 import ai.moeru.airicraft.agent.dialogue.DialogueIntentType;
 import ai.moeru.airicraft.agent.dialogue.DialogueResponse;
 import ai.moeru.airicraft.agent.goals.GoalMineSpec;
@@ -19,7 +20,6 @@ import ai.moeru.airicraft.agent.tasks.DropItemsStepArgs;
 import ai.moeru.airicraft.agent.tasks.EntityInteractionStepArgs;
 import ai.moeru.airicraft.agent.tasks.LedgerStep;
 import ai.moeru.airicraft.agent.tasks.LedgerStepKind;
-import ai.moeru.airicraft.agent.tasks.MinedBlockDropMapper;
 import ai.moeru.airicraft.agent.tasks.MissionExecutionSnapshot;
 import ai.moeru.airicraft.agent.tasks.MissionSpec;
 import ai.moeru.airicraft.agent.tasks.MissionType;
@@ -85,6 +85,10 @@ public final class ActiveJobRuntime {
 		return activeJob;
 	}
 
+	public void updateBlockAcquisitions(BlockAcquisitionIndex blockAcquisitions) {
+		collectResourceTaskHandler.updateBlockAcquisitions(blockAcquisitions);
+	}
+
 	public Optional<GoalSnapshot> activeGoal(long tick) {
 		if (activeJob.isIdle() || activeJob.status().terminal()) {
 			return Optional.empty();
@@ -130,7 +134,9 @@ public final class ActiveJobRuntime {
 		}
 		GoalSnapshot goal = activeJob.directGoal();
 		GoalMineSpec spec = goal == null ? null : goal.mineSpec();
-		List<String> targetBlockIds = activeJob.type() == ActiveJobType.COLLECT_RESOURCE ? CollectResourceTaskHandler.targetBlockIds(activeJob.taskSpec()) : spec == null ? List.of() : spec.blockIds();
+		List<String> targetBlockIds = activeJob.type() == ActiveJobType.COLLECT_RESOURCE
+			? collectResourceTaskHandler.targetBlockIds(activeJob.taskSpec())
+			: spec == null ? List.of() : spec.blockIds();
 		if (!targetBlockIds.contains(blockId)) {
 			return Optional.empty();
 		}
@@ -181,7 +187,7 @@ public final class ActiveJobRuntime {
 
 		int brokenBlocks = activeJob.collectedCount();
 		if (activeJob.type() == ActiveJobType.ENSURE_BLOCKS_IN_INVENTORY) {
-			int itemCount = MinedBlockDropMapper.matchingInventoryItemCount(lastEvidence.itemCounts(), spec.blockIds());
+			int itemCount = matchingItemCount(lastEvidence.itemCounts(), spec.matchingItemIds());
 			if (event.terminalState() == TaskExecutionState.COMPLETED && itemCount < spec.quantity()) {
 				return TerminalTaskReport.warnOnly(ensureBlocksInventoryShortfallWarning(
 					event.taskId(),
@@ -486,7 +492,7 @@ public final class ActiveJobRuntime {
 	private void refreshMineBlocksAttempt(long tick) {
 		GoalMineSpec spec = activeJob.directGoal().mineSpec();
 		int satisfiedCount = activeJob.type() == ActiveJobType.ENSURE_BLOCKS_IN_INVENTORY
-			? MinedBlockDropMapper.matchingInventoryItemCount(lastEvidence.itemCounts(), spec == null ? null : spec.blockIds())
+			? matchingItemCount(lastEvidence.itemCounts(), spec == null ? null : spec.matchingItemIds())
 			: activeJob.collectedCount();
 		if (spec == null) {
 			clearDesiredTaskState();
@@ -517,12 +523,17 @@ public final class ActiveJobRuntime {
 		int remainingToMine = Math.max(1, requestedSpec.quantity() - satisfiedCount);
 		int absoluteInventoryTarget = activeJob.type() == ActiveJobType.ENSURE_BLOCKS_IN_INVENTORY
 			? requestedSpec.quantity()
-			: matchingItemCount(lastEvidence.itemCounts(), requestedSpec.blockIds()) + remainingToMine;
+			: matchingItemCount(lastEvidence.itemCounts(), requestedSpec.matchingItemIds()) + remainingToMine;
 		GoalSnapshot executionGoal = new GoalSnapshot(
 			GoalType.MINE_BLOCKS,
 			null,
 			null,
-			new GoalMineSpec(requestedSpec.blockIds(), absoluteInventoryTarget),
+			new GoalMineSpec(
+				requestedSpec.blockIds(),
+				absoluteInventoryTarget,
+				requestedSpec.matchingItemIds(),
+				requestedSpec.requiredToolItemIds()
+			),
 			tick,
 			activeJob.directGoal().source()
 		);
@@ -680,7 +691,7 @@ public final class ActiveJobRuntime {
 		if (spec == null) {
 			return updated(job, ActiveJobStatus.FAILED, null, "missing_mine_blocks_args", job.collectedCount(), tick);
 		}
-		int currentItemCount = MinedBlockDropMapper.matchingInventoryItemCount(evidence.itemCounts(), spec.blockIds());
+		int currentItemCount = matchingItemCount(evidence.itemCounts(), spec.matchingItemIds());
 		if (currentItemCount >= spec.quantity()) {
 			return updated(job, ActiveJobStatus.COMPLETED, null, null, job.collectedCount(), tick);
 		}
@@ -858,17 +869,17 @@ public final class ActiveJobRuntime {
 			+ " brokenBlocks=" + Math.max(0, brokenBlocks)
 			+ " itemCount=" + Math.max(0, itemCount)
 			+ " requestedItemCount=" + (spec == null ? 0 : Math.max(0, spec.quantity()))
-			+ " matchingItemIds=" + (spec == null ? List.of() : MinedBlockDropMapper.matchingInventoryItemIds(spec.blockIds()))
+			+ " matchingItemIds=" + (spec == null ? List.of() : spec.matchingItemIds())
 			+ ". Runtime will keep mining until the requested inventory count is reached.";
 	}
 
-	private static int matchingItemCount(Map<String, Integer> itemCounts, List<String> blockIds) {
-		if (itemCounts == null || itemCounts.isEmpty() || blockIds == null || blockIds.isEmpty()) {
+	private static int matchingItemCount(Map<String, Integer> itemCounts, List<String> matchingItemIds) {
+		if (itemCounts == null || itemCounts.isEmpty() || matchingItemIds == null || matchingItemIds.isEmpty()) {
 			return 0;
 		}
 		int total = 0;
-		for (String blockId : blockIds) {
-			total += itemCounts.getOrDefault(blockId, 0);
+		for (String itemId : matchingItemIds) {
+			total += itemCounts.getOrDefault(itemId, 0);
 		}
 		return total;
 	}

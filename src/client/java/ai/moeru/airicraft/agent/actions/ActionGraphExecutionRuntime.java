@@ -46,6 +46,7 @@ public final class ActionGraphExecutionRuntime {
 	private long startedTick = -1L;
 	private ActionResolverContext lastContext;
 	private final ActionFactStore facts = new ActionFactStore();
+	private BlockAcquisitionIndex blockAcquisitions = BlockAcquisitionIndex.empty();
 	private final List<ActionTraceEvent> trace = new ArrayList<>();
 	private final List<Map<String, Object>> recoveryHistory = new ArrayList<>();
 	private final Set<String> blockedAlternatives = new LinkedHashSet<>();
@@ -141,6 +142,7 @@ public final class ActionGraphExecutionRuntime {
 		this.lastContext = Objects.requireNonNull(context, "context");
 		this.state = ActionGraphExecutionState.RESOLVING;
 		this.facts.clear();
+		this.blockAcquisitions = BlockAcquisitionIndex.empty();
 		this.trace.clear();
 		this.recoveryHistory.clear();
 		this.blockedAlternatives.clear();
@@ -284,6 +286,7 @@ public final class ActionGraphExecutionRuntime {
 		startedTick = -1L;
 		lastContext = null;
 		facts.clear();
+		blockAcquisitions = BlockAcquisitionIndex.empty();
 		trace.clear();
 		recoveryHistory.clear();
 		blockedAlternatives.clear();
@@ -351,6 +354,7 @@ public final class ActionGraphExecutionRuntime {
 		if (resolutionTask == null) {
 			ActionGoal resolutionGoal = goal;
 			List<ActionFact> factSnapshot = facts.queryAll();
+			BlockAcquisitionIndex blockAcquisitionSnapshot = blockAcquisitions;
 			Set<String> blockedSnapshot = Set.copyOf(blockedAlternatives);
 			FutureTask<ActionResolveResult> task = new FutureTask<>(() -> {
 				ActionsetLoadResult loadResult = actionsetLoader.get();
@@ -364,6 +368,7 @@ public final class ActionGraphExecutionRuntime {
 				return ActionResolver.resolve(new ActionResolutionRequest(
 					loadResult.index(),
 					factSnapshot,
+					blockAcquisitionSnapshot,
 					context,
 					resolutionGoal,
 					ActionResolutionRequest.DEFAULT_MAX_DEPTH,
@@ -883,6 +888,7 @@ public final class ActionGraphExecutionRuntime {
 	}
 
 	private void ingestObservedFacts(ActionGraphExecutionInput input) {
+		blockAcquisitions = input.blockAcquisitions();
 		addInventoryFacts(input.observedInventory(), ActionFactProvenance.OBSERVED, input.context(), true);
 		addResourceFacts(input.observedResources(), ActionFactProvenance.OBSERVED, input.context());
 		addCraftRecipeFacts(input.availableCrafts(), ActionFactProvenance.OBSERVED, input.context());

@@ -305,7 +305,7 @@ public final class BaritoneTaskExecutor implements WorldTaskExecutor {
 			}
 			targetStates.add(block.get().getDefaultState());
 		}
-		return MiningToolPreflight.ensureSelected(client, player, targetStates);
+		return MiningToolPreflight.ensureSelected(client, player, targetStates, goal.mineSpec().requiredToolItemIds());
 	}
 
 	private static Optional<Block> resolveBlock(String blockId) {
@@ -327,10 +327,27 @@ public final class BaritoneTaskExecutor implements WorldTaskExecutor {
 		}
 
 		static Result ensureSelected(MinecraftClient client, ClientPlayerEntity player, java.util.List<BlockState> targetStates) {
+			return ensureSelected(client, player, targetStates, java.util.List.of());
+		}
+
+		static Result ensureSelected(
+			MinecraftClient client,
+			ClientPlayerEntity player,
+			java.util.List<BlockState> targetStates,
+			java.util.List<String> requiredToolItemIds
+		) {
 			ScreenHandler handler = player.currentScreenHandler;
 			ItemStack selectedStack = player.getInventory().getSelectedStack();
-			int sourceSlot = findPreferredToolSlot(handler, selectedStack, targetStates);
+			java.util.Set<String> requiredTools = requiredToolItemIds == null
+				? java.util.Set.of()
+				: java.util.Set.copyOf(requiredToolItemIds);
+			int sourceSlot = requiredTools.isEmpty()
+				? findPreferredToolSlot(handler, selectedStack, targetStates)
+				: findRequiredToolSlot(handler, selectedStack, targetStates, requiredTools);
 			if (sourceSlot < 0) {
+				if (!requiredTools.isEmpty() && !matchesRequiredTool(selectedStack, requiredTools)) {
+					return Result.failed("missing_required_harvest_tool itemIds=" + requiredTools);
+				}
 				return needsSuitableTool(targetStates) && !isSuitableForAllRequiredBlocks(selectedStack, targetStates)
 					? Result.failed("missing_suitable_tool blockIds=" + requiredBlockIds(targetStates))
 					: Result.success();
@@ -343,7 +360,11 @@ public final class BaritoneTaskExecutor implements WorldTaskExecutor {
 				client.interactionManager.clickSlot(handler.syncId, sourceSlot, selectedHotbarSlot, SlotActionType.SWAP, player);
 				selectAndSyncHotbarSlot(client, player, selectedHotbarSlot);
 			}
-			return !needsSuitableTool(targetStates) || isSuitableForAllRequiredBlocks(player.getInventory().getSelectedStack(), targetStates)
+			ItemStack selected = player.getInventory().getSelectedStack();
+			if (!requiredTools.isEmpty() && !matchesRequiredTool(selected, requiredTools)) {
+				return Result.failed("tool_selection_failed requiredItemIds=" + requiredTools);
+			}
+			return !needsSuitableTool(targetStates) || isSuitableForAllRequiredBlocks(selected, targetStates)
 				? Result.success()
 				: Result.failed("tool_selection_failed blockIds=" + requiredBlockIds(targetStates));
 		}
@@ -385,6 +406,42 @@ public final class BaritoneTaskExecutor implements WorldTaskExecutor {
 				}
 			}
 			return bestSlot;
+		}
+
+		private static int findRequiredToolSlot(
+			ScreenHandler handler,
+			ItemStack selectedStack,
+			java.util.List<BlockState> targetStates,
+			java.util.Set<String> requiredToolItemIds
+		) {
+			if (!(handler instanceof PlayerScreenHandler)) {
+				return -1;
+			}
+			ItemStack bestStack = matchesRequiredTool(selectedStack, requiredToolItemIds)
+				? selectedStack
+				: ItemStack.EMPTY;
+			int bestSlot = -1;
+			for (int slot = PlayerScreenHandler.HOTBAR_START; slot < PlayerScreenHandler.HOTBAR_END; slot++) {
+				ItemStack candidate = handler.getSlot(slot).getStack();
+				if (matchesRequiredTool(candidate, requiredToolItemIds) && isBetterMiningTool(candidate, bestStack, targetStates)) {
+					bestStack = candidate;
+					bestSlot = slot;
+				}
+			}
+			for (int slot = PlayerScreenHandler.INVENTORY_START; slot < PlayerScreenHandler.HOTBAR_START; slot++) {
+				ItemStack candidate = handler.getSlot(slot).getStack();
+				if (matchesRequiredTool(candidate, requiredToolItemIds) && isBetterMiningTool(candidate, bestStack, targetStates)) {
+					bestStack = candidate;
+					bestSlot = slot;
+				}
+			}
+			return bestSlot;
+		}
+
+		private static boolean matchesRequiredTool(ItemStack stack, java.util.Set<String> requiredToolItemIds) {
+			return stack != null
+				&& !stack.isEmpty()
+				&& requiredToolItemIds.contains(Registries.ITEM.getId(stack.getItem()).toString());
 		}
 
 		static boolean isBetterMiningTool(ItemStack candidate, ItemStack current, java.util.List<BlockState> targetStates) {
@@ -707,7 +764,7 @@ public final class BaritoneTaskExecutor implements WorldTaskExecutor {
 		if (client == null || client.world == null || client.player == null || request == null || request.goal() == null || request.goal().mineSpec() == null || request.pickupSweepPositions().isEmpty()) {
 			return List.of();
 		}
-		Set<String> matchingItemIds = MinedBlockDropMapper.matchingInventoryItemIds(request.goal().mineSpec().blockIds());
+		Set<String> matchingItemIds = Set.copyOf(request.goal().mineSpec().matchingItemIds());
 		Set<Integer> seenEntityIds = new HashSet<>();
 		ArrayList<ItemEntity> matchingDrops = new ArrayList<>();
 		for (GoalPosition position : request.pickupSweepPositions()) {

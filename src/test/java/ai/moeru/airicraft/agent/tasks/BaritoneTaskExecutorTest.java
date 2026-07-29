@@ -310,11 +310,16 @@ class BaritoneTaskExecutorTest {
 		observedDrops.add(List.of(new BaritoneTaskExecutor.MineDropTarget(7, dropPosition)));
 		observedDrops.add(List.of());
 		BaritoneTaskExecutor executor = new BaritoneTaskExecutor(() -> null, facade, request ->
-			MinedBlockDropMapper.matchingInventoryItemIds(request.goal().mineSpec().blockIds()).contains("minecraft:wheat_seeds")
+			request.goal().mineSpec().matchingItemIds().contains("minecraft:wheat_seeds")
 				? observedDrops.removeFirst()
 				: List.of()
 		);
-		GoalSnapshot goal = new GoalSnapshot(GoalType.MINE_BLOCKS, null, null, new GoalMineSpec(List.of("minecraft:short_grass"), 1), 20L, "planner_response");
+		GoalSnapshot goal = new GoalSnapshot(GoalType.MINE_BLOCKS, null, null, new GoalMineSpec(
+			List.of("minecraft:short_grass"),
+			1,
+			List.of("minecraft:wheat_seeds"),
+			List.of()
+		), 20L, "planner_response");
 		GoalPosition finalBrokenBlock = new GoalPosition(10, 64, 20, true);
 		WorldTaskRequest request = WorldTaskRequest.collectMine("mine-task", "mine-task", goal, finalBrokenBlock);
 

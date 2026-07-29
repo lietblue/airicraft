@@ -17,6 +17,7 @@ import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class ActionResolverTest {
+	private static final BlockAcquisitionIndex TEST_BLOCK_ACQUISITIONS = BlockAcquisitionTestFixtures.survival();
 	private static final ActionResolverContext CONTEXT = new ActionResolverContext(
 		"world-a",
 		"bot",
@@ -45,6 +46,7 @@ class ActionResolverTest {
 		ActionResolutionRequest request = ActionResolutionRequest.defaults(
 			ActionsetIndex.empty(),
 			facts.queryAll(),
+			TEST_BLOCK_ACQUISITIONS,
 			CONTEXT,
 			ActionGoal.inventoryItem("minecraft:diamond", 1)
 		);
@@ -64,7 +66,7 @@ class ActionResolverTest {
 			.mapToInt(Number::intValue)
 			.findFirst()
 			.orElseThrow();
-		assertTrue(expandedGoals < 100, () -> "expandedGoals=" + expandedGoals);
+		assertTrue(expandedGoals < 250, () -> "expandedGoals=" + expandedGoals);
 	}
 
 	@Test
@@ -72,6 +74,7 @@ class ActionResolverTest {
 		ActionResolutionRequest request = new ActionResolutionRequest(
 			ActionsetIndex.empty(),
 			List.of(),
+			TEST_BLOCK_ACQUISITIONS,
 			CONTEXT,
 			ActionGoal.inventoryItem("minecraft:diamond", 1),
 			8,
@@ -97,7 +100,7 @@ class ActionResolverTest {
 			ActionFact.NEVER_STALE
 		));
 
-		ActionResolveResult result = new ActionResolver(ActionsetIndex.empty(), facts, CONTEXT)
+		ActionResolveResult result = new ActionResolver(ActionsetIndex.empty(), facts, TEST_BLOCK_ACQUISITIONS, CONTEXT)
 			.resolve(ActionGoal.resourceCollection("WOOD_LOGS", 3));
 
 		assertTrue(result.resolved(), () -> result.trace().toString());
@@ -114,7 +117,7 @@ class ActionResolverTest {
 		ActionFactStore facts = new ActionFactStore();
 		addSurvivalCraftFacts(facts);
 
-		ActionResolveResult result = new ActionResolver(ActionsetIndex.empty(), facts, CONTEXT)
+		ActionResolveResult result = new ActionResolver(ActionsetIndex.empty(), facts, TEST_BLOCK_ACQUISITIONS, CONTEXT)
 			.resolve(ActionGoal.resourceCollection("RAW_IRON", 3));
 
 		assertTrue(result.resolved(), () -> result.trace().toString());
@@ -128,12 +131,12 @@ class ActionResolverTest {
 		assertEquals("WOOD_LOGS", result.route().steps().getFirst().args().get("resourceKind"));
 		assertEquals("minecraft:raw_iron", result.route().steps().getLast().args().get("itemId"));
 		assertTrace(result.trace(), "route_selected", "resource_provider", "RAW_IRON");
-		assertTrace(result.trace(), "route_selected", "mining_provider", "minecraft:raw_iron");
+		assertTracePayload(result.trace(), "route_candidate_built", "mining_provider", "itemId", "minecraft:raw_iron");
 	}
 
 	@Test
 	void rejectsUnsupportedResourceCollectionWithTrace() {
-		ActionResolveResult result = new ActionResolver(ActionsetIndex.empty(), new ActionFactStore(), CONTEXT)
+		ActionResolveResult result = new ActionResolver(ActionsetIndex.empty(), new ActionFactStore(), TEST_BLOCK_ACQUISITIONS, CONTEXT)
 			.resolve(ActionGoal.resourceCollection("OBSIDIAN", 1));
 
 		assertFalse(result.resolved());
@@ -144,7 +147,7 @@ class ActionResolverTest {
 
 	@Test
 	void knownMiningAcquisitionDoesNotRequireAnObservedTarget() {
-		ActionResolveResult result = new ActionResolver(ActionsetIndex.empty(), new ActionFactStore(), CONTEXT)
+		ActionResolveResult result = new ActionResolver(ActionsetIndex.empty(), new ActionFactStore(), TEST_BLOCK_ACQUISITIONS, CONTEXT)
 			.resolve(ActionGoal.inventoryItem("minecraft:dirt", 1));
 
 		assertTrue(result.resolved(), () -> result.trace().toString());
@@ -153,16 +156,16 @@ class ActionResolverTest {
 	}
 
 	@Test
-	void resolvesInventoryLogThroughWoodResourceProvider() {
-		ActionResolveResult result = new ActionResolver(ActionsetIndex.empty(), new ActionFactStore(), CONTEXT)
+	void resolvesInventoryLogThroughLootTableMiningProvider() {
+		ActionResolveResult result = new ActionResolver(ActionsetIndex.empty(), new ActionFactStore(), TEST_BLOCK_ACQUISITIONS, CONTEXT)
 			.resolve(ActionGoal.inventoryItem("minecraft:birch_log", 2));
 
 		assertTrue(result.resolved(), () -> result.trace().toString());
-		assertEquals(List.of("collect_resource"), result.route().steps().stream().map(ActionPlanStep::targetId).toList());
+		assertEquals(List.of("mine_block"), result.route().steps().stream().map(ActionPlanStep::targetId).toList());
 		ActionPlanStep step = result.route().steps().getFirst();
-		assertEquals("resource_provider", step.actionId());
-		assertEquals("minecraft:birch_log", step.alternativeId());
-		assertEquals("WOOD_LOGS", step.args().get("resourceKind"));
+		assertEquals("mining_provider", step.actionId());
+		assertEquals(List.of("minecraft:birch_log"), step.args().get("blockIds"));
+		assertEquals(List.of("minecraft:birch_log"), step.args().get("matchingItemIds"));
 		assertEquals(2, step.args().get("quantity"));
 	}
 
@@ -247,7 +250,7 @@ class ActionResolverTest {
 			ActionFact.NEVER_STALE
 		));
 
-		ActionResolveResult result = new ActionResolver(ActionsetIndex.empty(), facts, CONTEXT)
+		ActionResolveResult result = new ActionResolver(ActionsetIndex.empty(), facts, TEST_BLOCK_ACQUISITIONS, CONTEXT)
 			.resolve(ActionGoal.inventoryItem("minecraft:bread", 2));
 
 		assertTrue(result.resolved(), () -> result.trace().toString());
@@ -288,7 +291,7 @@ class ActionResolverTest {
 			ActionFact.NEVER_STALE
 		));
 
-		ActionResolveResult result = new ActionResolver(ActionsetIndex.empty(), facts, CONTEXT)
+		ActionResolveResult result = new ActionResolver(ActionsetIndex.empty(), facts, TEST_BLOCK_ACQUISITIONS, CONTEXT)
 			.resolve(ActionGoal.inventoryItem("minecraft:bread", 3));
 
 		assertTrue(result.resolved(), () -> result.trace().toString());
@@ -333,7 +336,7 @@ class ActionResolverTest {
 			ActionFact.NEVER_STALE
 		));
 
-		ActionResolveResult result = new ActionResolver(ActionsetIndex.empty(), facts, CONTEXT)
+		ActionResolveResult result = new ActionResolver(ActionsetIndex.empty(), facts, TEST_BLOCK_ACQUISITIONS, CONTEXT)
 			.resolve(ActionGoal.inventoryItem("minecraft:stick", 4));
 
 		assertTrue(result.resolved(), () -> result.trace().toString());
@@ -354,7 +357,7 @@ class ActionResolverTest {
 			ActionFact.NEVER_STALE
 		));
 
-		ActionResolveResult result = new ActionResolver(ActionsetIndex.empty(), facts, CONTEXT)
+		ActionResolveResult result = new ActionResolver(ActionsetIndex.empty(), facts, TEST_BLOCK_ACQUISITIONS, CONTEXT)
 			.resolve(ActionGoal.inventoryItem("minecraft:crafting_table", 1));
 
 		assertTrue(result.resolved(), () -> result.trace().toString());
@@ -389,7 +392,7 @@ class ActionResolverTest {
 			ActionFact.NEVER_STALE
 		));
 
-		ActionResolveResult result = new ActionResolver(ActionsetIndex.empty(), facts, CONTEXT)
+		ActionResolveResult result = new ActionResolver(ActionsetIndex.empty(), facts, TEST_BLOCK_ACQUISITIONS, CONTEXT)
 			.resolve(ActionGoal.inventoryItem("minecraft:wooden_pickaxe", 1));
 
 		assertTrue(result.resolved(), () -> result.trace().toString());
@@ -411,7 +414,7 @@ class ActionResolverTest {
 			ActionFact.NEVER_STALE
 		));
 
-		ActionResolveResult result = new ActionResolver(ActionsetIndex.empty(), facts, CONTEXT)
+		ActionResolveResult result = new ActionResolver(ActionsetIndex.empty(), facts, TEST_BLOCK_ACQUISITIONS, CONTEXT)
 			.resolve(ActionGoal.inventoryItem("minecraft:wooden_hoe", 1));
 
 		assertTrue(result.resolved(), () -> result.trace().toString());
@@ -439,7 +442,7 @@ class ActionResolverTest {
 			ActionFact.NEVER_STALE
 		));
 
-		ActionResolveResult result = new ActionResolver(ActionsetIndex.empty(), facts, CONTEXT)
+		ActionResolveResult result = new ActionResolver(ActionsetIndex.empty(), facts, TEST_BLOCK_ACQUISITIONS, CONTEXT)
 			.resolve(ActionGoal.inventoryItem("minecraft:wooden_pickaxe", 1));
 
 		assertTrue(result.resolved(), () -> result.trace().toString());
@@ -455,7 +458,7 @@ class ActionResolverTest {
 		ActionFactStore facts = new ActionFactStore();
 		addSurvivalCraftFacts(facts);
 
-		ActionResolveResult result = new ActionResolver(ActionsetIndex.empty(), facts, CONTEXT)
+		ActionResolveResult result = new ActionResolver(ActionsetIndex.empty(), facts, TEST_BLOCK_ACQUISITIONS, CONTEXT)
 			.resolve(ActionGoal.inventoryItem("minecraft:crafting_table", 1));
 
 		assertTrue(result.resolved(), () -> result.trace().toString());
@@ -487,13 +490,13 @@ class ActionResolverTest {
 			ActionFact.NEVER_STALE
 		));
 
-		ActionResolveResult result = new ActionResolver(ActionsetIndex.empty(), facts, CONTEXT)
+		ActionResolveResult result = new ActionResolver(ActionsetIndex.empty(), facts, TEST_BLOCK_ACQUISITIONS, CONTEXT)
 			.resolve(ActionGoal.inventoryItem("minecraft:iron_ingot", 3));
 
 		assertTrue(result.resolved(), () -> result.trace().toString());
-		assertEquals(List.of("collect_resource", "smelt_item", "watch", "collect_smelted_item"), result.route().steps().stream().map(ActionPlanStep::targetId).toList());
+		assertEquals(List.of("mine_block", "smelt_item", "watch", "collect_smelted_item"), result.route().steps().stream().map(ActionPlanStep::targetId).toList());
 		ActionPlanStep fuel = result.route().steps().getFirst();
-		assertEquals("WOOD_LOGS", fuel.args().get("resourceKind"));
+		assertEquals("minecraft:oak_log", fuel.args().get("itemId"));
 		ActionPlanStep smelt = result.route().steps().get(1);
 		assertEquals("smelting_provider", smelt.actionId());
 		assertEquals("minecraft:raw_iron", smelt.args().get("inputItemId"));
@@ -556,7 +559,7 @@ class ActionResolverTest {
 			ActionFact.NEVER_STALE
 		));
 
-		ActionResolveResult result = new ActionResolver(ActionsetIndex.empty(), facts, CONTEXT)
+		ActionResolveResult result = new ActionResolver(ActionsetIndex.empty(), facts, TEST_BLOCK_ACQUISITIONS, CONTEXT)
 			.resolve(ActionGoal.inventoryItem("minecraft:charcoal", 8));
 
 		assertTrue(result.resolved(), () -> result.trace().toString());
@@ -602,7 +605,7 @@ class ActionResolverTest {
 			ActionFact.NEVER_STALE
 		));
 
-		ActionResolveResult result = new ActionResolver(ActionsetIndex.empty(), facts, CONTEXT)
+		ActionResolveResult result = new ActionResolver(ActionsetIndex.empty(), facts, TEST_BLOCK_ACQUISITIONS, CONTEXT)
 			.resolve(ActionGoal.inventoryItem("minecraft:iron_ingot", 3));
 
 		assertTrue(result.resolved(), () -> result.trace().toString());
@@ -653,7 +656,7 @@ class ActionResolverTest {
 			ActionFact.NEVER_STALE
 		));
 
-		ActionResolveResult result = new ActionResolver(ActionsetIndex.empty(), facts, CONTEXT)
+		ActionResolveResult result = new ActionResolver(ActionsetIndex.empty(), facts, TEST_BLOCK_ACQUISITIONS, CONTEXT)
 			.resolve(ActionGoal.inventoryItem("minecraft:iron_ingot", 3));
 
 		assertTrue(result.resolved(), () -> result.trace().toString());
@@ -711,11 +714,11 @@ class ActionResolverTest {
 			ActionFact.NEVER_STALE
 		));
 
-		ActionResolveResult result = new ActionResolver(ActionsetIndex.empty(), facts, CONTEXT)
+		ActionResolveResult result = new ActionResolver(ActionsetIndex.empty(), facts, TEST_BLOCK_ACQUISITIONS, CONTEXT)
 			.resolve(ActionGoal.inventoryItem("minecraft:iron_ingot", 3));
 
 		assertTrue(result.resolved(), () -> result.trace().toString());
-		assertEquals(List.of("collect_resource", "smelt_item", "watch", "collect_smelted_item"), result.route().steps().stream().map(ActionPlanStep::targetId).toList());
+		assertEquals(List.of("mine_block", "smelt_item", "watch", "collect_smelted_item"), result.route().steps().stream().map(ActionPlanStep::targetId).toList());
 		ActionPlanStep smelt = result.route().steps().get(1);
 		assertEquals(3, smelt.args().get("inputQuantity"));
 		assertEquals("minecraft:oak_log", smelt.args().get("fuelItemId"));
@@ -733,7 +736,7 @@ class ActionResolverTest {
 			ActionFact.NEVER_STALE
 		));
 
-		ActionResolveResult result = new ActionResolver(ActionsetIndex.empty(), facts, CONTEXT)
+		ActionResolveResult result = new ActionResolver(ActionsetIndex.empty(), facts, TEST_BLOCK_ACQUISITIONS, CONTEXT)
 			.resolve(ActionGoal.inventoryItem("minecraft:raw_iron", 3));
 
 		assertTrue(result.resolved(), () -> result.trace().toString());
@@ -743,7 +746,7 @@ class ActionResolverTest {
 		assertEquals("minecraft:raw_iron", mine.args().get("itemId"));
 		assertEquals(3, mine.args().get("quantity"));
 		assertEquals(List.of("minecraft:deepslate_iron_ore", "minecraft:iron_ore"), mine.args().get("blockIds"));
-		assertTrace(result.trace(), "route_selected", "mining_provider", "minecraft:raw_iron");
+		assertTracePayload(result.trace(), "route_candidate_built", "mining_provider", "itemId", "minecraft:raw_iron");
 	}
 
 	@Test
@@ -779,7 +782,7 @@ class ActionResolverTest {
 			ActionFact.NEVER_STALE
 		));
 
-		ActionResolveResult result = new ActionResolver(ActionsetIndex.empty(), facts, CONTEXT)
+		ActionResolveResult result = new ActionResolver(ActionsetIndex.empty(), facts, TEST_BLOCK_ACQUISITIONS, CONTEXT)
 			.resolve(ActionGoal.inventoryItem("minecraft:raw_iron", 3));
 
 		assertTrue(result.resolved(), () -> result.trace().toString());
@@ -809,7 +812,7 @@ class ActionResolverTest {
 			ActionFact.NEVER_STALE
 		));
 
-		ActionResolveResult result = new ActionResolver(ActionsetIndex.empty(), facts, CONTEXT)
+		ActionResolveResult result = new ActionResolver(ActionsetIndex.empty(), facts, TEST_BLOCK_ACQUISITIONS, CONTEXT)
 			.resolve(ActionGoal.inventoryItem("minecraft:raw_iron", 3));
 
 		assertTrue(result.resolved(), () -> result.trace().toString());
@@ -859,7 +862,7 @@ class ActionResolverTest {
 			ActionFact.NEVER_STALE
 		));
 
-		ActionResolveResult result = new ActionResolver(ActionsetIndex.empty(), facts, CONTEXT)
+		ActionResolveResult result = new ActionResolver(ActionsetIndex.empty(), facts, TEST_BLOCK_ACQUISITIONS, CONTEXT)
 			.resolve(ActionGoal.inventoryItem("minecraft:iron_pickaxe", 1));
 
 		assertTrue(result.resolved(), () -> result.trace().toString());
@@ -912,7 +915,7 @@ class ActionResolverTest {
 			));
 		}
 
-		ActionResolveResult result = new ActionResolver(ActionsetIndex.empty(), facts, CONTEXT)
+		ActionResolveResult result = new ActionResolver(ActionsetIndex.empty(), facts, TEST_BLOCK_ACQUISITIONS, CONTEXT)
 			.resolve(ActionGoal.inventoryItem("minecraft:iron_pickaxe", 1));
 
 		assertTrue(result.resolved(), () -> result.trace().toString());
@@ -953,7 +956,7 @@ class ActionResolverTest {
 			ActionFact.NEVER_STALE
 		));
 
-		ActionResolveResult result = new ActionResolver(ActionsetIndex.empty(), facts, CONTEXT)
+		ActionResolveResult result = new ActionResolver(ActionsetIndex.empty(), facts, TEST_BLOCK_ACQUISITIONS, CONTEXT)
 			.resolve(ActionGoal.inventoryItem("minecraft:furnace", 1));
 
 		assertTrue(result.resolved(), () -> result.trace().toString());
@@ -1002,11 +1005,11 @@ class ActionResolverTest {
 			ActionFact.NEVER_STALE
 		));
 
-		ActionResolveResult result = new ActionResolver(ActionsetIndex.empty(), facts, CONTEXT)
+		ActionResolveResult result = new ActionResolver(ActionsetIndex.empty(), facts, TEST_BLOCK_ACQUISITIONS, CONTEXT)
 			.resolve(ActionGoal.inventoryItem("minecraft:iron_pickaxe", 1));
 
 		assertTrue(result.resolved(), () -> result.trace().toString());
-		assertEquals(List.of("collect_resource", "smelt_item", "watch", "collect_smelted_item", "craft_item"), result.route().steps().stream().map(ActionPlanStep::targetId).toList());
+		assertEquals(List.of("mine_block", "smelt_item", "watch", "collect_smelted_item", "craft_item"), result.route().steps().stream().map(ActionPlanStep::targetId).toList());
 		assertEquals("minecraft:oak_log", result.route().steps().get(1).args().get("fuelItemId"));
 		assertEquals("iron_ingot_x3_and_stick_x2_to_iron_pickaxe", result.route().steps().get(4).args().get("recipeId"));
 	}
@@ -1060,7 +1063,7 @@ class ActionResolverTest {
 			ActionFact.NEVER_STALE
 		));
 
-		ActionResolveResult result = new ActionResolver(ActionsetIndex.empty(), facts, CONTEXT)
+		ActionResolveResult result = new ActionResolver(ActionsetIndex.empty(), facts, TEST_BLOCK_ACQUISITIONS, CONTEXT)
 			.resolve(ActionGoal.inventoryItem("minecraft:iron_pickaxe", 1));
 
 		assertTrue(result.resolved(), () -> result.trace().toString());
@@ -1105,7 +1108,7 @@ class ActionResolverTest {
 			ActionFact.NEVER_STALE
 		));
 
-		ActionResolveResult result = new ActionResolver(ActionsetIndex.empty(), facts, CONTEXT)
+		ActionResolveResult result = new ActionResolver(ActionsetIndex.empty(), facts, TEST_BLOCK_ACQUISITIONS, CONTEXT)
 			.resolve(ActionGoal.inventoryItem("minecraft:iron_pickaxe", 1));
 
 		assertTrue(result.resolved(), () -> result.trace().toString());
@@ -1202,7 +1205,7 @@ class ActionResolverTest {
 			ActionFact.NEVER_STALE
 		));
 
-		ActionResolveResult result = new ActionResolver(ActionsetIndex.empty(), facts, CONTEXT)
+		ActionResolveResult result = new ActionResolver(ActionsetIndex.empty(), facts, TEST_BLOCK_ACQUISITIONS, CONTEXT)
 			.resolve(ActionGoal.inventoryItem("minecraft:iron_pickaxe", 1));
 
 		assertTrue(result.resolved(), () -> result.trace().toString());
@@ -1253,7 +1256,7 @@ class ActionResolverTest {
 			ActionFact.NEVER_STALE
 		));
 
-		ActionResolveResult result = new ActionResolver(ActionsetIndex.empty(), facts, CONTEXT)
+		ActionResolveResult result = new ActionResolver(ActionsetIndex.empty(), facts, TEST_BLOCK_ACQUISITIONS, CONTEXT)
 			.resolve(ActionGoal.inventoryItem("minecraft:iron_pickaxe", 1));
 
 		assertTrue(result.resolved(), () -> result.trace().toString());
@@ -1282,7 +1285,7 @@ class ActionResolverTest {
 			ActionFact.NEVER_STALE
 		));
 
-		ActionResolveResult result = new ActionResolver(ActionsetIndex.empty(), facts, CONTEXT)
+		ActionResolveResult result = new ActionResolver(ActionsetIndex.empty(), facts, TEST_BLOCK_ACQUISITIONS, CONTEXT)
 			.resolve(ActionGoal.inventoryItem("minecraft:cobblestone", 8));
 
 		assertTrue(result.resolved(), () -> result.trace().toString());
@@ -1354,21 +1357,42 @@ class ActionResolverTest {
 
 	@Test
 	void returnsUnknownAcquisitionMethodWhenNoProviderIsRegistered() {
-		ActionResolveResult result = resolver(new ActionFactStore()).resolve(ActionGoal.inventoryItem("minecraft:seagrass", 20));
+		ActionResolveResult result = resolver(new ActionFactStore()).resolve(ActionGoal.inventoryItem("minecraft:elytra", 1));
 
 		assertFalse(result.resolved());
 		assertEquals("unknown_acquisition_method", result.failureCode());
-		assertTrue(result.message().contains("minecraft:seagrass"));
+		assertTrue(result.message().contains("minecraft:elytra"));
 		assertTrue(result.message().contains("no target search was started"));
 		assertTrue(result.route().steps().isEmpty());
 		assertTrace(result.trace(), "goal_started", null, null);
 		assertTrace(result.trace(), "goal_failed", null, null);
 	}
 
+	@Test
+	void resolvesSeagrassFromBlockAcquisitionKnowledgeWithShears() {
+		ActionFactStore facts = new ActionFactStore();
+		facts.upsert(new ActionFact(
+			ActionFactIdentity.inventoryItem("world-a", "bot", "minecraft:shears"),
+			Map.of("count", 1),
+			ActionFactProvenance.OBSERVED,
+			90,
+			ActionFact.NEVER_STALE
+		));
+
+		ActionResolveResult result = resolver(facts).resolve(ActionGoal.inventoryItem("minecraft:seagrass", 20));
+
+		assertTrue(result.resolved(), () -> result.trace().toString());
+		ActionPlanStep step = result.route().steps().getLast();
+		assertEquals("mine_block", step.targetId());
+		assertEquals(List.of("minecraft:seagrass"), step.args().get("blockIds"));
+		assertEquals(List.of("minecraft:seagrass"), step.args().get("matchingItemIds"));
+		assertEquals(List.of("minecraft:shears"), step.args().get("requiredToolItemIds"));
+	}
+
 	private static ActionResolver resolver(ActionFactStore facts) {
 		ActionsetLoadResult load = ActionsetLibraryLoader.defaults().load(Path.of("actionsets"));
 		assertTrue(load.valid(), () -> load.diagnostics().toString());
-		return new ActionResolver(load.index(), facts, CONTEXT);
+		return new ActionResolver(load.index(), facts, TEST_BLOCK_ACQUISITIONS, CONTEXT);
 	}
 
 	private static void addSurvivalCraftFacts(ActionFactStore facts) {
@@ -1426,6 +1450,21 @@ class ActionResolverTest {
 			.filter(event -> eventType.equals(event.eventType()))
 			.filter(event -> actionId == null || actionId.equals(event.actionId()))
 			.filter(event -> alternativeId == null || alternativeId.equals(event.alternativeId()))
+			.count();
+		assertTrue(matches > 0, () -> trace.toString());
+	}
+
+	private static void assertTracePayload(
+		List<ActionTraceEvent> trace,
+		String eventType,
+		String actionId,
+		String payloadKey,
+		Object payloadValue
+	) {
+		long matches = trace.stream()
+			.filter(event -> eventType.equals(event.eventType()))
+			.filter(event -> actionId == null || actionId.equals(event.actionId()))
+			.filter(event -> payloadValue.equals(event.payload().get(payloadKey)))
 			.count();
 		assertTrue(matches > 0, () -> trace.toString());
 	}

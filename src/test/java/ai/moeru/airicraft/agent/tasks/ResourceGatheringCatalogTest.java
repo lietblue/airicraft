@@ -3,7 +3,6 @@ package ai.moeru.airicraft.agent.tasks;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
-import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -34,20 +33,10 @@ class ResourceGatheringCatalogTest {
 		assertFalse(rawIron.aggregate());
 		assertEquals("minecraft:raw_iron", rawIron.primaryItemId());
 		assertEquals(List.of("minecraft:raw_iron"), rawIron.acceptedItemIds());
-		assertEquals(List.of("minecraft:deepslate_iron_ore", "minecraft:iron_ore"), rawIron.sourceBlockIds());
 
 		ResourceGatheringCatalog.ResourceEntry wood = ResourceGatheringCatalog.entry(TaskResourceKind.WOOD_LOGS).orElseThrow();
 		assertTrue(wood.aggregate());
 		assertTrue(wood.acceptedItemIds().contains("minecraft:oak_log"));
-		assertTrue(wood.sourceBlockIds().contains("minecraft:pale_oak_log"));
-	}
-
-	@Test
-	void includesExplicitPossibleDropsOutsideResourceKinds() {
-		assertEquals(
-			Set.of("minecraft:short_grass", "minecraft:wheat_seeds"),
-			ResourceGatheringCatalog.matchingInventoryItemIds(List.of("minecraft:short_grass"))
-		);
-		assertEquals(List.of(), ResourceGatheringCatalog.sourceBlockIdsForInventoryItem("minecraft:wheat_seeds"));
+		assertTrue(wood.acceptedItemIds().contains("minecraft:pale_oak_log"));
 	}
 }

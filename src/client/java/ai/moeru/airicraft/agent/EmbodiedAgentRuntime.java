@@ -32,6 +32,7 @@ import ai.moeru.airicraft.agent.actions.ActionGraphWatchSnapshot;
 import ai.moeru.airicraft.agent.actions.ActionWatchAnchor;
 import ai.moeru.airicraft.agent.actions.ActionWatchProgressKind;
 import ai.moeru.airicraft.agent.actions.ActionWatchProgressObservation;
+import ai.moeru.airicraft.agent.actions.BlockAcquisitionIndex;
 import ai.moeru.airicraft.agent.actions.ActionGraphDebugService;
 import ai.moeru.airicraft.agent.actions.ActionGraphPrimitiveDispatch;
 import ai.moeru.airicraft.agent.actions.ActionGraphPrimitiveDispatchResult;
@@ -44,6 +45,7 @@ import ai.moeru.airicraft.agent.actions.ActionPlanStep;
 import ai.moeru.airicraft.agent.actions.ActionResolverContext;
 import ai.moeru.airicraft.agent.actions.ActionsetLibraryPaths;
 import ai.moeru.airicraft.agent.actions.FarmBootstrapFactProvider;
+import ai.moeru.airicraft.agent.actions.MinecraftBlockAcquisitionKnowledgeService;
 import ai.moeru.airicraft.agent.actions.PersistentActionFactStore;
 import ai.moeru.airicraft.agent.dialogue.DialogueIntent;
 import ai.moeru.airicraft.agent.dialogue.DialogueIntentType;
@@ -122,12 +124,10 @@ import ai.moeru.airicraft.agent.social.PrimaryInteractionResolver;
 import ai.moeru.airicraft.agent.tasks.TaskExecutionSnapshot;
 import ai.moeru.airicraft.agent.tasks.TaskExecutionState;
 import ai.moeru.airicraft.agent.tasks.WorldTaskRequest;
-import ai.moeru.airicraft.agent.tasks.CollectResourceTaskHandler;
 import ai.moeru.airicraft.agent.tasks.InventoryItemCounter;
 import ai.moeru.airicraft.agent.tasks.InventoryResourceCounter;
 import ai.moeru.airicraft.agent.tasks.LedgerStepKind;
 import ai.moeru.airicraft.agent.tasks.MissionExecutionSnapshot;
-import ai.moeru.airicraft.agent.tasks.MinedBlockDropMapper;
 import ai.moeru.airicraft.agent.tasks.NearbyEntityService;
 import ai.moeru.airicraft.agent.tasks.ResourceGatheringCatalog;
 import ai.moeru.airicraft.agent.tasks.TaskResourceKind;
@@ -244,6 +244,7 @@ public final class EmbodiedAgentRuntime {
 	private final ActionGraphCoordinator actionGraphCoordinator;
 	private final SurvivalReflexRuntime survivalReflexRuntime;
 	private final PersistentActionFactStore persistentActionFactStore = PersistentActionFactStore.defaults();
+	private final MinecraftBlockAcquisitionKnowledgeService blockAcquisitionKnowledgeService = new MinecraftBlockAcquisitionKnowledgeService();
 	private final boolean codexDriverActive;
 
 	private boolean initialized;
@@ -253,6 +254,7 @@ public final class EmbodiedAgentRuntime {
 	private boolean evaluationPlannerSuppressed;
 	private SessionSnapshot sessionSnapshot = SessionSnapshot.initial();
 	private SessionSnapshot sessionSnapshotOverrideForTests;
+	private BlockAcquisitionIndex blockAcquisitionsOverrideForTests;
 	private FollowState followState = FollowState.idle();
 	private TaskSnapshot taskSnapshot = TaskSnapshot.idle();
 	private TaskExecutionSnapshot taskExecutionSnapshot = TaskExecutionSnapshot.idle();
@@ -440,6 +442,7 @@ public final class EmbodiedAgentRuntime {
 		autoLanOpenState.clear();
 		localDamageTracker.clear();
 		sessionSnapshotOverrideForTests = null;
+		blockAcquisitionsOverrideForTests = null;
 		nearbyPlayerTracker.clear(tickCount, eventBuffer);
 		primaryInteractionResolver.clear();
 		eventPolicyState.clear();
@@ -451,6 +454,7 @@ public final class EmbodiedAgentRuntime {
 		worldReadLedger.clear();
 		actionGraphCoordinator.cancelAll("world_left", tickCount);
 		actionGraphCoordinator.clear();
+		blockAcquisitionKnowledgeService.reset();
 		pendingActionGraphTerminalEvent = null;
 		activeJobRuntime.clear();
 		idleIdeaScheduler.reset();
@@ -480,6 +484,8 @@ public final class EmbodiedAgentRuntime {
 		sessionSnapshot = sessionSnapshotOverrideForTests != null
 			? sessionSnapshotOverrideForTests.withTickCount(tickCount)
 			: sessionRuntime.poll(client, tickCount, eventBuffer);
+		blockAcquisitionKnowledgeService.tick(client);
+		activeJobRuntime.updateBlockAcquisitions(blockAcquisitions());
 		enforcePlayerLifecycle(client);
 		if (!wasWorldLoaded && sessionSnapshot.worldLoaded()) {
 			worldLoadTick = tickCount;
@@ -804,6 +810,7 @@ public final class EmbodiedAgentRuntime {
 		tickCount = 0L;
 		worldLoadTick = -1L;
 		sessionSnapshotOverrideForTests = null;
+		blockAcquisitionsOverrideForTests = null;
 		autoLanOpenState.clear();
 		localDamageTracker.clear();
 		nearbyPlayerTracker.clear(tickCount, eventBuffer);
@@ -814,6 +821,7 @@ public final class EmbodiedAgentRuntime {
 		observability.shutdown();
 		visionService.shutdown();
 		worldTaskExecutor.shutdown();
+		blockAcquisitionKnowledgeService.shutdown();
 		surfaceMemory.clear();
 		actionGraphCoordinator.cancelAll("runtime_shutdown", tickCount);
 		actionGraphCoordinator.shutdown();
@@ -1694,7 +1702,8 @@ public final class EmbodiedAgentRuntime {
 			worldEvidence.knownSmelts(),
 			observedFacts,
 			agentPosition,
-			watchProgress
+			watchProgress,
+			blockAcquisitions()
 		), foregroundAllowed);
 		drainActionGraphCoordinatorEvents();
 	}
@@ -2082,6 +2091,11 @@ public final class EmbodiedAgentRuntime {
 		this.sessionSnapshot = sessionSnapshot == null ? SessionSnapshot.initial() : sessionSnapshot;
 	}
 
+	void overrideBlockAcquisitionsForTests(BlockAcquisitionIndex blockAcquisitions) {
+		blockAcquisitionsOverrideForTests = blockAcquisitions;
+		activeJobRuntime.updateBlockAcquisitions(blockAcquisitions());
+	}
+
 	void injectNearbyPlayerForTests(String playerName, Vec3d pos) {
 		nearbyPlayerTracker.injectPlayerNearby(playerName, pos, tickCount, eventBuffer);
 	}
@@ -2292,7 +2306,7 @@ public final class EmbodiedAgentRuntime {
 				);
 			}
 			case PlannerToolCatalog.MINE_BLOCKS -> {
-				GoalMineSpec mineSpec = new GoalMineSpec(
+				GoalMineSpec mineSpec = goalMineSpec(
 					stringArrayArg(args, "blockIds"),
 					intArg(args, "quantity").orElseThrow(() -> new IllegalArgumentException("quantity is required"))
 				);
@@ -2304,7 +2318,7 @@ public final class EmbodiedAgentRuntime {
 				yield queuedActionToolResult("mine_blocks", "blockIds=" + String.join(",", mineSpec.blockIds()) + " quantity=" + mineSpec.quantity());
 			}
 			case PlannerToolCatalog.ENSURE_BLOCKS_IN_INVENTORY -> {
-				GoalMineSpec mineSpec = new GoalMineSpec(
+				GoalMineSpec mineSpec = goalMineSpec(
 					stringArrayArg(args, "blockIds"),
 					intArg(args, "quantity").orElseThrow(() -> new IllegalArgumentException("quantity is required"))
 				);
@@ -2313,7 +2327,9 @@ public final class EmbodiedAgentRuntime {
 					yield "TOOL_ERROR: ensure_blocks_in_inventory " + validationError.get();
 				}
 				WorldEvidence evidence = currentWorldEvidence(MinecraftClient.getInstance());
-				int currentItemCount = MinedBlockDropMapper.matchingInventoryItemCount(evidence.itemCounts(), mineSpec.blockIds());
+				int currentItemCount = mineSpec.matchingItemIds().stream()
+					.mapToInt(itemId -> evidence.itemCounts().getOrDefault(itemId, 0))
+					.sum();
 				if (currentItemCount >= mineSpec.quantity()) {
 					yield "Tool result for ensure_blocks_in_inventory: already_satisfied blockIds="
 						+ String.join(",", mineSpec.blockIds())
@@ -2322,7 +2338,7 @@ public final class EmbodiedAgentRuntime {
 						+ " itemCount="
 						+ currentItemCount
 						+ " matchingItemIds="
-						+ MinedBlockDropMapper.matchingInventoryItemIds(mineSpec.blockIds());
+						+ mineSpec.matchingItemIds();
 				}
 				applyPlannerJobTool(ActiveJobProposal.ensureBlocksInInventory(mineSpec));
 				yield queuedActionToolResult("ensure_blocks_in_inventory", "blockIds=" + String.join(",", mineSpec.blockIds()) + " quantity=" + mineSpec.quantity());
@@ -3222,6 +3238,23 @@ public final class EmbodiedAgentRuntime {
 		return List.copyOf(values);
 	}
 
+	private GoalMineSpec goalMineSpec(List<String> blockIds, int quantity) {
+		BlockAcquisitionIndex index = blockAcquisitions();
+		List<String> matchingItemIds = index.matchingOutputItemIds(blockIds).stream().sorted().toList();
+		return new GoalMineSpec(
+			blockIds,
+			quantity,
+			matchingItemIds.isEmpty() ? blockIds : matchingItemIds,
+			List.of()
+		);
+	}
+
+	private BlockAcquisitionIndex blockAcquisitions() {
+		return blockAcquisitionsOverrideForTests == null
+			? blockAcquisitionKnowledgeService.snapshot().index()
+			: blockAcquisitionsOverrideForTests;
+	}
+
 	private static Optional<String> validateMineBlockIds(List<String> blockIds) {
 		if (blockIds == null || blockIds.isEmpty()) {
 			return Optional.of("missing_block_id");
@@ -3437,7 +3470,10 @@ public final class EmbodiedAgentRuntime {
 		if (client == null || client.world == null || client.player == null || spec == null) {
 			return false;
 		}
-		List<String> targetBlockIds = CollectResourceTaskHandler.targetBlockIds(spec);
+		List<String> targetBlockIds = ResourceGatheringCatalog.entry(spec.resourceKind())
+			.map(ResourceGatheringCatalog.ResourceEntry::acceptedItemIds)
+			.map(blockAcquisitions()::sourceBlockIdsForOutputs)
+			.orElse(List.of());
 		if (targetBlockIds.isEmpty()) {
 			return false;
 		}

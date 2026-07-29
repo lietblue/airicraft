@@ -11,6 +11,7 @@ import ai.moeru.airicraft.agent.actions.ActionGraphAgentPosition;
 import ai.moeru.airicraft.agent.actions.ActionGraphCoordinator;
 import ai.moeru.airicraft.agent.actions.ActionGraphExecutionInput;
 import ai.moeru.airicraft.agent.actions.ActionGraphExecutionSnapshot;
+import ai.moeru.airicraft.agent.actions.BlockAcquisitionTestFixtures;
 import ai.moeru.airicraft.agent.actions.ActionGraphExecutionState;
 import ai.moeru.airicraft.agent.actions.ActionGraphResidency;
 import ai.moeru.airicraft.agent.actions.ActionResolverContext;
@@ -2397,6 +2398,7 @@ class EmbodiedAgentRuntimeTest {
 	void plannerDirectGoalToolDoesNotPreemptActiveCollectResourceTask() {
 		FakeWorldTaskExecutor executor = new FakeWorldTaskExecutor();
 		EmbodiedAgentRuntime runtime = EmbodiedAgentRuntime.createForTests(executor);
+		runtime.overrideBlockAcquisitionsForTests(BlockAcquisitionTestFixtures.survival());
 		runtime.overrideSessionSnapshotForTests(new SessionSnapshot(
 			SessionMode.REMOTE_MULTIPLAYER,
 			true,
@@ -2485,6 +2487,7 @@ class EmbodiedAgentRuntimeTest {
 	void semanticTaskFailureEmitsTaskEventAndInternalUpdate() {
 		FakeWorldTaskExecutor executor = new FakeWorldTaskExecutor();
 		EmbodiedAgentRuntime runtime = EmbodiedAgentRuntime.createForTests(executor);
+		runtime.overrideBlockAcquisitionsForTests(BlockAcquisitionTestFixtures.survival());
 		runtime.overrideSessionSnapshotForTests(new SessionSnapshot(
 			SessionMode.REMOTE_MULTIPLAYER,
 			true,
@@ -2539,6 +2542,7 @@ class EmbodiedAgentRuntimeTest {
 	void collectResourceTargetMissingEmitsBlockedEventAndPlannerTrigger() {
 		FakeWorldTaskExecutor executor = new FakeWorldTaskExecutor();
 		EmbodiedAgentRuntime runtime = EmbodiedAgentRuntime.createForTests(executor);
+		runtime.overrideBlockAcquisitionsForTests(BlockAcquisitionTestFixtures.survival());
 		runtime.overrideSessionSnapshotForTests(new SessionSnapshot(
 			SessionMode.REMOTE_MULTIPLAYER,
 			true,
@@ -2683,6 +2687,7 @@ class EmbodiedAgentRuntimeTest {
 	void deathIsAHardCancellationBoundaryAndRejectsNewActions() {
 		FakeWorldTaskExecutor executor = new FakeWorldTaskExecutor();
 		EmbodiedAgentRuntime runtime = EmbodiedAgentRuntime.createForTests(executor);
+		runtime.overrideBlockAcquisitionsForTests(BlockAcquisitionTestFixtures.survival());
 		runtime.overrideSessionSnapshotForTests(loadedRemoteSession());
 		runtime.submitTask(new TaskSpec(TaskType.COLLECT_RESOURCE, TaskResourceKind.WOOD_LOGS, 2), "test");
 		runtime.onClientTick(null);

@@ -1,5 +1,6 @@
 package ai.moeru.airicraft.agent.job;
 
+import ai.moeru.airicraft.agent.actions.BlockAcquisitionTestFixtures;
 import ai.moeru.airicraft.agent.dialogue.DialogueIntent;
 import ai.moeru.airicraft.agent.dialogue.DialogueIntentType;
 import ai.moeru.airicraft.agent.dialogue.DialogueResponse;
@@ -48,7 +49,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class ActiveJobRuntimeTest {
 	@Test
 	void reflexPausePreservesJobIdentityAndProgressUntilExplicitResume() {
-		ActiveJobRuntime runtime = new ActiveJobRuntime();
+		ActiveJobRuntime runtime = runtime();
 		runtime.applyPlannerResponse(
 			new DialogueResponse(
 				"Mining dirt.",
@@ -81,7 +82,7 @@ class ActiveJobRuntimeTest {
 
 	@Test
 	void minedBlockEventWithoutActiveMineJobIsIgnored() {
-		ActiveJobRuntime runtime = new ActiveJobRuntime();
+		ActiveJobRuntime runtime = runtime();
 
 		assertTrue(runtime.recordMinedBlock("minecraft:dirt", 1L).isEmpty());
 		assertEquals(ActiveJobStatus.IDLE, runtime.current().status());
@@ -89,7 +90,7 @@ class ActiveJobRuntimeTest {
 
 	@Test
 	void mineBlocksProgressCountsOnlyMatchingBreakEvents() {
-		ActiveJobRuntime runtime = new ActiveJobRuntime();
+		ActiveJobRuntime runtime = runtime();
 		runtime.applyPlannerResponse(
 			new DialogueResponse(
 				"Mining dirt.",
@@ -128,7 +129,7 @@ class ActiveJobRuntimeTest {
 
 	@Test
 	void mineBlocksExactBreakCountNormalizesCancelledTerminalToCompletion() {
-		ActiveJobRuntime runtime = new ActiveJobRuntime();
+		ActiveJobRuntime runtime = runtime();
 		runtime.applyPlannerResponse(
 			new DialogueResponse(
 				"Mining dirt.",
@@ -167,7 +168,7 @@ class ActiveJobRuntimeTest {
 
 	@Test
 	void mineBlocksAtOrAboveRequestedCountCompletesParentJob() {
-		ActiveJobRuntime runtime = new ActiveJobRuntime();
+		ActiveJobRuntime runtime = runtime();
 		runtime.applyPlannerResponse(
 			new DialogueResponse(
 				"Mining dirt.",
@@ -198,7 +199,7 @@ class ActiveJobRuntimeTest {
 
 	@Test
 	void collectResourceForwardsLastMatchingBrokenBlockToMinePickupSweep() {
-		ActiveJobRuntime runtime = new ActiveJobRuntime();
+		ActiveJobRuntime runtime = runtime();
 		runtime.submitTask(new TaskSpec(TaskType.COLLECT_RESOURCE, TaskResourceKind.COBBLESTONE, 3), 0, "test", 1L);
 		runtime.tick(TaskExecutionSnapshot.idle(), resourceEvidence(TaskResourceKind.COBBLESTONE, 0, 2L), true, true, 2L);
 
@@ -209,7 +210,7 @@ class ActiveJobRuntimeTest {
 
 	@Test
 	void mineBlocksIgnoresInventoryIncreaseAndRestartsAfterEarlyBaritoneCompletion() {
-		ActiveJobRuntime runtime = new ActiveJobRuntime();
+		ActiveJobRuntime runtime = runtime();
 		runtime.applyPlannerResponse(
 			new DialogueResponse(
 				"Mining dirt.",
@@ -244,7 +245,7 @@ class ActiveJobRuntimeTest {
 
 	@Test
 	void mineBlocksRestartsAfterPartialBreakCountAndEarlyBaritoneCompletion() {
-		ActiveJobRuntime runtime = new ActiveJobRuntime();
+		ActiveJobRuntime runtime = runtime();
 		runtime.applyPlannerResponse(
 			new DialogueResponse(
 				"Mining dirt.",
@@ -278,7 +279,7 @@ class ActiveJobRuntimeTest {
 
 	@Test
 	void ensureBlocksInInventoryUsesAbsoluteInventoryTarget() {
-		ActiveJobRuntime runtime = new ActiveJobRuntime();
+		ActiveJobRuntime runtime = runtime();
 		GoalMineSpec mineSpec = new GoalMineSpec(List.of("minecraft:dirt"), 3);
 		runtime.applyPlannerResponse(
 			new DialogueResponse(
@@ -304,8 +305,13 @@ class ActiveJobRuntimeTest {
 
 	@Test
 	void ensureBlocksInInventoryCompletesFromMappedDropInventory() {
-		ActiveJobRuntime runtime = new ActiveJobRuntime();
-		GoalMineSpec mineSpec = new GoalMineSpec(List.of("minecraft:iron_ore"), 3);
+		ActiveJobRuntime runtime = runtime();
+		GoalMineSpec mineSpec = new GoalMineSpec(
+			List.of("minecraft:iron_ore"),
+			3,
+			List.of("minecraft:raw_iron"),
+			List.of("minecraft:stone_pickaxe")
+		);
 		runtime.applyPlannerResponse(
 			new DialogueResponse(
 				"Ensuring iron.",
@@ -325,7 +331,7 @@ class ActiveJobRuntimeTest {
 
 	@Test
 	void ensureBlocksInInventoryTerminalReportIncludesBrokenBlockCount() {
-		ActiveJobRuntime runtime = new ActiveJobRuntime();
+		ActiveJobRuntime runtime = runtime();
 		runtime.applyPlannerResponse(
 			new DialogueResponse(
 				"Ensuring dirt.",
@@ -359,7 +365,7 @@ class ActiveJobRuntimeTest {
 
 	@Test
 	void mineBlocksCompletedTerminalMismatchReportsWarningOnly() {
-		ActiveJobRuntime runtime = new ActiveJobRuntime();
+		ActiveJobRuntime runtime = runtime();
 		runtime.applyPlannerResponse(
 			new DialogueResponse(
 				"Mining dirt.",
@@ -392,7 +398,7 @@ class ActiveJobRuntimeTest {
 
 	@Test
 	void collectProgressDoesNotReplaceRunningPrimitiveMineTask() {
-		ActiveJobRuntime runtime = new ActiveJobRuntime();
+		ActiveJobRuntime runtime = runtime();
 		runtime.submitTask(new TaskSpec(TaskType.COLLECT_RESOURCE, TaskResourceKind.WOOD_LOGS, 16), 4, "test", 1L);
 
 		runtime.tick(TaskExecutionSnapshot.idle(), evidence(4, 2L), true, true, 2L);
@@ -419,7 +425,7 @@ class ActiveJobRuntimeTest {
 
 	@Test
 	void collectShortfallStartsNextPrimitiveAttemptAfterCompletion() {
-		ActiveJobRuntime runtime = new ActiveJobRuntime();
+		ActiveJobRuntime runtime = runtime();
 		runtime.submitTask(new TaskSpec(TaskType.COLLECT_RESOURCE, TaskResourceKind.WOOD_LOGS, 16), 4, "test", 1L);
 
 		runtime.tick(TaskExecutionSnapshot.idle(), evidence(4, 2L), true, true, 2L);
@@ -444,7 +450,7 @@ class ActiveJobRuntimeTest {
 
 	@Test
 	void collectAttemptUsesAbsoluteInventoryTargetWhenBaselineAlreadyHasLogs() {
-		ActiveJobRuntime runtime = new ActiveJobRuntime();
+		ActiveJobRuntime runtime = runtime();
 		runtime.submitTask(new TaskSpec(TaskType.COLLECT_RESOURCE, TaskResourceKind.WOOD_LOGS, 5), 5, "test", 1L);
 
 		runtime.tick(TaskExecutionSnapshot.idle(), evidence(5, 2L), true, true, 2L);
@@ -455,7 +461,7 @@ class ActiveJobRuntimeTest {
 
 	@Test
 	void actionGraphCollectStartsWithoutNearbyEvidence() {
-		ActiveJobRuntime runtime = new ActiveJobRuntime();
+		ActiveJobRuntime runtime = runtime();
 		runtime.submitTask(new TaskSpec(TaskType.COLLECT_RESOURCE, TaskResourceKind.WOOD_LOGS, 1), 0, "action_graph", 1L);
 
 		runtime.tick(TaskExecutionSnapshot.idle(), evidence(0, 2L), true, false, 2L);
@@ -467,7 +473,7 @@ class ActiveJobRuntimeTest {
 
 	@Test
 	void clearGoalDoesNotCancelCompletedCollectJob() {
-		ActiveJobRuntime runtime = new ActiveJobRuntime();
+		ActiveJobRuntime runtime = runtime();
 		runtime.submitTask(new TaskSpec(TaskType.COLLECT_RESOURCE, TaskResourceKind.WOOD_LOGS, 5), 3, "test", 1L);
 
 		runtime.tick(TaskExecutionSnapshot.idle(), evidence(8, 2L), true, true, 2L);
@@ -490,7 +496,7 @@ class ActiveJobRuntimeTest {
 
 	@Test
 	void craftRecipeActiveJobProjectsWorldTaskRequest() {
-		ActiveJobRuntime runtime = new ActiveJobRuntime();
+		ActiveJobRuntime runtime = runtime();
 		CraftRecipeStepArgs craftRecipe = new CraftRecipeStepArgs("oak_planks_x2_to_stick", 1);
 
 		runtime.applyPlannerResponse(
@@ -515,7 +521,7 @@ class ActiveJobRuntimeTest {
 
 	@Test
 	void dropItemsActiveJobProjectsWorldTaskRequest() {
-		ActiveJobRuntime runtime = new ActiveJobRuntime();
+		ActiveJobRuntime runtime = runtime();
 		DropItemsStepArgs dropItems = new DropItemsStepArgs("minecraft:oak_log", 2, "Alice");
 
 		runtime.applyPlannerResponse(
@@ -540,7 +546,7 @@ class ActiveJobRuntimeTest {
 
 	@Test
 	void smeltItemsActiveJobProjectsWorldTaskRequest() {
-		ActiveJobRuntime runtime = new ActiveJobRuntime();
+		ActiveJobRuntime runtime = runtime();
 		SmeltItemsStepArgs smeltItems = new SmeltItemsStepArgs(
 			"smelt:iron:nearby-1",
 			3,
@@ -572,7 +578,7 @@ class ActiveJobRuntimeTest {
 
 	@Test
 	void collectSmeltedItemsActiveJobProjectsWorldTaskRequest() {
-		ActiveJobRuntime runtime = new ActiveJobRuntime();
+		ActiveJobRuntime runtime = runtime();
 		CollectSmeltedItemsStepArgs collect = new CollectSmeltedItemsStepArgs("smelt-process-1", "confirm-2");
 
 		runtime.applyPlannerResponse(
@@ -597,7 +603,7 @@ class ActiveJobRuntimeTest {
 
 	@Test
 	void returnToSurfaceActiveJobProjectsWorldTaskRequest() {
-		ActiveJobRuntime runtime = new ActiveJobRuntime();
+		ActiveJobRuntime runtime = runtime();
 		ReturnToSurfaceStepArgs returnToSurface = new ReturnToSurfaceStepArgs(
 			new GoalPosition(12, 70, -8, false),
 			"nearest_surface",
@@ -627,7 +633,7 @@ class ActiveJobRuntimeTest {
 
 	@Test
 	void blockInteractionActiveJobsProjectWorldTaskRequests() {
-		ActiveJobRuntime placeRuntime = new ActiveJobRuntime();
+		ActiveJobRuntime placeRuntime = runtime();
 		BlockPlacementStepArgs place = new BlockPlacementStepArgs(
 			"minecraft:dirt",
 			new GoalPosition(1, 64, 2, true),
@@ -651,7 +657,7 @@ class ActiveJobRuntimeTest {
 		assertEquals(place, placeRequest.blockPlacement());
 		assertEquals(ActiveJobType.PLACE_BLOCK, placeRuntime.current().type());
 
-		ActiveJobRuntime useRuntime = new ActiveJobRuntime();
+		ActiveJobRuntime useRuntime = runtime();
 		BlockUseStepArgs use = new BlockUseStepArgs(
 			"minecraft:wheat_seeds",
 			new GoalPosition(1, 65, 2, true),
@@ -688,7 +694,7 @@ class ActiveJobRuntimeTest {
 			TaskExecutionState.PAUSED_BY_REFLEX, ActiveJobStatus.BLOCKED
 		);
 		for (Map.Entry<TaskExecutionState, ActiveJobStatus> taskStatus : taskStatuses.entrySet()) {
-			ActiveJobRuntime runtime = new ActiveJobRuntime();
+			ActiveJobRuntime runtime = runtime();
 			runtime.applyPlannerResponse(
 				new DialogueResponse(
 					"Placing the crafting table.",
@@ -732,7 +738,7 @@ class ActiveJobRuntimeTest {
 
 	@Test
 	void useBlockLedgerStepProjectsWorldTaskRequest() {
-		ActiveJobRuntime runtime = new ActiveJobRuntime();
+		ActiveJobRuntime runtime = runtime();
 		BlockUseStepArgs use = new BlockUseStepArgs(
 			"minecraft:water_bucket",
 			new GoalPosition(-15, 63, -40, true),
@@ -770,7 +776,7 @@ class ActiveJobRuntimeTest {
 
 	@Test
 	void batchedBlockInteractionActiveJobsProjectWorldTaskRequests() {
-		ActiveJobRuntime placeRuntime = new ActiveJobRuntime();
+		ActiveJobRuntime placeRuntime = runtime();
 		BlockPlacementStepArgs place = new BlockPlacementStepArgs(
 			"minecraft:dirt",
 			List.of(
@@ -796,7 +802,7 @@ class ActiveJobRuntimeTest {
 		assertEquals(2, placeRequest.blockPlacement().targets().size());
 		assertEquals(ActiveJobType.PLACE_BLOCK, placeRuntime.current().type());
 
-		ActiveJobRuntime useRuntime = new ActiveJobRuntime();
+		ActiveJobRuntime useRuntime = runtime();
 		BlockUseStepArgs use = new BlockUseStepArgs(
 			"minecraft:wheat_seeds",
 			List.of(
@@ -825,7 +831,7 @@ class ActiveJobRuntimeTest {
 
 	@Test
 	void breakBlocksLedgerStepProjectsWorldTaskRequest() {
-		ActiveJobRuntime runtime = new ActiveJobRuntime();
+		ActiveJobRuntime runtime = runtime();
 		BlockBreakStepArgs blockBreak = new BlockBreakStepArgs(List.of(new BlockBreakStepArgs.Target(
 			new GoalPosition(-15, 63, -40, true),
 			List.of("minecraft:grass_block")
@@ -860,7 +866,7 @@ class ActiveJobRuntimeTest {
 
 	@Test
 	void attackEntityActiveJobProjectsWorldTaskRequest() {
-		ActiveJobRuntime runtime = new ActiveJobRuntime();
+		ActiveJobRuntime runtime = runtime();
 		EntityInteractionStepArgs attack = new EntityInteractionStepArgs(
 			new EntitySelector(null, null, "minecraft:sheep"),
 			null
@@ -888,7 +894,7 @@ class ActiveJobRuntimeTest {
 
 	@Test
 	void dropItemsPrimitiveJobIgnoresCompanionSessionGate() {
-		ActiveJobRuntime runtime = new ActiveJobRuntime();
+		ActiveJobRuntime runtime = runtime();
 		DropItemsStepArgs dropItems = new DropItemsStepArgs("minecraft:oak_log", 2, null);
 		runtime.applyPlannerResponse(
 			new DialogueResponse(
@@ -957,5 +963,11 @@ class ActiveJobRuntimeTest {
 			null,
 			tick
 		);
+	}
+
+	private static ActiveJobRuntime runtime() {
+		ActiveJobRuntime runtime = new ActiveJobRuntime();
+		runtime.updateBlockAcquisitions(BlockAcquisitionTestFixtures.survival());
+		return runtime;
 	}
 }

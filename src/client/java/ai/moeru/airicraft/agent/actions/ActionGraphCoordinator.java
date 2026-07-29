@@ -392,7 +392,8 @@ public final class ActionGraphCoordinator {
 			input.knownSmelts(),
 			input.observedFacts(),
 			input.agentPosition(),
-			input.watchProgress()
+			input.watchProgress(),
+			input.blockAcquisitions()
 		);
 	}
 

@@ -24,7 +24,8 @@ public record ActionGraphExecutionInput(
 	List<SmeltingRecipeKnowledge> knownSmelts,
 	List<ActionFact> observedFacts,
 	ActionGraphAgentPosition agentPosition,
-	Map<String, ActionWatchProgressObservation> watchProgress
+	Map<String, ActionWatchProgressObservation> watchProgress,
+	BlockAcquisitionIndex blockAcquisitions
 ) {
 	public ActionGraphExecutionInput(
 		ActionResolverContext context,
@@ -33,7 +34,7 @@ public record ActionGraphExecutionInput(
 		boolean actuationAllowed,
 		TaskTerminalEvent terminalTaskEvent
 	) {
-		this(context, observedInventory, Map.of(), worldLoaded, actuationAllowed, terminalTaskEvent, List.of(), List.of(), List.of(), List.of(), List.of(), null, Map.of());
+		this(context, observedInventory, Map.of(), worldLoaded, actuationAllowed, terminalTaskEvent, List.of(), List.of(), List.of(), List.of(), List.of(), null, Map.of(), BlockAcquisitionIndex.empty());
 	}
 
 	public ActionGraphExecutionInput(
@@ -44,7 +45,7 @@ public record ActionGraphExecutionInput(
 		TaskTerminalEvent terminalTaskEvent,
 		List<CraftingOpportunity> availableCrafts
 	) {
-		this(context, observedInventory, Map.of(), worldLoaded, actuationAllowed, terminalTaskEvent, availableCrafts, List.of(), List.of(), List.of(), List.of(), null, Map.of());
+		this(context, observedInventory, Map.of(), worldLoaded, actuationAllowed, terminalTaskEvent, availableCrafts, List.of(), List.of(), List.of(), List.of(), null, Map.of(), BlockAcquisitionIndex.empty());
 	}
 
 	public ActionGraphExecutionInput(
@@ -56,7 +57,7 @@ public record ActionGraphExecutionInput(
 		List<CraftingOpportunity> availableCrafts,
 		List<ActionFact> observedFacts
 	) {
-		this(context, observedInventory, Map.of(), worldLoaded, actuationAllowed, terminalTaskEvent, availableCrafts, List.of(), List.of(), List.of(), observedFacts, null, Map.of());
+		this(context, observedInventory, Map.of(), worldLoaded, actuationAllowed, terminalTaskEvent, availableCrafts, List.of(), List.of(), List.of(), observedFacts, null, Map.of(), BlockAcquisitionIndex.empty());
 	}
 
 	public ActionGraphExecutionInput(
@@ -69,7 +70,7 @@ public record ActionGraphExecutionInput(
 		List<SmeltingOption> availableSmelts,
 		List<ActionFact> observedFacts
 	) {
-		this(context, observedInventory, Map.of(), worldLoaded, actuationAllowed, terminalTaskEvent, availableCrafts, List.of(), availableSmelts, List.of(), observedFacts, null, Map.of());
+		this(context, observedInventory, Map.of(), worldLoaded, actuationAllowed, terminalTaskEvent, availableCrafts, List.of(), availableSmelts, List.of(), observedFacts, null, Map.of(), BlockAcquisitionIndex.empty());
 	}
 
 	public ActionGraphExecutionInput(
@@ -83,7 +84,7 @@ public record ActionGraphExecutionInput(
 		List<SmeltingOption> availableSmelts,
 		List<ActionFact> observedFacts
 	) {
-		this(context, observedInventory, observedResources, worldLoaded, actuationAllowed, terminalTaskEvent, availableCrafts, List.of(), availableSmelts, List.of(), observedFacts, null, Map.of());
+		this(context, observedInventory, observedResources, worldLoaded, actuationAllowed, terminalTaskEvent, availableCrafts, List.of(), availableSmelts, List.of(), observedFacts, null, Map.of(), BlockAcquisitionIndex.empty());
 	}
 
 	public ActionGraphExecutionInput(
@@ -98,7 +99,7 @@ public record ActionGraphExecutionInput(
 		List<SmeltingOption> availableSmelts,
 		List<ActionFact> observedFacts
 	) {
-		this(context, observedInventory, observedResources, worldLoaded, actuationAllowed, terminalTaskEvent, availableCrafts, knownCrafts, availableSmelts, List.of(), observedFacts, null, Map.of());
+		this(context, observedInventory, observedResources, worldLoaded, actuationAllowed, terminalTaskEvent, availableCrafts, knownCrafts, availableSmelts, List.of(), observedFacts, null, Map.of(), BlockAcquisitionIndex.empty());
 	}
 
 	public ActionGraphExecutionInput(
@@ -114,7 +115,40 @@ public record ActionGraphExecutionInput(
 		List<SmeltingRecipeKnowledge> knownSmelts,
 		List<ActionFact> observedFacts
 	) {
-		this(context, observedInventory, observedResources, worldLoaded, actuationAllowed, terminalTaskEvent, availableCrafts, knownCrafts, availableSmelts, knownSmelts, observedFacts, null, Map.of());
+		this(context, observedInventory, observedResources, worldLoaded, actuationAllowed, terminalTaskEvent, availableCrafts, knownCrafts, availableSmelts, knownSmelts, observedFacts, null, Map.of(), BlockAcquisitionIndex.empty());
+	}
+
+	public ActionGraphExecutionInput(
+		ActionResolverContext context,
+		Map<String, Integer> observedInventory,
+		Map<String, Integer> observedResources,
+		boolean worldLoaded,
+		boolean actuationAllowed,
+		TaskTerminalEvent terminalTaskEvent,
+		List<CraftingOpportunity> availableCrafts,
+		List<CraftingOpportunity> knownCrafts,
+		List<SmeltingOption> availableSmelts,
+		List<SmeltingRecipeKnowledge> knownSmelts,
+		List<ActionFact> observedFacts,
+		ActionGraphAgentPosition agentPosition,
+		Map<String, ActionWatchProgressObservation> watchProgress
+	) {
+		this(
+			context,
+			observedInventory,
+			observedResources,
+			worldLoaded,
+			actuationAllowed,
+			terminalTaskEvent,
+			availableCrafts,
+			knownCrafts,
+			availableSmelts,
+			knownSmelts,
+			observedFacts,
+			agentPosition,
+			watchProgress,
+			BlockAcquisitionIndex.empty()
+		);
 	}
 
 	public ActionGraphExecutionInput {
@@ -126,6 +160,7 @@ public record ActionGraphExecutionInput(
 		availableSmelts = availableSmelts == null ? List.of() : List.copyOf(availableSmelts);
 		knownSmelts = knownSmelts == null ? List.of() : List.copyOf(knownSmelts);
 		observedFacts = observedFacts == null ? List.of() : List.copyOf(observedFacts);
+		blockAcquisitions = blockAcquisitions == null ? BlockAcquisitionIndex.empty() : blockAcquisitions;
 		watchProgress = watchProgress == null || watchProgress.isEmpty()
 			? Map.of()
 			: Collections.unmodifiableMap(new LinkedHashMap<>(watchProgress));

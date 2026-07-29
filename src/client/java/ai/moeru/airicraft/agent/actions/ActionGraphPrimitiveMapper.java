@@ -188,6 +188,8 @@ public final class ActionGraphPrimitiveMapper {
 
 	private static ActionGraphPrimitiveDispatch mineBlock(ActionPlanStep step) {
 		List<String> blockIds = stringListArg(step, "blockIds");
+		List<String> matchingItemIds = stringListArg(step, "matchingItemIds");
+		List<String> requiredToolItemIds = stringListArg(step, "requiredToolItemIds");
 		int quantity = intArg(step, "quantity", 1);
 		int targetCount = Math.max(quantity, intArg(step, "targetCount", quantity));
 		if (blockIds.isEmpty()) {
@@ -199,11 +201,18 @@ public final class ActionGraphPrimitiveMapper {
 		LinkedHashMap<String, Object> payload = new LinkedHashMap<>();
 		payload.put("jobType", "ENSURE_BLOCKS_IN_INVENTORY");
 		payload.put("blockIds", blockIds);
+		payload.put("matchingItemIds", matchingItemIds.isEmpty() ? blockIds : matchingItemIds);
+		payload.put("requiredToolItemIds", requiredToolItemIds);
 		payload.put("quantity", quantity);
 		payload.put("targetCount", targetCount);
 		return ActionGraphPrimitiveDispatch.dispatchable(
 			step,
-			ActiveJobProposal.ensureBlocksInInventory(new GoalMineSpec(blockIds, targetCount)),
+			ActiveJobProposal.ensureBlocksInInventory(new GoalMineSpec(
+				blockIds,
+				targetCount,
+				matchingItemIds.isEmpty() ? blockIds : matchingItemIds,
+				requiredToolItemIds
+			)),
 			payload
 		);
 	}
