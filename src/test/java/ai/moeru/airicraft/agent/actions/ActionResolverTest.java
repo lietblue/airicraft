@@ -730,7 +730,7 @@ class ActionResolverTest {
 		ActionFactStore facts = new ActionFactStore();
 		addSurvivalCraftFacts(facts);
 		addSurvivalSmeltFacts(facts);
-		CraftingOpportunity stonePickaxeRecipe = ActionGraphDomainKnowledge.survivalCrafts().stream()
+		CraftingOpportunity stonePickaxeRecipe = ActionGraphRecipeFixtures.survivalCrafts().stream()
 			.filter(craft -> "minecraft:stone_pickaxe".equals(craft.outputItemId()))
 			.findFirst()
 			.orElseThrow();
@@ -1227,7 +1227,7 @@ class ActionResolverTest {
 	}
 
 	private static void addSurvivalCraftFacts(ActionFactStore facts) {
-		for (CraftingOpportunity craft : ActionGraphDomainKnowledge.survivalCrafts()) {
+		for (CraftingOpportunity craft : ActionGraphRecipeFixtures.survivalCrafts()) {
 			facts.upsert(new ActionFact(
 				ActionFactIdentity.craftRecipe("world-a", "bot", craft.recipeId()),
 				craftPayload(craft),

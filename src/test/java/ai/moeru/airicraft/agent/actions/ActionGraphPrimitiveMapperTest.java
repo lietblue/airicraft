@@ -73,7 +73,7 @@ class ActionGraphPrimitiveMapperTest {
 	}
 
 	@Test
-	void mapsCraftItemUsingSurvivalRecipeWhenCurrentCraftSnapshotIsNarrow() {
+	void rejectsKnownRecipeWhenCurrentCraftSnapshotDoesNotContainIt() {
 		ActionPlanStep step = primitive("craft_item", Map.of(
 			"itemId", "minecraft:iron_pickaxe",
 			"recipeId", "iron_ingot_x3_and_stick_x2_to_iron_pickaxe",
@@ -82,11 +82,8 @@ class ActionGraphPrimitiveMapperTest {
 
 		ActionGraphPrimitiveDispatch dispatch = ActionGraphPrimitiveMapper.map(step, List.of());
 
-		assertTrue(dispatch.dispatchable());
-		assertEquals(ActiveJobType.CRAFT_RECIPE, dispatch.proposal().type());
-		assertEquals("iron_ingot_x3_and_stick_x2_to_iron_pickaxe", dispatch.proposal().craftRecipe().recipeId());
-		assertEquals(1, dispatch.proposal().craftRecipe().times());
-		assertEquals("minecraft:iron_pickaxe", dispatch.payload().get("outputItemId"));
+		assertFalse(dispatch.dispatchable());
+		assertEquals("recipe_not_found", dispatch.failureCode());
 	}
 
 	@Test

@@ -12,6 +12,7 @@ import net.minecraft.recipe.NetworkRecipeId;
 import net.minecraft.recipe.RecipeEntry;
 import net.minecraft.recipe.RecipeDisplayEntry;
 import net.minecraft.recipe.RecipeFinder;
+import net.minecraft.recipe.ServerRecipeManager;
 import net.minecraft.recipe.display.RecipeDisplay;
 import net.minecraft.recipe.display.ShapedCraftingRecipeDisplay;
 import net.minecraft.recipe.display.ShapelessCraftingRecipeDisplay;
@@ -24,6 +25,7 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -36,6 +38,10 @@ public final class CraftingOpportunityResolver {
 	private static final int PLAYER_GRID_INPUT_COUNT = PlayerScreenHandler.CRAFTING_INPUT_COUNT;
 	private static final int WORKBENCH_GRID_INPUT_COUNT = 9;
 	static final int MAX_PLACEMENT_VARIANTS_PER_RECIPE = 24;
+	private static final Object RECIPE_CATALOG_LOCK = new Object();
+	private static IntegratedServer cachedCatalogServer;
+	private static ServerRecipeManager cachedRecipeManager;
+	private static RecipeCatalog cachedRecipeCatalog = RecipeCatalog.empty();
 
 	private CraftingOpportunityResolver() {
 	}
@@ -44,22 +50,84 @@ public final class CraftingOpportunityResolver {
 		if (player == null) {
 			return List.of();
 		}
-		Map<String, CraftingOpportunity> opportunities = new LinkedHashMap<>();
-		for (ResolvedCraftingOption option : resolvedOptions(player)) {
-			opportunities.putIfAbsent(option.opportunity().recipeId(), option.opportunity());
-		}
-		return List.copyOf(opportunities.values());
+		return opportunities(resolvedOptions(player));
 	}
 
 	public static List<CraftingOpportunity> knownCrafts(ClientPlayerEntity player) {
 		if (player == null) {
 			return List.of();
 		}
-		Map<String, CraftingOpportunity> opportunities = new LinkedHashMap<>();
-		for (CraftingOpportunity opportunity : knownCrafts(player.getRecipeBook().getOrderedResults())) {
-			opportunities.putIfAbsent(opportunity.recipeId(), opportunity);
+		RecipeCatalog catalog = integratedServerRecipeCatalog();
+		return mergeOpportunities(
+			knownOptions(player.getRecipeBook().getOrderedResults()),
+			catalog.knownCrafts()
+		);
+	}
+
+	public static CraftingOpportunitySnapshot inspect(ClientPlayerEntity player) {
+		if (player == null) {
+			return CraftingOpportunitySnapshot.empty();
 		}
-		return List.copyOf(opportunities.values());
+		RecipeFinder finder = recipeFinder(player);
+		Map<Item, Integer> availableItems = inventoryCounts(player);
+		RecipeCatalog catalog = integratedServerRecipeCatalog();
+		return inspect(
+			player.getRecipeBook().getOrderedResults(),
+			catalog.collections(),
+			catalog.knownCrafts(),
+			finder,
+			availableItems
+		);
+	}
+
+	static CraftingOpportunitySnapshot inspect(
+		List<RecipeResultCollection> recipeBookCollections,
+		List<RecipeResultCollection> catalogCollections,
+		List<CraftingOpportunity> catalogKnownCrafts,
+		RecipeFinder finder,
+		Map<Item, Integer> availableItems
+	) {
+		return snapshot(
+			opportunities(resolvedOptions(recipeBookCollections, finder, availableItems)),
+			opportunities(resolvedOptions(catalogCollections, finder, availableItems, true)),
+			knownOptions(recipeBookCollections),
+			catalogKnownCrafts
+		);
+	}
+
+	static CraftingOpportunitySnapshot snapshot(
+		List<CraftingOpportunity> recipeBookAvailable,
+		List<CraftingOpportunity> catalogAvailable,
+		List<CraftingOpportunity> recipeBookKnown,
+		List<CraftingOpportunity> catalogKnown
+	) {
+		return new CraftingOpportunitySnapshot(
+			mergeOpportunities(recipeBookAvailable, catalogAvailable),
+			mergeOpportunities(recipeBookKnown, catalogKnown)
+		);
+	}
+
+	private static List<CraftingOpportunity> opportunities(List<ResolvedCraftingOption> options) {
+		if (options == null || options.isEmpty()) {
+			return List.of();
+		}
+		return options.stream().map(ResolvedCraftingOption::opportunity).toList();
+	}
+
+	@SafeVarargs
+	private static List<CraftingOpportunity> mergeOpportunities(List<CraftingOpportunity>... sources) {
+		Map<String, CraftingOpportunity> merged = new LinkedHashMap<>();
+		for (List<CraftingOpportunity> source : sources) {
+			if (source == null) {
+				continue;
+			}
+			for (CraftingOpportunity opportunity : source) {
+				if (opportunity != null) {
+					merged.putIfAbsent(opportunity.recipeId(), opportunity);
+				}
+			}
+		}
+		return List.copyOf(merged.values());
 	}
 
 	static List<CraftingOpportunity> availableCrafts(List<RecipeResultCollection> collections, RecipeFinder finder) {
@@ -219,27 +287,36 @@ public final class CraftingOpportunityResolver {
 	private static List<ResolvedCraftingOption> resolvedOptions(ClientPlayerEntity player) {
 		RecipeFinder finder = recipeFinder(player);
 		Map<Item, Integer> availableItems = inventoryCounts(player);
+		RecipeCatalog catalog = integratedServerRecipeCatalog();
 		List<ResolvedCraftingOption> options = new ArrayList<>(resolvedOptions(player.getRecipeBook().getOrderedResults(), finder, availableItems));
-		options.addAll(resolvedOptions(integratedServerRecipeCollections(), finder, availableItems, true));
+		options.addAll(resolvedOptions(catalog.collections(), finder, availableItems, true));
 		return List.copyOf(options);
 	}
 
-	private static List<RecipeResultCollection> integratedServerRecipeCollections() {
+	private static RecipeCatalog integratedServerRecipeCatalog() {
 		MinecraftClient client = MinecraftClient.getInstance();
 		if (client == null || !client.isIntegratedServerRunning()) {
-			return List.of();
+			clearRecipeCatalogCache();
+			return RecipeCatalog.empty();
 		}
 		IntegratedServer server = client.getServer();
 		if (server == null) {
-			return List.of();
+			clearRecipeCatalogCache();
+			return RecipeCatalog.empty();
+		}
+		ServerRecipeManager recipeManager = server.getRecipeManager();
+		synchronized (RECIPE_CATALOG_LOCK) {
+			if (server == cachedCatalogServer && recipeManager == cachedRecipeManager) {
+				return cachedRecipeCatalog;
+			}
 		}
 		CompletableFuture<List<RecipeDisplayEntry>> future = new CompletableFuture<>();
 		server.executeSync(() -> {
 			try {
-				List<RecipeEntry<?>> recipes = List.copyOf(server.getRecipeManager().values());
+				List<RecipeEntry<?>> recipes = List.copyOf(recipeManager.values());
 				List<RecipeDisplayEntry> entries = new ArrayList<>();
 				for (RecipeEntry<?> recipe : recipes) {
-					server.getRecipeManager().forEachRecipeDisplay(recipe.id(), entries::add);
+					recipeManager.forEachRecipeDisplay(recipe.id(), entries::add);
 				}
 				future.complete(List.copyOf(entries));
 			}
@@ -249,10 +326,27 @@ public final class CraftingOpportunityResolver {
 		});
 		try {
 			List<RecipeDisplayEntry> entries = future.get(2L, TimeUnit.SECONDS);
-			return entries.isEmpty() ? List.of() : List.of(new RecipeResultCollection(entries));
+			List<RecipeResultCollection> collections = entries.isEmpty()
+				? List.of()
+				: List.of(new RecipeResultCollection(entries));
+			RecipeCatalog catalog = new RecipeCatalog(collections, knownOptions(collections));
+			synchronized (RECIPE_CATALOG_LOCK) {
+				cachedCatalogServer = server;
+				cachedRecipeManager = recipeManager;
+				cachedRecipeCatalog = catalog;
+			}
+			return catalog;
 		}
 		catch (Exception exception) {
-			return List.of();
+			return RecipeCatalog.empty();
+		}
+	}
+
+	private static void clearRecipeCatalogCache() {
+		synchronized (RECIPE_CATALOG_LOCK) {
+			cachedCatalogServer = null;
+			cachedRecipeManager = null;
+			cachedRecipeCatalog = RecipeCatalog.empty();
 		}
 	}
 
@@ -451,9 +545,63 @@ public final class CraftingOpportunityResolver {
 		if (choices == null || choices.isEmpty() || maxVariants <= 0) {
 			return List.of();
 		}
-		List<List<T>> variants = new ArrayList<>();
+		LinkedHashSet<List<T>> variants = new LinkedHashSet<>();
+		addRepresentativeCombinations(choices, availableItems == null ? Map.of() : availableItems, maxVariants, variants);
 		backtrackBoundedCombinations(choices, availableItems == null ? Map.of() : availableItems, maxVariants, 0, new HashMap<>(), new ArrayList<>(), variants);
 		return List.copyOf(variants);
+	}
+
+	private static <T> void addRepresentativeCombinations(
+		List<List<T>> choices,
+		Map<T, Integer> availableItems,
+		int maxVariants,
+		LinkedHashSet<List<T>> variants
+	) {
+		LinkedHashSet<T> representatives = new LinkedHashSet<>();
+		for (List<T> positionChoices : choices) {
+			representatives.addAll(positionChoices);
+		}
+		for (T representative : representatives) {
+			if (variants.size() >= maxVariants) {
+				return;
+			}
+			Map<T, Integer> usedItems = new HashMap<>();
+			List<T> combination = new ArrayList<>();
+			boolean valid = true;
+			for (List<T> positionChoices : choices) {
+				T selected = availableChoice(positionChoices, representative, availableItems, usedItems);
+				if (selected == null) {
+					valid = false;
+					break;
+				}
+				combination.add(selected);
+				usedItems.merge(selected, 1, Integer::sum);
+			}
+			if (valid) {
+				variants.add(List.copyOf(combination));
+			}
+		}
+	}
+
+	private static <T> T availableChoice(
+		List<T> choices,
+		T preferred,
+		Map<T, Integer> availableItems,
+		Map<T, Integer> usedItems
+	) {
+		if (choices.contains(preferred) && hasRemaining(preferred, availableItems, usedItems)) {
+			return preferred;
+		}
+		for (T choice : choices) {
+			if (hasRemaining(choice, availableItems, usedItems)) {
+				return choice;
+			}
+		}
+		return null;
+	}
+
+	private static <T> boolean hasRemaining(T choice, Map<T, Integer> availableItems, Map<T, Integer> usedItems) {
+		return availableItems.getOrDefault(choice, 0) > usedItems.getOrDefault(choice, 0);
 	}
 
 	private static <T> void backtrackBoundedCombinations(
@@ -463,7 +611,7 @@ public final class CraftingOpportunityResolver {
 		int index,
 		Map<T, Integer> usedItems,
 		List<T> current,
-		List<List<T>> variants
+		LinkedHashSet<List<T>> variants
 	) {
 		if (variants.size() >= maxVariants) {
 			return;
@@ -566,5 +714,19 @@ public final class CraftingOpportunityResolver {
 		CraftingOpportunity opportunity,
 		List<CraftingIngredientPlacement> placements
 	) {
+	}
+
+	private record RecipeCatalog(
+		List<RecipeResultCollection> collections,
+		List<CraftingOpportunity> knownCrafts
+	) {
+		private RecipeCatalog {
+			collections = collections == null ? List.of() : List.copyOf(collections);
+			knownCrafts = knownCrafts == null ? List.of() : List.copyOf(knownCrafts);
+		}
+
+		private static RecipeCatalog empty() {
+			return new RecipeCatalog(List.of(), List.of());
+		}
 	}
 }

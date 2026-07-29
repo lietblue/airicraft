@@ -9,6 +9,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class CraftingOpportunityResolverTest {
 	@Test
@@ -33,6 +34,30 @@ class CraftingOpportunityResolverTest {
 			List.of(),
 			CraftingOpportunityResolver.knownCrafts(List.of(RecipeResultCollection.EMPTY))
 		);
+	}
+
+	@Test
+	void fullRecipeCatalogProvidesLockedStandardRecipes() {
+		CraftingOpportunity woodenHoe = new CraftingOpportunity(
+			"oak_planks_x2_and_stick_x2_to_wooden_hoe",
+			"minecraft:wooden_hoe",
+			1,
+			List.of("minecraft:oak_planks", "minecraft:oak_planks", "minecraft:stick", "minecraft:stick"),
+			CraftingGridKind.WORKBENCH_3X3
+		);
+		CraftingOpportunitySnapshot snapshot = CraftingOpportunityResolver.snapshot(
+			List.of(),
+			List.of(),
+			List.of(),
+			List.of(woodenHoe)
+		);
+
+		assertEquals(List.of(), snapshot.availableCrafts());
+		assertTrue(snapshot.knownCrafts().stream().anyMatch(recipe ->
+			"oak_planks_x2_and_stick_x2_to_wooden_hoe".equals(recipe.recipeId())
+				&& "minecraft:wooden_hoe".equals(recipe.outputItemId())
+				&& recipe.gridKind() == CraftingGridKind.WORKBENCH_3X3
+		));
 	}
 
 	@Test
@@ -106,5 +131,17 @@ class CraftingOpportunityResolverTest {
 				CraftingOpportunityResolver.MAX_PLACEMENT_VARIANTS_PER_RECIPE
 			).size()
 		);
+	}
+
+	@Test
+	void representativeCombinationsKeepEachTaggedMaterialVariant() {
+		List<String> planks = List.of("acacia_planks", "birch_planks", "oak_planks");
+		List<List<String>> combinations = CraftingOpportunityResolver.boundedCombinations(
+			List.of(planks, planks, List.of("stick"), List.of("stick")),
+			Map.of("acacia_planks", 4, "birch_planks", 4, "oak_planks", 4, "stick", 4),
+			4
+		);
+
+		assertTrue(combinations.contains(List.of("oak_planks", "oak_planks", "stick", "stick")));
 	}
 }

@@ -240,7 +240,12 @@ class ActionGraphExecutionRuntimeTest {
 		ActionGraphExecutionRuntime runtime = new ActionGraphExecutionRuntime(ActionsetIndex.empty(), dispatcher);
 		runtime.submit(ActionGoal.inventoryItem("minecraft:iron_pickaxe", 1), Map.of("minecraft:birch_planks", 3), CONTEXT, 100);
 
-		ActionGraphExecutionSnapshot dispatched = runtime.tick(input(Map.of("minecraft:birch_planks", 3), null, 101));
+		ActionGraphExecutionSnapshot dispatched = runtime.tick(inputWithKnownCrafts(
+			Map.of("minecraft:birch_planks", 3),
+			null,
+			101,
+			ActionGraphRecipeFixtures.survivalCrafts()
+		));
 
 		assertEquals(ActionGraphExecutionState.WAITING_PRIMITIVE, dispatched.state());
 		assertEquals(1, dispatcher.dispatchedSteps.size());
@@ -471,7 +476,7 @@ class ActionGraphExecutionRuntimeTest {
 	void genericWoodCollectionReplansToObservedLogVariantRecipe() {
 		RecordingDispatcher dispatcher = new RecordingDispatcher();
 		ActionGraphExecutionRuntime runtime = new ActionGraphExecutionRuntime(ActionsetIndex.empty(), dispatcher);
-		List<CraftingOpportunity> survivalCrafts = ActionGraphDomainKnowledge.survivalCrafts();
+		List<CraftingOpportunity> survivalCrafts = ActionGraphRecipeFixtures.survivalCrafts();
 		runtime.submit(ActionGoal.inventoryItem("minecraft:crafting_table", 1), Map.of(), CONTEXT, 100);
 
 		ActionGraphExecutionSnapshot collecting = runtime.tick(input(Map.of(), null, 101, survivalCrafts));
@@ -587,23 +592,26 @@ class ActionGraphExecutionRuntimeTest {
 			100
 		);
 
-		ActionGraphExecutionSnapshot pickaxeDispatched = runtime.tick(input(
+		ActionGraphExecutionSnapshot pickaxeDispatched = runtime.tick(inputWithKnownCrafts(
 			Map.of("minecraft:birch_planks", 7, "minecraft:stick", 2),
 			null,
-			101
+			101,
+			ActionGraphRecipeFixtures.survivalCrafts()
 		));
 		ActionPlanStep pickaxeStep = dispatcher.dispatchedSteps.getFirst();
 		assertEquals("minecraft:wooden_pickaxe", pickaxeStep.args().get("itemId"));
 
-		ActionGraphExecutionSnapshot failed = runtime.tick(input(
+		ActionGraphExecutionSnapshot failed = runtime.tick(inputWithKnownCrafts(
 			Map.of("minecraft:stick", 2),
 			new TaskTerminalEvent(pickaxeDispatched.activeTaskId(), null, TaskExecutionState.FAILED, "recipe_not_found", null),
-			102
+			102,
+			ActionGraphRecipeFixtures.survivalCrafts()
 		));
-		ActionGraphExecutionSnapshot replanned = runtime.tick(input(
+		ActionGraphExecutionSnapshot replanned = runtime.tick(inputWithKnownCrafts(
 			Map.of("minecraft:stick", 2),
 			null,
-			122
+			122,
+			ActionGraphRecipeFixtures.survivalCrafts()
 		));
 
 		assertEquals(ActionGraphExecutionState.WAITING_PRIMITIVE, failed.state(), () -> failed.toString());

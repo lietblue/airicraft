@@ -136,6 +136,7 @@ import ai.moeru.airicraft.agent.tasks.WorldTaskExecutor;
 import ai.moeru.airicraft.agent.tasks.CollectSmeltedItemsStepArgs;
 import ai.moeru.airicraft.agent.tasks.CraftRecipeStepArgs;
 import ai.moeru.airicraft.agent.tasks.CraftingOpportunityResolver;
+import ai.moeru.airicraft.agent.tasks.CraftingOpportunitySnapshot;
 import ai.moeru.airicraft.agent.tasks.DropItemsStepArgs;
 import ai.moeru.airicraft.agent.tasks.EntityAttackMode;
 import ai.moeru.airicraft.agent.tasks.EntityInteractionStepArgs;
@@ -2991,12 +2992,13 @@ public final class EmbodiedAgentRuntime {
 		int selectedHotbarSlot = client.player.getInventory().getSelectedSlot();
 		BlockPos origin = client.player.getBlockPos();
 		Map<String, Integer> itemCounts = inventoryItemCounter.count(client.player.getInventory());
+		CraftingOpportunitySnapshot crafting = CraftingOpportunityResolver.inspect(client.player);
 		return new WorldEvidence(
 			resourceCounts,
 			itemCounts,
 			collectNearbyBlocks(client, origin),
-			CraftingOpportunityResolver.availableCrafts(client.player),
-			CraftingOpportunityResolver.knownCrafts(client.player),
+			crafting.availableCrafts(),
+			crafting.knownCrafts(),
 			smeltingPlannerService.availableSmeltingOptions(client, smeltingProcessManager, tickCount),
 			client.world == null ? null : client.world.getRegistryKey().getValue().toString(),
 			origin.getX(),

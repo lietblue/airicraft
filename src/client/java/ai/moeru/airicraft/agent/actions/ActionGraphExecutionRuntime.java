@@ -556,12 +556,6 @@ public final class ActionGraphExecutionRuntime {
 		addResourceFacts(input.observedResources(), ActionFactProvenance.OBSERVED, input.context());
 		addCraftRecipeFacts(input.availableCrafts(), ActionFactProvenance.OBSERVED, input.context());
 		addCraftRecipeFacts(input.knownCrafts(), ActionFactProvenance.INFERRED, input.context());
-		addCraftRecipeFacts(
-			ActionGraphDomainKnowledge.survivalCrafts(),
-			ActionFactProvenance.INFERRED,
-			input.context(),
-			ActionFact.NEVER_STALE
-		);
 		addSmeltRecipeFacts(input.availableSmelts(), input.context());
 		addInferredSmeltRecipeFacts(ActionGraphDomainKnowledge.survivalSmelts(), input.context());
 		addObservedFacts(input.observedFacts());
