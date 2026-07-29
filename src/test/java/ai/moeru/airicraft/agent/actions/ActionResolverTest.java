@@ -57,7 +57,14 @@ class ActionResolverTest {
 		assertTrue(result.resolved(), () -> result.trace().toString());
 		assertEquals("mine_block", result.route().steps().getLast().targetId());
 		assertEquals("minecraft:diamond", result.route().steps().getLast().args().get("itemId"));
-		assertTrue(result.trace().stream().anyMatch(event -> "route_cache_hit".equals(event.eventType())));
+		int expandedGoals = result.trace().stream()
+			.filter(event -> "resolution_stats".equals(event.eventType()))
+			.map(ActionTraceEvent::payload)
+			.map(payload -> (Number) payload.get("expandedGoals"))
+			.mapToInt(Number::intValue)
+			.findFirst()
+			.orElseThrow();
+		assertTrue(expandedGoals < 100, () -> "expandedGoals=" + expandedGoals);
 	}
 
 	@Test

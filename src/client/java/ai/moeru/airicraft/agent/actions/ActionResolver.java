@@ -911,8 +911,13 @@ public final class ActionResolver {
 		if (requiredFuelTicks <= 0) {
 			return Optional.empty();
 		}
+		List<FuelCandidate> orderedCandidates = fuelCandidates().stream()
+			.sorted(Comparator
+				.comparingInt((FuelCandidate candidate) -> fuelPriority(candidate.itemId()))
+				.thenComparing(Comparator.comparingInt(this::fuelAcquisitionAffinity).reversed()))
+			.toList();
 		FuelPlan bestPlan = null;
-		for (FuelCandidate candidate : fuelCandidates()) {
+		for (FuelCandidate candidate : orderedCandidates) {
 			int requiredQuantity = fuelItemsNeeded(requiredFuelTicks, candidate.fuelTicks());
 			if (requiredQuantity <= 0) {
 				continue;
@@ -921,11 +926,25 @@ public final class ActionResolver {
 			int priority = fuelPriority(candidate.itemId());
 			if (existingGoalCount(fuelGoal) >= requiredQuantity) {
 				bestPlan = chooseCheaperFuelPlan(bestPlan, new FuelPlan(candidate.itemId(), requiredQuantity, ActionRoute.empty(), priority));
+			}
+		}
+		for (FuelCandidate candidate : orderedCandidates) {
+			int priority = fuelPriority(candidate.itemId());
+			if (bestPlan != null && priority >= bestPlan.priority()) {
+				break;
+			}
+			int requiredQuantity = fuelItemsNeeded(requiredFuelTicks, candidate.fuelTicks());
+			if (requiredQuantity <= 0) {
 				continue;
 			}
+			ActionGoal fuelGoal = ActionGoal.inventoryItem(candidate.itemId(), requiredQuantity);
 			Optional<ActionRoute> fuelRoute = resolveGoal(fuelGoal, depth + 1, resolving, trace);
 			if (fuelRoute.isPresent()) {
-				bestPlan = chooseCheaperFuelPlan(bestPlan, new FuelPlan(candidate.itemId(), requiredQuantity, fuelRoute.get(), priority));
+				bestPlan = new FuelPlan(candidate.itemId(), requiredQuantity, fuelRoute.get(), priority);
+				break;
+			}
+			if (budgetExceeded) {
+				break;
 			}
 		}
 		if (bestPlan == null) {
@@ -939,6 +958,16 @@ public final class ActionResolver {
 			Map.of("goal", smeltingGoal.normalizedKey(), "fuelItemId", bestPlan.itemId(), "fuelQuantity", bestPlan.quantity())
 		));
 		return Optional.of(bestPlan);
+	}
+
+	private int fuelAcquisitionAffinity(FuelCandidate candidate) {
+		int affinity = existingGoalCount(ActionGoal.inventoryItem(candidate.itemId(), 1)) * 1_000;
+		for (ActionFact recipe : craftRecipesByOutput.getOrDefault(candidate.itemId(), List.of())) {
+			for (String inputItemId : recipeInputCounts(recipe).keySet()) {
+				affinity += existingGoalCount(ActionGoal.inventoryItem(inputItemId, 1));
+			}
+		}
+		return affinity;
 	}
 
 	private int fuelPriority(String itemId) {
