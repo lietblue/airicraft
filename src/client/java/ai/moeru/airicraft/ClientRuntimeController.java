@@ -228,7 +228,8 @@ public final class ClientRuntimeController {
 			screenshotService,
 			worldTaskExecutor,
 			smeltingProcessManager,
-			cameraController
+			cameraController,
+			baritoneFacade
 		);
 	}
 

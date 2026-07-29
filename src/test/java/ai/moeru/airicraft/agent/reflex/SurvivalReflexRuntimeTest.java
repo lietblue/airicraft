@@ -36,6 +36,9 @@ class SurvivalReflexRuntimeTest {
 		assertTrue(SurvivalReflexRuntime.stableDrowningRecovery(false, true, true));
 		assertTrue(SurvivalReflexRuntime.stableDrowningRecovery(true, true, false));
 		assertFalse(SurvivalReflexRuntime.stableDrowningRecovery(true, false, true));
+		assertTrue(SurvivalReflexRuntime.shouldNavigateToSafeLand(true, true));
+		assertFalse(SurvivalReflexRuntime.shouldNavigateToSafeLand(false, true));
+		assertFalse(SurvivalReflexRuntime.shouldNavigateToSafeLand(true, false));
 	}
 
 	@Test

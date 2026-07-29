@@ -6,6 +6,7 @@ import ai.moeru.airicraft.BridgeUnavailableException;
 import ai.moeru.airicraft.FirstPersonScreenshotService;
 import ai.moeru.airicraft.SingleplayerWorldService;
 import ai.moeru.airicraft.agent.behavior.BehaviorTreeRuntime;
+import ai.moeru.airicraft.agent.baritone.BaritoneFacade;
 import ai.moeru.airicraft.agent.baritone.BaritonePathfindSettings;
 import ai.moeru.airicraft.agent.control.CameraController;
 import ai.moeru.airicraft.agent.behavior.BehaviorTreeSnapshot;
@@ -308,10 +309,23 @@ public final class EmbodiedAgentRuntime {
 		SmeltingProcessManager smeltingProcessManager,
 		CameraController cameraController
 	) {
+		this(airicraftConfig, config, screenshotService, worldTaskExecutor, smeltingProcessManager, cameraController, null);
+	}
+
+	public EmbodiedAgentRuntime(
+		AiricraftConfig airicraftConfig,
+		AgentConfig config,
+		FirstPersonScreenshotService screenshotService,
+		WorldTaskExecutor worldTaskExecutor,
+		SmeltingProcessManager smeltingProcessManager,
+		CameraController cameraController,
+		BaritoneFacade baritoneFacade
+	) {
 		this(airicraftConfig, config, screenshotService, worldTaskExecutor,
 			AgentObservability.create(config == null ? null : config.observability()),
 			smeltingProcessManager,
-			cameraController);
+			cameraController,
+			baritoneFacade);
 	}
 
 	public EmbodiedAgentRuntime(
@@ -323,10 +337,23 @@ public final class EmbodiedAgentRuntime {
 		SmeltingProcessManager smeltingProcessManager,
 		CameraController cameraController
 	) {
+		this(airicraftConfig, config, screenshotService, worldTaskExecutor, observability, smeltingProcessManager, cameraController, null);
+	}
+
+	public EmbodiedAgentRuntime(
+		AiricraftConfig airicraftConfig,
+		AgentConfig config,
+		FirstPersonScreenshotService screenshotService,
+		WorldTaskExecutor worldTaskExecutor,
+		AgentObservability observability,
+		SmeltingProcessManager smeltingProcessManager,
+		CameraController cameraController,
+		BaritoneFacade baritoneFacade
+	) {
 		this.airicraftConfig = Objects.requireNonNull(airicraftConfig, "airicraftConfig");
 		this.config = Objects.requireNonNull(config, "config");
 		this.codexDriverActive = Boolean.getBoolean("airicraft.codexDriver");
-		this.survivalReflexRuntime = new SurvivalReflexRuntime(this.config.reflex());
+		this.survivalReflexRuntime = new SurvivalReflexRuntime(this.config.reflex(), baritoneFacade);
 		this.worldTaskExecutor = Objects.requireNonNull(worldTaskExecutor, "worldTaskExecutor");
 		this.observability = new FlightRecordingObservability(Objects.requireNonNull(observability, "observability"), llmFlightRecorder);
 		this.smeltingProcessManager = Objects.requireNonNull(smeltingProcessManager, "smeltingProcessManager");
