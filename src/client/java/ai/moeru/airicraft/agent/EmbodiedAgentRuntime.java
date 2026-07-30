@@ -665,12 +665,8 @@ public final class EmbodiedAgentRuntime {
 			activeJob == null || activeJob.isIdle() || activeJob.status().terminal() ? null : activeJob.jobId(),
 			actionGraphCoordinator.hasForeground() ? graph.executionId() : null
 		);
-		GoalPosition surfaceTarget = surfaceMemory.bestTarget()
-			.map(SurfaceMemory.SurfaceTarget::position)
-			.orElse(null);
 		survivalReflexRuntime.tick(
 			client,
-			surfaceTarget,
 			interruptedWork,
 			tickCount,
 			() -> releaseNormalActuatorsForReflex(client)
@@ -4717,7 +4713,7 @@ public final class EmbodiedAgentRuntime {
 			return false;
 		}
 		return switch (type) {
-			case MINE, BOUNDED_HARVEST, CRAFT_RECIPE, DROP_ITEMS, SMELT_ITEMS, COLLECT_SMELTED_ITEMS, RETURN_TO_SURFACE, PLACE_BLOCK, USE_BLOCK, BREAK_BLOCKS -> true;
+			case MINE, UNDERWATER_HARVEST, CRAFT_RECIPE, DROP_ITEMS, SMELT_ITEMS, COLLECT_SMELTED_ITEMS, RETURN_TO_SURFACE, PLACE_BLOCK, USE_BLOCK, BREAK_BLOCKS -> true;
 			case FOLLOW, NAVIGATE, ATTACK_ENTITY, USE_ENTITY -> false;
 		};
 	}

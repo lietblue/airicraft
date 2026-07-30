@@ -50,11 +50,14 @@ public final class BaritoneTaskExecutor implements WorldTaskExecutor {
 	private TaskExecutionState terminalEventState;
 	private TaskTerminationCause terminalEventCause;
 	private String pendingInternalCancelTaskId;
+	private long pendingInternalCancelAcknowledgement = -1L;
 	private String mineDropPickupTaskId;
 	private MineDropTarget mineDropPickupTarget;
 	private int mineDropPickupAttempts;
 	private int mineDropPickupSettleTicks;
 	private TerminalOutcome pendingMineTerminalOutcome;
+	private GoalSnapshot pendingWaterReplanGoal;
+	private boolean mineSatisfiedAwaitingRelease;
 	private Double temporaryWaterPenaltyBase;
 	private TaskExecutionSnapshot snapshot = TaskExecutionSnapshot.idle();
 
@@ -101,22 +104,22 @@ public final class BaritoneTaskExecutor implements WorldTaskExecutor {
 
 		if (activeTask.isEmpty()) {
 			if (appliedTask != null) {
-				pendingInternalCancelTaskId = appliedTask.taskId();
-				facade.cancel();
+				requestInternalCancellation(appliedTask.taskId());
 			}
 			reset();
 			return Optional.empty();
 		}
 
 		if (!sessionSnapshot.companionActuationAllowed()) {
-			clearWaterRecovery();
+			if (pendingWaterReplanGoal == null || sessionSnapshot.requiresRespawn()) {
+				clearWaterRecovery();
+			}
 			if (sessionSnapshot.requiresRespawn() && appliedTask != null) {
-				pendingInternalCancelTaskId = appliedTask.taskId();
-				facade.cancel();
+				requestInternalCancellation(appliedTask.taskId());
 				appliedTask = null;
+				clearMineDropPickupState();
 			}
 			clearTerminalEvent(activeTask.get());
-			clearMineDropPickupState();
 			snapshot = new TaskExecutionSnapshot(
 				TaskExecutionState.PAUSED_BY_SESSION_GATE,
 				activeTask.get().taskId(),
@@ -134,28 +137,75 @@ public final class BaritoneTaskExecutor implements WorldTaskExecutor {
 		if (taskTargetChanged) {
 			clearWaterRecovery();
 			clearMineDropPickupState();
+			mineSatisfiedAwaitingRelease = false;
 			if (appliedTask != null) {
-				pendingInternalCancelTaskId = appliedTask.taskId();
-				facade.cancel();
+				requestInternalCancellation(appliedTask.taskId());
+				appliedTask = null;
+			}
+			if (!BaritoneReleaseBarrier.releaseAndDrain(facade)) {
+				clearTerminalEvent(activeTask.get());
+				snapshot = new TaskExecutionSnapshot(
+					TaskExecutionState.RUNNING,
+					activeTask.get().taskId(),
+					activeTask.get().goal(),
+					"Baritone",
+					"waiting_for_baritone_release",
+					null,
+					null
+				);
+				return Optional.empty();
 			}
 			clearTerminalEvent(activeTask.get());
-			try {
-				applyGoal(activeTask.get().goal());
+			facade.pollPathEvent();
+			clearInternalCancellation();
+			if (satisfiedMineRequest(activeTask.get())) {
+				mineSatisfiedAwaitingRelease = true;
 			}
-			catch (RuntimeException exception) {
-				appliedTask = activeTask.get();
-				return failTaskStart(appliedTask, exception);
+			else {
+				try {
+					applyGoal(activeTask.get().goal());
+				}
+				catch (RuntimeException exception) {
+					appliedTask = activeTask.get();
+					return failTaskStart(appliedTask, exception);
+				}
 			}
 		}
 		else if (mineGoalJustSatisfied) {
+			clearWaterRecovery();
 			clearTerminalEvent(activeTask.get());
-			facade.cancel();
+			requestInternalCancellation(activeTask.get().taskId());
+			mineSatisfiedAwaitingRelease = true;
 		}
 		appliedTask = activeTask.get();
 
-		Optional<String> pathEvent = facade.pollPathEvent();
-		if (isSuppressedInternalCancel(pathEvent)) {
-			pathEvent = Optional.empty();
+		clearAcknowledgedInternalCancellation();
+		Optional<String> pathEvent;
+		if (mineSatisfiedAwaitingRelease) {
+			// Drain any late event from the owned mine operation, but completion is
+			// derived from the inventory fact rather than a cancellation spelling.
+			facade.pollPathEvent();
+			if (!BaritoneReleaseBarrier.releaseAndDrain(facade)) {
+				snapshot = new TaskExecutionSnapshot(
+					TaskExecutionState.RUNNING,
+					appliedTask.taskId(),
+					appliedTask.goal(),
+					"Baritone",
+					"waiting_for_satisfied_mine_release",
+					null,
+					null
+				);
+				return Optional.empty();
+			}
+			clearInternalCancellation();
+			mineSatisfiedAwaitingRelease = false;
+			pathEvent = Optional.of("CANCELED");
+		}
+		else {
+			pathEvent = facade.pollPathEvent();
+			if (isSuppressedInternalCancel(pathEvent)) {
+				pathEvent = Optional.empty();
+			}
 		}
 		boolean mineProcessOwnsPathEvent = mineProcessOwnsPathEvent(pathEvent, appliedTask);
 		MineDropPickupResult mineDropPickupResult = mineProcessOwnsPathEvent
@@ -219,6 +269,17 @@ public final class BaritoneTaskExecutor implements WorldTaskExecutor {
 	}
 
 	private Optional<String> waterRecoveryEvent(long tick, WorldTaskRequest request) {
+		if (pendingWaterReplanGoal != null) {
+			if (!BaritoneReleaseBarrier.releaseAndDrain(facade)) {
+				return Optional.of("WATER_STALL_RELEASING");
+			}
+			GoalSnapshot goal = pendingWaterReplanGoal;
+			pendingWaterReplanGoal = null;
+			facade.pollPathEvent();
+			clearInternalCancellation();
+			applyGoal(goal);
+			return Optional.of("WATER_STALL_REPLAN");
+		}
 		WaterStallRecovery.Decision decision = waterStallRecovery.observe(
 			tick,
 			waterProgressObserver.observe().orElse(null),
@@ -241,14 +302,22 @@ public final class BaritoneTaskExecutor implements WorldTaskExecutor {
 			Math.max(MIN_RECOVERY_WATER_PENALTY, currentPenalty * RECOVERY_WATER_PENALTY_MULTIPLIER)
 		);
 		facade.setWalkOnWaterPenalty(recoveryPenalty);
-		pendingInternalCancelTaskId = request.taskId();
-		facade.cancel();
-		applyGoal(request.goal());
+		pendingWaterReplanGoal = request.goal();
+		requestInternalCancellation(request.taskId());
+		if (!BaritoneReleaseBarrier.released(facade)) {
+			return Optional.of("WATER_STALL_RELEASING");
+		}
+		GoalSnapshot goal = pendingWaterReplanGoal;
+		pendingWaterReplanGoal = null;
+		facade.pollPathEvent();
+		clearInternalCancellation();
+		applyGoal(goal);
 		return Optional.of("WATER_STALL_REPLAN");
 	}
 
 	private void clearWaterRecovery() {
 		waterStallRecovery.clear();
+		pendingWaterReplanGoal = null;
 		restoreTemporaryWaterPenalty();
 	}
 
@@ -689,7 +758,7 @@ public final class BaritoneTaskExecutor implements WorldTaskExecutor {
 			mineDropPickupSettleTicks = 0;
 		}
 		mineDropPickupAttempts++;
-		pendingInternalCancelTaskId = activeTask.taskId();
+		markInternalCancellation(activeTask.taskId());
 		facade.startNavigate(nextTarget.position());
 		snapshot = new TaskExecutionSnapshot(
 			TaskExecutionState.RUNNING,
@@ -826,7 +895,34 @@ public final class BaritoneTaskExecutor implements WorldTaskExecutor {
 			return false;
 		}
 		pendingInternalCancelTaskId = null;
+		pendingInternalCancelAcknowledgement = -1L;
 		return true;
+	}
+
+	private void requestInternalCancellation(String taskId) {
+		long acknowledgementBeforeRequest = facade.cancellationAcknowledgement();
+		facade.cancel();
+		pendingInternalCancelTaskId = taskId;
+		pendingInternalCancelAcknowledgement = acknowledgementBeforeRequest;
+	}
+
+	private void markInternalCancellation(String taskId) {
+		pendingInternalCancelTaskId = taskId;
+		pendingInternalCancelAcknowledgement = facade.cancellationAcknowledgement();
+	}
+
+	private void clearAcknowledgedInternalCancellation() {
+		if (pendingInternalCancelTaskId != null
+			&& pendingInternalCancelAcknowledgement >= 0L
+			&& facade.cancellationAcknowledgement() > pendingInternalCancelAcknowledgement) {
+			pendingInternalCancelTaskId = null;
+			pendingInternalCancelAcknowledgement = -1L;
+		}
+	}
+
+	private void clearInternalCancellation() {
+		pendingInternalCancelTaskId = null;
+		pendingInternalCancelAcknowledgement = -1L;
 	}
 
 	private static boolean isCancelledPathEvent(String normalizedPathEvent) {
@@ -850,6 +946,13 @@ public final class BaritoneTaskExecutor implements WorldTaskExecutor {
 			&& (previous == null || !previous.mineGoalSatisfied())
 			&& current.goal() != null
 			&& current.goal().type() == GoalType.MINE_BLOCKS;
+	}
+
+	private static boolean satisfiedMineRequest(WorldTaskRequest request) {
+		return request != null
+			&& request.mineGoalSatisfied()
+			&& request.goal() != null
+			&& request.goal().type() == GoalType.MINE_BLOCKS;
 	}
 
 	private static boolean sameGoalTarget(GoalSnapshot left, GoalSnapshot right) {
@@ -923,6 +1026,8 @@ public final class BaritoneTaskExecutor implements WorldTaskExecutor {
 		terminalEventState = null;
 		terminalEventCause = null;
 		pendingInternalCancelTaskId = null;
+		pendingInternalCancelAcknowledgement = -1L;
+		mineSatisfiedAwaitingRelease = false;
 		clearMineDropPickupState();
 		snapshot = TaskExecutionSnapshot.idle();
 	}

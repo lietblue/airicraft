@@ -22,6 +22,7 @@ import java.lang.reflect.Proxy;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -105,12 +106,79 @@ class LiveBaritoneFacadeTest {
 		assertFalse(goal.isInGoal(16, 64, -8));
 	}
 
+	@Test
+	void delayedInternalCancellationIsAcknowledgedWithoutLeakingToTheNextGoal() {
+		RecordingBaritoneHarness harness = new RecordingBaritoneHarness();
+		LiveBaritoneFacade facade = new LiveBaritoneFacade(harness.baritone(), () -> {
+		});
+
+		facade.startMine(new GoalMineSpec(List.of("minecraft:clay"), 1));
+		facade.cancel();
+		assertTrue(facade.cancellationPending());
+		assertFalse(facade.processActive());
+
+		facade.startNavigate(new GoalPosition(2, 62, 3, true));
+		harness.publishPathEvent(PathEvent.CANCELED);
+
+		assertFalse(facade.cancellationPending());
+		assertEquals(1L, facade.cancellationAcknowledgement());
+		assertTrue(facade.pollPathEvent().isEmpty());
+
+		harness.publishPathEvent(PathEvent.CANCELED);
+		assertEquals(Optional.of("CANCELED"), facade.pollPathEvent());
+	}
+
+	@Test
+	void unsafeCancellationDoesNotCreateARequiredReceiptAndSuppressesItsOptionalLaterEvent() {
+		RecordingBaritoneHarness harness = new RecordingBaritoneHarness();
+		LiveBaritoneFacade facade = new LiveBaritoneFacade(harness.baritone(), () -> {
+		});
+		harness.cancelImmediatelySafe.set(false);
+
+		facade.startMine(new GoalMineSpec(List.of("minecraft:clay"), 1));
+
+		assertFalse(facade.cancel());
+		assertFalse(facade.cancellationPending());
+		assertTrue(facade.processActive());
+		assertEquals(1, harness.cancelEverythingCalls.get());
+		assertFalse(facade.cancel());
+		assertEquals(1, harness.cancelEverythingCalls.get());
+
+		harness.pathingActive.set(false);
+		harness.publishPathEvent(PathEvent.CANCELED);
+
+		assertFalse(facade.processActive());
+		assertEquals(1L, facade.cancellationAcknowledgement());
+		assertTrue(facade.pollPathEvent().isEmpty());
+	}
+
+	@Test
+	void optionalCancellationReceiptExpiresBeforeTheNextOperation() {
+		RecordingBaritoneHarness harness = new RecordingBaritoneHarness();
+		LiveBaritoneFacade facade = new LiveBaritoneFacade(harness.baritone(), () -> {
+		});
+		harness.cancelImmediatelySafe.set(false);
+		facade.startMine(new GoalMineSpec(List.of("minecraft:sand"), 1));
+		assertFalse(facade.cancel());
+		harness.pathingActive.set(false);
+
+		facade.startNavigate(new GoalPosition(2, 62, 3, true));
+		harness.publishPathEvent(PathEvent.CANCELED);
+
+		assertEquals(Optional.of("CANCELED"), facade.pollPathEvent());
+	}
+
 	private static final class RecordingBaritoneHarness {
 		private final AtomicReference<AbstractGameEventListener> pathListener = new AtomicReference<>();
 		private final AtomicReference<String> activeProcessName = new AtomicReference<>();
 		private final AtomicReference<Object> followPredicate = new AtomicReference<>();
 		private final AtomicReference<Boolean> cancelEverythingCalled = new AtomicReference<>(false);
+		private final AtomicInteger cancelEverythingCalls = new AtomicInteger();
+		private final AtomicReference<Boolean> cancelImmediatelySafe = new AtomicReference<>(true);
 		private final AtomicReference<Boolean> mineProcessActive = new AtomicReference<>(false);
+		private final AtomicReference<Boolean> customGoalProcessActive = new AtomicReference<>(false);
+		private final AtomicReference<Boolean> followProcessActive = new AtomicReference<>(false);
+		private final AtomicReference<Boolean> pathingActive = new AtomicReference<>(false);
 		private final AtomicReference<Double> estimatedTicksToGoal = new AtomicReference<>(37.5D);
 		private final List<Object> navigateCalls = new ArrayList<>();
 		private final List<Object[]> mineCalls = new ArrayList<>();
@@ -118,24 +186,33 @@ class LiveBaritoneFacadeTest {
 			case "estimatedTicksToGoal" -> Optional.ofNullable(estimatedTicksToGoal.get());
 			case "cancelEverything" -> {
 				cancelEverythingCalled.set(true);
-				yield true;
+				cancelEverythingCalls.incrementAndGet();
+				mineProcessActive.set(false);
+				customGoalProcessActive.set(false);
+				followProcessActive.set(false);
+				if (cancelImmediatelySafe.get()) {
+					pathingActive.set(false);
+				}
+				yield cancelImmediatelySafe.get();
 			}
 			case "getGoal", "getCurrent", "getNext" -> null;
 			case "getInProgress" -> Optional.empty();
-			case "isPathing", "hasPath" -> false;
+			case "isPathing", "hasPath" -> pathingActive.get();
 			default -> defaultValue(method);
 		});
 		private final IFollowProcess followProcess = proxy(IFollowProcess.class, (proxy, method, args) -> switch (method.getName()) {
 			case "follow" -> {
 				followPredicate.set(args[0]);
 				activeProcessName.set("follow");
+				followProcessActive.set(true);
+				pathingActive.set(true);
 				yield null;
 			}
 			case "pickup" -> null;
 			case "following" -> List.of();
 			case "currentFilter" -> null;
 			case "cancel" -> null;
-			case "isActive" -> false;
+			case "isActive" -> followProcessActive.get();
 			case "onTick" -> null;
 			case "isTemporary" -> false;
 			case "onLostControl" -> null;
@@ -146,11 +223,13 @@ class LiveBaritoneFacadeTest {
 			case "setGoalAndPath", "setGoal" -> {
 				navigateCalls.add(args[0]);
 				activeProcessName.set("custom_goal");
+				customGoalProcessActive.set(true);
+				pathingActive.set(true);
 				yield null;
 			}
 			case "path" -> null;
 			case "getGoal", "mostRecentGoal" -> navigateCalls.isEmpty() ? null : navigateCalls.get(navigateCalls.size() - 1);
-			case "isActive" -> false;
+			case "isActive" -> customGoalProcessActive.get();
 			case "onTick" -> null;
 			case "isTemporary" -> false;
 			case "onLostControl" -> null;
@@ -162,6 +241,7 @@ class LiveBaritoneFacadeTest {
 				mineCalls.add(args.clone());
 				activeProcessName.set("mine");
 				mineProcessActive.set(true);
+				pathingActive.set(true);
 				yield null;
 			}
 			case "mine", "cancel", "onLostControl" -> {
@@ -176,7 +256,7 @@ class LiveBaritoneFacadeTest {
 		});
 		private final IBaritoneProcess activeProcess = proxy(IBaritoneProcess.class, (proxy, method, args) -> switch (method.getName()) {
 			case "displayName0" -> activeProcessName.get();
-			case "isActive" -> true;
+			case "isActive" -> mineProcessActive.get() || customGoalProcessActive.get() || followProcessActive.get();
 			case "onTick" -> null;
 			case "isTemporary" -> false;
 			case "onLostControl" -> null;

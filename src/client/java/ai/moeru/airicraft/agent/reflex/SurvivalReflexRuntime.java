@@ -4,8 +4,9 @@ import ai.moeru.airicraft.agent.AgentConfig;
 import ai.moeru.airicraft.agent.baritone.BaritoneFacade;
 import ai.moeru.airicraft.agent.control.CameraController;
 import ai.moeru.airicraft.agent.control.MovementController;
-import ai.moeru.airicraft.agent.goals.GoalPosition;
-import ai.moeru.airicraft.agent.tasks.SurfaceMemory;
+import ai.moeru.airicraft.agent.tasks.MinecraftUnderwaterEscapeController;
+import ai.moeru.airicraft.agent.tasks.UnderwaterEscapeSearch;
+import ai.moeru.airicraft.agent.tasks.UnderwaterHarvestPolicy;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.network.ClientPlayerEntity;
 import net.minecraft.entity.Entity;
@@ -32,19 +33,17 @@ public final class SurvivalReflexRuntime {
 	private static final int ESCAPE_PHASE_TICKS = 20;
 
 	private final AgentConfig.ReflexConfig config;
-	private final BaritoneFacade baritone;
 	private final MovementController movementController;
 	private final CameraController cameraController;
+	private final MinecraftUnderwaterEscapeController underwaterEscape;
 	private final Map<String, ObservedThreat> observedThreats = new LinkedHashMap<>();
 	private final List<SurvivalReflexEvent> pendingEvents = new ArrayList<>();
 
 	private SurvivalReflexSnapshot snapshot = SurvivalReflexSnapshot.idle();
 	private boolean drowningDamageObserved;
 	private long lastMobDamageTick = Long.MIN_VALUE;
-	private int lastAir = Integer.MIN_VALUE;
 	private int stuckTicks;
 	private boolean safetyHoldActuating;
-	private GoalPosition safeLandNavigationTarget;
 
 	public SurvivalReflexRuntime(AgentConfig.ReflexConfig config) {
 		this(config, new MovementController(), new CameraController(), null);
@@ -71,7 +70,11 @@ public final class SurvivalReflexRuntime {
 		this.config = Objects.requireNonNullElseGet(config, AgentConfig.ReflexConfig::defaults);
 		this.movementController = Objects.requireNonNull(movementController, "movementController");
 		this.cameraController = Objects.requireNonNull(cameraController, "cameraController");
-		this.baritone = baritone;
+		this.underwaterEscape = new MinecraftUnderwaterEscapeController(
+			baritone,
+			this.movementController,
+			this.cameraController
+		);
 	}
 
 	public SurvivalReflexSnapshot snapshot() {
@@ -100,7 +103,6 @@ public final class SurvivalReflexRuntime {
 
 	public SurvivalReflexSnapshot tick(
 		MinecraftClient client,
-		GoalPosition surfaceTarget,
 		InterruptedWork interruptedWork,
 		long tick,
 		Runnable releaseNormalActuators
@@ -131,13 +133,12 @@ public final class SurvivalReflexRuntime {
 		}
 
 		if (drowningDanger || snapshot.cause() == SurvivalReflexCause.DROWNING) {
-			tickDrowning(client, player, surfaceTarget, drowningDanger, threats, tick);
+			tickDrowning(client, player, drowningDanger, threats, tick);
 		}
 		else {
 			tickMobAttack(client, player, threats, tick);
 		}
 		drowningDamageObserved = false;
-		lastAir = player.getAir();
 		return snapshot;
 	}
 
@@ -195,10 +196,9 @@ public final class SurvivalReflexRuntime {
 		observedThreats.clear();
 		drowningDamageObserved = false;
 		lastMobDamageTick = Long.MIN_VALUE;
-		lastAir = Integer.MIN_VALUE;
 		stuckTicks = 0;
 		safetyHoldActuating = false;
-		cancelSafeLandNavigation();
+		underwaterEscape.reset(client);
 		long epoch = snapshot.safetyEpoch();
 		snapshot = new SurvivalReflexSnapshot(
 			SurvivalReflexState.IDLE, null, null, epoch, null, null, null, List.of(),
@@ -261,7 +261,6 @@ public final class SurvivalReflexRuntime {
 	private void tickDrowning(
 		MinecraftClient client,
 		ClientPlayerEntity player,
-		GoalPosition surfaceTarget,
 		boolean danger,
 		List<ResolvedThreat> threats,
 		long tick
@@ -271,12 +270,18 @@ public final class SurvivalReflexRuntime {
 		if (snapshot.cause() != SurvivalReflexCause.DROWNING || snapshot.action() != desiredAction) {
 			changeAction(SurvivalReflexCause.DROWNING, desiredAction, tick);
 		}
-		boolean breathable = breathableAndRecovering(player, lastAir);
-		boolean safeLand = player.isOnGround() && SurfaceMemory.isSurfaceStandingPosition(client, player.getBlockPos());
-		boolean stable = stableDrowningRecovery(hasInterruptedWork, breathable, safeLand);
+		boolean airRecovered = airRecoveryMarginReached(
+			player.isSubmergedInWater(),
+			player.getAir(),
+			player.getMaxAir()
+		);
+		boolean safeLand = player.isOnGround()
+			&& MinecraftUnderwaterEscapeController.isSafeStandingPosition(client, player.getBlockPos());
+		boolean stable = stableDrowningRecovery(hasInterruptedWork, airRecovered, safeLand);
 		int stableTicks = stable ? snapshot.breathableTicks() + 1 : 0;
 		if (drowningResolved(stableTicks)) {
 			if (!mobThreatsResolved(threats.size(), tick, lastMobDamageTick, config.threatCooldownTicks())) {
+				underwaterEscape.reset(client);
 				changeAction(SurvivalReflexCause.MOB_ATTACK, chooseMobAction(healthRatio(player), threats), tick);
 				refreshSnapshot(player, threats, lastMobDamageTick, 0, null);
 				return;
@@ -287,15 +292,25 @@ public final class SurvivalReflexRuntime {
 
 		try {
 			if (stable) {
-				cancelSafeLandNavigation();
+				underwaterEscape.reset(client);
 				movementController.stop(client);
 			}
-			else if (shouldUseSafeLandNavigation(hasInterruptedWork)) {
-				tickSafeLandNavigation(client, surfaceTarget, tick);
-			}
 			else {
-				cancelSafeLandNavigation();
-				movementController.swimUp(client, false, false, tick);
+				UnderwaterEscapeSearch.SearchMode mode = drowningSearchMode(
+					hasInterruptedWork,
+					player.isSubmergedInWater(),
+					player.getAir(),
+					player.getMaxAir()
+				);
+				underwaterEscape.tick(
+					client,
+					mode,
+					player.getAir(),
+					tick,
+					mode == UnderwaterEscapeSearch.SearchMode.BREATHABLE
+						? !player.isSubmergedInWater()
+						: safeLand
+				);
 			}
 			refreshSnapshot(player, threats, danger ? tick : snapshot.lastDangerTick(), stableTicks, null);
 		}
@@ -304,30 +319,6 @@ public final class SurvivalReflexRuntime {
 			recordActuatorFailure(operation, exception, tick);
 			refreshSnapshot(player, threats, danger ? tick : snapshot.lastDangerTick(), stableTicks, failureText(exception));
 		}
-	}
-
-	private void tickSafeLandNavigation(
-		MinecraftClient client,
-		GoalPosition surfaceTarget,
-		long tick
-	) {
-		if (!shouldNavigateToSafeLand(surfaceTarget != null, baritone != null && baritone.isLoaded())) {
-			movementController.swimUp(client, false, false, tick);
-			return;
-		}
-		if (!surfaceTarget.equals(safeLandNavigationTarget)) {
-			movementController.stop(client);
-			cancelSafeLandNavigation();
-			baritone.startNavigate(surfaceTarget);
-			safeLandNavigationTarget = surfaceTarget;
-		}
-		baritone.pollPathEvent().ifPresent(event -> {
-			if ("CALC_FAILED".equalsIgnoreCase(event)
-				|| "CANCELLED".equalsIgnoreCase(event)
-				|| "CANCELED".equalsIgnoreCase(event)) {
-				cancelSafeLandNavigation();
-			}
-		});
 	}
 
 	private void tickMobAttack(MinecraftClient client, ClientPlayerEntity player, List<ResolvedThreat> threats, long tick) {
@@ -398,7 +389,7 @@ public final class SurvivalReflexRuntime {
 		long tick,
 		String reason
 	) {
-		cancelSafeLandNavigation();
+		underwaterEscape.reset(client);
 		movementController.stop(client);
 		SurvivalReflexState nextState = snapshot.holdId() == null
 			? SurvivalReflexState.IDLE
@@ -473,18 +464,12 @@ public final class SurvivalReflexRuntime {
 		);
 	}
 
-	static boolean breathableAndRecovering(ClientPlayerEntity player, int previousAir) {
-		return player != null && breathableAndRecovering(
-			player.isSubmergedInWater(), player.getAir(), player.getMaxAir(), previousAir
-		);
-	}
-
 	static boolean shouldStartDrowning(boolean submerged, int air, int lowAirTicks, boolean drowningDamageObserved) {
 		return drowningDamageObserved || (submerged && air <= Math.max(0, lowAirTicks));
 	}
 
-	static boolean breathableAndRecovering(boolean submerged, int air, int maxAir, int previousAir) {
-		return !submerged && (air >= maxAir || previousAir == Integer.MIN_VALUE || air > previousAir);
+	static boolean airRecoveryMarginReached(boolean submerged, int air, int maxAir) {
+		return UnderwaterHarvestPolicy.mayResumeHarvest(submerged, air, maxAir);
 	}
 
 	static boolean drowningResolved(int breathableTicks) {
@@ -495,16 +480,20 @@ public final class SurvivalReflexRuntime {
 		return hasInterruptedWork ? SurvivalReflexAction.SWIM_TO_AIR : SurvivalReflexAction.REACH_SAFE_LAND;
 	}
 
-	static boolean stableDrowningRecovery(boolean hasInterruptedWork, boolean breathable, boolean safeLand) {
-		return hasInterruptedWork ? breathable : safeLand;
+	static boolean stableDrowningRecovery(boolean hasInterruptedWork, boolean airRecovered, boolean safeLand) {
+		return hasInterruptedWork ? airRecovered : safeLand;
 	}
 
-	static boolean shouldNavigateToSafeLand(boolean targetAvailable, boolean baritoneLoaded) {
-		return targetAvailable && baritoneLoaded;
-	}
-
-	static boolean shouldUseSafeLandNavigation(boolean hasInterruptedWork) {
-		return !hasInterruptedWork;
+	static UnderwaterEscapeSearch.SearchMode drowningSearchMode(
+		boolean hasInterruptedWork,
+		boolean submerged,
+		int air,
+		int maxAir
+	) {
+		if (hasInterruptedWork || submerged || air < Math.max(0, maxAir - UnderwaterHarvestPolicy.AIR_RESUME_MARGIN_TICKS)) {
+			return UnderwaterEscapeSearch.SearchMode.BREATHABLE;
+		}
+		return UnderwaterEscapeSearch.SearchMode.SAFE_STANDING;
 	}
 
 	static boolean shouldBeginReflex(SurvivalReflexState state, boolean dangerPresent) {
@@ -622,13 +611,19 @@ public final class SurvivalReflexRuntime {
 		);
 		if (!shouldActuate) {
 			if (safetyHoldActuating) {
-				movementController.stop(client);
+				underwaterEscape.reset(client);
 				safetyHoldActuating = false;
 			}
 			return;
 		}
 		try {
-			movementController.swimUp(client, false, false, tick);
+			underwaterEscape.tick(
+				client,
+				UnderwaterEscapeSearch.SearchMode.BREATHABLE,
+				player.getAir(),
+				tick,
+				!player.isSubmergedInWater()
+			);
 			safetyHoldActuating = true;
 		}
 		catch (RuntimeException exception) {
@@ -665,13 +660,6 @@ public final class SurvivalReflexRuntime {
 			threat.observed().uuid(), threat.observed().name(), threat.observed().entityTypeId(), threat.distance(),
 			threat.entity().isAlive(), threat.lineOfSight()
 		)).toList();
-	}
-
-	private void cancelSafeLandNavigation() {
-		if (safeLandNavigationTarget != null && baritone != null && baritone.isLoaded()) {
-			baritone.cancel();
-		}
-		safeLandNavigationTarget = null;
 	}
 
 	private static String failureText(RuntimeException exception) {

@@ -11,11 +11,13 @@ import ai.moeru.airicraft.agent.idle.IdleIdeasLoader;
 import ai.moeru.airicraft.agent.tasks.BaritoneTaskExecutor;
 import ai.moeru.airicraft.agent.tasks.BlockBreakTaskExecutor;
 import ai.moeru.airicraft.agent.tasks.BlockInteractionTaskExecutor;
-import ai.moeru.airicraft.agent.tasks.BoundedBlockHarvestTaskExecutor;
+import ai.moeru.airicraft.agent.tasks.UnderwaterHarvestTaskExecutor;
 import ai.moeru.airicraft.agent.tasks.CraftingTaskExecutor;
 import ai.moeru.airicraft.agent.tasks.DispatchingWorldTaskExecutor;
 import ai.moeru.airicraft.agent.tasks.DropItemsTaskExecutor;
 import ai.moeru.airicraft.agent.tasks.EntityInteractionTaskExecutor;
+import ai.moeru.airicraft.agent.tasks.HybridMiningTaskExecutor;
+import ai.moeru.airicraft.agent.tasks.LiveHybridMiningEnvironment;
 import ai.moeru.airicraft.agent.tasks.ReturnToSurfaceTaskExecutor;
 import ai.moeru.airicraft.agent.tasks.SmeltingProcessManager;
 import ai.moeru.airicraft.agent.tasks.SmeltingTaskExecutor;
@@ -211,8 +213,21 @@ public final class ClientRuntimeController {
 
 	private EmbodiedAgentRuntime createRuntime(AiricraftConfig airicraftConfig, AgentConfig agentConfig) {
 		SmeltingProcessManager smeltingProcessManager = new SmeltingProcessManager();
+		BaritoneTaskExecutor baritoneTaskExecutor = new BaritoneTaskExecutor(baritoneFacade);
+		UnderwaterHarvestTaskExecutor underwaterHarvestTaskExecutor = new UnderwaterHarvestTaskExecutor(
+			baritoneFacade,
+			cameraController
+		);
+		LiveHybridMiningEnvironment miningEnvironment = new LiveHybridMiningEnvironment(baritoneFacade);
+		HybridMiningTaskExecutor miningCoordinator = new HybridMiningTaskExecutor(
+			baritoneTaskExecutor,
+			underwaterHarvestTaskExecutor,
+			miningEnvironment,
+			miningEnvironment,
+			miningEnvironment
+		);
 		WorldTaskExecutor worldTaskExecutor = new DispatchingWorldTaskExecutor(
-			new BaritoneTaskExecutor(baritoneFacade),
+			miningCoordinator,
 			new CraftingTaskExecutor(baritoneFacade, cameraController),
 			new DropItemsTaskExecutor(),
 			new EntityInteractionTaskExecutor(baritoneFacade, cameraController),
@@ -220,7 +235,7 @@ public final class ClientRuntimeController {
 			new ReturnToSurfaceTaskExecutor(baritoneFacade),
 			new BlockInteractionTaskExecutor(airicraftConfig.blockInteractionDelayTicks(), cameraController, baritoneFacade),
 			new BlockBreakTaskExecutor(),
-			new BoundedBlockHarvestTaskExecutor(baritoneFacade, cameraController)
+			baritoneFacade
 		);
 		return new EmbodiedAgentRuntime(
 			airicraftConfig,

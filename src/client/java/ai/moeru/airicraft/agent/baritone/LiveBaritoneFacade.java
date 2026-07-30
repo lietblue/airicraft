@@ -16,11 +16,18 @@ import net.minecraft.util.math.BlockPos;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.atomic.AtomicLong;
 
 public final class LiveBaritoneFacade implements BaritoneFacade {
 	private final IBaritone baritone;
 	private final Runnable settingsApplier;
 	private final ConcurrentLinkedQueue<PathEvent> pathEvents = new ConcurrentLinkedQueue<>();
+	private final ConcurrentLinkedQueue<Long> expectedCancellations = new ConcurrentLinkedQueue<>();
+	private final ConcurrentLinkedQueue<Long> deferredCancellations = new ConcurrentLinkedQueue<>();
+	private final AtomicLong cancellationSequence = new AtomicLong();
+	private final AtomicLong cancellationAcknowledgement = new AtomicLong();
+	private long operationGeneration;
+	private long cancelledOperationGeneration = Long.MIN_VALUE;
 
 	public LiveBaritoneFacade() {
 		this(BaritoneAPI.getProvider().getPrimaryBaritone(), BaritoneSettingsProfile::apply);
@@ -33,6 +40,16 @@ public final class LiveBaritoneFacade implements BaritoneFacade {
 			baritone.getGameEventHandler().registerEventListener(new AbstractGameEventListener() {
 				@Override
 				public void onPathEvent(PathEvent event) {
+					if (event == PathEvent.CANCELED) {
+						Long expectedSequence = expectedCancellations.poll();
+						if (expectedSequence == null) {
+							expectedSequence = deferredCancellations.poll();
+						}
+						if (expectedSequence != null) {
+							cancellationAcknowledgement.accumulateAndGet(expectedSequence, Math::max);
+							return;
+						}
+					}
 					pathEvents.add(event);
 				}
 			});
@@ -64,7 +81,7 @@ public final class LiveBaritoneFacade implements BaritoneFacade {
 		if (!isLoaded() || playerName == null || playerName.isBlank()) {
 			return;
 		}
-		pathEvents.clear();
+		beginOperation();
 		baritone.getFollowProcess().follow(entity ->
 			entity != null
 				&& entity.getName() != null
@@ -77,7 +94,7 @@ public final class LiveBaritoneFacade implements BaritoneFacade {
 		if (!isLoaded() || position == null) {
 			return;
 		}
-		pathEvents.clear();
+		beginOperation();
 		baritone.getCustomGoalProcess().setGoalAndPath(new GoalBlock(position.x(), position.y(), position.z()));
 	}
 
@@ -86,7 +103,7 @@ public final class LiveBaritoneFacade implements BaritoneFacade {
 		if (!isLoaded() || position == null) {
 			return;
 		}
-		pathEvents.clear();
+		beginOperation();
 		baritone.getCustomGoalProcess().setGoalAndPath(new GoalNear(
 			new BlockPos(position.x(), position.y(), position.z()),
 			Math.max(1, radiusBlocks)
@@ -98,7 +115,7 @@ public final class LiveBaritoneFacade implements BaritoneFacade {
 		if (!isLoaded() || spec == null) {
 			return;
 		}
-		pathEvents.clear();
+		beginOperation();
 		baritone.getMineProcess().mineByName(spec.quantity(), spec.blockIds().toArray(String[]::new));
 	}
 
@@ -108,12 +125,61 @@ public final class LiveBaritoneFacade implements BaritoneFacade {
 	}
 
 	@Override
-	public void cancel() {
+	public boolean processActive() {
 		if (!isLoaded()) {
-			return;
+			return false;
+		}
+		IPathingBehavior pathing = baritone.getPathingBehavior();
+		return baritone.getMineProcess().isActive()
+			|| baritone.getCustomGoalProcess().isActive()
+			|| baritone.getFollowProcess().isActive()
+			|| (pathing != null && (pathing.isPathing() || pathing.getInProgress().isPresent()))
+			|| baritone.getPathingControlManager().mostRecentInControl()
+				.filter(IBaritoneProcess::isActive)
+				.isPresent();
+	}
+
+	@Override
+	public boolean cancel() {
+		if (!isLoaded()) {
+			return false;
+		}
+		if (cancelledOperationGeneration == operationGeneration) {
+			return cancellationPending();
+		}
+		if (!processActive()) {
+			return cancellationPending();
 		}
 		pathEvents.clear();
-		baritone.getPathingBehavior().cancelEverything();
+		boolean cancellationQueued = baritone.getPathingBehavior().cancelEverything();
+		cancelledOperationGeneration = operationGeneration;
+		long sequence = cancellationSequence.incrementAndGet();
+		if (cancellationQueued) {
+			expectedCancellations.add(sequence);
+		}
+		else {
+			// A later null-command tick may emit CANCELED, while a replacement
+			// process may soft-cancel without one. Suppress it if it arrives, but
+			// do not make release ownership depend on an optional event.
+			deferredCancellations.add(sequence);
+		}
+		return cancellationQueued;
+	}
+
+	@Override
+	public boolean cancellationPending() {
+		return !expectedCancellations.isEmpty();
+	}
+
+	@Override
+	public long cancellationAcknowledgement() {
+		return cancellationAcknowledgement.get();
+	}
+
+	private void beginOperation() {
+		operationGeneration++;
+		pathEvents.clear();
+		deferredCancellations.clear();
 	}
 
 	@Override

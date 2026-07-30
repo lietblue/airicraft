@@ -62,6 +62,42 @@ class BaritoneTaskExecutorTest {
 	}
 
 	@Test
+	void sessionGateDuringWaterReplanPreservesTheDeferredGoal() {
+		FakeBaritoneFacade facade = new FakeBaritoneFacade();
+		facade.activateMineOnStart = true;
+		AtomicReference<Optional<WaterStallRecovery.Sample>> waterSample = new AtomicReference<>(Optional.of(
+			new WaterStallRecovery.Sample(true, 4.0D, 62.0D, -8.0D)
+		));
+		BaritoneTaskExecutor executor = new BaritoneTaskExecutor(
+			() -> null,
+			facade,
+			request -> List.of(),
+			waterSample::get
+		);
+		GoalSnapshot goal = new GoalSnapshot(
+			GoalType.MINE_BLOCKS,
+			null,
+			null,
+			new GoalMineSpec(List.of("minecraft:clay"), 1),
+			0L,
+			"action_graph"
+		);
+		WorldTaskRequest request = request("clay-task", goal);
+
+		executor.tick(multiplayerAt(0L), Optional.of(request));
+		executor.tick(multiplayerAt(WaterStallRecovery.STALL_TICKS), Optional.of(request));
+		assertEquals("WATER_STALL_RELEASING", executor.snapshot().lastPathEvent());
+		assertEquals(1, facade.mineCalls.size());
+
+		executor.tick(singleplayerLocal(), Optional.of(request));
+		facade.mineProcessActive = false;
+		executor.tick(multiplayerAt(WaterStallRecovery.STALL_TICKS + 1L), Optional.of(request));
+
+		assertEquals("WATER_STALL_REPLAN", executor.snapshot().lastPathEvent());
+		assertEquals(2, facade.mineCalls.size());
+	}
+
+	@Test
 	void taskRemovalRestoresTemporaryWaterPenaltyWithoutWaitingForMovement() {
 		FakeBaritoneFacade facade = new FakeBaritoneFacade();
 		AtomicReference<Optional<WaterStallRecovery.Sample>> waterSample = new AtomicReference<>(Optional.of(
@@ -169,7 +205,7 @@ class BaritoneTaskExecutorTest {
 	@Test
 	void activeMineProcessOwnsTargetCompletionFailureAndReselectionWithoutRestartingTask() {
 		FakeBaritoneFacade facade = new FakeBaritoneFacade();
-		facade.mineProcessActive = true;
+		facade.activateMineOnStart = true;
 		BaritoneTaskExecutor executor = new BaritoneTaskExecutor(facade);
 		GoalSnapshot goal = new GoalSnapshot(
 			GoalType.MINE_BLOCKS,
@@ -221,7 +257,7 @@ class BaritoneTaskExecutorTest {
 	@Test
 	void newlySatisfiedMineCancelsOwnedProcessOnceThenCompletes() {
 		FakeBaritoneFacade facade = new FakeBaritoneFacade();
-		facade.mineProcessActive = true;
+		facade.activateMineOnStart = true;
 		BaritoneTaskExecutor executor = new BaritoneTaskExecutor(facade);
 		GoalSnapshot goal = new GoalSnapshot(
 			GoalType.MINE_BLOCKS,
@@ -464,8 +500,6 @@ class BaritoneTaskExecutorTest {
 		WorldTaskRequest request = WorldTaskRequest.collectMine("mine-task", "mine-job", goal, new GoalPosition(10, 64, 20, true))
 			.withMineGoalSatisfied(true);
 
-		executor.tick(multiplayer(), Optional.of(request));
-		facade.pathEvents.add("CANCELED");
 		Optional<TaskTerminalEvent> completed = executor.tick(multiplayer(), Optional.of(request));
 
 		assertTrue(completed.isPresent());
@@ -497,10 +531,44 @@ class BaritoneTaskExecutorTest {
 		assertEquals("pickup_sweep", executor.snapshot().lastPathEvent());
 
 		facade.pathEvents.add("CANCELED");
-		assertTrue(executor.tick(multiplayer(), Optional.of(request)).isEmpty());
-		assertEquals(TaskExecutionState.RUNNING, executor.snapshot().state());
+		Optional<TaskTerminalEvent> completed = executor.tick(multiplayer(), Optional.of(request));
 
-		facade.pathEvents.add("AT_GOAL");
+		assertTrue(completed.isPresent());
+		assertEquals(TaskExecutionState.COMPLETED, completed.orElseThrow().terminalState());
+		assertEquals(TaskTerminationCause.GOAL_REACHED, completed.orElseThrow().terminationCause());
+	}
+
+	@Test
+	void sessionGateDuringSatisfiedMinePickupPreservesTheTerminalOutcome() {
+		FakeBaritoneFacade facade = new FakeBaritoneFacade();
+		GoalPosition finalBrokenBlock = new GoalPosition(10, 64, 20, true);
+		ArrayDeque<List<BaritoneTaskExecutor.MineDropTarget>> observedDrops = new ArrayDeque<>();
+		observedDrops.add(List.of(new BaritoneTaskExecutor.MineDropTarget(41, finalBrokenBlock)));
+		observedDrops.add(List.of());
+		BaritoneTaskExecutor executor = new BaritoneTaskExecutor(
+			() -> null,
+			facade,
+			request -> observedDrops.removeFirst()
+		);
+		GoalSnapshot goal = new GoalSnapshot(
+			GoalType.MINE_BLOCKS,
+			null,
+			null,
+			new GoalMineSpec(List.of("minecraft:clay"), 1),
+			20L,
+			"action_graph"
+		);
+		WorldTaskRequest request = WorldTaskRequest.collectMine(
+			"mine-task",
+			"mine-job",
+			goal,
+			finalBrokenBlock
+		).withMineGoalSatisfied(true);
+
+		assertTrue(executor.tick(multiplayer(), Optional.of(request)).isEmpty());
+		assertEquals("pickup_sweep", executor.snapshot().lastPathEvent());
+		assertTrue(executor.tick(singleplayerLocal(), Optional.of(request)).isEmpty());
+
 		Optional<TaskTerminalEvent> completed = executor.tick(multiplayer(), Optional.of(request));
 
 		assertTrue(completed.isPresent());
@@ -906,6 +974,8 @@ class BaritoneTaskExecutorTest {
 		private final ArrayDeque<String> pathEvents = new ArrayDeque<>();
 		private boolean navigationGoalReached;
 		private boolean mineProcessActive;
+		private boolean activateMineOnStart;
+		private boolean cancellationRequested;
 		private int cancelCalls;
 		private RuntimeException startMineFailure;
 		private boolean loaded = true;
@@ -935,16 +1005,19 @@ class BaritoneTaskExecutorTest {
 
 		@Override
 		public void startFollow(String playerName) {
+			cancellationRequested = false;
 			followCalls.add(playerName);
 		}
 
 		@Override
 		public void startNavigate(GoalPosition position) {
+			cancellationRequested = false;
 			navigateCalls.add(position);
 		}
 
 		@Override
 		public void startNavigateNear(GoalPosition position, int radiusBlocks) {
+			cancellationRequested = false;
 			navigateCalls.add(position);
 		}
 
@@ -953,7 +1026,9 @@ class BaritoneTaskExecutorTest {
 			if (startMineFailure != null) {
 				throw startMineFailure;
 			}
+			cancellationRequested = false;
 			mineCalls.add(spec);
+			mineProcessActive = activateMineOnStart;
 		}
 
 		@Override
@@ -962,8 +1037,12 @@ class BaritoneTaskExecutorTest {
 		}
 
 		@Override
-		public void cancel() {
-			cancelCalls++;
+		public boolean cancel() {
+			if (!cancellationRequested) {
+				cancelCalls++;
+				cancellationRequested = true;
+			}
+			return false;
 		}
 
 		@Override

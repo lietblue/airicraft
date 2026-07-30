@@ -24,7 +24,33 @@ public interface BaritoneFacade {
 
 	boolean mineProcessActive();
 
-	void cancel();
+	/**
+	 * Whether one of the agent-owned Baritone processes still controls pathing.
+	 * Implementations that cannot observe this may conservatively fall back to
+	 * the process name exposed by Baritone.
+	 */
+	default boolean processActive() {
+		return mineProcessActive();
+	}
+
+	/**
+	 * Requests cancellation of the current operation.
+	 *
+	 * @return {@code true} when Baritone queued an internal {@code CANCELED}
+	 * acknowledgement immediately (including one already pending); {@code false}
+	 * when an unsafe movement may finish later without emitting that event
+	 */
+	boolean cancel();
+
+	/** True while an internally requested cancellation still awaits its event. */
+	default boolean cancellationPending() {
+		return false;
+	}
+
+	/** Monotonic acknowledgement for internally requested cancellation events. */
+	default long cancellationAcknowledgement() {
+		return 0L;
+	}
 
 	Optional<String> activeProcessName();
 

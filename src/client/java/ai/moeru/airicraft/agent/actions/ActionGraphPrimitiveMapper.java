@@ -1,7 +1,6 @@
 package ai.moeru.airicraft.agent.actions;
 
 import ai.moeru.airicraft.agent.goals.GoalMineSpec;
-import ai.moeru.airicraft.agent.goals.BlockAcquisitionMode;
 import ai.moeru.airicraft.agent.goals.GoalPosition;
 import ai.moeru.airicraft.agent.job.ActiveJobProposal;
 import ai.moeru.airicraft.agent.tasks.BlockBreakStepArgs;
@@ -212,8 +211,7 @@ public final class ActionGraphPrimitiveMapper {
 				blockIds,
 				targetCount,
 				matchingItemIds.isEmpty() ? blockIds : matchingItemIds,
-				requiredToolItemIds,
-				BlockAcquisitionMode.BOUNDED_LOCAL
+				requiredToolItemIds
 			)),
 			payload
 		);

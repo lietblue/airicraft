@@ -1,7 +1,6 @@
 package ai.moeru.airicraft.agent.actions;
 
 import ai.moeru.airicraft.agent.job.ActiveJobType;
-import ai.moeru.airicraft.agent.goals.BlockAcquisitionMode;
 import ai.moeru.airicraft.agent.tasks.CraftingGridKind;
 import ai.moeru.airicraft.agent.tasks.CraftingOpportunity;
 import ai.moeru.airicraft.agent.tasks.SmeltingOption;
@@ -112,7 +111,7 @@ class ActionGraphPrimitiveMapperTest {
 		assertEquals(ActiveJobType.ENSURE_BLOCKS_IN_INVENTORY, dispatch.proposal().type());
 		assertEquals(List.of("minecraft:wheat"), dispatch.proposal().mineSpec().blockIds());
 		assertEquals(3, dispatch.proposal().mineSpec().quantity());
-		assertEquals(BlockAcquisitionMode.BOUNDED_LOCAL, dispatch.proposal().mineSpec().acquisitionMode());
+		assertEquals(List.of("minecraft:wheat"), dispatch.proposal().mineSpec().matchingItemIds());
 		assertEquals("ENSURE_BLOCKS_IN_INVENTORY", dispatch.payload().get("jobType"));
 		assertEquals(1, dispatch.payload().get("quantity"));
 		assertEquals(3, dispatch.payload().get("targetCount"));

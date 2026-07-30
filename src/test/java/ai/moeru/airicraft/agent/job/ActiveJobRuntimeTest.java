@@ -5,7 +5,6 @@ import ai.moeru.airicraft.agent.dialogue.DialogueIntent;
 import ai.moeru.airicraft.agent.dialogue.DialogueIntentType;
 import ai.moeru.airicraft.agent.dialogue.DialogueResponse;
 import ai.moeru.airicraft.agent.goals.GoalMineSpec;
-import ai.moeru.airicraft.agent.goals.BlockAcquisitionMode;
 import ai.moeru.airicraft.agent.goals.GoalPosition;
 import ai.moeru.airicraft.agent.goals.GoalType;
 import ai.moeru.airicraft.agent.tasks.BlockBreakStepArgs;
@@ -305,14 +304,13 @@ class ActiveJobRuntimeTest {
 	}
 
 	@Test
-	void boundedAcquisitionProjectsDedicatedLocalHarvestTaskLifecycle() {
+	void ensureBlocksInInventoryProjectsBaritoneMineTaskLifecycle() {
 		ActiveJobRuntime runtime = runtime();
 		GoalMineSpec mineSpec = new GoalMineSpec(
 			List.of("minecraft:seagrass"),
 			20,
 			List.of("minecraft:seagrass"),
-			List.of("minecraft:shears"),
-			BlockAcquisitionMode.BOUNDED_LOCAL
+			List.of("minecraft:shears")
 		);
 		runtime.applyPlannerResponse(
 			new DialogueResponse(
@@ -326,11 +324,11 @@ class ActiveJobRuntimeTest {
 		);
 
 		WorldTaskRequest request = runtime.activeTaskRequest().orElseThrow();
-		assertEquals(WorldTaskType.BOUNDED_HARVEST, request.type());
-		assertEquals(BlockAcquisitionMode.BOUNDED_LOCAL, request.goal().mineSpec().acquisitionMode());
+		assertEquals(WorldTaskType.MINE, request.type());
+		assertEquals(mineSpec, request.goal().mineSpec());
 
 		runtime.tick(
-			new TaskExecutionSnapshot(TaskExecutionState.FAILED, request.taskId(), request.goal(), "BoundedBlockHarvest", "resource_not_found_nearby", null, null),
+			new TaskExecutionSnapshot(TaskExecutionState.FAILED, request.taskId(), request.goal(), "Baritone", "resource_not_found_nearby", null, null),
 			evidence(Map.of("minecraft:seagrass", 0), 2L),
 			true,
 			false,

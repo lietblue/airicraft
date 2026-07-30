@@ -1,5 +1,6 @@
 package ai.moeru.airicraft.agent.reflex;
 
+import ai.moeru.airicraft.agent.tasks.UnderwaterEscapeSearch;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -19,11 +20,11 @@ class SurvivalReflexRuntimeTest {
 	}
 
 	@Test
-	void drowningRequiresTwelveBreathableRecoveringTicksToResolve() {
-		assertTrue(SurvivalReflexRuntime.breathableAndRecovering(false, 80, 300, 70));
-		assertTrue(SurvivalReflexRuntime.breathableAndRecovering(false, 300, 300, 300));
-		assertFalse(SurvivalReflexRuntime.breathableAndRecovering(false, 70, 300, 70));
-		assertFalse(SurvivalReflexRuntime.breathableAndRecovering(true, 80, 300, 70));
+	void drowningRequiresAirMarginAndTwelveStableTicksToResolve() {
+		assertFalse(SurvivalReflexRuntime.airRecoveryMarginReached(false, 279, 300));
+		assertTrue(SurvivalReflexRuntime.airRecoveryMarginReached(false, 280, 300));
+		assertTrue(SurvivalReflexRuntime.airRecoveryMarginReached(false, 300, 300));
+		assertFalse(SurvivalReflexRuntime.airRecoveryMarginReached(true, 300, 300));
 		assertFalse(SurvivalReflexRuntime.drowningResolved(11));
 		assertTrue(SurvivalReflexRuntime.drowningResolved(12));
 	}
@@ -36,11 +37,12 @@ class SurvivalReflexRuntimeTest {
 		assertTrue(SurvivalReflexRuntime.stableDrowningRecovery(false, true, true));
 		assertTrue(SurvivalReflexRuntime.stableDrowningRecovery(true, true, false));
 		assertFalse(SurvivalReflexRuntime.stableDrowningRecovery(true, false, true));
-		assertTrue(SurvivalReflexRuntime.shouldNavigateToSafeLand(true, true));
-		assertFalse(SurvivalReflexRuntime.shouldNavigateToSafeLand(false, true));
-		assertFalse(SurvivalReflexRuntime.shouldNavigateToSafeLand(true, false));
-		assertTrue(SurvivalReflexRuntime.shouldUseSafeLandNavigation(false));
-		assertFalse(SurvivalReflexRuntime.shouldUseSafeLandNavigation(true));
+		assertEquals(UnderwaterEscapeSearch.SearchMode.BREATHABLE,
+			SurvivalReflexRuntime.drowningSearchMode(false, true, 80, 300));
+		assertEquals(UnderwaterEscapeSearch.SearchMode.BREATHABLE,
+			SurvivalReflexRuntime.drowningSearchMode(true, false, 300, 300));
+		assertEquals(UnderwaterEscapeSearch.SearchMode.SAFE_STANDING,
+			SurvivalReflexRuntime.drowningSearchMode(false, false, 280, 300));
 	}
 
 	@Test

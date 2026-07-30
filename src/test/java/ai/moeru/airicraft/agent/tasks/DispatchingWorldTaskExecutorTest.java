@@ -1,10 +1,10 @@
 package ai.moeru.airicraft.agent.tasks;
 
+import ai.moeru.airicraft.agent.baritone.BaritoneFacade;
 import ai.moeru.airicraft.agent.session.SessionMode;
 import ai.moeru.airicraft.agent.session.SessionSnapshot;
 import ai.moeru.airicraft.agent.goals.GoalPosition;
 import ai.moeru.airicraft.agent.goals.GoalMineSpec;
-import ai.moeru.airicraft.agent.goals.BlockAcquisitionMode;
 import ai.moeru.airicraft.agent.goals.GoalSnapshot;
 import ai.moeru.airicraft.agent.goals.GoalType;
 import org.junit.jupiter.api.Test;
@@ -14,6 +14,7 @@ import java.util.List;
 import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class DispatchingWorldTaskExecutorTest {
 	@Test
@@ -237,8 +238,8 @@ class DispatchingWorldTaskExecutorTest {
 	}
 
 	@Test
-	void boundedHarvestRequestsRouteToDedicatedExecutorAndResetBaritone() {
-		RecordingExecutor baritone = new RecordingExecutor();
+	void underwaterHarvestRequestsRouteThroughMiningCoordinator() {
+		RecordingExecutor miningCoordinator = new RecordingExecutor();
 		RecordingExecutor crafting = new RecordingExecutor();
 		RecordingExecutor dropItems = new RecordingExecutor();
 		RecordingExecutor entityInteraction = new RecordingExecutor();
@@ -246,9 +247,48 @@ class DispatchingWorldTaskExecutorTest {
 		RecordingExecutor returnToSurface = new RecordingExecutor();
 		RecordingExecutor blockInteraction = new RecordingExecutor();
 		RecordingExecutor blockBreak = new RecordingExecutor();
-		RecordingExecutor boundedHarvest = new RecordingExecutor();
 		DispatchingWorldTaskExecutor executor = new DispatchingWorldTaskExecutor(
-			baritone,
+			miningCoordinator,
+			crafting,
+			dropItems,
+			entityInteraction,
+			smelting,
+			returnToSurface,
+			blockInteraction,
+			blockBreak
+		);
+		GoalSnapshot goal = new GoalSnapshot(
+			GoalType.MINE_BLOCKS,
+			null,
+			null,
+			new GoalMineSpec(List.of("minecraft:seagrass"), 20, List.of("minecraft:seagrass"), List.of("minecraft:shears")),
+			1L,
+			"action_graph"
+		);
+
+		executor.tick(snapshot(), Optional.of(WorldTaskRequest.underwaterHarvest(
+			"harvest-1",
+			"job-1",
+			goal,
+			new UnderwaterHarvestStepArgs(new GoalPosition(2, 52, -4, true))
+		)));
+
+		assertEquals(WorldTaskType.UNDERWATER_HARVEST, miningCoordinator.lastTask.orElseThrow().type());
+	}
+
+	@Test
+	void taskTypeTransitionWaitsForSharedBaritoneOwnershipAndReceipt() {
+		RecordingExecutor mining = new RecordingExecutor();
+		RecordingExecutor crafting = new RecordingExecutor();
+		RecordingExecutor dropItems = new RecordingExecutor();
+		RecordingExecutor entityInteraction = new RecordingExecutor();
+		RecordingExecutor smelting = new RecordingExecutor();
+		RecordingExecutor returnToSurface = new RecordingExecutor();
+		RecordingExecutor blockInteraction = new RecordingExecutor();
+		RecordingExecutor blockBreak = new RecordingExecutor();
+		RecordingBaritone sharedBaritone = new RecordingBaritone();
+		DispatchingWorldTaskExecutor executor = new DispatchingWorldTaskExecutor(
+			mining,
 			crafting,
 			dropItems,
 			entityInteraction,
@@ -256,21 +296,33 @@ class DispatchingWorldTaskExecutorTest {
 			returnToSurface,
 			blockInteraction,
 			blockBreak,
-			boundedHarvest
+			sharedBaritone
 		);
-		GoalSnapshot goal = new GoalSnapshot(
-			GoalType.MINE_BLOCKS,
+		GoalSnapshot navigation = new GoalSnapshot(
+			GoalType.NAVIGATE_TO,
 			null,
+			new GoalPosition(2, 64, 3, true),
 			null,
-			new GoalMineSpec(List.of("minecraft:seagrass"), 20, List.of("minecraft:seagrass"), List.of("minecraft:shears"), BlockAcquisitionMode.BOUNDED_LOCAL),
-			1L,
-			"action_graph"
+			0L,
+			"test"
+		);
+		executor.tick(snapshot(), Optional.of(WorldTaskRequest.direct("nav", navigation)));
+		sharedBaritone.active = true;
+		WorldTaskRequest craft = WorldTaskRequest.craftRecipe(
+			"craft",
+			"job",
+			new CraftRecipeStepArgs("minecraft:stick", 1)
 		);
 
-		executor.tick(snapshot(), Optional.of(WorldTaskRequest.boundedHarvest("harvest-1", "job-1", goal)));
+		assertTrue(executor.tick(snapshot(), Optional.of(craft)).isEmpty());
+		assertTrue(crafting.lastTask.isEmpty());
+		assertEquals("waiting_for_previous_baritone_release", executor.snapshot().lastPathEvent());
 
-		assertEquals(WorldTaskType.BOUNDED_HARVEST, boundedHarvest.lastTask.orElseThrow().type());
-		assertEquals(Optional.empty(), baritone.lastTask);
+		sharedBaritone.cancellationPending = false;
+		executor.tick(snapshot(), Optional.of(craft));
+
+		assertEquals(WorldTaskType.CRAFT_RECIPE, crafting.lastTask.orElseThrow().type());
+		assertEquals(1, sharedBaritone.cancelCalls);
 	}
 
 	private static SessionSnapshot snapshot() {
@@ -300,5 +352,38 @@ class DispatchingWorldTaskExecutorTest {
 		@Override
 		public void shutdown() {
 		}
+	}
+
+	private static final class RecordingBaritone implements BaritoneFacade {
+		private boolean active;
+		private boolean cancellationPending;
+		private int cancelCalls;
+
+		@Override public boolean isLoaded() { return true; }
+		@Override public void applySettings() { }
+		@Override public double walkOnWaterPenalty() { return 0.0D; }
+		@Override public void setWalkOnWaterPenalty(double value) { }
+		@Override public void startFollow(String playerName) { }
+		@Override public void startNavigate(GoalPosition position) { }
+		@Override public void startNavigateNear(GoalPosition position, int radiusBlocks) { }
+		@Override public void startMine(GoalMineSpec spec) { }
+		@Override public boolean mineProcessActive() { return active; }
+		@Override public boolean processActive() { return active; }
+
+		@Override
+		public boolean cancel() {
+			if (active && !cancellationPending) {
+				cancelCalls++;
+				active = false;
+				cancellationPending = true;
+			}
+			return cancellationPending;
+		}
+
+		@Override public boolean cancellationPending() { return cancellationPending; }
+		@Override public Optional<String> activeProcessName() { return Optional.empty(); }
+		@Override public Optional<Double> estimatedTicksToGoal() { return Optional.empty(); }
+		@Override public Optional<String> pollPathEvent() { return Optional.empty(); }
+		@Override public boolean navigationGoalReached(GoalPosition position) { return false; }
 	}
 }
