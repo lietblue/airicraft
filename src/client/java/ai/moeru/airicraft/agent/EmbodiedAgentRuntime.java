@@ -196,6 +196,10 @@ public final class EmbodiedAgentRuntime {
 	static final int BLOCK_MODIFICATION_TOOL_RESULT_TIMEOUT_TICKS = 40;
 	private static final long SMELTING_OUTPUT_READY_POLL_INTERVAL_TICKS = 20L;
 	private static final long RESPAWN_RETRY_TICKS = 20L;
+	private static final int NEARBY_BLOCK_HORIZONTAL_RADIUS = 16;
+	private static final int NEARBY_BLOCK_VERTICAL_RADIUS = 16;
+	private static final long NEARBY_BLOCK_SCAN_INTERVAL_TICKS = 10L;
+	private static final int NEARBY_BLOCK_SCAN_MOVEMENT_THRESHOLD = 4;
 	private static final List<String> KNOWN_NON_BLOCK_MINE_ITEM_IDS = List.of(
 		"minecraft:raw_iron",
 		"minecraft:iron_ingot"
@@ -266,6 +270,10 @@ public final class EmbodiedAgentRuntime {
 	private boolean deathBoundaryApplied;
 	private long lastRespawnRequestTick = -1L;
 	private long lastSmeltingOutputReadyPollTick = Long.MIN_VALUE;
+	private Object nearbyBlockSnapshotWorld;
+	private BlockPos nearbyBlockSnapshotOrigin;
+	private long nearbyBlockSnapshotTick = Long.MIN_VALUE;
+	private Map<String, Integer> nearbyBlockSnapshot = Map.of();
 	private final Map<UUID, String> seenPlayerNames = new LinkedHashMap<>();
 	private volatile PendingCraftToolResult pendingCraftToolResult;
 	private volatile PendingBlockModificationToolResult pendingBlockModificationToolResult;
@@ -456,6 +464,7 @@ public final class EmbodiedAgentRuntime {
 		actionGraphCoordinator.cancelAll("world_left", tickCount);
 		actionGraphCoordinator.clear();
 		blockAcquisitionKnowledgeService.reset();
+		clearNearbyBlockSnapshot();
 		pendingActionGraphTerminalEvent = null;
 		activeJobRuntime.clear();
 		idleIdeaScheduler.reset();
@@ -823,6 +832,7 @@ public final class EmbodiedAgentRuntime {
 		visionService.shutdown();
 		worldTaskExecutor.shutdown();
 		blockAcquisitionKnowledgeService.shutdown();
+		clearNearbyBlockSnapshot();
 		surfaceMemory.clear();
 		actionGraphCoordinator.cancelAll("runtime_shutdown", tickCount);
 		actionGraphCoordinator.shutdown();
@@ -1250,6 +1260,7 @@ public final class EmbodiedAgentRuntime {
 	public void prepareForEvaluation() {
 		proactiveSocialModeOverride = null;
 		evaluationPlannerSuppressed = false;
+		clearNearbyBlockSnapshot();
 		prepareClientForEvaluation();
 	}
 
@@ -3500,12 +3511,16 @@ public final class EmbodiedAgentRuntime {
 
 	private Map<String, Integer> collectNearbyBlocks(MinecraftClient client, BlockPos origin) {
 		if (client == null || client.world == null) {
+			clearNearbyBlockSnapshot();
 			return Map.of();
 		}
+		if (canReuseNearbyBlockSnapshot(client.world, origin)) {
+			return nearbyBlockSnapshot;
+		}
 		java.util.HashMap<String, Integer> counts = new java.util.HashMap<>();
-		for (int dx = -8; dx <= 8; dx++) {
-			for (int dy = -4; dy <= 4; dy++) {
-				for (int dz = -8; dz <= 8; dz++) {
+		for (int dx = -NEARBY_BLOCK_HORIZONTAL_RADIUS; dx <= NEARBY_BLOCK_HORIZONTAL_RADIUS; dx++) {
+			for (int dy = -NEARBY_BLOCK_VERTICAL_RADIUS; dy <= NEARBY_BLOCK_VERTICAL_RADIUS; dy++) {
+				for (int dz = -NEARBY_BLOCK_HORIZONTAL_RADIUS; dz <= NEARBY_BLOCK_HORIZONTAL_RADIUS; dz++) {
 					BlockPos pos = origin.add(dx, dy, dz);
 					if (!client.world.isChunkLoaded(pos)) {
 						continue;
@@ -3515,7 +3530,33 @@ public final class EmbodiedAgentRuntime {
 				}
 			}
 		}
-		return Map.copyOf(counts);
+		nearbyBlockSnapshotWorld = client.world;
+		nearbyBlockSnapshotOrigin = origin.toImmutable();
+		nearbyBlockSnapshotTick = tickCount;
+		nearbyBlockSnapshot = Map.copyOf(counts);
+		return nearbyBlockSnapshot;
+	}
+
+	private boolean canReuseNearbyBlockSnapshot(Object world, BlockPos origin) {
+		if (nearbyBlockSnapshotWorld != world || nearbyBlockSnapshotOrigin == null || origin == null) {
+			return false;
+		}
+		long age = tickCount - nearbyBlockSnapshotTick;
+		if (age < 0L || age >= NEARBY_BLOCK_SCAN_INTERVAL_TICKS) {
+			return false;
+		}
+		long dx = (long) origin.getX() - nearbyBlockSnapshotOrigin.getX();
+		long dy = (long) origin.getY() - nearbyBlockSnapshotOrigin.getY();
+		long dz = (long) origin.getZ() - nearbyBlockSnapshotOrigin.getZ();
+		long movementThresholdSquared = (long) NEARBY_BLOCK_SCAN_MOVEMENT_THRESHOLD * NEARBY_BLOCK_SCAN_MOVEMENT_THRESHOLD;
+		return dx * dx + dy * dy + dz * dz <= movementThresholdSquared;
+	}
+
+	private void clearNearbyBlockSnapshot() {
+		nearbyBlockSnapshotWorld = null;
+		nearbyBlockSnapshotOrigin = null;
+		nearbyBlockSnapshotTick = Long.MIN_VALUE;
+		nearbyBlockSnapshot = Map.of();
 	}
 
 	public VisionDescription describeCapturedView(FirstPersonScreenshotService.CapturedScreenshot screenshot, String prompt) throws LlmBackendException {
