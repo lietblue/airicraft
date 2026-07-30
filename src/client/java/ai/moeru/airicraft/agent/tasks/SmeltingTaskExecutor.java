@@ -36,6 +36,7 @@ public final class SmeltingTaskExecutor implements WorldTaskExecutor {
 	private final Supplier<MinecraftClient> clientSupplier;
 	private final SmeltingProcessManager processManager;
 	private final BaritoneFacade baritoneFacade;
+	private final PlacementSneakController placementSneakController = new PlacementSneakController();
 
 	private WorldTaskRequest appliedTask;
 	private boolean terminalEventEmitted;
@@ -73,6 +74,7 @@ public final class SmeltingTaskExecutor implements WorldTaskExecutor {
 			appliedTask = request;
 		}
 		if (sessionSnapshot == null || !sessionSnapshot.companionActuationAllowed()) {
+			placementSneakController.release(clientSupplier.get());
 			snapshot = snapshot(TaskExecutionState.PAUSED_BY_SESSION_GATE, request, "session_gate");
 			return Optional.empty();
 		}
@@ -463,13 +465,21 @@ public final class SmeltingTaskExecutor implements WorldTaskExecutor {
 		return state.isOf(Blocks.FURNACE) || state.isOf(Blocks.BLAST_FURNACE) || state.isOf(Blocks.SMOKER);
 	}
 
-	private static PlacementAttempt placeFurnace(MinecraftClient client, ClientPlayerEntity player, BlockPos pos) {
+	private PlacementAttempt placeFurnace(MinecraftClient client, ClientPlayerEntity player, BlockPos pos) {
 		if (player.currentScreenHandler != player.playerScreenHandler || !player.currentScreenHandler.getCursorStack().isEmpty()) {
 			return new PlacementAttempt(false, "inventory_not_ready");
 		}
 		Hand hand = selectFurnacePlacementHand(client, player);
 		if (hand == null) {
 			return new PlacementAttempt(false, "furnace_not_selectable");
+		}
+		PlacementSneakController.Preparation sneakPreparation = placementSneakController.prepare(client, player);
+		if (sneakPreparation != PlacementSneakController.Preparation.READY) {
+			return new PlacementAttempt(false, switch (sneakPreparation) {
+				case PRESS_AND_WAIT -> "preparing_sneak";
+				case WAITING -> "waiting_for_sneak";
+				case READY -> throw new IllegalStateException("ready placement handled above");
+			});
 		}
 		BlockPos support = pos.down();
 		BlockHitResult hitResult = new BlockHitResult(
@@ -478,9 +488,15 @@ public final class SmeltingTaskExecutor implements WorldTaskExecutor {
 			support,
 			false
 		);
-		ActionResult result = client.interactionManager.interactBlock(player, hand, hitResult);
-		if (result.isAccepted()) {
-			player.swingHand(hand);
+		ActionResult result;
+		try {
+			result = client.interactionManager.interactBlock(player, hand, hitResult);
+			if (result.isAccepted()) {
+				player.swingHand(hand);
+			}
+		}
+		finally {
+			placementSneakController.release(client);
 		}
 		return new PlacementAttempt(result.isAccepted(), result.isAccepted() ? "accepted" : "interact_" + result);
 	}
@@ -566,6 +582,7 @@ public final class SmeltingTaskExecutor implements WorldTaskExecutor {
 	}
 
 	private Optional<TaskTerminalEvent> complete(WorldTaskRequest request, String message) {
+		placementSneakController.release(clientSupplier.get());
 		cancelNavigationIfStarted();
 		closeOpenedStationIfSafe();
 		snapshot = snapshot(TaskExecutionState.COMPLETED, request, message);
@@ -577,6 +594,7 @@ public final class SmeltingTaskExecutor implements WorldTaskExecutor {
 	}
 
 	private Optional<TaskTerminalEvent> fail(WorldTaskRequest request, String reason) {
+		placementSneakController.release(clientSupplier.get());
 		cancelNavigationIfStarted();
 		closeOpenedStationIfSafe();
 		if (request.type() == WorldTaskType.SMELT_ITEMS) {
@@ -665,6 +683,7 @@ public final class SmeltingTaskExecutor implements WorldTaskExecutor {
 	}
 
 	private void reset() {
+		placementSneakController.release(clientSupplier.get());
 		cancelNavigationIfStarted();
 		closeOpenedStationIfSafe();
 		appliedTask = null;

@@ -82,6 +82,7 @@ public final class BlockInteractionTaskExecutor implements WorldTaskExecutor {
 	private BlockPos directApproachTarget;
 	private long directApproachStartTick;
 	private final Set<BlockPos> attemptedPlacementStandPositions = new HashSet<>();
+	private final PlacementSneakController placementSneakController = new PlacementSneakController();
 	private PendingPlacementConfirmation pendingPlacementConfirmation;
 
 	public BlockInteractionTaskExecutor() {
@@ -135,6 +136,7 @@ public final class BlockInteractionTaskExecutor implements WorldTaskExecutor {
 			appliedTask = request;
 		}
 		if (!actuationAllowed(sessionSnapshot)) {
+			placementSneakController.release(clientSupplier.get());
 			snapshot = snapshot(TaskExecutionState.PAUSED_BY_SESSION_GATE, request, "session_gate");
 			return Optional.empty();
 		}
@@ -270,7 +272,31 @@ public final class BlockInteractionTaskExecutor implements WorldTaskExecutor {
 			return navigateTowardInteractionRange(tick, client, player, request, target, hitTarget, "target_not_visible supportPos=" + compactPos(hitTarget.supportPos()));
 		}
 		clearNavigation();
-		ActionResult blockResult = client.interactionManager.interactBlock(player, hand, hitTarget.hitResult());
+		if (request.type() == WorldTaskType.PLACE_BLOCK) {
+			PlacementSneakController.Preparation sneakPreparation = placementSneakController.prepare(client, player);
+			if (sneakPreparation != PlacementSneakController.Preparation.READY) {
+				snapshot = snapshot(
+					TaskExecutionState.RUNNING,
+					request,
+					(sneakPreparation == PlacementSneakController.Preparation.PRESS_AND_WAIT
+						? "preparing_sneak_for_placement"
+						: "waiting_for_sneak_for_placement")
+						+ " targetIndex=" + targetIndex
+						+ " targetPos=" + compactPos(target)
+						+ " supportPos=" + compactPos(hitTarget.supportPos())
+				);
+				return Optional.empty();
+			}
+		}
+		ActionResult blockResult;
+		try {
+			blockResult = client.interactionManager.interactBlock(player, hand, hitTarget.hitResult());
+		}
+		finally {
+			if (request.type() == WorldTaskType.PLACE_BLOCK) {
+				placementSneakController.release(client);
+			}
+		}
 		ActionResult itemResult = null;
 		if (!blockResult.isAccepted() && request.type() == WorldTaskType.USE_BLOCK && !(blockResult instanceof ActionResult.Fail)) {
 			cameraController.lookAtNow(client, hitTarget.hitVec());
@@ -1201,6 +1227,7 @@ public final class BlockInteractionTaskExecutor implements WorldTaskExecutor {
 	}
 
 	private Optional<TaskTerminalEvent> complete(WorldTaskRequest request, String message) {
+		placementSneakController.release(clientSupplier.get());
 		snapshot = snapshot(TaskExecutionState.COMPLETED, request, message);
 		if (terminalEventEmitted) {
 			return Optional.empty();
@@ -1226,6 +1253,7 @@ public final class BlockInteractionTaskExecutor implements WorldTaskExecutor {
 	}
 
 	private Optional<TaskTerminalEvent> fail(WorldTaskRequest request, String reason) {
+		placementSneakController.release(clientSupplier.get());
 		clearNavigation();
 		clearDirectApproach();
 		movementController.stop(clientSupplier.get());
@@ -1355,6 +1383,7 @@ public final class BlockInteractionTaskExecutor implements WorldTaskExecutor {
 	}
 
 	private void reset() {
+		placementSneakController.release(clientSupplier.get());
 		clearNavigation();
 		clearDirectApproach();
 		movementController.stop(clientSupplier.get());
