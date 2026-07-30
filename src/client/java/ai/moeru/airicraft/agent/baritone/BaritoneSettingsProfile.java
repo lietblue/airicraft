@@ -80,6 +80,11 @@ public final class BaritoneSettingsProfile {
 			public void freeLook(boolean value) {
 				settings.freeLook.value = value;
 			}
+
+			@Override
+			public void exploreForBlocks(boolean value) {
+				settings.exploreForBlocks.value = value;
+			}
 		});
 	}
 
@@ -100,6 +105,7 @@ public final class BaritoneSettingsProfile {
 		settings.randomLooking(0.0D);
 		settings.randomLooking113(0.0D);
 		settings.freeLook(false);
+		settings.exploreForBlocks(false);
 	}
 
 	interface SettingsTarget {
@@ -128,5 +134,7 @@ public final class BaritoneSettingsProfile {
 		void randomLooking113(double value);
 
 		void freeLook(boolean value);
+
+		void exploreForBlocks(boolean value);
 	}
 }

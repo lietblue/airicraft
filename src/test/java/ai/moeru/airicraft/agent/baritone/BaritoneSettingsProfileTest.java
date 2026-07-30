@@ -26,6 +26,7 @@ class BaritoneSettingsProfileTest {
 		assertEquals(0.0D, target.randomLooking);
 		assertEquals(0.0D, target.randomLooking113);
 		assertFalse(target.freeLook);
+		assertFalse(target.exploreForBlocks);
 	}
 
 	private static final class FakeSettingsTarget implements BaritoneSettingsProfile.SettingsTarget {
@@ -42,6 +43,7 @@ class BaritoneSettingsProfileTest {
 		private double randomLooking = 1.0D;
 		private double randomLooking113 = 1.0D;
 		private boolean freeLook = true;
+		private boolean exploreForBlocks = true;
 
 		@Override
 		public void chatControl(boolean value) {
@@ -106,6 +108,11 @@ class BaritoneSettingsProfileTest {
 		@Override
 		public void freeLook(boolean value) {
 			freeLook = value;
+		}
+
+		@Override
+		public void exploreForBlocks(boolean value) {
+			exploreForBlocks = value;
 		}
 	}
 }
