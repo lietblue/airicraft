@@ -9,6 +9,8 @@ import net.minecraft.registry.Registries;
 import net.minecraft.resource.Resource;
 import net.minecraft.resource.ResourceManager;
 import net.minecraft.util.Identifier;
+import net.minecraft.util.math.BlockPos;
+import net.minecraft.world.EmptyBlockView;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -55,6 +57,20 @@ public final class MinecraftBlockAcquisitionLoader {
 				return Optional.empty();
 			}
 			BlockState state = block.getDefaultState();
+			float hardness = state.getHardness(EmptyBlockView.INSTANCE, BlockPos.ORIGIN);
+			int emptyHandBreakTicks = BlockMiningTime.baselineBreakTicks(
+				hardness,
+				1.0,
+				!state.isToolRequired()
+			);
+			LinkedHashMap<String, Integer> breakTicksByTool = new LinkedHashMap<>();
+			for (ToolCandidate candidate : toolCandidates) {
+				breakTicksByTool.put(candidate.itemId(), BlockMiningTime.baselineBreakTicks(
+					hardness,
+					candidate.stack().getMiningSpeedMultiplier(state),
+					!state.isToolRequired() || candidate.stack().isSuitableFor(state)
+				));
+			}
 			List<String> suitableTools = state.isToolRequired()
 				? toolCandidates.stream()
 					.filter(candidate -> candidate.stack().isSuitableFor(state))
@@ -66,7 +82,9 @@ public final class MinecraftBlockAcquisitionLoader {
 				lootTableId.toString(),
 				json.get(),
 				state.isToolRequired(),
-				suitableTools
+				suitableTools,
+				emptyHandBreakTicks,
+				breakTicksByTool
 			));
 		});
 	}
