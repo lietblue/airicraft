@@ -46,7 +46,7 @@ class ActionGraphDebugServiceTest {
 
 		assertEquals(true, payload.get("available"));
 		assertEquals(true, payload.get("resolved"));
-		assertEquals(10, map(payload.get("route")).get("cost"));
+		assertEquals(0, map(payload.get("route")).get("cost"));
 		assertEquals(1, list(map(payload.get("route")).get("steps")).size());
 		assertEquals("craft_item", map(list(map(payload.get("route")).get("steps")).getFirst()).get("targetId"));
 		assertEquals(1, map(payload.get("factSourceCounts")).get("assumedInventory"));
@@ -88,7 +88,7 @@ class ActionGraphDebugServiceTest {
 		));
 
 		assertEquals(true, payload.get("resolved"));
-		assertEquals(15, map(payload.get("route")).get("cost"));
+		assertEquals(0, map(payload.get("route")).get("cost"));
 		assertEquals(1, list(map(payload.get("route")).get("steps")).size());
 		assertEquals("recipe_provider", map(list(map(payload.get("route")).get("steps")).getFirst()).get("actionId"));
 		assertEquals(1, map(payload.get("factSourceCounts")).get("observedCraftRecipes"));

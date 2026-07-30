@@ -19,7 +19,12 @@ public final class ActionResolver {
 	private static final int FUEL_TICKS_LOGS = 300;
 	private static final int FUEL_TICKS_STICKS = 100;
 	private static final int FUEL_TICKS_COAL = 1600;
-	private static final int RECIPE_INPUT_DEFICIT_COST = 25;
+	private static final int PROVIDER_RANK_RECIPE = 0;
+	private static final int PROVIDER_RANK_RESOURCE = 0;
+	private static final int PROVIDER_RANK_SMELTING = 1;
+	private static final int PROVIDER_RANK_MINING = 2;
+	// A known-empty local scan remains reachable through search, but should lose to any plausible local source.
+	private static final int ABSENT_NEARBY_BLOCK_MULTIPLIER = 256;
 	private static final Set<ActionFactProvenance> GUARD_USABLE_PROVENANCE = Set.of(
 		ActionFactProvenance.OBSERVED,
 		ActionFactProvenance.EXECUTOR_REPORTED,
@@ -29,6 +34,7 @@ public final class ActionResolver {
 	private final ActionsetIndex index;
 	private final ActionFactStore facts;
 	private final BlockAcquisitionIndex blockAcquisitions;
+	private final NearbyBlockAvailability nearbyBlockAvailability;
 	private final ActionResolverContext context;
 	private final int maxDepth;
 	private final Set<String> blockedAlternativeKeys;
@@ -47,6 +53,7 @@ public final class ActionResolver {
 			request.actionsets(),
 			new ActionFactStore(request.facts()),
 			request.blockAcquisitions(),
+			request.nearbyBlockAvailability(),
 			request.context(),
 			request.maxDepth(),
 			request.blockedAlternativeKeys(),
@@ -83,6 +90,7 @@ public final class ActionResolver {
 			index,
 			facts,
 			blockAcquisitions,
+			NearbyBlockAvailability.unknown(),
 			context,
 			maxDepth,
 			Set.of(),
@@ -102,6 +110,7 @@ public final class ActionResolver {
 			index,
 			facts,
 			BlockAcquisitionIndex.empty(),
+			NearbyBlockAvailability.unknown(),
 			context,
 			maxDepth,
 			blockedAlternativeKeys,
@@ -122,6 +131,7 @@ public final class ActionResolver {
 			index,
 			facts,
 			BlockAcquisitionIndex.empty(),
+			NearbyBlockAvailability.unknown(),
 			context,
 			maxDepth,
 			blockedAlternativeKeys,
@@ -134,6 +144,7 @@ public final class ActionResolver {
 		ActionsetIndex index,
 		ActionFactStore facts,
 		BlockAcquisitionIndex blockAcquisitions,
+		NearbyBlockAvailability nearbyBlockAvailability,
 		ActionResolverContext context,
 		int maxDepth,
 		Set<String> blockedAlternativeKeys,
@@ -143,6 +154,7 @@ public final class ActionResolver {
 		this.index = Objects.requireNonNull(index, "index");
 		this.facts = Objects.requireNonNull(facts, "facts");
 		this.blockAcquisitions = blockAcquisitions == null ? BlockAcquisitionIndex.empty() : blockAcquisitions;
+		this.nearbyBlockAvailability = nearbyBlockAvailability == null ? NearbyBlockAvailability.unknown() : nearbyBlockAvailability;
 		this.context = Objects.requireNonNull(context, "context");
 		this.maxDepth = Math.max(1, maxDepth);
 		this.blockedAlternativeKeys = blockedAlternativeKeys == null ? Set.of() : Set.copyOf(blockedAlternativeKeys);
@@ -278,19 +290,36 @@ public final class ActionResolver {
 		LinkedHashSet<String> resolving,
 		List<ActionTraceEvent> trace
 	) {
-		Optional<ActionRoute> route = resolveResourceProviderGoal(goal, depth, resolving, trace);
-		if (route.isPresent() || budgetExceeded) {
-			return route;
+		ArrayList<ProviderCandidate> candidates = new ArrayList<>();
+		for (ProviderResolver resolver : List.<ProviderResolver>of(
+			this::resolveResourceProviderGoal,
+			this::resolveRecipeProviderGoal,
+			this::resolveSmeltingProviderGoal,
+			this::resolveMiningProviderGoal
+		)) {
+			resolver.resolve(goal, depth, resolving, trace).ifPresent(candidates::add);
+			if (budgetExceeded) {
+				return Optional.empty();
+			}
 		}
-		route = resolveSmeltingProviderGoal(goal, depth, resolving, trace);
-		if (route.isPresent() || budgetExceeded) {
-			return route;
+		ProviderCandidate selected = candidates.stream()
+			.min(Comparator
+				.comparingInt((ProviderCandidate candidate) -> candidate.route().cost())
+				.thenComparingInt(ProviderCandidate::rank)
+				.thenComparing(ProviderCandidate::actionId)
+				.thenComparing(ProviderCandidate::alternativeId))
+			.orElse(null);
+		if (selected == null) {
+			return Optional.empty();
 		}
-		route = resolveMiningProviderGoal(goal, depth, resolving, trace);
-		if (route.isPresent() || budgetExceeded) {
-			return route;
-		}
-		return resolveRecipeProviderGoal(goal, depth, resolving, trace);
+		trace.add(event(
+			"route_selected",
+			selected.actionId(),
+			selected.alternativeId(),
+			"",
+			Map.of("goal", goal.normalizedKey(), "cost", selected.route().cost())
+		));
+		return Optional.of(selected.route());
 	}
 
 	private Optional<ActionRoute> resolveActionsetGoal(
@@ -318,7 +347,7 @@ public final class ActionResolver {
 					entry.actionId(),
 					alternativeId,
 					"",
-					Map.of("goal", goal.normalizedKey(), "cost", cost(alternative))
+					Map.of("goal", goal.normalizedKey(), "cost", intrinsicAlternativeCost(alternative))
 				));
 
 				List<ActionFact> matchedGuards = matchedGuards(alternative, params, trace, entry.actionId(), alternativeId);
@@ -336,7 +365,7 @@ public final class ActionResolver {
 		return Optional.empty();
 	}
 
-	private Optional<ActionRoute> resolveResourceProviderGoal(
+	private Optional<ProviderCandidate> resolveResourceProviderGoal(
 		ActionGoal goal,
 		int depth,
 		LinkedHashSet<String> resolving,
@@ -371,7 +400,7 @@ public final class ActionResolver {
 		int targetCount = goal.minimum("countAtLeast", 1);
 		int deficitCount = Math.max(0, targetCount - existingGoalCount(goal));
 		if (deficitCount <= 0) {
-			return Optional.of(ActionRoute.empty());
+			return Optional.of(new ProviderCandidate(ActionRoute.empty(), "resource_provider", resourceKind, PROVIDER_RANK_RESOURCE));
 		}
 		if (!entry.get().aggregate()) {
 			String itemId = entry.get().primaryItemId();
@@ -396,26 +425,30 @@ public final class ActionResolver {
 				));
 				return Optional.empty();
 			}
-			trace.add(event("route_selected", "resource_provider", resourceKind, "", Map.of("goal", goal.normalizedKey(), "itemId", itemId)));
-			return itemRoute;
+			return Optional.of(new ProviderCandidate(itemRoute.get(), "resource_provider", resourceKind, PROVIDER_RANK_RESOURCE));
 		}
+		int resourceCost = estimateAggregateResourceCost(entry.get(), deficitCount);
 		trace.add(event(
 			"route_candidate_built",
 			"resource_provider",
 			resourceKind,
 			"",
-			Map.of("goal", goal.normalizedKey(), "cost", 20, "resourceKind", resourceKind)
+			Map.of("goal", goal.normalizedKey(), "cost", resourceCost, "resourceKind", resourceKind)
 		));
 		LinkedHashMap<String, Object> args = new LinkedHashMap<>();
 		args.put("resourceKind", resourceKind);
 		args.put("quantity", deficitCount);
 		ActionPlanStep step = new ActionPlanStep(ActionStepKind.PRIMITIVE, "resource_provider", resourceKind, "collect_resource", "collect_resource", args);
 		trace.add(event("primitive_planned", "resource_provider", resourceKind, "collect_resource", Map.of("primitive", "collect_resource", "resourceKind", resourceKind)));
-		trace.add(event("route_selected", "resource_provider", resourceKind, "", Map.of("goal", goal.normalizedKey())));
-		return Optional.of(new ActionRoute(List.of(step), 20));
+		return Optional.of(new ProviderCandidate(
+			new ActionRoute(List.of(step), resourceCost),
+			"resource_provider",
+			resourceKind,
+			PROVIDER_RANK_RESOURCE
+		));
 	}
 
-	private Optional<ActionRoute> resolveRecipeProviderGoal(
+	private Optional<ProviderCandidate> resolveRecipeProviderGoal(
 		ActionGoal goal,
 		int depth,
 		LinkedHashSet<String> resolving,
@@ -431,7 +464,7 @@ public final class ActionResolver {
 		int targetCount = goal.minimum("countAtLeast", 1);
 		int deficitCount = Math.max(0, targetCount - existingGoalCount(goal));
 		if (deficitCount <= 0) {
-			return Optional.of(ActionRoute.empty());
+			return Optional.of(new ProviderCandidate(ActionRoute.empty(), "recipe_provider", outputItemId, PROVIDER_RANK_RECIPE));
 		}
 
 		ActionRoute bestRoute = null;
@@ -457,22 +490,8 @@ public final class ActionResolver {
 			int craftTimes = Math.max(1, (int) Math.ceil(deficitCount / (double) outputCount));
 			String gridKind = scalar(recipe.payload().get("gridKind"), "");
 			Map<String, Integer> effectiveInputCounts = effectiveRecipeInputCounts(outputItemId, inputCounts, gridKind);
-			int inputDeficitCost = recipeInputDeficit(effectiveInputCounts, craftTimes) * RECIPE_INPUT_DEFICIT_COST;
-			trace.add(event(
-				"route_candidate_built",
-				"recipe_provider",
-				recipeId,
-				"",
-				Map.of(
-					"goal", goal.normalizedKey(),
-					"cost", 15 + inputDeficitCost,
-					"outputItemId", outputItemId,
-					"inputDeficitCost", inputDeficitCost
-				)
-			));
-
 			ArrayList<ActionPlanStep> steps = new ArrayList<>();
-			int routeCost = 15 + inputDeficitCost;
+			int routeCost = 0;
 			boolean inputsResolved = true;
 			for (Map.Entry<String, Integer> input : effectiveInputCounts.entrySet()) {
 				int requiredCount = input.getValue() * craftTimes;
@@ -485,7 +504,7 @@ public final class ActionResolver {
 					break;
 				}
 				steps.addAll(subRoute.get().steps());
-				routeCost += subRoute.get().cost();
+				routeCost = saturatingAdd(routeCost, subRoute.get().cost());
 			}
 			if (!inputsResolved) {
 				continue;
@@ -498,6 +517,18 @@ public final class ActionResolver {
 			steps.add(new ActionPlanStep(ActionStepKind.PRIMITIVE, "recipe_provider", recipeId, "craft_item", "craft_item", args));
 			trace.add(event("primitive_planned", "recipe_provider", recipeId, "craft_item", Map.of("primitive", "craft_item", "itemId", outputItemId)));
 			ActionRoute candidateRoute = new ActionRoute(steps, routeCost);
+			trace.add(event(
+				"route_candidate_built",
+				"recipe_provider",
+				recipeId,
+				"",
+				Map.of(
+					"goal", goal.normalizedKey(),
+					"cost", routeCost,
+					"outputItemId", outputItemId,
+					"intrinsicCost", 0
+				)
+			));
 			if (bestRoute == null || candidateRoute.cost() < bestRoute.cost()) {
 				bestRoute = candidateRoute;
 				bestRecipeId = recipeId;
@@ -507,8 +538,7 @@ public final class ActionResolver {
 		if (bestRoute == null) {
 			return Optional.empty();
 		}
-		trace.add(event("route_selected", "recipe_provider", bestRecipeId, "", Map.of("goal", goal.normalizedKey())));
-		return Optional.of(bestRoute);
+		return Optional.of(new ProviderCandidate(bestRoute, "recipe_provider", bestRecipeId, PROVIDER_RANK_RECIPE));
 	}
 
 	private Map<String, Integer> effectiveRecipeInputCounts(
@@ -674,7 +704,7 @@ public final class ActionResolver {
 		return false;
 	}
 
-	private Optional<ActionRoute> resolveMiningProviderGoal(
+	private Optional<ProviderCandidate> resolveMiningProviderGoal(
 		ActionGoal goal,
 		int depth,
 		LinkedHashSet<String> resolving,
@@ -690,7 +720,7 @@ public final class ActionResolver {
 		int targetCount = goal.minimum("countAtLeast", 1);
 		int deficitCount = Math.max(0, targetCount - existingGoalCount(goal));
 		if (deficitCount <= 0) {
-			return Optional.of(ActionRoute.empty());
+			return Optional.of(new ProviderCandidate(ActionRoute.empty(), "mining_provider", itemId, PROVIDER_RANK_MINING));
 		}
 		List<BlockAcquisitionRule> acquisitionRules = blockAcquisitions.rulesForOutput(itemId);
 		if (acquisitionRules.isEmpty()) {
@@ -708,36 +738,50 @@ public final class ActionResolver {
 			return Optional.empty();
 		}
 
-		LinkedHashMap<MiningOptionKey, List<BlockAcquisitionRule>> groupedRules = new LinkedHashMap<>();
-		for (BlockAcquisitionRule rule : acquisitionRules) {
-			MiningOptionKey key = new MiningOptionKey(rule.emptyHandAllowed(), rule.usableToolItemIds());
-			groupedRules.computeIfAbsent(key, ignored -> new ArrayList<>()).add(rule);
-		}
 		ActionRoute bestRoute = null;
 		String bestOptionId = "";
-		for (Map.Entry<MiningOptionKey, List<BlockAcquisitionRule>> entry : groupedRules.entrySet().stream()
-			.sorted(Comparator.comparing(group -> group.getKey().normalizedKey()))
+		for (BlockAcquisitionRule rule : acquisitionRules.stream()
+			.sorted(Comparator
+				.comparing(BlockAcquisitionRule::blockId)
+				.thenComparing(BlockAcquisitionRule::lootTableId))
 			.toList()) {
-			MiningOptionKey option = entry.getKey();
-			MiningToolPlan toolPlan = resolveMiningToolPlan(option, depth, resolving, trace, goal, itemId);
+			if (!rule.dropEstimateKnown() || rule.expectedDropsPerBreak() <= 0.0) {
+				trace.add(event(
+					"route_candidate_rejected",
+					"mining_provider",
+					rule.blockId(),
+					"",
+					Map.of("goal", goal.normalizedKey(), "reason", "unknown_drop_estimate", "itemId", itemId)
+				));
+				continue;
+			}
+			int expectedBreakCount = expectedBreakCount(deficitCount, rule.expectedDropsPerBreak());
+			int availabilityMultiplier = availabilityMultiplier(rule, expectedBreakCount);
+			MiningToolPlan toolPlan = resolveMiningToolPlan(
+				rule,
+				expectedBreakCount,
+				availabilityMultiplier,
+				depth,
+				resolving,
+				trace,
+				goal,
+				itemId
+			);
 			if (!toolPlan.available()) {
 				continue;
 			}
-			List<String> blockIds = entry.getValue().stream()
-				.map(BlockAcquisitionRule::blockId)
-				.distinct()
-				.sorted()
-				.toList();
-			String optionId = option.normalizedKey() + ":" + String.join(",", blockIds);
-			int routeCost = 35 + toolPlan.route().cost();
+			List<String> blockIds = List.of(rule.blockId());
+			String optionId = rule.blockId() + ":" + toolPlan.normalizedToolKey();
+			int routeCost = saturatingAdd(toolPlan.route().cost(), toolPlan.miningWorkCost());
 			ArrayList<ActionPlanStep> steps = new ArrayList<>(toolPlan.route().steps());
 			LinkedHashMap<String, Object> args = new LinkedHashMap<>();
 			args.put("itemId", itemId);
 			args.put("blockIds", blockIds);
 			args.put("matchingItemIds", List.of(itemId));
-			args.put("requiredToolItemIds", option.emptyHandAllowed() ? List.of() : option.usableToolItemIds());
+			args.put("requiredToolItemIds", toolPlan.requiredToolItemIds());
 			args.put("quantity", deficitCount);
 			args.put("targetCount", targetCount);
+			args.put("estimatedBreakCount", expectedBreakCount);
 			steps.add(new ActionPlanStep(ActionStepKind.PRIMITIVE, "mining_provider", optionId, "mine_block", "mine_block", args));
 			ActionRoute candidate = new ActionRoute(List.copyOf(steps), routeCost);
 			trace.add(event(
@@ -745,12 +789,20 @@ public final class ActionResolver {
 				"mining_provider",
 				optionId,
 				"",
-				Map.of(
-					"goal", goal.normalizedKey(),
-					"cost", routeCost,
-					"itemId", itemId,
-					"blockIds", blockIds,
-					"requiredToolItemIds", args.get("requiredToolItemIds")
+				Map.ofEntries(
+					Map.entry("goal", goal.normalizedKey()),
+					Map.entry("cost", routeCost),
+					Map.entry("itemId", itemId),
+					Map.entry("blockIds", blockIds),
+					Map.entry("requiredToolItemIds", args.get("requiredToolItemIds")),
+					Map.entry("dropProbability", rule.dropProbability()),
+					Map.entry("expectedDropsPerBreak", rule.expectedDropsPerBreak()),
+					Map.entry("expectedBreakCount", expectedBreakCount),
+					Map.entry("breakTicks", toolPlan.breakTicks()),
+					Map.entry("availabilityObserved", nearbyBlockAvailability.observed()),
+					Map.entry("nearbyBlockCount", nearbyBlockAvailability.count(rule.blockId())),
+					Map.entry("availabilityMultiplier", availabilityMultiplier),
+					Map.entry("miningWorkCost", toolPlan.miningWorkCost())
 				)
 			));
 			if (bestRoute == null
@@ -770,43 +822,72 @@ public final class ActionResolver {
 			"blockIds", selected.args().get("blockIds"),
 			"requiredToolItemIds", selected.args().get("requiredToolItemIds")
 		)));
-		trace.add(event("route_selected", "mining_provider", bestOptionId, "", Map.of("goal", goal.normalizedKey())));
-		return Optional.of(bestRoute);
+		return Optional.of(new ProviderCandidate(bestRoute, "mining_provider", bestOptionId, PROVIDER_RANK_MINING));
 	}
 
 	private MiningToolPlan resolveMiningToolPlan(
-		MiningOptionKey option,
+		BlockAcquisitionRule rule,
+		int expectedBreakCount,
+		int availabilityMultiplier,
 		int depth,
 		LinkedHashSet<String> resolving,
 		List<ActionTraceEvent> trace,
 		ActionGoal goal,
 		String outputItemId
 	) {
-		if (option.emptyHandAllowed() || option.usableToolItemIds().stream()
-			.anyMatch(toolItemId -> existingGoalCount(ActionGoal.inventoryItem(toolItemId, 1)) >= 1)) {
-			return MiningToolPlan.available(ActionRoute.empty());
-		}
-		ActionRoute bestRoute = null;
-		String bestToolItemId = "";
-		for (String toolItemId : option.usableToolItemIds()) {
-			Optional<ActionRoute> candidate = resolveGoal(
-				ActionGoal.inventoryItem(toolItemId, 1),
-				depth + 1,
-				resolving,
-				trace
+		MiningToolPlan bestPlan = null;
+		if (rule.emptyHandAllowed()) {
+			int handTicks = normalizedBreakTicks(rule.emptyHandBreakTicks());
+			bestPlan = MiningToolPlan.available(
+				ActionRoute.empty(),
+				List.of(),
+				handTicks,
+				miningWorkCost(handTicks, expectedBreakCount, availabilityMultiplier)
 			);
-			if (candidate.isEmpty()) {
-				continue;
-			}
-			if (bestRoute == null
-				|| candidate.get().cost() < bestRoute.cost()
-				|| (candidate.get().cost() == bestRoute.cost() && toolItemId.compareTo(bestToolItemId) < 0)) {
-				bestRoute = candidate.get();
-				bestToolItemId = toolItemId;
+			for (Map.Entry<String, Integer> tool : rule.breakTicksByToolItemId().entrySet()) {
+				if (existingGoalCount(ActionGoal.inventoryItem(tool.getKey(), 1)) < 1) {
+					continue;
+				}
+				int breakTicks = normalizedBreakTicks(tool.getValue());
+				MiningToolPlan candidate = MiningToolPlan.available(
+					ActionRoute.empty(),
+					List.of(tool.getKey()),
+					breakTicks,
+					miningWorkCost(breakTicks, expectedBreakCount, availabilityMultiplier)
+				);
+				bestPlan = cheaperMiningToolPlan(bestPlan, candidate);
 			}
 		}
-		if (bestRoute != null) {
-			return MiningToolPlan.available(bestRoute);
+		else {
+			for (String toolItemId : rule.usableToolItemIds()) {
+				ActionRoute toolRoute;
+				if (existingGoalCount(ActionGoal.inventoryItem(toolItemId, 1)) >= 1) {
+					toolRoute = ActionRoute.empty();
+				}
+				else {
+					Optional<ActionRoute> candidate = resolveGoal(
+						ActionGoal.inventoryItem(toolItemId, 1),
+						depth + 1,
+						resolving,
+						trace
+					);
+					if (candidate.isEmpty()) {
+						continue;
+					}
+					toolRoute = candidate.get();
+				}
+				int breakTicks = normalizedBreakTicks(rule.breakTicksByToolItemId().getOrDefault(toolItemId, rule.emptyHandBreakTicks()));
+				MiningToolPlan candidate = MiningToolPlan.available(
+					toolRoute,
+					List.of(toolItemId),
+					breakTicks,
+					miningWorkCost(breakTicks, expectedBreakCount, availabilityMultiplier)
+				);
+				bestPlan = cheaperMiningToolPlan(bestPlan, candidate);
+			}
+		}
+		if (bestPlan != null) {
+			return bestPlan;
 		}
 		trace.add(event(
 			"route_candidate_rejected",
@@ -816,13 +897,13 @@ public final class ActionResolver {
 			Map.of(
 				"goal", goal.normalizedKey(),
 				"reason", "missing_tool_prerequisite",
-				"toolItemIds", option.usableToolItemIds()
+				"toolItemIds", rule.usableToolItemIds()
 			)
 		));
 		return MiningToolPlan.unavailable();
 	}
 
-	private Optional<ActionRoute> resolveSmeltingProviderGoal(
+	private Optional<ProviderCandidate> resolveSmeltingProviderGoal(
 		ActionGoal goal,
 		int depth,
 		LinkedHashSet<String> resolving,
@@ -838,7 +919,7 @@ public final class ActionResolver {
 		int targetCount = goal.minimum("countAtLeast", 1);
 		int deficitCount = Math.max(0, targetCount - existingGoalCount(goal));
 		if (deficitCount <= 0) {
-			return Optional.of(ActionRoute.empty());
+			return Optional.of(new ProviderCandidate(ActionRoute.empty(), "smelting_provider", outputItemId, PROVIDER_RANK_SMELTING));
 		}
 
 		ActionRoute bestRoute = null;
@@ -882,7 +963,7 @@ public final class ActionResolver {
 					continue;
 				}
 				steps.addAll(stationRoute.get().steps());
-				routeCost += stationRoute.get().cost();
+				routeCost = saturatingAdd(routeCost, stationRoute.get().cost());
 			}
 
 			Optional<ActionRoute> inputRoute = resolveGoal(
@@ -896,7 +977,7 @@ public final class ActionResolver {
 			}
 
 			steps.addAll(inputRoute.get().steps());
-			routeCost += inputRoute.get().cost();
+			routeCost = saturatingAdd(routeCost, inputRoute.get().cost());
 
 			int cookTimeTicks = intPayload(recipe, "cookTimeTicks", DEFAULT_SMELT_COOK_TICKS);
 			Optional<FuelPlan> fuelPlan = resolveSmeltingFuel(
@@ -909,7 +990,7 @@ public final class ActionResolver {
 			);
 			if (fuelPlan.isPresent()) {
 				steps.addAll(fuelPlan.get().route().steps());
-				routeCost += fuelPlan.get().route().cost();
+				routeCost = saturatingAdd(routeCost, fuelPlan.get().route().cost());
 			}
 			else {
 				trace.add(event(
@@ -1003,8 +1084,7 @@ public final class ActionResolver {
 		if (bestRoute == null) {
 			return Optional.empty();
 		}
-		trace.add(event("route_selected", "smelting_provider", bestOptionId, "", Map.of("goal", goal.normalizedKey())));
-		return Optional.of(bestRoute);
+		return Optional.of(new ProviderCandidate(bestRoute, "smelting_provider", bestOptionId, PROVIDER_RANK_SMELTING));
 	}
 
 	private Optional<FuelPlan> resolveSmeltingFuel(
@@ -1131,7 +1211,7 @@ public final class ActionResolver {
 		List<ActionTraceEvent> trace
 	) {
 		ArrayList<ActionPlanStep> steps = new ArrayList<>();
-		int routeCost = cost(alternative);
+		int routeCost = intrinsicAlternativeCost(alternative);
 		String alternativeId = scalar(alternative.get("id"), "<unnamed>");
 
 		for (Object needObject : objectList(alternative.get("needs"))) {
@@ -1141,7 +1221,7 @@ public final class ActionResolver {
 				return Optional.empty();
 			}
 			steps.addAll(subRoute.get().steps());
-			routeCost += subRoute.get().cost();
+			routeCost = saturatingAdd(routeCost, subRoute.get().cost());
 		}
 
 		for (Object stepObject : objectList(alternative.get("steps"))) {
@@ -1161,7 +1241,7 @@ public final class ActionResolver {
 					return Optional.empty();
 				}
 				steps.addAll(subRoute.get().steps());
-				routeCost += subRoute.get().cost();
+				routeCost = saturatingAdd(routeCost, subRoute.get().cost());
 				continue;
 			}
 			if (step.containsKey("actionset")) {
@@ -1393,43 +1473,172 @@ public final class ActionResolver {
 			.orElse(0);
 	}
 
-	private int recipeInputDeficit(Map<String, Integer> inputCounts, int craftTimes) {
-		int deficit = 0;
-		for (Map.Entry<String, Integer> input : inputCounts.entrySet()) {
-			int requiredCount = input.getValue() * craftTimes;
-			if (requiredCount <= 0) {
-				continue;
+	private int estimateAggregateResourceCost(
+		ResourceGatheringCatalog.ResourceEntry entry,
+		int deficitCount
+	) {
+		int bestCost = Integer.MAX_VALUE;
+		for (String itemId : entry.acceptedItemIds()) {
+			for (BlockAcquisitionRule rule : blockAcquisitions.rulesForOutput(itemId)) {
+				if (!rule.dropEstimateKnown() || rule.expectedDropsPerBreak() <= 0.0) {
+					continue;
+				}
+				int breakTicks = fastestImmediatelyAvailableBreakTicks(rule);
+				if (breakTicks <= 0) {
+					continue;
+				}
+				int expectedBreakCount = expectedBreakCount(deficitCount, rule.expectedDropsPerBreak());
+				int cost = miningWorkCost(
+					breakTicks,
+					expectedBreakCount,
+					availabilityMultiplier(rule, expectedBreakCount)
+				);
+				bestCost = Math.min(bestCost, cost);
 			}
-			deficit += Math.max(0, requiredCount - existingGoalCount(ActionGoal.inventoryItem(input.getKey(), requiredCount)));
 		}
-		return deficit;
+		return bestCost == Integer.MAX_VALUE ? 20 : bestCost;
 	}
 
-	private record MiningOptionKey(boolean emptyHandAllowed, List<String> usableToolItemIds) {
-		private MiningOptionKey {
-			usableToolItemIds = usableToolItemIds == null ? List.of() : usableToolItemIds.stream()
+	private int fastestImmediatelyAvailableBreakTicks(BlockAcquisitionRule rule) {
+		int best = rule.emptyHandAllowed() ? normalizedBreakTicks(rule.emptyHandBreakTicks()) : Integer.MAX_VALUE;
+		for (Map.Entry<String, Integer> tool : rule.breakTicksByToolItemId().entrySet()) {
+			if (existingGoalCount(ActionGoal.inventoryItem(tool.getKey(), 1)) >= 1) {
+				best = Math.min(best, normalizedBreakTicks(tool.getValue()));
+			}
+		}
+		return best == Integer.MAX_VALUE ? -1 : best;
+	}
+
+	private int availabilityMultiplier(BlockAcquisitionRule rule, int expectedBreakCount) {
+		if (!nearbyBlockAvailability.observed()) {
+			return 1;
+		}
+		int nearbyCount = nearbyBlockAvailability.count(rule.blockId());
+		if (nearbyCount <= 0) {
+			return ABSENT_NEARBY_BLOCK_MULTIPLIER;
+		}
+		return Math.max(1, ceilDiv(expectedBreakCount, nearbyCount));
+	}
+
+	private static int expectedBreakCount(int itemCount, double expectedDropsPerBreak) {
+		if (itemCount <= 0) {
+			return 0;
+		}
+		if (!Double.isFinite(expectedDropsPerBreak) || expectedDropsPerBreak <= 0.0) {
+			return Integer.MAX_VALUE;
+		}
+		double expected = Math.ceil(itemCount / expectedDropsPerBreak);
+		return expected >= Integer.MAX_VALUE ? Integer.MAX_VALUE : Math.max(1, (int) expected);
+	}
+
+	private static int normalizedBreakTicks(int breakTicks) {
+		return Math.max(1, breakTicks);
+	}
+
+	private static int miningWorkCost(int breakTicks, int expectedBreakCount, int availabilityMultiplier) {
+		return saturatingMultiply(normalizedBreakTicks(breakTicks), expectedBreakCount, Math.max(1, availabilityMultiplier));
+	}
+
+	private static MiningToolPlan cheaperMiningToolPlan(MiningToolPlan current, MiningToolPlan candidate) {
+		if (current == null) {
+			return candidate;
+		}
+		int currentCost = saturatingAdd(current.route().cost(), current.miningWorkCost());
+		int candidateCost = saturatingAdd(candidate.route().cost(), candidate.miningWorkCost());
+		if (candidateCost != currentCost) {
+			return candidateCost < currentCost ? candidate : current;
+		}
+		if (candidate.breakTicks() != current.breakTicks()) {
+			return candidate.breakTicks() < current.breakTicks() ? candidate : current;
+		}
+		return candidate.normalizedToolKey().compareTo(current.normalizedToolKey()) < 0 ? candidate : current;
+	}
+
+	private static int ceilDiv(int numerator, int denominator) {
+		if (numerator <= 0) {
+			return 0;
+		}
+		if (denominator <= 0) {
+			return Integer.MAX_VALUE;
+		}
+		return (int) Math.min(Integer.MAX_VALUE, ((long) numerator + denominator - 1L) / denominator);
+	}
+
+	private static int saturatingAdd(int left, int right) {
+		long result = (long) Math.max(0, left) + Math.max(0, right);
+		return result >= Integer.MAX_VALUE ? Integer.MAX_VALUE : (int) result;
+	}
+
+	private static int saturatingMultiply(int first, int second, int third) {
+		long result = Math.max(0, first);
+		for (int factor : List.of(second, third)) {
+			if (result == 0L || factor <= 0) {
+				return 0;
+			}
+			if (result > Integer.MAX_VALUE / (long) factor) {
+				return Integer.MAX_VALUE;
+			}
+			result *= factor;
+		}
+		return (int) result;
+	}
+
+	@FunctionalInterface
+	private interface ProviderResolver {
+		Optional<ProviderCandidate> resolve(
+			ActionGoal goal,
+			int depth,
+			LinkedHashSet<String> resolving,
+			List<ActionTraceEvent> trace
+		);
+	}
+
+	private record ProviderCandidate(
+		ActionRoute route,
+		String actionId,
+		String alternativeId,
+		int rank
+	) {
+		private ProviderCandidate {
+			route = route == null ? ActionRoute.empty() : route;
+			actionId = actionId == null ? "" : actionId;
+			alternativeId = alternativeId == null ? "" : alternativeId;
+		}
+	}
+
+	private record MiningToolPlan(
+		boolean available,
+		ActionRoute route,
+		List<String> requiredToolItemIds,
+		int breakTicks,
+		int miningWorkCost
+	) {
+		private MiningToolPlan {
+			route = route == null ? ActionRoute.empty() : route;
+			requiredToolItemIds = requiredToolItemIds == null ? List.of() : requiredToolItemIds.stream()
 				.filter(value -> value != null && !value.isBlank())
 				.distinct()
 				.sorted()
 				.toList();
+			breakTicks = normalizedBreakTicks(breakTicks);
+			miningWorkCost = Math.max(0, miningWorkCost);
 		}
 
-		private String normalizedKey() {
-			return (emptyHandAllowed ? "hand" : "tool") + ":" + String.join(",", usableToolItemIds);
-		}
-	}
-
-	private record MiningToolPlan(boolean available, ActionRoute route) {
-		private MiningToolPlan {
-			route = route == null ? ActionRoute.empty() : route;
-		}
-
-		private static MiningToolPlan available(ActionRoute route) {
-			return new MiningToolPlan(true, route);
+		private static MiningToolPlan available(
+			ActionRoute route,
+			List<String> requiredToolItemIds,
+			int breakTicks,
+			int miningWorkCost
+		) {
+			return new MiningToolPlan(true, route, requiredToolItemIds, breakTicks, miningWorkCost);
 		}
 
 		private static MiningToolPlan unavailable() {
-			return new MiningToolPlan(false, ActionRoute.empty());
+			return new MiningToolPlan(false, ActionRoute.empty(), List.of(), 1, 0);
+		}
+
+		private String normalizedToolKey() {
+			return requiredToolItemIds.isEmpty() ? "hand" : String.join(",", requiredToolItemIds);
 		}
 	}
 
@@ -1552,8 +1761,25 @@ public final class ActionResolver {
 	private static List<Map<String, Object>> alternatives(ActionsetEntry entry) {
 		return objectList(entry.definition().get("alternatives")).stream()
 			.map(ActionResolver::objectMap)
-			.sorted(Comparator.comparingInt(ActionResolver::cost))
+			.sorted(Comparator.comparingInt(ActionResolver::intrinsicAlternativeCost))
 			.toList();
+	}
+
+	private static int intrinsicAlternativeCost(Map<String, Object> alternative) {
+		boolean containsCraft = false;
+		for (Object stepObject : objectList(alternative.get("steps"))) {
+			Map<String, Object> step = objectMap(stepObject);
+			if (step.containsKey("primitive")) {
+				if (!"craft_item".equals(scalar(step.get("primitive"), ""))) {
+					return cost(alternative);
+				}
+				containsCraft = true;
+			}
+			else if (step.containsKey("watch") || step.containsKey("actionset")) {
+				return cost(alternative);
+			}
+		}
+		return containsCraft ? 0 : cost(alternative);
 	}
 
 	private static int cost(Map<String, Object> alternative) {

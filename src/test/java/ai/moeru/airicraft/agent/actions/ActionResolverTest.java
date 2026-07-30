@@ -183,7 +183,7 @@ class ActionResolverTest {
 		ActionResolveResult result = resolver(facts).resolve(ActionGoal.inventoryItem("minecraft:bread", 1));
 
 		assertTrue(result.resolved(), () -> result.trace().toString());
-		assertEquals(10, result.route().cost());
+		assertEquals(0, result.route().cost());
 		assertEquals(List.of("craft_item"), result.route().steps().stream().map(ActionPlanStep::targetId).toList());
 		ActionPlanStep craft = result.route().steps().getFirst();
 		assertEquals(ActionStepKind.PRIMITIVE, craft.kind());
@@ -507,7 +507,7 @@ class ActionResolverTest {
 				"minecraft:oak_log", 2,
 				"minecraft:oak_leaves", 64
 			)),
-			ActionGoal.inventoryItem("minecraft:stick", 4)
+			ActionGoal.inventoryItem("minecraft:stick", 2)
 		);
 
 		assertTrue(result.resolved(), () -> result.trace().toString());
@@ -527,7 +527,7 @@ class ActionResolverTest {
 			oakStickCraftFacts(),
 			oakStickAcquisitions(),
 			NearbyBlockAvailability.observed(Map.of("minecraft:oak_leaves", 64)),
-			ActionGoal.inventoryItem("minecraft:stick", 4)
+			ActionGoal.inventoryItem("minecraft:stick", 2)
 		);
 
 		assertTrue(result.resolved(), () -> result.trace().toString());
@@ -1598,7 +1598,7 @@ class ActionResolverTest {
 
 		assertTrue(result.resolved(), () -> result.trace().toString());
 		assertEquals(List.of("mine_block", "craft_item"), result.route().steps().stream().map(ActionPlanStep::targetId).toList());
-		assertEquals(60, result.route().cost());
+		assertEquals(20, result.route().cost());
 		ActionPlanStep harvest = result.route().steps().getFirst();
 		assertEquals("harvest_wheat", harvest.stepId());
 		assertEquals(List.of("minecraft:wheat"), harvest.args().get("blockIds"));
@@ -1700,6 +1700,13 @@ class ActionResolverTest {
 
 	private static ActionFactStore oakStickCraftFacts() {
 		ActionFactStore facts = new ActionFactStore();
+		facts.upsert(new ActionFact(
+			ActionFactIdentity.inventoryItem("world-a", "bot", "minecraft:stone_axe"),
+			Map.of("count", 1),
+			ActionFactProvenance.OBSERVED,
+			90,
+			ActionFact.NEVER_STALE
+		));
 		addCraftRecipeFact(
 			facts,
 			"oak_log_to_oak_planks",
@@ -1719,8 +1726,20 @@ class ActionResolverTest {
 
 	private static BlockAcquisitionIndex oakStickAcquisitions() {
 		return BlockAcquisitionIndex.of(List.of(
-			scoredHandRule("minecraft:oak_log", "minecraft:oak_log", 1.0, 20),
-			scoredHandRule("minecraft:oak_leaves", "minecraft:stick", 0.2, 10)
+			new BlockAcquisitionRule(
+				"minecraft:oak_log",
+				"minecraft:oak_log",
+				List.of("minecraft:stone_axe"),
+				true,
+				false,
+				"test:blocks/oak_log",
+				true,
+				1.0,
+				1.0,
+				60,
+				Map.of("minecraft:stone_axe", 8)
+			),
+			scoredHandRule("minecraft:oak_leaves", "minecraft:stick", 0.03, 6)
 		));
 	}
 
