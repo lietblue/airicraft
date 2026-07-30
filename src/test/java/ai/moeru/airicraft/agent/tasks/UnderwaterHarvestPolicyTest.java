@@ -78,6 +78,52 @@ class UnderwaterHarvestPolicyTest {
 	}
 
 	@Test
+	void underwaterApproachAscendsOverObstaclesAndDescendsTowardLowerTargets() {
+		assertEquals(
+			UnderwaterHarvestPolicy.VerticalMotion.ASCEND,
+			UnderwaterHarvestPolicy.underwaterVerticalMotion(-2.0D, true, false, true, true)
+		);
+		assertEquals(
+			UnderwaterHarvestPolicy.VerticalMotion.ASCEND,
+			UnderwaterHarvestPolicy.underwaterVerticalMotion(-2.0D, false, true, true, true)
+		);
+		assertEquals(
+			UnderwaterHarvestPolicy.VerticalMotion.DESCEND,
+			UnderwaterHarvestPolicy.underwaterVerticalMotion(-2.0D, false, false, true, true)
+		);
+		assertEquals(
+			UnderwaterHarvestPolicy.VerticalMotion.LEVEL,
+			UnderwaterHarvestPolicy.underwaterVerticalMotion(0.0D, true, false, false, true)
+		);
+	}
+
+	@Test
+	void underwaterBreakGroundingIsBoundedAndRequiresImmediateSupport() {
+		assertEquals(
+			UnderwaterHarvestPolicy.GroundingDecision.DESCEND,
+			UnderwaterHarvestPolicy.groundingDecision(true, true, false, true, 0)
+		);
+		assertEquals(
+			UnderwaterHarvestPolicy.GroundingDecision.GIVE_UP,
+			UnderwaterHarvestPolicy.groundingDecision(
+				true,
+				true,
+				false,
+				true,
+				UnderwaterHarvestPolicy.GROUNDING_TIMEOUT_TICKS
+			)
+		);
+		assertEquals(
+			UnderwaterHarvestPolicy.GroundingDecision.SKIP,
+			UnderwaterHarvestPolicy.groundingDecision(true, true, false, false, 0)
+		);
+		assertEquals(
+			UnderwaterHarvestPolicy.GroundingDecision.SKIP,
+			UnderwaterHarvestPolicy.groundingDecision(true, true, true, true, 0)
+		);
+	}
+
+	@Test
 	void distinguishesMissingSourcesFromAllDiscoveredSourcesBeingExcluded() {
 		assertEquals(
 			UnderwaterHarvestPolicy.SourceExhaustion.RESOURCE_NOT_FOUND_NEARBY,

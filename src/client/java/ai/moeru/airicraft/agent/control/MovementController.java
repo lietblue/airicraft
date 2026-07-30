@@ -11,6 +11,7 @@ public final class MovementController {
 	private boolean movingForward;
 	private boolean sprinting;
 	private boolean jumping;
+	private boolean descending;
 	private boolean stuck;
 	private long movingSinceTick = -1L;
 	private Vec3d movementStartPos;
@@ -37,6 +38,7 @@ public final class MovementController {
 		sprinting = sprint;
 		boolean effectiveJump = shouldJump(player, jump);
 		jumping = effectiveJump;
+		descending = false;
 		enableAutoJump(client);
 
 		client.options.forwardKey.setPressed(true);
@@ -45,7 +47,9 @@ public final class MovementController {
 		client.options.rightKey.setPressed(false);
 		client.options.sprintKey.setPressed(sprint);
 		client.options.jumpKey.setPressed(effectiveJump);
+		client.options.sneakKey.setPressed(false);
 		player.setSprinting(sprint);
+		player.setSneaking(false);
 
 		updateStuckState(player, tick);
 	}
@@ -66,6 +70,20 @@ public final class MovementController {
 		boolean right,
 		boolean sprint,
 		boolean jump,
+		long tick
+	) {
+		moveDirectional(client, forward, back, left, right, sprint, jump, false, tick);
+	}
+
+	public void moveDirectional(
+		MinecraftClient client,
+		boolean forward,
+		boolean back,
+		boolean left,
+		boolean right,
+		boolean sprint,
+		boolean jump,
+		boolean descend,
 		long tick
 	) {
 		if (client == null) {
@@ -89,6 +107,7 @@ public final class MovementController {
 		movingForward = effectiveForward;
 		sprinting = effectiveSprint;
 		jumping = jump;
+		descending = descend && !jump;
 		enableAutoJump(client);
 
 		client.options.forwardKey.setPressed(effectiveForward);
@@ -97,7 +116,9 @@ public final class MovementController {
 		client.options.rightKey.setPressed(right && !left);
 		client.options.sprintKey.setPressed(effectiveSprint);
 		client.options.jumpKey.setPressed(jump);
+		client.options.sneakKey.setPressed(descending);
 		player.setSprinting(effectiveSprint);
+		player.setSneaking(descending);
 
 		updateStuckState(player, tick);
 	}
@@ -110,6 +131,7 @@ public final class MovementController {
 		movingForward = false;
 		sprinting = false;
 		jumping = false;
+		descending = false;
 		stuck = false;
 		movingSinceTick = -1L;
 		movementStartPos = null;
@@ -123,10 +145,12 @@ public final class MovementController {
 		client.options.leftKey.setPressed(false);
 		client.options.rightKey.setPressed(false);
 		client.options.jumpKey.setPressed(false);
+		client.options.sneakKey.setPressed(false);
 		client.options.sprintKey.setPressed(false);
 		restoreAutoJump(client);
 		if (client.player != null) {
 			client.player.setSprinting(false);
+			client.player.setSneaking(false);
 		}
 	}
 
@@ -169,6 +193,7 @@ public final class MovementController {
 		return movingForward
 			|| sprinting
 			|| jumping
+			|| descending
 			|| movingSinceTick >= 0L
 			|| movementStartPos != null
 			|| previousAutoJumpValue != null;

@@ -61,6 +61,10 @@ public final class UnderwaterHarvestTaskExecutor implements WorldTaskExecutor {
 	private boolean completionPending;
 	private String completionMessage;
 	private int harvestedBlocks;
+	private BlockPos assistedApproachTarget;
+	private int obstacleAscentTicksRemaining;
+	private BlockPos groundingTarget;
+	private int groundingTicks;
 
 	public UnderwaterHarvestTaskExecutor(BaritoneFacade baritone, CameraController camera) {
 		this(MinecraftClient::getInstance, baritone, camera);
@@ -220,6 +224,10 @@ public final class UnderwaterHarvestTaskExecutor implements WorldTaskExecutor {
 		if (!awaitBaritoneRelease(request, client, target, "waiting_to_break_after_baritone_release")) {
 			return Optional.empty();
 		}
+		clearApproachAssist();
+		if (tickGroundingForBreak(request, client, player, target, tick)) {
+			return Optional.empty();
+		}
 		movement.stop(client);
 		camera.lookAtNow(client, targetCenter);
 		if (breakingTarget == null) {
@@ -251,6 +259,44 @@ public final class UnderwaterHarvestTaskExecutor implements WorldTaskExecutor {
 		return Optional.empty();
 	}
 
+	private boolean tickGroundingForBreak(
+		WorldTaskRequest request,
+		MinecraftClient client,
+		ClientPlayerEntity player,
+		HarvestTarget target,
+		long tick
+	) {
+		BlockPos immutableTarget = target.pos().toImmutable();
+		if (!immutableTarget.equals(groundingTarget)) {
+			groundingTarget = immutableTarget;
+			groundingTicks = 0;
+		}
+		UnderwaterHarvestPolicy.GroundingDecision decision = UnderwaterHarvestPolicy.groundingDecision(
+			target.environment().underwater(),
+			player.isSubmergedInWater(),
+			player.isOnGround(),
+			hasSolidSupportDirectlyBelow(client, player),
+			groundingTicks
+		);
+		if (decision != UnderwaterHarvestPolicy.GroundingDecision.DESCEND) {
+			clearGrounding();
+			return false;
+		}
+		groundingTicks++;
+		movement.moveDirectional(client, false, false, false, false, false, false, true, tick);
+		snapshot = snapshot(TaskExecutionState.RUNNING, request, "descending_to_ground targetPos="
+			+ compactPos(target.pos()) + " groundingTicks=" + groundingTicks);
+		return true;
+	}
+
+	private static boolean hasSolidSupportDirectlyBelow(MinecraftClient client, ClientPlayerEntity player) {
+		if (client == null || client.world == null || player == null) {
+			return false;
+		}
+		BlockPos supportPos = player.getBlockPos().down();
+		return client.world.getBlockState(supportPos).isSideSolidFullSquare(client.world, supportPos, Direction.UP);
+	}
+
 	private Optional<TaskTerminalEvent> tickApproach(
 		WorldTaskRequest request,
 		MinecraftClient client,
@@ -262,6 +308,7 @@ public final class UnderwaterHarvestTaskExecutor implements WorldTaskExecutor {
 	) {
 		if (run.prepareApproach(target.pos(), Math.sqrt(distanceSquared))) {
 			movement.stop(client);
+			clearApproachAssist();
 		}
 		UnderwaterHarvestPolicy.PositioningMode positioningMode = UnderwaterHarvestPolicy.positioningMode(target.environment());
 		if (positioningMode == UnderwaterHarvestPolicy.PositioningMode.BARITONE) {
@@ -322,12 +369,74 @@ public final class UnderwaterHarvestTaskExecutor implements WorldTaskExecutor {
 		long tick
 	) {
 		camera.lookAtNow(client, targetCenter);
-		boolean swimUp = targetCenter.y > player.getEyeY();
-		movement.moveDirectional(client, true, false, false, false, false, swimUp, tick);
+		UnderwaterHarvestPolicy.VerticalMotion verticalMotion = moveUnderwaterToward(
+			client,
+			player,
+			target.pos(),
+			targetCenter,
+			tick
+		);
 		snapshot = snapshot(TaskExecutionState.RUNNING, request, "approaching_underwater_target targetPos=" + compactPos(target.pos())
 			+ " environment=" + target.environment().name().toLowerCase() + " air=" + player.getAir()
+			+ " verticalMotion=" + verticalMotion.name().toLowerCase()
 			+ " approachTicks=" + run.approachProgress().activeTicks());
 		return Optional.empty();
+	}
+
+	private UnderwaterHarvestPolicy.VerticalMotion moveUnderwaterToward(
+		MinecraftClient client,
+		ClientPlayerEntity player,
+		BlockPos targetPos,
+		Vec3d target,
+		long tick
+	) {
+		if (!player.isTouchingWater() && !player.isSubmergedInWater()) {
+			clearApproachAssist();
+			movement.moveForward(client, false, false, tick);
+			return UnderwaterHarvestPolicy.VerticalMotion.LEVEL;
+		}
+		BlockPos immutableTarget = targetPos.toImmutable();
+		if (!immutableTarget.equals(assistedApproachTarget)) {
+			assistedApproachTarget = immutableTarget;
+			obstacleAscentTicksRemaining = 0;
+		}
+		boolean ascentClear = verticalClearance(client, player, 0.6D);
+		if (player.horizontalCollision && ascentClear) {
+			obstacleAscentTicksRemaining = UnderwaterHarvestPolicy.OBSTACLE_ASCENT_TICKS;
+		}
+		boolean descentClear = verticalClearance(client, player, -0.6D);
+		UnderwaterHarvestPolicy.VerticalMotion motion = UnderwaterHarvestPolicy.underwaterVerticalMotion(
+			target.y - player.getEyeY(),
+			player.horizontalCollision,
+			obstacleAscentTicksRemaining > 0,
+			ascentClear,
+			descentClear
+		);
+		if (motion == UnderwaterHarvestPolicy.VerticalMotion.ASCEND && obstacleAscentTicksRemaining > 0) {
+			obstacleAscentTicksRemaining--;
+		}
+		else if (!ascentClear) {
+			obstacleAscentTicksRemaining = 0;
+		}
+		movement.moveDirectional(
+			client,
+			true,
+			false,
+			false,
+			false,
+			false,
+			motion == UnderwaterHarvestPolicy.VerticalMotion.ASCEND,
+			motion == UnderwaterHarvestPolicy.VerticalMotion.DESCEND,
+			tick
+		);
+		return motion;
+	}
+
+	private static boolean verticalClearance(MinecraftClient client, ClientPlayerEntity player, double offsetY) {
+		return client != null
+			&& client.world != null
+			&& player != null
+			&& client.world.isSpaceEmpty(player, player.getBoundingBox().offset(0.0D, offsetY, 0.0D));
 	}
 
 	static <T> T routeApproachEffect(
@@ -368,6 +477,7 @@ public final class UnderwaterHarvestTaskExecutor implements WorldTaskExecutor {
 		if (!surfacing) {
 			cancelNavigation();
 			clearBreak(client);
+			clearApproachAssist();
 			underwaterEscape.reset(client);
 			surfacing = true;
 		}
@@ -431,12 +541,14 @@ public final class UnderwaterHarvestTaskExecutor implements WorldTaskExecutor {
 		);
 		if (decision == UnderwaterHarvestPolicy.PickupDecision.COLLECTED) {
 			movement.stop(client);
+			clearApproachAssist();
 			run.clearPickupWindow();
 			snapshot = snapshot(TaskExecutionState.RUNNING, request, "pickup_collected itemCount=" + inventoryCount + " targetCount=" + spec.quantity());
 			return Optional.empty();
 		}
 		if (decision == UnderwaterHarvestPolicy.PickupDecision.UNREACHABLE) {
 			movement.stop(client);
+			clearApproachAssist();
 			drop.ifPresent(entity -> unreachableDropIds.add(entity.getUuid()));
 			run.clearPickupWindow();
 			snapshot = snapshot(TaskExecutionState.RUNNING, request, "pickup_unreachable itemCount=" + inventoryCount + " targetCount=" + spec.quantity());
@@ -452,11 +564,23 @@ public final class UnderwaterHarvestTaskExecutor implements WorldTaskExecutor {
 			);
 			Vec3d target = new Vec3d(blockCenter.x(), blockCenter.y(), blockCenter.z());
 			camera.lookAtNow(client, target);
-			movement.moveDirectional(client, true, false, false, false, false, false, tick);
-			snapshot = snapshot(TaskExecutionState.RUNNING, request, "collecting_drop itemCount=" + inventoryCount + " targetCount=" + spec.quantity());
+			UnderwaterHarvestPolicy.VerticalMotion verticalMotion = moveUnderwaterToward(
+				client,
+				player,
+				new BlockPos(
+					(int) Math.floor(target.x),
+					(int) Math.floor(target.y),
+					(int) Math.floor(target.z)
+				),
+				target,
+				tick
+			);
+			snapshot = snapshot(TaskExecutionState.RUNNING, request, "collecting_drop itemCount=" + inventoryCount
+				+ " targetCount=" + spec.quantity() + " verticalMotion=" + verticalMotion.name().toLowerCase());
 			return Optional.empty();
 		}
 		movement.stop(client);
+		clearApproachAssist();
 		snapshot = snapshot(TaskExecutionState.RUNNING, request, "waiting_for_drop itemCount=" + inventoryCount);
 		return Optional.empty();
 	}
@@ -652,6 +776,17 @@ public final class UnderwaterHarvestTaskExecutor implements WorldTaskExecutor {
 		}
 		breakingTarget = null;
 		breakStartedTick = -1L;
+		clearGrounding();
+	}
+
+	private void clearApproachAssist() {
+		assistedApproachTarget = null;
+		obstacleAscentTicksRemaining = 0;
+	}
+
+	private void clearGrounding() {
+		groundingTarget = null;
+		groundingTicks = 0;
 	}
 
 	private void cancelNavigation() {
@@ -685,6 +820,8 @@ public final class UnderwaterHarvestTaskExecutor implements WorldTaskExecutor {
 		clearBreak(client);
 		underwaterEscape.reset(client);
 		movement.stop(client);
+		clearApproachAssist();
+		clearGrounding();
 	}
 
 	private void reset() {

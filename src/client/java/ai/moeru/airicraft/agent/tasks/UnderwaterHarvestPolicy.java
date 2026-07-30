@@ -17,6 +17,8 @@ public final class UnderwaterHarvestPolicy {
 	public static final int APPROACH_TIMEOUT_TICKS = 100;
 	public static final int APPROACH_PROGRESS_WINDOW_TICKS = 40;
 	public static final double APPROACH_MINIMUM_PROGRESS_BLOCKS = 0.25D;
+	public static final int OBSTACLE_ASCENT_TICKS = 12;
+	public static final int GROUNDING_TIMEOUT_TICKS = 20;
 
 	private UnderwaterHarvestPolicy() {
 	}
@@ -141,6 +143,37 @@ public final class UnderwaterHarvestPolicy {
 		return new ApproachUpdate(timedOut || stalled ? ApproachDecision.EXCLUDE_TARGET : ApproachDecision.CONTINUE, next);
 	}
 
+	public static VerticalMotion underwaterVerticalMotion(
+		double targetDeltaFromEye,
+		boolean horizontalCollision,
+		boolean obstacleAscentActive,
+		boolean ascentClear,
+		boolean descentClear
+	) {
+		if (ascentClear && (horizontalCollision || obstacleAscentActive || targetDeltaFromEye > 0.25D)) {
+			return VerticalMotion.ASCEND;
+		}
+		if (descentClear && targetDeltaFromEye < -0.75D) {
+			return VerticalMotion.DESCEND;
+		}
+		return VerticalMotion.LEVEL;
+	}
+
+	public static GroundingDecision groundingDecision(
+		boolean underwaterTarget,
+		boolean submerged,
+		boolean onGround,
+		boolean solidSupportDirectlyBelow,
+		int activeTicks
+	) {
+		if (!underwaterTarget || !submerged || onGround || !solidSupportDirectlyBelow) {
+			return GroundingDecision.SKIP;
+		}
+		return activeTicks < GROUNDING_TIMEOUT_TICKS
+			? GroundingDecision.DESCEND
+			: GroundingDecision.GIVE_UP;
+	}
+
 	public static PickupDecision pickupDecision(
 		int inventoryBeforeBreak,
 		int inventoryCount,
@@ -238,6 +271,18 @@ public final class UnderwaterHarvestPolicy {
 	public enum ApproachDecision {
 		CONTINUE,
 		EXCLUDE_TARGET
+	}
+
+	public enum VerticalMotion {
+		ASCEND,
+		LEVEL,
+		DESCEND
+	}
+
+	public enum GroundingDecision {
+		DESCEND,
+		SKIP,
+		GIVE_UP
 	}
 
 	public record Position(int x, int y, int z) {
