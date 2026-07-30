@@ -6,7 +6,6 @@ import ai.moeru.airicraft.agent.goals.GoalPosition;
 import net.minecraft.block.BlockState;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.network.ClientPlayerEntity;
-import net.minecraft.item.ItemStack;
 import net.minecraft.registry.Registries;
 import net.minecraft.util.math.BlockPos;
 
@@ -30,7 +29,6 @@ public final class LiveHybridMiningEnvironment implements
 	private boolean releaseStarted;
 	private String miningTaskId;
 	private BlockPos miningOrigin;
-	private int baselineMatchingItemCount;
 
 	public LiveHybridMiningEnvironment(BaritoneFacade baritone) {
 		this(MinecraftClient::getInstance, baritone);
@@ -62,14 +60,8 @@ public final class LiveHybridMiningEnvironment implements
 			|| !Objects.equals(miningTaskId, request.taskId())) {
 			return Optional.empty();
 		}
-		int currentMatchingItemCount = matchingInventoryCount(player, mineSpec.matchingItemIds());
-		if (currentMatchingItemCount <= baselineMatchingItemCount) {
-			return Optional.empty();
-		}
 		LocalSourceScan scan = scanLocalSources(client, mineSpec, originFor(request, player));
 		return HybridMiningPolicy.localDryExhaustionFallbackDue(
-			baselineMatchingItemCount,
-			currentMatchingItemCount,
 			scan.drySourcePresent(),
 			scan.underwaterFallback().isPresent()
 		) ? scan.underwaterFallback() : Optional.empty();
@@ -79,21 +71,18 @@ public final class LiveHybridMiningEnvironment implements
 	public void beginTask(WorldTaskRequest request) {
 		MinecraftClient client = clientSupplier.get();
 		ClientPlayerEntity player = client == null ? null : client.player;
-		GoalMineSpec mineSpec = request == null || request.goal() == null ? null : request.goal().mineSpec();
-		if (player == null || mineSpec == null) {
+		if (player == null || request == null || request.goal() == null || request.goal().mineSpec() == null) {
 			clearTask();
 			return;
 		}
 		miningTaskId = request.taskId();
 		miningOrigin = player.getBlockPos().toImmutable();
-		baselineMatchingItemCount = matchingInventoryCount(player, mineSpec.matchingItemIds());
 	}
 
 	@Override
 	public void clearTask() {
 		miningTaskId = null;
 		miningOrigin = null;
-		baselineMatchingItemCount = 0;
 	}
 
 	private BlockPos originFor(WorldTaskRequest request, ClientPlayerEntity player) {
@@ -150,18 +139,6 @@ public final class LiveHybridMiningEnvironment implements
 			)))
 			: Optional.empty();
 		return new LocalSourceScan(drySourcePresent, fallback);
-	}
-
-	private static int matchingInventoryCount(ClientPlayerEntity player, java.util.List<String> matchingItemIds) {
-		Set<String> ids = new HashSet<>(matchingItemIds);
-		int total = 0;
-		for (int slot = 0; slot < player.getInventory().size(); slot++) {
-			ItemStack stack = player.getInventory().getStack(slot);
-			if (!stack.isEmpty() && ids.contains(Registries.ITEM.getId(stack.getItem()).toString())) {
-				total += stack.getCount();
-			}
-		}
-		return total;
 	}
 
 	@Override

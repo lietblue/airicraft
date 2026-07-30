@@ -49,14 +49,8 @@ public final class HybridMiningPolicy {
 		return activeTicks > 0L && activeTicks % LOCAL_SOURCE_PROBE_INTERVAL_TICKS == 0L;
 	}
 
-	static boolean localDryExhaustionFallbackDue(
-		int baselineMatchingItemCount,
-		int currentMatchingItemCount,
-		boolean drySourcePresent,
-		boolean underwaterSourcePresent
-	) {
-		return currentMatchingItemCount > baselineMatchingItemCount
-			&& !drySourcePresent
+	static boolean localDryExhaustionFallbackDue(boolean drySourcePresent, boolean underwaterSourcePresent) {
+		return !drySourcePresent
 			&& underwaterSourcePresent;
 	}
 

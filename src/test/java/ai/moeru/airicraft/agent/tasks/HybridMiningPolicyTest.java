@@ -16,10 +16,9 @@ class HybridMiningPolicyTest {
 	}
 
 	@Test
-	void localDryExhaustionRequiresProgressAndAnUnderwaterSource() {
-		assertFalse(HybridMiningPolicy.localDryExhaustionFallbackDue(2, 2, false, true));
-		assertFalse(HybridMiningPolicy.localDryExhaustionFallbackDue(2, 3, true, true));
-		assertFalse(HybridMiningPolicy.localDryExhaustionFallbackDue(2, 3, false, false));
-		assertTrue(HybridMiningPolicy.localDryExhaustionFallbackDue(2, 3, false, true));
+	void localDryExhaustionRequiresNoDrySourceAndAnUnderwaterSource() {
+		assertFalse(HybridMiningPolicy.localDryExhaustionFallbackDue(true, true));
+		assertFalse(HybridMiningPolicy.localDryExhaustionFallbackDue(false, false));
+		assertTrue(HybridMiningPolicy.localDryExhaustionFallbackDue(false, true));
 	}
 }
