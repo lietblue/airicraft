@@ -10,10 +10,14 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class UnderwaterHarvestPolicyTest {
 	@Test
-	void classifiesFluidContainedAndWaterAdjacentSourcesWithoutResourceNames() {
-		assertEquals(UnderwaterHarvestPolicy.SourceEnvironment.FLUID_CONTAINED, UnderwaterHarvestPolicy.classify(true, true));
-		assertEquals(UnderwaterHarvestPolicy.SourceEnvironment.WATER_ADJACENT, UnderwaterHarvestPolicy.classify(false, true));
-		assertEquals(UnderwaterHarvestPolicy.SourceEnvironment.DRY, UnderwaterHarvestPolicy.classify(false, false));
+	void classifiesOnlyAccessibleDryAndUnderwaterSourcesWithoutResourceNames() {
+		assertEquals(UnderwaterHarvestPolicy.SourceEnvironment.FLUID_CONTAINED,
+			UnderwaterHarvestPolicy.classify(true, true, true).orElseThrow());
+		assertEquals(UnderwaterHarvestPolicy.SourceEnvironment.DRY,
+			UnderwaterHarvestPolicy.classify(false, true, true).orElseThrow());
+		assertEquals(UnderwaterHarvestPolicy.SourceEnvironment.WATER_ADJACENT,
+			UnderwaterHarvestPolicy.classify(false, false, true).orElseThrow());
+		assertTrue(UnderwaterHarvestPolicy.classify(false, false, false).isEmpty());
 	}
 
 	@Test

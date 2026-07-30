@@ -8,9 +8,7 @@ import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.network.ClientPlayerEntity;
 import net.minecraft.item.ItemStack;
 import net.minecraft.registry.Registries;
-import net.minecraft.registry.tag.FluidTags;
 import net.minecraft.util.math.BlockPos;
-import net.minecraft.util.math.Direction;
 
 import java.util.HashSet;
 import java.util.Objects;
@@ -129,17 +127,12 @@ public final class LiveHybridMiningEnvironment implements
 					if (!requestedBlocks.contains(Registries.BLOCK.getId(state.getBlock()).toString())) {
 						continue;
 					}
-					boolean containsFluid = state.getFluidState().isIn(FluidTags.WATER);
-					boolean adjacentFluid = false;
-					for (Direction direction : Direction.values()) {
-						BlockPos adjacent = pos.offset(direction);
-						if (client.world.isChunkLoaded(adjacent)
-							&& client.world.getFluidState(adjacent).isIn(FluidTags.WATER)) {
-							adjacentFluid = true;
-							break;
-						}
+					Optional<UnderwaterHarvestPolicy.SourceEnvironment> environment =
+						MinecraftUnderwaterSourceClassifier.classify(client, pos, state);
+					if (environment.isEmpty()) {
+						continue;
 					}
-					if (UnderwaterHarvestPolicy.classify(containsFluid, adjacentFluid).underwater()) {
+					if (environment.orElseThrow().underwater()) {
 						underwaterSourcePresent = true;
 					}
 					else {

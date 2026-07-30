@@ -13,7 +13,6 @@ import net.minecraft.entity.ItemEntity;
 import net.minecraft.item.ItemStack;
 import net.minecraft.network.packet.c2s.play.UpdateSelectedSlotC2SPacket;
 import net.minecraft.registry.Registries;
-import net.minecraft.registry.tag.FluidTags;
 import net.minecraft.screen.PlayerScreenHandler;
 import net.minecraft.screen.ScreenHandler;
 import net.minecraft.screen.slot.SlotActionType;
@@ -181,7 +180,18 @@ public final class UnderwaterHarvestTaskExecutor implements WorldTaskExecutor {
 			snapshot = snapshot(TaskExecutionState.RUNNING, request, "target_reassess targetPos=" + compactPos(target.pos()));
 			return Optional.empty();
 		}
-		UnderwaterHarvestPolicy.SourceEnvironment currentEnvironment = classifySource(client, target.pos(), currentState);
+		Optional<UnderwaterHarvestPolicy.SourceEnvironment> observedEnvironment =
+			MinecraftUnderwaterSourceClassifier.classify(client, target.pos(), currentState);
+		if (observedEnvironment.isEmpty()) {
+			cancelNavigation();
+			movement.stop(client);
+			clearBreak(client);
+			run.invalidateBatch();
+			snapshot = snapshot(TaskExecutionState.RUNNING, request, "target_no_longer_accessible targetPos="
+				+ compactPos(target.pos()));
+			return Optional.empty();
+		}
+		UnderwaterHarvestPolicy.SourceEnvironment currentEnvironment = observedEnvironment.orElseThrow();
 		if (!run.reconcileEnvironment(currentEnvironment)) {
 			cancelNavigation();
 			movement.stop(client);
@@ -476,11 +486,15 @@ public final class UnderwaterHarvestTaskExecutor implements WorldTaskExecutor {
 					if (excludedTargets.contains(pos)) {
 						continue;
 					}
-					candidates.add(new UnderwaterHarvestPolicy.Target(
-						new UnderwaterHarvestPolicy.Position(x, y, z),
-						blockId,
-						classifySource(client, pos, state)
-					));
+					Optional<UnderwaterHarvestPolicy.SourceEnvironment> environment =
+						MinecraftUnderwaterSourceClassifier.classify(client, pos, state);
+					if (environment.isPresent()) {
+						candidates.add(new UnderwaterHarvestPolicy.Target(
+							new UnderwaterHarvestPolicy.Position(x, y, z),
+							blockId,
+							environment.orElseThrow()
+						));
+					}
 				}
 			}
 		}
@@ -493,24 +507,6 @@ public final class UnderwaterHarvestTaskExecutor implements WorldTaskExecutor {
 			))
 			.toList();
 		return new SourceScan(selected, Set.copyOf(discovered));
-	}
-
-	private static UnderwaterHarvestPolicy.SourceEnvironment classifySource(
-		MinecraftClient client,
-		BlockPos pos,
-		BlockState state
-	) {
-		boolean containsFluid = state.getFluidState().isIn(FluidTags.WATER);
-		boolean adjacentFluid = false;
-		for (Direction direction : Direction.values()) {
-			BlockPos adjacent = pos.offset(direction);
-			if (client.world.isChunkLoaded(adjacent)
-				&& client.world.getFluidState(adjacent).isIn(FluidTags.WATER)) {
-				adjacentFluid = true;
-				break;
-			}
-		}
-		return UnderwaterHarvestPolicy.classify(containsFluid, adjacentFluid);
 	}
 
 	private static Optional<ItemEntity> nearestMatchingDrop(

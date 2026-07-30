@@ -3,6 +3,7 @@ package ai.moeru.airicraft.agent.tasks;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
 
 /**
  * Pure policy for local, environment-aware underwater harvesting.
@@ -20,11 +21,20 @@ public final class UnderwaterHarvestPolicy {
 	private UnderwaterHarvestPolicy() {
 	}
 
-	public static SourceEnvironment classify(boolean sourceContainsFluid, boolean adjacentFluid) {
+	public static Optional<SourceEnvironment> classify(
+		boolean sourceContainsFluid,
+		boolean dryStandingApproach,
+		boolean adjacentFluid
+	) {
 		if (sourceContainsFluid) {
-			return SourceEnvironment.FLUID_CONTAINED;
+			return Optional.of(SourceEnvironment.FLUID_CONTAINED);
 		}
-		return adjacentFluid ? SourceEnvironment.WATER_ADJACENT : SourceEnvironment.DRY;
+		if (dryStandingApproach) {
+			return Optional.of(SourceEnvironment.DRY);
+		}
+		return adjacentFluid
+			? Optional.of(SourceEnvironment.WATER_ADJACENT)
+			: Optional.empty();
 	}
 
 	public static boolean shouldSurface(boolean submerged, int remainingAir, int maxAir) {
