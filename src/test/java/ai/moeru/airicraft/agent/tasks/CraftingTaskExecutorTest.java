@@ -1,8 +1,10 @@
 package ai.moeru.airicraft.agent.tasks;
 
+import ai.moeru.airicraft.agent.control.CameraController;
+import ai.moeru.airicraft.agent.goals.GoalPosition;
+import ai.moeru.airicraft.agent.session.SessionSnapshot;
 import net.minecraft.recipe.NetworkRecipeId;
 import net.minecraft.screen.PlayerScreenHandler;
-import net.minecraft.util.math.BlockPos;
 import org.junit.jupiter.api.Test;
 
 import java.util.Optional;
@@ -16,18 +18,62 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class CraftingTaskExecutorTest {
 	@Test
-	void portableTableFromInventoryUsesFirstSafeNearbyGroundSite() {
-		BlockPos origin = new BlockPos(39, 67, 152);
-		BlockPos safeGroundSite = new BlockPos(39, 66, 153);
-
+	void portableTableFromInventoryChoosesPlacementFlow() {
 		assertEquals(
 			CraftingTaskExecutor.WorkbenchSetupAction.PLACE_PORTABLE_TABLE,
 			CraftingTaskExecutor.initialWorkbenchSetupAction(false, true)
 		);
-		assertEquals(
-			Optional.of(safeGroundSite),
-			CraftingTaskExecutor.chooseCraftingTablePlacement(origin, safeGroundSite::equals)
+	}
+
+	@Test
+	void portableTablePlacementDelegatesOneExactTargetToBlockExecutor() {
+		GoalPosition target = new GoalPosition(2, 59, -5, true);
+		WorldTaskRequest parent = WorldTaskRequest.craftRecipe(
+			"craft-1",
+			"graph-1",
+			new CraftRecipeStepArgs("minecraft:iron_pickaxe", 1)
 		);
+
+		WorldTaskRequest placement = CraftingTaskExecutor.portableTablePlacementRequest(parent, 2, target);
+
+		assertEquals(WorldTaskType.PLACE_BLOCK, placement.type());
+		assertEquals("craft-1:portable-table:2", placement.taskId());
+		assertEquals("graph-1", placement.sourceJobId());
+		assertEquals("minecraft:crafting_table", placement.blockPlacement().itemId());
+		assertEquals(target, placement.blockPlacement().targetPosition());
+		assertEquals("auto", placement.blockPlacement().facePreference());
+		assertEquals("air_or_replaceable", placement.blockPlacement().requiredTargetMaterial());
+	}
+
+	@Test
+	void placementFailureKeepsStableCodeAndDetailedEvidence() {
+		assertEquals(
+			"crafting_table_place_failed stage=placement_exhausted attempted=4 lastTarget=2,59,-5 lastFailure=safe_stand_position_not_found",
+			CraftingTaskExecutor.portableTableFailure(
+				"placement_exhausted",
+				4,
+				new GoalPosition(2, 59, -5, true),
+				"safe_stand_position_not_found"
+			)
+		);
+	}
+
+	@Test
+	void craftingLifecycleCancelsOwnedPlacementExecutor() {
+		RecordingPlacementExecutor placementExecutor = new RecordingPlacementExecutor();
+		CraftingTaskExecutor executor = new CraftingTaskExecutor(
+			() -> null,
+			null,
+			new CameraController(),
+			placementExecutor
+		);
+
+		executor.onWorldLeave();
+		assertEquals(1, placementExecutor.worldLeaveCount);
+
+		executor.shutdown();
+		assertEquals(2, placementExecutor.worldLeaveCount);
+		assertEquals(1, placementExecutor.shutdownCount);
 	}
 
 	@Test
@@ -43,14 +89,6 @@ class CraftingTaskExecutorTest {
 		assertTrue(CraftingTaskExecutor.craftingTableWithinSearchBounds(-8, 5, 5));
 		assertFalse(CraftingTaskExecutor.craftingTableWithinSearchBounds(-17, 0, 0));
 		assertFalse(CraftingTaskExecutor.craftingTableWithinSearchBounds(0, 9, 0));
-	}
-
-	@Test
-	void portableTablePlacementRequiresWorldSafetyReachAndVisibility() {
-		assertTrue(CraftingTaskExecutor.isSafeCraftingTablePlacement(true, true, true, true, true));
-		assertFalse(CraftingTaskExecutor.isSafeCraftingTablePlacement(true, true, false, true, true));
-		assertFalse(CraftingTaskExecutor.isSafeCraftingTablePlacement(true, true, true, false, true));
-		assertFalse(CraftingTaskExecutor.isSafeCraftingTablePlacement(true, true, true, true, false));
 	}
 
 	@Test
@@ -171,5 +209,30 @@ class CraftingTaskExecutorTest {
 		assertEquals(123, request.syncId());
 		assertEquals(networkRecipeId, request.networkRecipeId());
 		assertFalse(request.craftAll());
+	}
+
+	private static final class RecordingPlacementExecutor implements WorldTaskExecutor {
+		private int worldLeaveCount;
+		private int shutdownCount;
+
+		@Override
+		public Optional<TaskTerminalEvent> tick(SessionSnapshot sessionSnapshot, Optional<WorldTaskRequest> activeTask) {
+			return Optional.empty();
+		}
+
+		@Override
+		public TaskExecutionSnapshot snapshot() {
+			return TaskExecutionSnapshot.idle();
+		}
+
+		@Override
+		public void onWorldLeave() {
+			worldLeaveCount++;
+		}
+
+		@Override
+		public void shutdown() {
+			shutdownCount++;
+		}
 	}
 }

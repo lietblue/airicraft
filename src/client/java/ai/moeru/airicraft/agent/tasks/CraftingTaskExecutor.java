@@ -6,14 +6,12 @@ import ai.moeru.airicraft.agent.goals.GoalPosition;
 import ai.moeru.airicraft.agent.session.SessionSnapshot;
 import net.minecraft.block.BlockState;
 import net.minecraft.block.Blocks;
-import net.minecraft.block.ShapeContext;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.gui.screen.ingame.InventoryScreen;
 import net.minecraft.client.network.ClientPlayerEntity;
 import net.minecraft.item.Item;
 import net.minecraft.item.ItemStack;
 import net.minecraft.item.Items;
-import net.minecraft.network.packet.c2s.play.UpdateSelectedSlotC2SPacket;
 import net.minecraft.recipe.NetworkRecipeId;
 import net.minecraft.screen.CraftingScreenHandler;
 import net.minecraft.screen.PlayerScreenHandler;
@@ -26,12 +24,11 @@ import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Direction;
 import net.minecraft.util.math.Vec3d;
 
-import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
 import java.util.Optional;
-import java.util.function.Predicate;
 import java.util.function.Supplier;
 
 public final class CraftingTaskExecutor implements WorldTaskExecutor {
@@ -44,6 +41,7 @@ public final class CraftingTaskExecutor implements WorldTaskExecutor {
 	private final Supplier<MinecraftClient> clientSupplier;
 	private final BaritoneFacade baritoneFacade;
 	private final CameraController cameraController;
+	private final WorldTaskExecutor portableTablePlacementExecutor;
 
 	private WorldTaskRequest appliedTask;
 	private CraftingPlan plan;
@@ -57,6 +55,8 @@ public final class CraftingTaskExecutor implements WorldTaskExecutor {
 	private BlockPos placedTablePos;
 	private boolean navigationStarted;
 	private boolean openedWorkbenchForTask;
+	private PortableTablePlacementPolicy.AttemptState portableTablePlacementState;
+	private WorldTaskRequest portableTablePlacementTask;
 	private TaskExecutionSnapshot snapshot = TaskExecutionSnapshot.idle();
 
 	public CraftingTaskExecutor() {
@@ -80,9 +80,24 @@ public final class CraftingTaskExecutor implements WorldTaskExecutor {
 	}
 
 	CraftingTaskExecutor(Supplier<MinecraftClient> clientSupplier, BaritoneFacade baritoneFacade, CameraController cameraController) {
+		this(
+			clientSupplier,
+			baritoneFacade,
+			cameraController,
+			new BlockInteractionTaskExecutor(clientSupplier, cameraController, 0, baritoneFacade)
+		);
+	}
+
+	CraftingTaskExecutor(
+		Supplier<MinecraftClient> clientSupplier,
+		BaritoneFacade baritoneFacade,
+		CameraController cameraController,
+		WorldTaskExecutor portableTablePlacementExecutor
+	) {
 		this.clientSupplier = Objects.requireNonNull(clientSupplier, "clientSupplier");
 		this.baritoneFacade = baritoneFacade;
 		this.cameraController = Objects.requireNonNull(cameraController, "cameraController");
+		this.portableTablePlacementExecutor = Objects.requireNonNull(portableTablePlacementExecutor, "portableTablePlacementExecutor");
 	}
 
 	@Override
@@ -135,7 +150,7 @@ public final class CraftingTaskExecutor implements WorldTaskExecutor {
 		}
 
 		if (plan.gridKind() == CraftingGridKind.WORKBENCH_3X3) {
-			WorkbenchReadiness readiness = ensureWorkbenchReady(request, client, player);
+			WorkbenchReadiness readiness = ensureWorkbenchReady(request, sessionSnapshot, client, player);
 			if (readiness.failureReason().isPresent()) {
 				return fail(request, readiness.failureReason().get());
 			}
@@ -191,7 +206,12 @@ public final class CraftingTaskExecutor implements WorldTaskExecutor {
 		return toCraftingPlan(resolved);
 	}
 
-	private WorkbenchReadiness ensureWorkbenchReady(WorldTaskRequest request, MinecraftClient client, ClientPlayerEntity player) {
+	private WorkbenchReadiness ensureWorkbenchReady(
+		WorldTaskRequest request,
+		SessionSnapshot sessionSnapshot,
+		MinecraftClient client,
+		ClientPlayerEntity player
+	) {
 		if (player.currentScreenHandler instanceof CraftingScreenHandler) {
 			if (phase != CraftPhase.IDLE
 				&& phase != CraftPhase.PLACING_INPUTS
@@ -261,23 +281,7 @@ public final class CraftingTaskExecutor implements WorldTaskExecutor {
 				snapshot = snapshot(TaskExecutionState.RUNNING, request, "inventory_screen_dismissed");
 				return WorkbenchReadiness.notReadyState();
 			}
-			if (placeCraftingTable(client, player)) {
-				phase = CraftPhase.WAITING_FOR_TABLE_PLACED;
-				waitTicks = 0;
-				snapshot = snapshot(TaskExecutionState.RUNNING, request, "crafting_table_placed");
-				return WorkbenchReadiness.notReadyState();
-			}
-			return WorkbenchReadiness.failed("crafting_table_place_failed");
-		}
-
-		if (phase == CraftPhase.WAITING_FOR_TABLE_PLACED) {
-			if (placedTablePos != null && client.world != null && client.world.getBlockState(placedTablePos).isOf(Blocks.CRAFTING_TABLE)) {
-				tableTarget = new TableTarget(placedTablePos, standPositionForTable(client, player, placedTablePos).orElse(null));
-				phase = CraftPhase.OPENING_TABLE;
-				waitTicks = 0;
-				return WorkbenchReadiness.notReadyState();
-			}
-			return waitForWorkbench(request, player, "crafting_table_place_failed");
+			return tickPortableTablePlacement(request, sessionSnapshot, client, player);
 		}
 
 		if (phase == CraftPhase.NAVIGATING_TO_TABLE) {
@@ -367,6 +371,7 @@ public final class CraftingTaskExecutor implements WorldTaskExecutor {
 
 	private WorkbenchReadiness fallBackToPortableCraftingTable(WorldTaskRequest request, ClientPlayerEntity player) {
 		cancelNavigationIfStarted();
+		cancelPortableTablePlacement();
 		tableTarget = null;
 		placedTablePos = null;
 		waitTicks = 0;
@@ -632,6 +637,22 @@ public final class CraftingTaskExecutor implements WorldTaskExecutor {
 		return player.squaredDistanceTo(Vec3d.ofCenter(pos)) <= TABLE_INTERACTION_RANGE_SQUARED;
 	}
 
+	private static GoalPosition goalPosition(BlockPos pos) {
+		return new GoalPosition(pos.getX(), pos.getY(), pos.getZ(), true);
+	}
+
+	private static BlockPos blockPos(GoalPosition position) {
+		return new BlockPos(position.x(), position.y(), position.z());
+	}
+
+	private static String compactPos(BlockPos pos) {
+		return pos == null ? "none" : pos.getX() + "," + pos.getY() + "," + pos.getZ();
+	}
+
+	private static String compactGoal(GoalPosition position) {
+		return position == null ? "none" : position.x() + "," + position.y() + "," + position.z();
+	}
+
 	private static boolean closeInventoryScreenIfOpen(MinecraftClient client, ClientPlayerEntity player) {
 		if (client.currentScreen instanceof InventoryScreen
 			&& player.currentScreenHandler == player.playerScreenHandler
@@ -642,131 +663,183 @@ public final class CraftingTaskExecutor implements WorldTaskExecutor {
 		return false;
 	}
 
-	private boolean placeCraftingTable(MinecraftClient client, ClientPlayerEntity player) {
-		if (client.world == null || player.currentScreenHandler != player.playerScreenHandler || !player.currentScreenHandler.getCursorStack().isEmpty()) {
-			return false;
-		}
-		placedTablePos = chooseCraftingTablePlacement(client, player).orElse(null);
-		if (placedTablePos == null) {
-			return false;
-		}
-		Hand placementHand = selectCraftingTablePlacementHand(client, player);
-		if (placementHand == null) {
-			return false;
-		}
-		BlockPos support = placedTablePos.down();
-		Vec3d hitVec = new Vec3d(support.getX() + 0.5D, support.getY() + 1.0D, support.getZ() + 0.5D);
-		cameraController.lookAtNow(client, hitVec);
-		BlockHitResult hitResult = new BlockHitResult(
-			hitVec,
-			Direction.UP,
-			support,
-			false
-		);
-		ActionResult result = client.interactionManager.interactBlock(player, placementHand, hitResult);
-		if (result.isAccepted()) {
-			player.swingHand(placementHand);
-		}
-		return result.isAccepted();
-	}
-
-	private static Optional<BlockPos> chooseCraftingTablePlacement(MinecraftClient client, ClientPlayerEntity player) {
-		return chooseCraftingTablePlacement(
-			player.getBlockPos(),
-			candidate -> canPlaceCraftingTableAt(client, player, candidate)
-		);
-	}
-
-	static Optional<BlockPos> chooseCraftingTablePlacement(BlockPos origin, Predicate<BlockPos> placementAllowed) {
-		Objects.requireNonNull(origin, "origin");
-		Objects.requireNonNull(placementAllowed, "placementAllowed");
-		for (BlockPos candidate : craftingTablePlacementCandidatePositions(origin)) {
-			if (placementAllowed.test(candidate)) {
-				return Optional.of(candidate.toImmutable());
-			}
-		}
-		return Optional.empty();
-	}
-
-	static List<BlockPos> craftingTablePlacementCandidatePositions(BlockPos origin) {
-		ArrayList<BlockPos> candidates = new ArrayList<>();
-		for (int yOffset : List.of(0, -1, 1)) {
-			for (Direction direction : Direction.Type.HORIZONTAL) {
-				candidates.add(origin.offset(direction).add(0, yOffset, 0));
-			}
-		}
-		for (int yOffset : List.of(0, -1, 1)) {
-			for (int dx = -2; dx <= 2; dx++) {
-				for (int dz = -2; dz <= 2; dz++) {
-					BlockPos candidate = origin.add(dx, yOffset, dz);
-					if (!candidate.equals(origin)) {
-						candidates.add(candidate);
-					}
-				}
-			}
-		}
-		return List.copyOf(candidates);
-	}
-
-	private static boolean canPlaceCraftingTableAt(MinecraftClient client, ClientPlayerEntity player, BlockPos pos) {
-		if (client.world == null || !client.world.isChunkLoaded(pos) || !client.world.isChunkLoaded(pos.down())) {
-			return false;
-		}
-		BlockState target = client.world.getBlockState(pos);
-		BlockState support = client.world.getBlockState(pos.down());
-		Vec3d hitVec = new Vec3d(pos.getX() + 0.5D, pos.getY(), pos.getZ() + 0.5D);
-		return isSafeCraftingTablePlacement(
-			target.isAir() || target.isReplaceable(),
-			support.isSideSolidFullSquare(client.world, pos.down(), Direction.UP),
-			client.world.canPlace(Blocks.CRAFTING_TABLE.getDefaultState(), pos, ShapeContext.ofPlacement(player)),
-			player.squaredDistanceTo(hitVec) <= TABLE_INTERACTION_RANGE_SQUARED,
-			BlockInteractionTaskExecutor.raycastMatchesSupport(client, player, pos.down(), hitVec, Direction.UP)
-		);
-	}
-
-	static boolean isSafeCraftingTablePlacement(
-		boolean targetReplaceable,
-		boolean supportSolid,
-		boolean worldAllowsPlacement,
-		boolean withinInteractionRange,
-		boolean supportVisible
+	private WorkbenchReadiness tickPortableTablePlacement(
+		WorldTaskRequest request,
+		SessionSnapshot sessionSnapshot,
+		MinecraftClient client,
+		ClientPlayerEntity player
 	) {
-		return targetReplaceable
-			&& supportSolid
-			&& worldAllowsPlacement
-			&& withinInteractionRange
-			&& supportVisible;
+		if (client.world == null
+			|| player.currentScreenHandler != player.playerScreenHandler
+			|| !player.currentScreenHandler.getCursorStack().isEmpty()) {
+			return WorkbenchReadiness.failed(portableTableFailure("placement_unavailable", 0, null, "crafting_busy"));
+		}
+		if (portableTablePlacementState == null) {
+			GoalPosition origin = goalPosition(player.getBlockPos());
+			List<PortableTablePlacementPolicy.SiteObservation> observations = PortableTablePlacementPolicy
+				.candidatePositions(origin)
+				.stream()
+				.map(candidate -> observePortableTableSite(client, candidate, origin))
+				.toList();
+			List<GoalPosition> candidates = PortableTablePlacementPolicy.rankFeasibleSites(
+				origin,
+				observations,
+				PortableTablePlacementPolicy.MAX_ATTEMPTS
+			);
+			portableTablePlacementState = new PortableTablePlacementPolicy.AttemptState(
+				candidates,
+				sessionSnapshot.tickCount()
+			);
+			if (candidates.isEmpty()) {
+				return WorkbenchReadiness.failed(portableTableFailure("site_not_found", 0, null, "no_static_feasible_site"));
+			}
+		}
+
+		PortableTablePlacementPolicy.AttemptState placementState = portableTablePlacementState;
+		if (placementState.timedOut(sessionSnapshot.tickCount())) {
+			return WorkbenchReadiness.failed(portableTableFailure(
+				"placement_timeout",
+				placementState.attemptNumber(),
+				placementState.activeTarget(),
+				placementState.lastFailure()
+			));
+		}
+		if (placementState.exhausted()) {
+			return WorkbenchReadiness.failed(portableTableFailure(
+				"placement_exhausted",
+				placementState.candidates().size(),
+				null,
+				placementState.lastFailure()
+			));
+		}
+
+		GoalPosition target = placementState.activeTarget();
+		if (portableTablePlacementTask == null) {
+			portableTablePlacementTask = portableTablePlacementRequest(request, placementState.attemptNumber(), target);
+		}
+		Optional<TaskTerminalEvent> terminal = portableTablePlacementExecutor.tick(
+			sessionSnapshot,
+			Optional.of(portableTablePlacementTask)
+		);
+		TaskExecutionSnapshot childSnapshot = portableTablePlacementExecutor.snapshot();
+		if (terminal.isEmpty()) {
+			snapshot = snapshot(TaskExecutionState.RUNNING, request, portableTableProgressEvent(placementState, target, childSnapshot.lastPathEvent()));
+			return WorkbenchReadiness.notReadyState();
+		}
+
+		TaskTerminalEvent childTerminal = terminal.get();
+		BlockPos targetPos = blockPos(target);
+		boolean exactTablePlaced = childTerminal.terminalState() == TaskExecutionState.COMPLETED
+			&& client.world.isChunkLoaded(targetPos)
+			&& client.world.getBlockState(targetPos).isOf(Blocks.CRAFTING_TABLE);
+		resetPortableTablePlacementAttempt(sessionSnapshot);
+		if (exactTablePlaced) {
+			placedTablePos = targetPos;
+			tableTarget = new TableTarget(targetPos, standPositionForTable(client, player, targetPos).orElse(null));
+			clearPortableTablePlacementState();
+			phase = CraftPhase.OPENING_TABLE;
+			waitTicks = 0;
+			snapshot = snapshot(TaskExecutionState.RUNNING, request, "crafting_table_placed targetPos=" + compactPos(targetPos));
+			return WorkbenchReadiness.notReadyState();
+		}
+
+		String failure = childTerminal.terminalState() == TaskExecutionState.COMPLETED
+			? "placed_block_not_crafting_table"
+			: childTerminal.message();
+		if (PortableTablePlacementPolicy.failureDisposition(failure) == PortableTablePlacementPolicy.FailureDisposition.TERMINATE) {
+			return WorkbenchReadiness.failed(portableTableFailure(
+				"placement_failed",
+				placementState.attemptNumber(),
+				target,
+				failure
+			));
+		}
+		portableTablePlacementState = placementState.advance(failure);
+		portableTablePlacementTask = null;
+		if (portableTablePlacementState.exhausted()) {
+			return WorkbenchReadiness.failed(portableTableFailure(
+				"placement_exhausted",
+				portableTablePlacementState.candidates().size(),
+				target,
+				failure
+			));
+		}
+		snapshot = snapshot(TaskExecutionState.RUNNING, request,
+			"crafting_table_placement_retry"
+				+ " completedAttempt=" + placementState.attemptNumber()
+				+ " failedTarget=" + compactGoal(target)
+				+ " failure=" + failure);
+		return WorkbenchReadiness.notReadyState();
 	}
 
-	private static boolean selectHotbarItem(MinecraftClient client, ClientPlayerEntity player, Item item) {
-		ScreenHandler handler = player.currentScreenHandler;
-		int sourceSlot = findInventorySlot(handler, CraftingGridSpec.PLAYER, item);
-		if (sourceSlot < 0) {
-			return false;
-		}
-		int selectedHotbarSlot = player.getInventory().getSelectedSlot();
-		if (sourceSlot >= CraftingGridSpec.PLAYER.hotbarStart() && sourceSlot < CraftingGridSpec.PLAYER.hotbarEnd()) {
-			selectAndSyncHotbarSlot(client, player, sourceSlot - CraftingGridSpec.PLAYER.hotbarStart());
-			return true;
-		}
-		client.interactionManager.clickSlot(handler.syncId, sourceSlot, selectedHotbarSlot, SlotActionType.SWAP, player);
-		selectAndSyncHotbarSlot(client, player, selectedHotbarSlot);
-		ItemStack selected = player.getInventory().getSelectedStack();
-		return !selected.isEmpty() && selected.isOf(item);
+	private static PortableTablePlacementPolicy.SiteObservation observePortableTableSite(
+		MinecraftClient client,
+		GoalPosition candidate,
+		GoalPosition origin
+	) {
+		BlockPos target = blockPos(candidate);
+		boolean targetLoaded = client.world != null && client.world.isChunkLoaded(target);
+		BlockState targetState = targetLoaded ? client.world.getBlockState(target) : null;
+		boolean adjacentSupportAvailable = client.world != null && Arrays.stream(Direction.values())
+			.map(target::offset)
+			.filter(client.world::isChunkLoaded)
+			.map(client.world::getBlockState)
+			.anyMatch(state -> !state.isAir() && !state.isReplaceable());
+		return new PortableTablePlacementPolicy.SiteObservation(
+			candidate,
+			targetLoaded,
+			targetState != null && (targetState.isAir() || targetState.isReplaceable()),
+			adjacentSupportAvailable,
+			occupiesPlayerSpace(candidate, origin)
+		);
 	}
 
-	private static void selectAndSyncHotbarSlot(MinecraftClient client, ClientPlayerEntity player, int hotbarSlot) {
-		player.getInventory().setSelectedSlot(hotbarSlot);
-		if (client.getNetworkHandler() != null) {
-			client.getNetworkHandler().sendPacket(new UpdateSelectedSlotC2SPacket(hotbarSlot));
-		}
+	private static boolean occupiesPlayerSpace(GoalPosition candidate, GoalPosition origin) {
+		return candidate.x() == origin.x()
+			&& candidate.z() == origin.z()
+			&& candidate.y() >= origin.y()
+			&& candidate.y() <= origin.y() + 1;
 	}
 
-	private static Hand selectCraftingTablePlacementHand(MinecraftClient client, ClientPlayerEntity player) {
-		if (player.getOffHandStack().isOf(Items.CRAFTING_TABLE)) {
-			return Hand.OFF_HAND;
-		}
-		return selectHotbarItem(client, player, Items.CRAFTING_TABLE) ? Hand.MAIN_HAND : null;
+	static WorldTaskRequest portableTablePlacementRequest(
+		WorldTaskRequest parent,
+		int attemptNumber,
+		GoalPosition target
+	) {
+		return WorldTaskRequest.placeBlock(
+			parent.taskId() + ":portable-table:" + attemptNumber,
+			parent.sourceJobId(),
+			new BlockPlacementStepArgs("minecraft:crafting_table", target, "auto", "air_or_replaceable")
+		);
+	}
+
+	private static String portableTableProgressEvent(
+		PortableTablePlacementPolicy.AttemptState state,
+		GoalPosition target,
+		String childEvent
+	) {
+		return "crafting_table_placing"
+			+ " attempt=" + state.attemptNumber() + "/" + state.candidates().size()
+			+ " targetPos=" + compactGoal(target)
+			+ " childEvent=" + (childEvent == null ? "starting" : childEvent);
+	}
+
+	static String portableTableFailure(String stage, int attempted, GoalPosition target, String lastFailure) {
+		return "crafting_table_place_failed"
+			+ " stage=" + stage
+			+ " attempted=" + attempted
+			+ " lastTarget=" + compactGoal(target)
+			+ " lastFailure=" + (lastFailure == null || lastFailure.isBlank() ? "none" : lastFailure);
+	}
+
+	private void resetPortableTablePlacementAttempt(SessionSnapshot sessionSnapshot) {
+		portableTablePlacementExecutor.tick(sessionSnapshot, Optional.empty());
+		portableTablePlacementTask = null;
+	}
+
+	private void clearPortableTablePlacementState() {
+		portableTablePlacementState = null;
+		portableTablePlacementTask = null;
 	}
 
 	private static boolean hasCraftingTableItem(ScreenHandler handler) {
@@ -825,6 +898,7 @@ public final class CraftingTaskExecutor implements WorldTaskExecutor {
 
 	private Optional<TaskTerminalEvent> complete(WorldTaskRequest request) {
 		cancelNavigationIfStarted();
+		cancelPortableTablePlacement();
 		closeOwnedWorkbenchIfSafe();
 		snapshot = snapshot(TaskExecutionState.COMPLETED, request, "crafted");
 		if (terminalEventEmitted) {
@@ -850,6 +924,7 @@ public final class CraftingTaskExecutor implements WorldTaskExecutor {
 
 	private Optional<TaskTerminalEvent> fail(WorldTaskRequest request, String reason) {
 		cancelNavigationIfStarted();
+		cancelPortableTablePlacement();
 		closeOwnedWorkbenchIfSafe();
 		snapshot = snapshot(TaskExecutionState.FAILED, request, reason);
 		if (terminalEventEmitted) {
@@ -887,10 +962,12 @@ public final class CraftingTaskExecutor implements WorldTaskExecutor {
 	@Override
 	public void shutdown() {
 		reset();
+		portableTablePlacementExecutor.shutdown();
 	}
 
 	private void reset() {
 		cancelNavigationIfStarted();
+		cancelPortableTablePlacement();
 		closeOwnedWorkbenchIfSafe();
 		appliedTask = null;
 		plan = null;
@@ -907,6 +984,11 @@ public final class CraftingTaskExecutor implements WorldTaskExecutor {
 		snapshot = TaskExecutionSnapshot.idle();
 	}
 
+	private void cancelPortableTablePlacement() {
+		portableTablePlacementExecutor.onWorldLeave();
+		clearPortableTablePlacementState();
+	}
+
 	private void cancelNavigationIfStarted() {
 		if (navigationStarted && baritoneFacade != null && baritoneFacade.isLoaded()) {
 			baritoneFacade.cancel();
@@ -921,7 +1003,6 @@ public final class CraftingTaskExecutor implements WorldTaskExecutor {
 		CRAFTING_TABLE_WAITING_FOR_TAKE,
 		NAVIGATING_TO_TABLE,
 		PLACING_TABLE,
-		WAITING_FOR_TABLE_PLACED,
 		OPENING_TABLE,
 		WAITING_FOR_TABLE_SCREEN,
 		PLACING_INPUTS,
