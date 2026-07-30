@@ -19,7 +19,37 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class HybridMiningTaskExecutorTest {
 	@Test
-	void localDryExhaustionAfterInventoryProgressHandsOffBeforeBaritoneFailure() {
+	void underwaterOnlyPatchHandsOffBeforeStartingBaritone() {
+		RecordingExecutor baritone = new RecordingExecutor();
+		RecordingExecutor underwater = new RecordingExecutor();
+		LocalDepletionProbe sourceProbe = new LocalDepletionProbe();
+		sourceProbe.localFallback = Optional.of(stepArgs());
+		HybridMiningTaskExecutor executor = executor(
+			baritone,
+			underwater,
+			sourceProbe,
+			Optional::empty,
+			HybridMiningTaskExecutorTest::released
+		);
+		WorldTaskRequest request = request();
+
+		executor.tick(session(0L), Optional.of(request));
+
+		assertEquals(HybridMiningTaskExecutor.Phase.RELEASING_BARITONE, executor.phase());
+		assertEquals(1, sourceProbe.beginCalls);
+		assertEquals(1, sourceProbe.localProbeCalls);
+		assertEquals(0, baritone.activeCalls());
+		assertEquals(1, baritone.emptyCalls());
+		assertEquals(0, underwater.activeCalls());
+
+		executor.tick(session(1L), Optional.of(request));
+
+		assertEquals(HybridMiningTaskExecutor.Phase.UNDERWATER_HARVEST, executor.phase());
+		assertEquals(request.taskId(), underwater.lastActive().orElseThrow().taskId());
+	}
+
+	@Test
+	void localDryExhaustionAfterInitialProbeHandsOffBeforeBaritoneFailure() {
 		RecordingExecutor baritone = new RecordingExecutor();
 		RecordingExecutor underwater = new RecordingExecutor();
 		LocalDepletionProbe sourceProbe = new LocalDepletionProbe();
@@ -43,7 +73,7 @@ class HybridMiningTaskExecutorTest {
 
 		assertEquals(HybridMiningTaskExecutor.Phase.RELEASING_BARITONE, executor.phase());
 		assertEquals(1, sourceProbe.beginCalls);
-		assertEquals(1, sourceProbe.localProbeCalls);
+		assertEquals(2, sourceProbe.localProbeCalls);
 		assertEquals(1, baritone.emptyCalls());
 		assertEquals(0, underwater.activeCalls());
 	}

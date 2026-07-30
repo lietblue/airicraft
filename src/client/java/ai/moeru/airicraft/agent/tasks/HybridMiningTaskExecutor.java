@@ -25,6 +25,7 @@ public final class HybridMiningTaskExecutor implements WorldTaskExecutor {
 	private UnderwaterHarvestStepArgs underwaterStepArgs;
 	private HybridMiningPolicy.PostReplanStall postReplanStall;
 	private long baritonePrimaryActiveTicks;
+	private boolean initialLocalSourcesChecked;
 	private long releaseActiveTicks;
 	private boolean terminalEventEmitted;
 	private boolean releaseQuarantined;
@@ -89,6 +90,16 @@ public final class HybridMiningTaskExecutor implements WorldTaskExecutor {
 	}
 
 	private Optional<TaskTerminalEvent> tickBaritonePrimary(SessionSnapshot sessionSnapshot, WorldTaskRequest request) {
+		if (eligibleMiningRequest(request)
+			&& sessionSnapshot.companionActuationAllowed()
+			&& !initialLocalSourcesChecked) {
+			initialLocalSourcesChecked = true;
+			Optional<UnderwaterHarvestStepArgs> localFallback = findLocalDepletionFallback(request);
+			if (localFallback.isPresent()) {
+				beginHandoff(sessionSnapshot, request, localFallback.orElseThrow());
+				return Optional.empty();
+			}
+		}
 		Optional<TaskTerminalEvent> terminal = baritoneExecutor.tick(sessionSnapshot, Optional.of(request));
 		snapshot = baritoneExecutor.snapshot();
 
@@ -397,6 +408,7 @@ public final class HybridMiningTaskExecutor implements WorldTaskExecutor {
 		underwaterStepArgs = null;
 		postReplanStall = null;
 		baritonePrimaryActiveTicks = 0L;
+		initialLocalSourcesChecked = false;
 		releaseActiveTicks = 0L;
 		terminalEventEmitted = false;
 		releaseQuarantined = false;
