@@ -152,7 +152,7 @@ class ActionResolverTest {
 
 		assertTrue(result.resolved(), () -> result.trace().toString());
 		assertEquals("mine_block", result.route().steps().getLast().targetId());
-		assertEquals(List.of("minecraft:dirt", "minecraft:grass_block"), result.route().steps().getLast().args().get("blockIds"));
+		assertEquals(List.of("minecraft:dirt"), result.route().steps().getLast().args().get("blockIds"));
 	}
 
 	@Test
@@ -343,6 +343,293 @@ class ActionResolverTest {
 		assertEquals(List.of("craft_item", "craft_item"), result.route().steps().stream().map(ActionPlanStep::targetId).toList());
 		assertEquals("oak_log_to_oak_planks", result.route().steps().get(0).args().get("recipeId"));
 		assertEquals("oak_planks_x2_to_stick", result.route().steps().get(1).args().get("recipeId"));
+	}
+
+	@Test
+	void recipeCostEqualsOnlyTheMissingIngredientRouteCost() {
+		ActionFactStore facts = new ActionFactStore();
+		facts.upsert(new ActionFact(
+			ActionFactIdentity.inventoryItem("world-a", "bot", "minecraft:test_ingredient"),
+			Map.of("count", 1),
+			ActionFactProvenance.OBSERVED,
+			90,
+			ActionFact.NEVER_STALE
+		));
+		addCraftRecipeFact(
+			facts,
+			"test_ingredient_x2_to_test_result",
+			"minecraft:test_result",
+			1,
+			Map.of("minecraft:test_ingredient", 2)
+		);
+		BlockAcquisitionIndex acquisitions = BlockAcquisitionIndex.of(List.of(scoredHandRule(
+			"minecraft:test_ingredient_ore",
+			"minecraft:test_ingredient",
+			1.0,
+			12
+		)));
+		NearbyBlockAvailability availability = NearbyBlockAvailability.observed(Map.of(
+			"minecraft:test_ingredient_ore", 4
+		));
+
+		ActionResolveResult ingredient = resolveWithScoring(
+			facts,
+			acquisitions,
+			availability,
+			ActionGoal.inventoryItem("minecraft:test_ingredient", 2)
+		);
+		ActionResolveResult crafted = resolveWithScoring(
+			facts,
+			acquisitions,
+			availability,
+			ActionGoal.inventoryItem("minecraft:test_result", 1)
+		);
+
+		assertTrue(ingredient.resolved(), () -> ingredient.trace().toString());
+		assertTrue(crafted.resolved(), () -> crafted.trace().toString());
+		assertEquals(ingredient.route().cost(), crafted.route().cost());
+		assertEquals(
+			List.of("mine_block", "craft_item"),
+			crafted.route().steps().stream().map(ActionPlanStep::targetId).toList()
+		);
+	}
+
+	@Test
+	void recipeHasZeroIntrinsicCostWhenAllIngredientsAreHeld() {
+		ActionFactStore facts = new ActionFactStore();
+		facts.upsert(new ActionFact(
+			ActionFactIdentity.inventoryItem("world-a", "bot", "minecraft:test_ingredient"),
+			Map.of("count", 2),
+			ActionFactProvenance.OBSERVED,
+			90,
+			ActionFact.NEVER_STALE
+		));
+		addCraftRecipeFact(
+			facts,
+			"test_ingredient_x2_to_test_result",
+			"minecraft:test_result",
+			1,
+			Map.of("minecraft:test_ingredient", 2)
+		);
+
+		ActionResolveResult result = resolveWithScoring(
+			facts,
+			BlockAcquisitionIndex.empty(),
+			NearbyBlockAvailability.unknown(),
+			ActionGoal.inventoryItem("minecraft:test_result", 1)
+		);
+
+		assertTrue(result.resolved(), () -> result.trace().toString());
+		assertEquals(0, result.route().cost());
+		assertEquals(List.of("craft_item"), result.route().steps().stream().map(ActionPlanStep::targetId).toList());
+	}
+
+	@Test
+	void probabilisticMiningCostUsesExpectedAttempts() {
+		BlockAcquisitionIndex acquisitions = BlockAcquisitionIndex.of(List.of(
+			scoredHandRule("minecraft:deterministic_source", "minecraft:deterministic_drop", 1.0, 10),
+			scoredHandRule("minecraft:probabilistic_source", "minecraft:probabilistic_drop", 0.2, 10)
+		));
+
+		ActionResolveResult deterministic = resolveWithScoring(
+			new ActionFactStore(),
+			acquisitions,
+			NearbyBlockAvailability.unknown(),
+			ActionGoal.inventoryItem("minecraft:deterministic_drop", 1)
+		);
+		ActionResolveResult probabilistic = resolveWithScoring(
+			new ActionFactStore(),
+			acquisitions,
+			NearbyBlockAvailability.unknown(),
+			ActionGoal.inventoryItem("minecraft:probabilistic_drop", 1)
+		);
+
+		assertTrue(deterministic.resolved(), () -> deterministic.trace().toString());
+		assertTrue(probabilistic.resolved(), () -> probabilistic.trace().toString());
+		assertEquals(deterministic.route().cost() * 5, probabilistic.route().cost());
+	}
+
+	@Test
+	void slowerBlocksHaveHigherMiningCost() {
+		BlockAcquisitionIndex acquisitions = BlockAcquisitionIndex.of(List.of(
+			scoredHandRule("minecraft:fast_source", "minecraft:fast_drop", 1.0, 5),
+			scoredHandRule("minecraft:slow_source", "minecraft:slow_drop", 1.0, 40)
+		));
+
+		ActionResolveResult fast = resolveWithScoring(
+			new ActionFactStore(),
+			acquisitions,
+			NearbyBlockAvailability.unknown(),
+			ActionGoal.inventoryItem("minecraft:fast_drop", 1)
+		);
+		ActionResolveResult slow = resolveWithScoring(
+			new ActionFactStore(),
+			acquisitions,
+			NearbyBlockAvailability.unknown(),
+			ActionGoal.inventoryItem("minecraft:slow_drop", 1)
+		);
+
+		assertTrue(fast.resolved(), () -> fast.trace().toString());
+		assertTrue(slow.resolved(), () -> slow.trace().toString());
+		assertTrue(slow.route().cost() > fast.route().cost(), () -> "fast=" + fast.route() + ", slow=" + slow.route());
+	}
+
+	@Test
+	void abundantSourceBeatsEquallyFastScarceSource() {
+		BlockAcquisitionIndex acquisitions = BlockAcquisitionIndex.of(List.of(
+			scoredHandRule("minecraft:a_scarce_source", "minecraft:shared_drop", 1.0, 10),
+			scoredHandRule("minecraft:z_abundant_source", "minecraft:shared_drop", 1.0, 10)
+		));
+
+		ActionResolveResult result = resolveWithScoring(
+			new ActionFactStore(),
+			acquisitions,
+			NearbyBlockAvailability.observed(Map.of(
+				"minecraft:a_scarce_source", 1,
+				"minecraft:z_abundant_source", 10
+			)),
+			ActionGoal.inventoryItem("minecraft:shared_drop", 10)
+		);
+
+		assertTrue(result.resolved(), () -> result.trace().toString());
+		assertEquals(List.of("minecraft:z_abundant_source"), result.route().steps().getLast().args().get("blockIds"));
+	}
+
+	@Test
+	void nearbyLogsMakeCraftingSticksCheaperThanLeafDrops() {
+		ActionFactStore facts = oakStickCraftFacts();
+		BlockAcquisitionIndex acquisitions = oakStickAcquisitions();
+
+		ActionResolveResult result = resolveWithScoring(
+			facts,
+			acquisitions,
+			NearbyBlockAvailability.observed(Map.of(
+				"minecraft:oak_log", 2,
+				"minecraft:oak_leaves", 64
+			)),
+			ActionGoal.inventoryItem("minecraft:stick", 4)
+		);
+
+		assertTrue(result.resolved(), () -> result.trace().toString());
+		assertEquals("collect_resource", result.route().steps().getFirst().targetId());
+		assertEquals("craft_item", result.route().steps().getLast().targetId());
+		assertEquals("oak_planks_x2_to_stick", result.route().steps().getLast().args().get("recipeId"));
+		assertFalse(result.route().steps().stream().anyMatch(step ->
+			"mine_block".equals(step.targetId())
+				&& List.of("minecraft:oak_leaves").equals(step.args().get("blockIds"))
+		));
+		assertTrace(result.trace(), "route_selected", "recipe_provider", "oak_planks_x2_to_stick");
+	}
+
+	@Test
+	void leafDropsRemainFallbackWhenObservedLogsAreGone() {
+		ActionResolveResult result = resolveWithScoring(
+			oakStickCraftFacts(),
+			oakStickAcquisitions(),
+			NearbyBlockAvailability.observed(Map.of("minecraft:oak_leaves", 64)),
+			ActionGoal.inventoryItem("minecraft:stick", 4)
+		);
+
+		assertTrue(result.resolved(), () -> result.trace().toString());
+		assertEquals(List.of("mine_block"), result.route().steps().stream().map(ActionPlanStep::targetId).toList());
+		ActionPlanStep mine = result.route().steps().getFirst();
+		assertEquals("minecraft:stick", mine.args().get("itemId"));
+		assertEquals(List.of("minecraft:oak_leaves"), mine.args().get("blockIds"));
+	}
+
+	@Test
+	void absentPlacedPlanksDoNotBeatCraftingFromNearbyLogs() {
+		ActionFactStore facts = new ActionFactStore();
+		addCraftRecipeFact(
+			facts,
+			"oak_log_to_oak_planks",
+			"minecraft:oak_planks",
+			4,
+			Map.of("minecraft:oak_log", 1)
+		);
+		BlockAcquisitionIndex acquisitions = BlockAcquisitionIndex.of(List.of(
+			scoredHandRule("minecraft:oak_log", "minecraft:oak_log", 1.0, 20),
+			scoredHandRule("minecraft:oak_planks", "minecraft:oak_planks", 1.0, 10)
+		));
+
+		ActionResolveResult result = resolveWithScoring(
+			facts,
+			acquisitions,
+			NearbyBlockAvailability.observed(Map.of("minecraft:oak_log", 2)),
+			ActionGoal.inventoryItem("minecraft:oak_planks", 4)
+		);
+
+		assertTrue(result.resolved(), () -> result.trace().toString());
+		assertEquals(
+			List.of("collect_resource", "craft_item"),
+			result.route().steps().stream().map(ActionPlanStep::targetId).toList()
+		);
+		assertEquals("oak_log_to_oak_planks", result.route().steps().getLast().args().get("recipeId"));
+		assertFalse(result.route().steps().stream().anyMatch(step ->
+			List.of("minecraft:oak_planks").equals(step.args().get("blockIds"))
+		));
+	}
+
+	@Test
+	void absentPlacedFurnaceDoesNotBeatCraftingFromNearbyStone() {
+		ActionFactStore facts = new ActionFactStore();
+		facts.upsert(new ActionFact(
+			ActionFactIdentity.inventoryItem("world-a", "bot", "minecraft:wooden_pickaxe"),
+			Map.of("count", 1),
+			ActionFactProvenance.OBSERVED,
+			90,
+			ActionFact.NEVER_STALE
+		));
+		facts.upsert(new ActionFact(
+			ActionFactIdentity.inventoryItem("world-a", "bot", "minecraft:crafting_table"),
+			Map.of("count", 1),
+			ActionFactProvenance.OBSERVED,
+			90,
+			ActionFact.NEVER_STALE
+		));
+		facts.upsert(new ActionFact(
+			ActionFactIdentity.craftRecipe("world-a", "bot", "cobblestone_x8_to_furnace"),
+			Map.of(
+				"outputItemId", "minecraft:furnace",
+				"outputCount", 1,
+				"inputCounts", Map.of("minecraft:cobblestone", 8),
+				"gridKind", "WORKBENCH_3X3"
+			),
+			ActionFactProvenance.INFERRED,
+			90,
+			ActionFact.NEVER_STALE
+		));
+		BlockAcquisitionIndex acquisitions = BlockAcquisitionIndex.of(List.of(
+			scoredToolRule(
+				"minecraft:stone",
+				"minecraft:cobblestone",
+				"minecraft:wooden_pickaxe",
+				1.0,
+				20
+			),
+			scoredToolRule(
+				"minecraft:furnace",
+				"minecraft:furnace",
+				"minecraft:wooden_pickaxe",
+				1.0,
+				30
+			)
+		));
+
+		ActionResolveResult result = resolveWithScoring(
+			facts,
+			acquisitions,
+			NearbyBlockAvailability.observed(Map.of("minecraft:stone", 16)),
+			ActionGoal.inventoryItem("minecraft:furnace", 1)
+		);
+
+		assertTrue(result.resolved(), () -> result.trace().toString());
+		assertEquals(
+			List.of("mine_block", "craft_item"),
+			result.route().steps().stream().map(ActionPlanStep::targetId).toList()
+		);
+		assertEquals(List.of("minecraft:stone"), result.route().steps().getFirst().args().get("blockIds"));
+		assertEquals("cobblestone_x8_to_furnace", result.route().steps().getLast().args().get("recipeId"));
 	}
 
 	@Test
@@ -745,7 +1032,7 @@ class ActionResolverTest {
 		assertEquals("mining_provider", mine.actionId());
 		assertEquals("minecraft:raw_iron", mine.args().get("itemId"));
 		assertEquals(3, mine.args().get("quantity"));
-		assertEquals(List.of("minecraft:deepslate_iron_ore", "minecraft:iron_ore"), mine.args().get("blockIds"));
+		assertEquals(List.of("minecraft:deepslate_iron_ore"), mine.args().get("blockIds"));
 		assertTracePayload(result.trace(), "route_candidate_built", "mining_provider", "itemId", "minecraft:raw_iron");
 	}
 
@@ -1393,6 +1680,114 @@ class ActionResolverTest {
 		ActionsetLoadResult load = ActionsetLibraryLoader.defaults().load(Path.of("actionsets"));
 		assertTrue(load.valid(), () -> load.diagnostics().toString());
 		return new ActionResolver(load.index(), facts, TEST_BLOCK_ACQUISITIONS, CONTEXT);
+	}
+
+	private static ActionResolveResult resolveWithScoring(
+		ActionFactStore facts,
+		BlockAcquisitionIndex acquisitions,
+		NearbyBlockAvailability availability,
+		ActionGoal goal
+	) {
+		return ActionResolver.resolve(ActionResolutionRequest.defaults(
+			ActionsetIndex.empty(),
+			facts.queryAll(),
+			acquisitions,
+			availability,
+			CONTEXT,
+			goal
+		));
+	}
+
+	private static ActionFactStore oakStickCraftFacts() {
+		ActionFactStore facts = new ActionFactStore();
+		addCraftRecipeFact(
+			facts,
+			"oak_log_to_oak_planks",
+			"minecraft:oak_planks",
+			4,
+			Map.of("minecraft:oak_log", 1)
+		);
+		addCraftRecipeFact(
+			facts,
+			"oak_planks_x2_to_stick",
+			"minecraft:stick",
+			4,
+			Map.of("minecraft:oak_planks", 2)
+		);
+		return facts;
+	}
+
+	private static BlockAcquisitionIndex oakStickAcquisitions() {
+		return BlockAcquisitionIndex.of(List.of(
+			scoredHandRule("minecraft:oak_log", "minecraft:oak_log", 1.0, 20),
+			scoredHandRule("minecraft:oak_leaves", "minecraft:stick", 0.2, 10)
+		));
+	}
+
+	private static BlockAcquisitionRule scoredHandRule(
+		String blockId,
+		String outputItemId,
+		double expectedDropsPerBreak,
+		int breakTicks
+	) {
+		boolean probabilistic = expectedDropsPerBreak < 1.0;
+		return new BlockAcquisitionRule(
+			blockId,
+			outputItemId,
+			List.of(),
+			true,
+			probabilistic,
+			"test:blocks/" + blockId.substring(blockId.indexOf(':') + 1),
+			true,
+			Math.min(1.0, expectedDropsPerBreak),
+			expectedDropsPerBreak,
+			breakTicks,
+			Map.of()
+		);
+	}
+
+	private static BlockAcquisitionRule scoredToolRule(
+		String blockId,
+		String outputItemId,
+		String toolItemId,
+		double expectedDropsPerBreak,
+		int breakTicks
+	) {
+		boolean probabilistic = expectedDropsPerBreak < 1.0;
+		return new BlockAcquisitionRule(
+			blockId,
+			outputItemId,
+			List.of(toolItemId),
+			false,
+			probabilistic,
+			"test:blocks/" + blockId.substring(blockId.indexOf(':') + 1),
+			true,
+			Math.min(1.0, expectedDropsPerBreak),
+			expectedDropsPerBreak,
+			breakTicks,
+			Map.of(toolItemId, breakTicks)
+		);
+	}
+
+	private static void addCraftRecipeFact(
+		ActionFactStore facts,
+		String recipeId,
+		String outputItemId,
+		int outputCount,
+		Map<String, Integer> inputCounts
+	) {
+		facts.upsert(new ActionFact(
+			ActionFactIdentity.craftRecipe("world-a", "bot", recipeId),
+			Map.of(
+				"outputItemId", outputItemId,
+				"outputCount", outputCount,
+				"inputCounts", inputCounts,
+				"gridKind", "PLAYER_2X2"
+			),
+			ActionFactProvenance.INFERRED,
+			90,
+			ActionFact.NEVER_STALE
+		));
 	}
 
 	private static void addSurvivalCraftFacts(ActionFactStore facts) {
