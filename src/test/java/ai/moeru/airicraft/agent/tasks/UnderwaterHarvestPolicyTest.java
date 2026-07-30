@@ -13,10 +13,12 @@ class UnderwaterHarvestPolicyTest {
 	void classifiesOnlyAccessibleDryAndUnderwaterSourcesWithoutResourceNames() {
 		assertEquals(UnderwaterHarvestPolicy.SourceEnvironment.FLUID_CONTAINED,
 			UnderwaterHarvestPolicy.classify(true, true, true).orElseThrow());
-		assertEquals(UnderwaterHarvestPolicy.SourceEnvironment.DRY,
+		assertEquals(UnderwaterHarvestPolicy.SourceEnvironment.WATER_ADJACENT,
 			UnderwaterHarvestPolicy.classify(false, true, true).orElseThrow());
 		assertEquals(UnderwaterHarvestPolicy.SourceEnvironment.WATER_ADJACENT,
 			UnderwaterHarvestPolicy.classify(false, false, true).orElseThrow());
+		assertEquals(UnderwaterHarvestPolicy.SourceEnvironment.DRY,
+			UnderwaterHarvestPolicy.classify(false, true, false).orElseThrow());
 		assertTrue(UnderwaterHarvestPolicy.classify(false, false, false).isEmpty());
 	}
 

@@ -29,12 +29,13 @@ public final class UnderwaterHarvestPolicy {
 		if (sourceContainsFluid) {
 			return Optional.of(SourceEnvironment.FLUID_CONTAINED);
 		}
+		if (adjacentFluid) {
+			return Optional.of(SourceEnvironment.WATER_ADJACENT);
+		}
 		if (dryStandingApproach) {
 			return Optional.of(SourceEnvironment.DRY);
 		}
-		return adjacentFluid
-			? Optional.of(SourceEnvironment.WATER_ADJACENT)
-			: Optional.empty();
+		return Optional.empty();
 	}
 
 	public static boolean shouldSurface(boolean submerged, int remainingAir, int maxAir) {
