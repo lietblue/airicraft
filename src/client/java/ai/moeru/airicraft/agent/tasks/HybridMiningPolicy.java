@@ -9,7 +9,6 @@ public final class HybridMiningPolicy {
 	static final long POST_REPLAN_STALL_TICKS = 60L;
 	static final double POST_REPLAN_PROGRESS_DISTANCE = 0.75D;
 	static final long HANDOFF_TIMEOUT_TICKS = 20L;
-	static final long LOCAL_SOURCE_PROBE_INTERVAL_TICKS = 20L;
 
 	private HybridMiningPolicy() {
 	}
@@ -45,13 +44,8 @@ public final class HybridMiningPolicy {
 			: ReleaseDecision.WAIT;
 	}
 
-	static boolean shouldProbeLocalSources(long activeTicks) {
-		return activeTicks > 0L && activeTicks % LOCAL_SOURCE_PROBE_INTERVAL_TICKS == 0L;
-	}
-
-	static boolean localDryExhaustionFallbackDue(boolean drySourcePresent, boolean underwaterSourcePresent) {
-		return !drySourcePresent
-			&& underwaterSourcePresent;
+	static boolean shouldTryUnderwaterFallback(TaskTerminationCause terminationCause) {
+		return terminationCause == TaskTerminationCause.CALCULATION_FAILED;
 	}
 
 	enum ReleaseDecision {

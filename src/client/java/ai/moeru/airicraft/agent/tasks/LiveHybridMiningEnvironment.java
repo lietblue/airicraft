@@ -48,23 +48,7 @@ public final class LiveHybridMiningEnvironment implements
 			return Optional.empty();
 		}
 		BlockPos origin = originFor(request, player);
-		return scanLocalSources(client, mineSpec, origin).underwaterFallback();
-	}
-
-	@Override
-	public Optional<UnderwaterHarvestStepArgs> findAfterLocalDryExhaustion(WorldTaskRequest request) {
-		MinecraftClient client = clientSupplier.get();
-		ClientPlayerEntity player = client == null ? null : client.player;
-		GoalMineSpec mineSpec = request == null || request.goal() == null ? null : request.goal().mineSpec();
-		if (client == null || client.world == null || player == null || mineSpec == null
-			|| !Objects.equals(miningTaskId, request.taskId())) {
-			return Optional.empty();
-		}
-		LocalSourceScan scan = scanLocalSources(client, mineSpec, originFor(request, player));
-		return HybridMiningPolicy.localDryExhaustionFallbackDue(
-			scan.drySourcePresent(),
-			scan.underwaterFallback().isPresent()
-		) ? scan.underwaterFallback() : Optional.empty();
+		return findLocalUnderwaterSource(client, mineSpec, origin);
 	}
 
 	@Override
@@ -91,13 +75,12 @@ public final class LiveHybridMiningEnvironment implements
 			: player.getBlockPos().toImmutable();
 	}
 
-	private static LocalSourceScan scanLocalSources(
+	private static Optional<UnderwaterHarvestStepArgs> findLocalUnderwaterSource(
 		MinecraftClient client,
 		GoalMineSpec mineSpec,
 		BlockPos origin
 	) {
 		Set<String> requestedBlocks = new HashSet<>(mineSpec.blockIds());
-		boolean drySourcePresent = false;
 		boolean underwaterSourcePresent = false;
 		for (int x = origin.getX() - UnderwaterHarvestPolicy.HORIZONTAL_RADIUS;
 			x <= origin.getX() + UnderwaterHarvestPolicy.HORIZONTAL_RADIUS;
@@ -124,13 +107,10 @@ public final class LiveHybridMiningEnvironment implements
 					if (environment.orElseThrow().underwater()) {
 						underwaterSourcePresent = true;
 					}
-					else {
-						drySourcePresent = true;
-					}
 				}
 			}
 		}
-		Optional<UnderwaterHarvestStepArgs> fallback = underwaterSourcePresent
+		return underwaterSourcePresent
 			? Optional.of(new UnderwaterHarvestStepArgs(new GoalPosition(
 				origin.getX(),
 				origin.getY(),
@@ -138,7 +118,6 @@ public final class LiveHybridMiningEnvironment implements
 				true
 			)))
 			: Optional.empty();
-		return new LocalSourceScan(drySourcePresent, fallback);
 	}
 
 	@Override
@@ -175,12 +154,6 @@ public final class LiveHybridMiningEnvironment implements
 	@Override
 	public void resetRelease() {
 		releaseStarted = false;
-	}
-
-	private record LocalSourceScan(
-		boolean drySourcePresent,
-		Optional<UnderwaterHarvestStepArgs> underwaterFallback
-	) {
 	}
 
 }

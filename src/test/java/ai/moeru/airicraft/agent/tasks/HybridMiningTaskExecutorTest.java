@@ -19,62 +19,30 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class HybridMiningTaskExecutorTest {
 	@Test
-	void underwaterOnlyPatchHandsOffBeforeStartingBaritone() {
+	void underwaterSourceNeverPreemptsActiveBaritoneMining() {
 		RecordingExecutor baritone = new RecordingExecutor();
 		RecordingExecutor underwater = new RecordingExecutor();
-		LocalDepletionProbe sourceProbe = new LocalDepletionProbe();
-		sourceProbe.localFallback = Optional.of(stepArgs());
+		AtomicInteger sourceProbes = new AtomicInteger();
 		HybridMiningTaskExecutor executor = executor(
 			baritone,
 			underwater,
-			sourceProbe,
+			request -> {
+				sourceProbes.incrementAndGet();
+				return Optional.of(stepArgs());
+			},
 			Optional::empty,
 			HybridMiningTaskExecutorTest::released
 		);
 		WorldTaskRequest request = request();
 
-		executor.tick(session(0L), Optional.of(request));
-
-		assertEquals(HybridMiningTaskExecutor.Phase.RELEASING_BARITONE, executor.phase());
-		assertEquals(1, sourceProbe.beginCalls);
-		assertEquals(1, sourceProbe.localProbeCalls);
-		assertEquals(0, baritone.activeCalls());
-		assertEquals(1, baritone.emptyCalls());
-		assertEquals(0, underwater.activeCalls());
-
-		executor.tick(session(1L), Optional.of(request));
-
-		assertEquals(HybridMiningTaskExecutor.Phase.UNDERWATER_HARVEST, executor.phase());
-		assertEquals(request.taskId(), underwater.lastActive().orElseThrow().taskId());
-	}
-
-	@Test
-	void localDryExhaustionAfterInitialProbeHandsOffBeforeBaritoneFailure() {
-		RecordingExecutor baritone = new RecordingExecutor();
-		RecordingExecutor underwater = new RecordingExecutor();
-		LocalDepletionProbe sourceProbe = new LocalDepletionProbe();
-		HybridMiningTaskExecutor executor = executor(
-			baritone,
-			underwater,
-			sourceProbe,
-			Optional::empty,
-			HybridMiningTaskExecutorTest::waiting
-		);
-		WorldTaskRequest request = request();
-
-		executor.tick(session(0L), Optional.of(request));
-		sourceProbe.localFallback = Optional.of(stepArgs());
-		for (int tick = 1; tick < HybridMiningPolicy.LOCAL_SOURCE_PROBE_INTERVAL_TICKS - 1; tick++) {
+		for (int tick = 0; tick <= 60; tick++) {
 			executor.tick(session(tick), Optional.of(request));
 		}
+
 		assertEquals(HybridMiningTaskExecutor.Phase.BARITONE_PRIMARY, executor.phase());
-
-		executor.tick(session(HybridMiningPolicy.LOCAL_SOURCE_PROBE_INTERVAL_TICKS - 1), Optional.of(request));
-
-		assertEquals(HybridMiningTaskExecutor.Phase.RELEASING_BARITONE, executor.phase());
-		assertEquals(1, sourceProbe.beginCalls);
-		assertEquals(2, sourceProbe.localProbeCalls);
-		assertEquals(1, baritone.emptyCalls());
+		assertEquals(61, baritone.activeCalls());
+		assertEquals(0, baritone.emptyCalls());
+		assertEquals(0, sourceProbes.get());
 		assertEquals(0, underwater.activeCalls());
 	}
 
@@ -668,25 +636,4 @@ class HybridMiningTaskExecutorTest {
 		}
 	}
 
-	private static final class LocalDepletionProbe implements HybridMiningTaskExecutor.UnderwaterSourceProbe {
-		private Optional<UnderwaterHarvestStepArgs> localFallback = Optional.empty();
-		private int beginCalls;
-		private int localProbeCalls;
-
-		@Override
-		public Optional<UnderwaterHarvestStepArgs> findFallback(WorldTaskRequest request) {
-			return Optional.empty();
-		}
-
-		@Override
-		public Optional<UnderwaterHarvestStepArgs> findAfterLocalDryExhaustion(WorldTaskRequest request) {
-			localProbeCalls++;
-			return localFallback;
-		}
-
-		@Override
-		public void beginTask(WorldTaskRequest request) {
-			beginCalls++;
-		}
-	}
 }
