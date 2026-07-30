@@ -25,7 +25,14 @@ public final class UnderwaterEscapeSearch {
 		new Offset(0, 0, -1),
 		new Offset(0, 0, 1),
 		new Offset(1, 0, 0),
-		new Offset(0, -1, 0)
+		new Offset(0, -1, 0),
+		// A swimmer at the surface reaches a one-block-high shore by moving
+		// horizontally and upward in the same step. Without these transitions,
+		// safe ground can be physically adjacent yet disconnected in the search.
+		new Offset(-1, 1, 0),
+		new Offset(0, 1, -1),
+		new Offset(0, 1, 1),
+		new Offset(1, 1, 0)
 	);
 
 	private UnderwaterEscapeSearch() {

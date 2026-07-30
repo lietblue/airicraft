@@ -104,6 +104,23 @@ class UnderwaterEscapeSearchTest {
 	}
 
 	@Test
+	void stepsUpFromSurfaceWaterToOneBlockHighSafeStandingShore() {
+		UnderwaterEscapeSearch.Position start = position(0, 30, 0);
+		UnderwaterEscapeSearch.Position surfaceWater = position(1, 30, 0);
+		UnderwaterEscapeSearch.Position raisedShore = position(2, 31, 0);
+		UnderwaterEscapeSearch.SearchUpdate result = UnderwaterEscapeSearch.search(
+			request(start, UnderwaterEscapeSearch.SearchMode.SAFE_STANDING, 3, 64),
+			new UnderwaterEscapeSearch.WorldSnapshot(Map.of(
+				start, UnderwaterEscapeSearch.Cell.submerged(),
+				surfaceWater, UnderwaterEscapeSearch.Cell.breathableWater(),
+				raisedShore, UnderwaterEscapeSearch.Cell.safeStandingCell()
+			))
+		);
+
+		assertEquals(List.of(start, surfaceWater, raisedShore), result.candidates().getFirst().route());
+	}
+
+	@Test
 	void enforcesMaximumPathSteps() {
 		UnderwaterEscapeSearch.Position start = position(0, 40, 0);
 		UnderwaterEscapeSearch.Position one = position(1, 40, 0);
@@ -166,14 +183,14 @@ class UnderwaterEscapeSearchTest {
 	void completingTheFinalNeighborAtTheExactBudgetReportsComplete() {
 		UnderwaterEscapeSearch.Position start = position(0, 40, 0);
 		UnderwaterEscapeSearch.SearchUpdate result = UnderwaterEscapeSearch.begin(
-			request(start, UnderwaterEscapeSearch.SearchMode.BREATHABLE, 1, 7),
+			request(start, UnderwaterEscapeSearch.SearchMode.BREATHABLE, 1, 11),
 			new UnderwaterEscapeSearch.WorldSnapshot(Map.of(
 				start, UnderwaterEscapeSearch.Cell.submerged()
 			))
-		).advance(7);
+		).advance(11);
 
 		assertEquals(UnderwaterEscapeSearch.SearchStatus.COMPLETE, result.status());
-		assertEquals(7, result.totalInspectedCells());
+		assertEquals(11, result.totalInspectedCells());
 	}
 
 	@Test
