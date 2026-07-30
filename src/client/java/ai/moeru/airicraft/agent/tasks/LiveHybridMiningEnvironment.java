@@ -6,6 +6,7 @@ import ai.moeru.airicraft.agent.goals.GoalPosition;
 import net.minecraft.block.BlockState;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.network.ClientPlayerEntity;
+import net.minecraft.item.ItemStack;
 import net.minecraft.registry.Registries;
 import net.minecraft.registry.tag.FluidTags;
 import net.minecraft.util.math.BlockPos;
@@ -29,6 +30,9 @@ public final class LiveHybridMiningEnvironment implements
 	private final Supplier<MinecraftClient> clientSupplier;
 	private final BaritoneFacade baritone;
 	private boolean releaseStarted;
+	private String miningTaskId;
+	private BlockPos miningOrigin;
+	private int baselineMatchingItemCount;
 
 	public LiveHybridMiningEnvironment(BaritoneFacade baritone) {
 		this(MinecraftClient::getInstance, baritone);
@@ -47,8 +51,67 @@ public final class LiveHybridMiningEnvironment implements
 		if (client == null || client.world == null || player == null || mineSpec == null) {
 			return Optional.empty();
 		}
-		BlockPos origin = player.getBlockPos().toImmutable();
+		BlockPos origin = originFor(request, player);
+		return scanLocalSources(client, mineSpec, origin).underwaterFallback();
+	}
+
+	@Override
+	public Optional<UnderwaterHarvestStepArgs> findAfterLocalDryExhaustion(WorldTaskRequest request) {
+		MinecraftClient client = clientSupplier.get();
+		ClientPlayerEntity player = client == null ? null : client.player;
+		GoalMineSpec mineSpec = request == null || request.goal() == null ? null : request.goal().mineSpec();
+		if (client == null || client.world == null || player == null || mineSpec == null
+			|| !Objects.equals(miningTaskId, request.taskId())) {
+			return Optional.empty();
+		}
+		int currentMatchingItemCount = matchingInventoryCount(player, mineSpec.matchingItemIds());
+		if (currentMatchingItemCount <= baselineMatchingItemCount) {
+			return Optional.empty();
+		}
+		LocalSourceScan scan = scanLocalSources(client, mineSpec, originFor(request, player));
+		return HybridMiningPolicy.localDryExhaustionFallbackDue(
+			baselineMatchingItemCount,
+			currentMatchingItemCount,
+			scan.drySourcePresent(),
+			scan.underwaterFallback().isPresent()
+		) ? scan.underwaterFallback() : Optional.empty();
+	}
+
+	@Override
+	public void beginTask(WorldTaskRequest request) {
+		MinecraftClient client = clientSupplier.get();
+		ClientPlayerEntity player = client == null ? null : client.player;
+		GoalMineSpec mineSpec = request == null || request.goal() == null ? null : request.goal().mineSpec();
+		if (player == null || mineSpec == null) {
+			clearTask();
+			return;
+		}
+		miningTaskId = request.taskId();
+		miningOrigin = player.getBlockPos().toImmutable();
+		baselineMatchingItemCount = matchingInventoryCount(player, mineSpec.matchingItemIds());
+	}
+
+	@Override
+	public void clearTask() {
+		miningTaskId = null;
+		miningOrigin = null;
+		baselineMatchingItemCount = 0;
+	}
+
+	private BlockPos originFor(WorldTaskRequest request, ClientPlayerEntity player) {
+		return Objects.equals(miningTaskId, request.taskId()) && miningOrigin != null
+			? miningOrigin
+			: player.getBlockPos().toImmutable();
+	}
+
+	private static LocalSourceScan scanLocalSources(
+		MinecraftClient client,
+		GoalMineSpec mineSpec,
+		BlockPos origin
+	) {
 		Set<String> requestedBlocks = new HashSet<>(mineSpec.blockIds());
+		boolean drySourcePresent = false;
+		boolean underwaterSourcePresent = false;
 		for (int x = origin.getX() - UnderwaterHarvestPolicy.HORIZONTAL_RADIUS;
 			x <= origin.getX() + UnderwaterHarvestPolicy.HORIZONTAL_RADIUS;
 			x++) {
@@ -77,17 +140,35 @@ public final class LiveHybridMiningEnvironment implements
 						}
 					}
 					if (UnderwaterHarvestPolicy.classify(containsFluid, adjacentFluid).underwater()) {
-						return Optional.of(new UnderwaterHarvestStepArgs(new GoalPosition(
-							origin.getX(),
-							origin.getY(),
-							origin.getZ(),
-							true
-						)));
+						underwaterSourcePresent = true;
+					}
+					else {
+						drySourcePresent = true;
 					}
 				}
 			}
 		}
-		return Optional.empty();
+		Optional<UnderwaterHarvestStepArgs> fallback = underwaterSourcePresent
+			? Optional.of(new UnderwaterHarvestStepArgs(new GoalPosition(
+				origin.getX(),
+				origin.getY(),
+				origin.getZ(),
+				true
+			)))
+			: Optional.empty();
+		return new LocalSourceScan(drySourcePresent, fallback);
+	}
+
+	private static int matchingInventoryCount(ClientPlayerEntity player, java.util.List<String> matchingItemIds) {
+		Set<String> ids = new HashSet<>(matchingItemIds);
+		int total = 0;
+		for (int slot = 0; slot < player.getInventory().size(); slot++) {
+			ItemStack stack = player.getInventory().getStack(slot);
+			if (!stack.isEmpty() && ids.contains(Registries.ITEM.getId(stack.getItem()).toString())) {
+				total += stack.getCount();
+			}
+		}
+		return total;
 	}
 
 	@Override
@@ -124,6 +205,12 @@ public final class LiveHybridMiningEnvironment implements
 	@Override
 	public void resetRelease() {
 		releaseStarted = false;
+	}
+
+	private record LocalSourceScan(
+		boolean drySourcePresent,
+		Optional<UnderwaterHarvestStepArgs> underwaterFallback
+	) {
 	}
 
 }

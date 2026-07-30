@@ -8,8 +8,9 @@ import java.util.Optional;
 
 /**
  * Keeps Baritone as the primary mining owner and performs a one-way handoff to
- * the local underwater harvester after an eligible Baritone failure or second
- * water stall. The external task remains a single task throughout the handoff.
+ * the local underwater harvester after an eligible Baritone failure, second
+ * water stall, or exhaustion of the dry sources around the task-start origin.
+ * The external task remains a single task throughout the handoff.
  */
 public final class HybridMiningTaskExecutor implements WorldTaskExecutor {
 	private final WorldTaskExecutor baritoneExecutor;
@@ -111,6 +112,14 @@ public final class HybridMiningTaskExecutor implements WorldTaskExecutor {
 			}
 			// In particular, BARITONE_CANCELLED is never eligible for fallback.
 			return emitOnce(terminal, request);
+		}
+
+		if (HybridMiningPolicy.shouldProbeLocalSources(baritonePrimaryActiveTicks)) {
+			Optional<UnderwaterHarvestStepArgs> localFallback = findLocalDepletionFallback(request);
+			if (localFallback.isPresent()) {
+				beginHandoff(sessionSnapshot, request, localFallback.orElseThrow());
+				return Optional.empty();
+			}
 		}
 
 		String pathEvent = snapshot.lastPathEvent();
@@ -297,6 +306,16 @@ public final class HybridMiningTaskExecutor implements WorldTaskExecutor {
 		}
 	}
 
+	private Optional<UnderwaterHarvestStepArgs> findLocalDepletionFallback(WorldTaskRequest request) {
+		try {
+			Optional<UnderwaterHarvestStepArgs> observed = underwaterSourceProbe.findAfterLocalDryExhaustion(request);
+			return observed == null ? Optional.empty() : observed;
+		}
+		catch (RuntimeException ignored) {
+			return Optional.empty();
+		}
+	}
+
 	private Optional<HybridMiningPolicy.ProgressSample> observeProgress() {
 		try {
 			Optional<HybridMiningPolicy.ProgressSample> observed = miningProgressProbe.observeProgress();
@@ -358,6 +377,9 @@ public final class HybridMiningTaskExecutor implements WorldTaskExecutor {
 			underwaterTask = request;
 			underwaterStepArgs = request.underwaterHarvest();
 		}
+		else if (eligibleMiningRequest(request)) {
+			underwaterSourceProbe.beginTask(request);
+		}
 	}
 
 	private void clearActiveTask(SessionSnapshot sessionSnapshot) {
@@ -367,6 +389,7 @@ public final class HybridMiningTaskExecutor implements WorldTaskExecutor {
 	}
 
 	private void resetState() {
+		underwaterSourceProbe.clearTask();
 		baritoneReleaseProbe.resetRelease();
 		phase = Phase.BARITONE_PRIMARY;
 		appliedTask = null;
@@ -483,6 +506,16 @@ public final class HybridMiningTaskExecutor implements WorldTaskExecutor {
 	@FunctionalInterface
 	public interface UnderwaterSourceProbe {
 		Optional<UnderwaterHarvestStepArgs> findFallback(WorldTaskRequest request);
+
+		default Optional<UnderwaterHarvestStepArgs> findAfterLocalDryExhaustion(WorldTaskRequest request) {
+			return Optional.empty();
+		}
+
+		default void beginTask(WorldTaskRequest request) {
+		}
+
+		default void clearTask() {
+		}
 	}
 
 	@FunctionalInterface

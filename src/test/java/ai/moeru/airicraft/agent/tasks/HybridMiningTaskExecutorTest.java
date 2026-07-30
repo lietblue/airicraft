@@ -19,6 +19,36 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class HybridMiningTaskExecutorTest {
 	@Test
+	void localDryExhaustionAfterInventoryProgressHandsOffBeforeBaritoneFailure() {
+		RecordingExecutor baritone = new RecordingExecutor();
+		RecordingExecutor underwater = new RecordingExecutor();
+		LocalDepletionProbe sourceProbe = new LocalDepletionProbe();
+		HybridMiningTaskExecutor executor = executor(
+			baritone,
+			underwater,
+			sourceProbe,
+			Optional::empty,
+			HybridMiningTaskExecutorTest::waiting
+		);
+		WorldTaskRequest request = request();
+
+		executor.tick(session(0L), Optional.of(request));
+		sourceProbe.localFallback = Optional.of(stepArgs());
+		for (int tick = 1; tick < HybridMiningPolicy.LOCAL_SOURCE_PROBE_INTERVAL_TICKS - 1; tick++) {
+			executor.tick(session(tick), Optional.of(request));
+		}
+		assertEquals(HybridMiningTaskExecutor.Phase.BARITONE_PRIMARY, executor.phase());
+
+		executor.tick(session(HybridMiningPolicy.LOCAL_SOURCE_PROBE_INTERVAL_TICKS - 1), Optional.of(request));
+
+		assertEquals(HybridMiningTaskExecutor.Phase.RELEASING_BARITONE, executor.phase());
+		assertEquals(1, sourceProbe.beginCalls);
+		assertEquals(1, sourceProbe.localProbeCalls);
+		assertEquals(1, baritone.emptyCalls());
+		assertEquals(0, underwater.activeCalls());
+	}
+
+	@Test
 	void successfulBaritoneMiningNeverSwitchesWhenUnderwaterSourceExists() {
 		RecordingExecutor baritone = new RecordingExecutor();
 		RecordingExecutor underwater = new RecordingExecutor();
@@ -605,6 +635,28 @@ class HybridMiningTaskExecutorTest {
 
 		Optional<WorldTaskRequest> lastActive() {
 			return calls.reversed().stream().flatMap(Optional::stream).findFirst();
+		}
+	}
+
+	private static final class LocalDepletionProbe implements HybridMiningTaskExecutor.UnderwaterSourceProbe {
+		private Optional<UnderwaterHarvestStepArgs> localFallback = Optional.empty();
+		private int beginCalls;
+		private int localProbeCalls;
+
+		@Override
+		public Optional<UnderwaterHarvestStepArgs> findFallback(WorldTaskRequest request) {
+			return Optional.empty();
+		}
+
+		@Override
+		public Optional<UnderwaterHarvestStepArgs> findAfterLocalDryExhaustion(WorldTaskRequest request) {
+			localProbeCalls++;
+			return localFallback;
+		}
+
+		@Override
+		public void beginTask(WorldTaskRequest request) {
+			beginCalls++;
 		}
 	}
 }
