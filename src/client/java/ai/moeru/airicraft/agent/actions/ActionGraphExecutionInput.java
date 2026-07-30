@@ -25,8 +25,44 @@ public record ActionGraphExecutionInput(
 	List<ActionFact> observedFacts,
 	ActionGraphAgentPosition agentPosition,
 	Map<String, ActionWatchProgressObservation> watchProgress,
-	BlockAcquisitionIndex blockAcquisitions
+	BlockAcquisitionIndex blockAcquisitions,
+	NearbyBlockAvailability nearbyBlockAvailability
 ) {
+	public ActionGraphExecutionInput(
+		ActionResolverContext context,
+		Map<String, Integer> observedInventory,
+		Map<String, Integer> observedResources,
+		boolean worldLoaded,
+		boolean actuationAllowed,
+		TaskTerminalEvent terminalTaskEvent,
+		List<CraftingOpportunity> availableCrafts,
+		List<CraftingOpportunity> knownCrafts,
+		List<SmeltingOption> availableSmelts,
+		List<SmeltingRecipeKnowledge> knownSmelts,
+		List<ActionFact> observedFacts,
+		ActionGraphAgentPosition agentPosition,
+		Map<String, ActionWatchProgressObservation> watchProgress,
+		BlockAcquisitionIndex blockAcquisitions
+	) {
+		this(
+			context,
+			observedInventory,
+			observedResources,
+			worldLoaded,
+			actuationAllowed,
+			terminalTaskEvent,
+			availableCrafts,
+			knownCrafts,
+			availableSmelts,
+			knownSmelts,
+			observedFacts,
+			agentPosition,
+			watchProgress,
+			blockAcquisitions,
+			NearbyBlockAvailability.unknown()
+		);
+	}
+
 	public ActionGraphExecutionInput(
 		ActionResolverContext context,
 		Map<String, Integer> observedInventory,
@@ -161,6 +197,7 @@ public record ActionGraphExecutionInput(
 		knownSmelts = knownSmelts == null ? List.of() : List.copyOf(knownSmelts);
 		observedFacts = observedFacts == null ? List.of() : List.copyOf(observedFacts);
 		blockAcquisitions = blockAcquisitions == null ? BlockAcquisitionIndex.empty() : blockAcquisitions;
+		nearbyBlockAvailability = nearbyBlockAvailability == null ? NearbyBlockAvailability.unknown() : nearbyBlockAvailability;
 		watchProgress = watchProgress == null || watchProgress.isEmpty()
 			? Map.of()
 			: Collections.unmodifiableMap(new LinkedHashMap<>(watchProgress));

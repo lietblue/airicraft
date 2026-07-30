@@ -47,6 +47,7 @@ public final class ActionGraphExecutionRuntime {
 	private ActionResolverContext lastContext;
 	private final ActionFactStore facts = new ActionFactStore();
 	private BlockAcquisitionIndex blockAcquisitions = BlockAcquisitionIndex.empty();
+	private NearbyBlockAvailability nearbyBlockAvailability = NearbyBlockAvailability.unknown();
 	private final List<ActionTraceEvent> trace = new ArrayList<>();
 	private final List<Map<String, Object>> recoveryHistory = new ArrayList<>();
 	private final Set<String> blockedAlternatives = new LinkedHashSet<>();
@@ -143,6 +144,7 @@ public final class ActionGraphExecutionRuntime {
 		this.state = ActionGraphExecutionState.RESOLVING;
 		this.facts.clear();
 		this.blockAcquisitions = BlockAcquisitionIndex.empty();
+		this.nearbyBlockAvailability = NearbyBlockAvailability.unknown();
 		this.trace.clear();
 		this.recoveryHistory.clear();
 		this.blockedAlternatives.clear();
@@ -287,6 +289,7 @@ public final class ActionGraphExecutionRuntime {
 		lastContext = null;
 		facts.clear();
 		blockAcquisitions = BlockAcquisitionIndex.empty();
+		nearbyBlockAvailability = NearbyBlockAvailability.unknown();
 		trace.clear();
 		recoveryHistory.clear();
 		blockedAlternatives.clear();
@@ -355,6 +358,7 @@ public final class ActionGraphExecutionRuntime {
 			ActionGoal resolutionGoal = goal;
 			List<ActionFact> factSnapshot = facts.queryAll();
 			BlockAcquisitionIndex blockAcquisitionSnapshot = blockAcquisitions;
+			NearbyBlockAvailability nearbyBlockAvailabilitySnapshot = nearbyBlockAvailability;
 			Set<String> blockedSnapshot = Set.copyOf(blockedAlternatives);
 			FutureTask<ActionResolveResult> task = new FutureTask<>(() -> {
 				ActionsetLoadResult loadResult = actionsetLoader.get();
@@ -369,6 +373,7 @@ public final class ActionGraphExecutionRuntime {
 					loadResult.index(),
 					factSnapshot,
 					blockAcquisitionSnapshot,
+					nearbyBlockAvailabilitySnapshot,
 					context,
 					resolutionGoal,
 					ActionResolutionRequest.DEFAULT_MAX_DEPTH,
@@ -889,6 +894,7 @@ public final class ActionGraphExecutionRuntime {
 
 	private void ingestObservedFacts(ActionGraphExecutionInput input) {
 		blockAcquisitions = input.blockAcquisitions();
+		nearbyBlockAvailability = input.nearbyBlockAvailability();
 		addInventoryFacts(input.observedInventory(), ActionFactProvenance.OBSERVED, input.context(), true);
 		addResourceFacts(input.observedResources(), ActionFactProvenance.OBSERVED, input.context());
 		addCraftRecipeFacts(input.availableCrafts(), ActionFactProvenance.OBSERVED, input.context());

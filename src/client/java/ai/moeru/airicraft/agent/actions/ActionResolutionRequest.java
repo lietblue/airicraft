@@ -11,6 +11,7 @@ public record ActionResolutionRequest(
 	ActionsetIndex actionsets,
 	List<ActionFact> facts,
 	BlockAcquisitionIndex blockAcquisitions,
+	NearbyBlockAvailability nearbyBlockAvailability,
 	ActionResolverContext context,
 	ActionGoal goal,
 	int maxDepth,
@@ -25,11 +26,37 @@ public record ActionResolutionRequest(
 		actionsets = Objects.requireNonNull(actionsets, "actionsets");
 		facts = facts == null ? List.of() : List.copyOf(facts);
 		blockAcquisitions = blockAcquisitions == null ? BlockAcquisitionIndex.empty() : blockAcquisitions;
+		nearbyBlockAvailability = nearbyBlockAvailability == null ? NearbyBlockAvailability.unknown() : nearbyBlockAvailability;
 		context = Objects.requireNonNull(context, "context");
 		goal = Objects.requireNonNull(goal, "goal");
 		maxDepth = Math.max(1, maxDepth);
 		explorationBudget = Math.max(1, explorationBudget);
 		blockedAlternativeKeys = blockedAlternativeKeys == null ? Set.of() : Set.copyOf(blockedAlternativeKeys);
+	}
+
+	public ActionResolutionRequest(
+		ActionsetIndex actionsets,
+		List<ActionFact> facts,
+		BlockAcquisitionIndex blockAcquisitions,
+		ActionResolverContext context,
+		ActionGoal goal,
+		int maxDepth,
+		int explorationBudget,
+		Set<String> blockedAlternativeKeys,
+		boolean preferActionsetRoutes
+	) {
+		this(
+			actionsets,
+			facts,
+			blockAcquisitions,
+			NearbyBlockAvailability.unknown(),
+			context,
+			goal,
+			maxDepth,
+			explorationBudget,
+			blockedAlternativeKeys,
+			preferActionsetRoutes
+		);
 	}
 
 	public ActionResolutionRequest(
@@ -46,6 +73,7 @@ public record ActionResolutionRequest(
 			actionsets,
 			facts,
 			BlockAcquisitionIndex.empty(),
+			NearbyBlockAvailability.unknown(),
 			context,
 			goal,
 			maxDepth,
@@ -61,7 +89,7 @@ public record ActionResolutionRequest(
 		ActionResolverContext context,
 		ActionGoal goal
 	) {
-		return defaults(actionsets, facts, BlockAcquisitionIndex.empty(), context, goal);
+		return defaults(actionsets, facts, BlockAcquisitionIndex.empty(), NearbyBlockAvailability.unknown(), context, goal);
 	}
 
 	public static ActionResolutionRequest defaults(
@@ -71,10 +99,22 @@ public record ActionResolutionRequest(
 		ActionResolverContext context,
 		ActionGoal goal
 	) {
+		return defaults(actionsets, facts, blockAcquisitions, NearbyBlockAvailability.unknown(), context, goal);
+	}
+
+	public static ActionResolutionRequest defaults(
+		ActionsetIndex actionsets,
+		List<ActionFact> facts,
+		BlockAcquisitionIndex blockAcquisitions,
+		NearbyBlockAvailability nearbyBlockAvailability,
+		ActionResolverContext context,
+		ActionGoal goal
+	) {
 		return new ActionResolutionRequest(
 			actionsets,
 			facts,
 			blockAcquisitions,
+			nearbyBlockAvailability,
 			context,
 			goal,
 			DEFAULT_MAX_DEPTH,

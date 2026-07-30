@@ -393,7 +393,8 @@ public final class ActionGraphCoordinator {
 			input.observedFacts(),
 			input.agentPosition(),
 			input.watchProgress(),
-			input.blockAcquisitions()
+			input.blockAcquisitions(),
+			input.nearbyBlockAvailability()
 		);
 	}
 

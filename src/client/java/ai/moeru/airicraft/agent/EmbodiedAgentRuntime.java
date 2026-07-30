@@ -46,6 +46,7 @@ import ai.moeru.airicraft.agent.actions.ActionResolverContext;
 import ai.moeru.airicraft.agent.actions.ActionsetLibraryPaths;
 import ai.moeru.airicraft.agent.actions.FarmBootstrapFactProvider;
 import ai.moeru.airicraft.agent.actions.MinecraftBlockAcquisitionKnowledgeService;
+import ai.moeru.airicraft.agent.actions.NearbyBlockAvailability;
 import ai.moeru.airicraft.agent.actions.PersistentActionFactStore;
 import ai.moeru.airicraft.agent.dialogue.DialogueIntent;
 import ai.moeru.airicraft.agent.dialogue.DialogueIntentType;
@@ -1703,7 +1704,8 @@ public final class EmbodiedAgentRuntime {
 			observedFacts,
 			agentPosition,
 			watchProgress,
-			blockAcquisitions()
+			blockAcquisitions(),
+			NearbyBlockAvailability.observed(worldEvidence.nearbyBlocks())
 		), foregroundAllowed);
 		drainActionGraphCoordinatorEvents();
 	}
