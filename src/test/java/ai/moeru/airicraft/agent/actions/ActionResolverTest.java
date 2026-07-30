@@ -522,6 +522,38 @@ class ActionResolverTest {
 	}
 
 	@Test
+	void absentLogsStillBeatAbsentDeadBushesForSticks() {
+		ActionResolveResult result = resolveWithScoring(
+			oakStickCraftFacts(),
+			oakLogAndDeadBushStickAcquisitions(),
+			NearbyBlockAvailability.observed(Map.of()),
+			ActionGoal.inventoryItem("minecraft:stick", 2)
+		);
+
+		assertTrue(result.resolved(), () -> result.trace().toString());
+		assertEquals("collect_resource", result.route().steps().getFirst().targetId());
+		assertEquals("craft_item", result.route().steps().getLast().targetId());
+		assertEquals("oak_planks_x2_to_stick", result.route().steps().getLast().args().get("recipeId"));
+		assertFalse(result.route().steps().stream().anyMatch(step ->
+			List.of("minecraft:dead_bush").equals(step.args().get("blockIds"))
+		));
+	}
+
+	@Test
+	void observedDeadBushesRemainFallbackWhenLogsAreAbsent() {
+		ActionResolveResult result = resolveWithScoring(
+			oakStickCraftFacts(),
+			oakLogAndDeadBushStickAcquisitions(),
+			NearbyBlockAvailability.observed(Map.of("minecraft:dead_bush", 2)),
+			ActionGoal.inventoryItem("minecraft:stick", 2)
+		);
+
+		assertTrue(result.resolved(), () -> result.trace().toString());
+		assertEquals(List.of("mine_block"), result.route().steps().stream().map(ActionPlanStep::targetId).toList());
+		assertEquals(List.of("minecraft:dead_bush"), result.route().steps().getFirst().args().get("blockIds"));
+	}
+
+	@Test
 	void leafDropsRemainFallbackWhenObservedLogsAreGone() {
 		ActionResolveResult result = resolveWithScoring(
 			oakStickCraftFacts(),
@@ -1740,6 +1772,25 @@ class ActionResolverTest {
 				Map.of("minecraft:stone_axe", 8)
 			),
 			scoredHandRule("minecraft:oak_leaves", "minecraft:stick", 0.03, 6)
+		));
+	}
+
+	private static BlockAcquisitionIndex oakLogAndDeadBushStickAcquisitions() {
+		return BlockAcquisitionIndex.of(List.of(
+			new BlockAcquisitionRule(
+				"minecraft:oak_log",
+				"minecraft:oak_log",
+				List.of("minecraft:stone_axe"),
+				true,
+				false,
+				"test:blocks/oak_log",
+				true,
+				1.0,
+				1.0,
+				60,
+				Map.of("minecraft:stone_axe", 8)
+			),
+			scoredHandRule("minecraft:dead_bush", "minecraft:stick", 1.0, 1)
 		));
 	}
 

@@ -23,8 +23,6 @@ public final class ActionResolver {
 	private static final int PROVIDER_RANK_RESOURCE = 0;
 	private static final int PROVIDER_RANK_SMELTING = 1;
 	private static final int PROVIDER_RANK_MINING = 2;
-	// A known-empty local scan remains reachable through search, but should lose to any plausible local source.
-	private static final int ABSENT_NEARBY_BLOCK_MULTIPLIER = 256;
 	private static final Set<ActionFactProvenance> GUARD_USABLE_PROVENANCE = Set.of(
 		ActionFactProvenance.OBSERVED,
 		ActionFactProvenance.EXECUTOR_REPORTED,
@@ -756,11 +754,11 @@ public final class ActionResolver {
 				continue;
 			}
 			int expectedBreakCount = expectedBreakCount(deficitCount, rule.expectedDropsPerBreak());
-			int availabilityMultiplier = availabilityMultiplier(rule, expectedBreakCount);
+			int availabilityPenalty = availabilityPenalty(rule, expectedBreakCount);
 			MiningToolPlan toolPlan = resolveMiningToolPlan(
 				rule,
 				expectedBreakCount,
-				availabilityMultiplier,
+				availabilityPenalty,
 				depth,
 				resolving,
 				trace,
@@ -801,7 +799,9 @@ public final class ActionResolver {
 					Map.entry("breakTicks", toolPlan.breakTicks()),
 					Map.entry("availabilityObserved", nearbyBlockAvailability.observed()),
 					Map.entry("nearbyBlockCount", nearbyBlockAvailability.count(rule.blockId())),
-					Map.entry("availabilityMultiplier", availabilityMultiplier),
+					Map.entry("availabilityPenalty", availabilityPenalty),
+					Map.entry("baseMiningCost", MiningCostModel.BASE_MINING_COST),
+					Map.entry("breakTickCost", MiningCostModel.breakTickCost(toolPlan.breakTicks())),
 					Map.entry("miningWorkCost", toolPlan.miningWorkCost())
 				)
 			));
@@ -828,7 +828,7 @@ public final class ActionResolver {
 	private MiningToolPlan resolveMiningToolPlan(
 		BlockAcquisitionRule rule,
 		int expectedBreakCount,
-		int availabilityMultiplier,
+		int availabilityPenalty,
 		int depth,
 		LinkedHashSet<String> resolving,
 		List<ActionTraceEvent> trace,
@@ -842,7 +842,7 @@ public final class ActionResolver {
 				ActionRoute.empty(),
 				List.of(),
 				handTicks,
-				miningWorkCost(handTicks, expectedBreakCount, availabilityMultiplier)
+				MiningCostModel.workCost(handTicks, expectedBreakCount, availabilityPenalty)
 			);
 			for (Map.Entry<String, Integer> tool : rule.breakTicksByToolItemId().entrySet()) {
 				if (existingGoalCount(ActionGoal.inventoryItem(tool.getKey(), 1)) < 1) {
@@ -853,7 +853,7 @@ public final class ActionResolver {
 					ActionRoute.empty(),
 					List.of(tool.getKey()),
 					breakTicks,
-					miningWorkCost(breakTicks, expectedBreakCount, availabilityMultiplier)
+					MiningCostModel.workCost(breakTicks, expectedBreakCount, availabilityPenalty)
 				);
 				bestPlan = cheaperMiningToolPlan(bestPlan, candidate);
 			}
@@ -881,7 +881,7 @@ public final class ActionResolver {
 					toolRoute,
 					List.of(toolItemId),
 					breakTicks,
-					miningWorkCost(breakTicks, expectedBreakCount, availabilityMultiplier)
+					MiningCostModel.workCost(breakTicks, expectedBreakCount, availabilityPenalty)
 				);
 				bestPlan = cheaperMiningToolPlan(bestPlan, candidate);
 			}
@@ -1488,10 +1488,10 @@ public final class ActionResolver {
 					continue;
 				}
 				int expectedBreakCount = expectedBreakCount(deficitCount, rule.expectedDropsPerBreak());
-				int cost = miningWorkCost(
+				int cost = MiningCostModel.workCost(
 					breakTicks,
 					expectedBreakCount,
-					availabilityMultiplier(rule, expectedBreakCount)
+					availabilityPenalty(rule, expectedBreakCount)
 				);
 				bestCost = Math.min(bestCost, cost);
 			}
@@ -1509,15 +1509,12 @@ public final class ActionResolver {
 		return best == Integer.MAX_VALUE ? -1 : best;
 	}
 
-	private int availabilityMultiplier(BlockAcquisitionRule rule, int expectedBreakCount) {
-		if (!nearbyBlockAvailability.observed()) {
-			return 1;
-		}
-		int nearbyCount = nearbyBlockAvailability.count(rule.blockId());
-		if (nearbyCount <= 0) {
-			return ABSENT_NEARBY_BLOCK_MULTIPLIER;
-		}
-		return Math.max(1, ceilDiv(expectedBreakCount, nearbyCount));
+	private int availabilityPenalty(BlockAcquisitionRule rule, int expectedBreakCount) {
+		return MiningCostModel.availabilityPenalty(
+			nearbyBlockAvailability.observed(),
+			nearbyBlockAvailability.count(rule.blockId()),
+			expectedBreakCount
+		);
 	}
 
 	private static int expectedBreakCount(int itemCount, double expectedDropsPerBreak) {
@@ -1535,10 +1532,6 @@ public final class ActionResolver {
 		return Math.max(1, breakTicks);
 	}
 
-	private static int miningWorkCost(int breakTicks, int expectedBreakCount, int availabilityMultiplier) {
-		return saturatingMultiply(normalizedBreakTicks(breakTicks), expectedBreakCount, Math.max(1, availabilityMultiplier));
-	}
-
 	private static MiningToolPlan cheaperMiningToolPlan(MiningToolPlan current, MiningToolPlan candidate) {
 		if (current == null) {
 			return candidate;
@@ -1554,33 +1547,9 @@ public final class ActionResolver {
 		return candidate.normalizedToolKey().compareTo(current.normalizedToolKey()) < 0 ? candidate : current;
 	}
 
-	private static int ceilDiv(int numerator, int denominator) {
-		if (numerator <= 0) {
-			return 0;
-		}
-		if (denominator <= 0) {
-			return Integer.MAX_VALUE;
-		}
-		return (int) Math.min(Integer.MAX_VALUE, ((long) numerator + denominator - 1L) / denominator);
-	}
-
 	private static int saturatingAdd(int left, int right) {
 		long result = (long) Math.max(0, left) + Math.max(0, right);
 		return result >= Integer.MAX_VALUE ? Integer.MAX_VALUE : (int) result;
-	}
-
-	private static int saturatingMultiply(int first, int second, int third) {
-		long result = Math.max(0, first);
-		for (int factor : List.of(second, third)) {
-			if (result == 0L || factor <= 0) {
-				return 0;
-			}
-			if (result > Integer.MAX_VALUE / (long) factor) {
-				return Integer.MAX_VALUE;
-			}
-			result *= factor;
-		}
-		return (int) result;
 	}
 
 	@FunctionalInterface
