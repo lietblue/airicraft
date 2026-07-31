@@ -140,6 +140,22 @@ public final class PlannerToolRegistry {
 				.orElse(false);
 	}
 
+	public ReadOnlyBatchAuthorization authorizeReadOnlyBatch(List<PlannerToolCall> toolCalls) {
+		if (toolCalls == null || toolCalls.isEmpty()) {
+			return ReadOnlyBatchAuthorization.reject(BatchRejectionReason.UNKNOWN_TOOL, "");
+		}
+		for (PlannerToolCall toolCall : toolCalls) {
+			String toolName = PlannerToolCatalog.normalizeName(toolCall == null ? null : toolCall.name());
+			if (!isKnownTool(toolName)) {
+				return ReadOnlyBatchAuthorization.reject(BatchRejectionReason.UNKNOWN_TOOL, toolName);
+			}
+			if (!isReadTool(toolName)) {
+				return ReadOnlyBatchAuthorization.reject(BatchRejectionReason.NOT_READ_ONLY, toolName);
+			}
+		}
+		return ReadOnlyBatchAuthorization.allow();
+	}
+
 	public Optional<PlannerToolProvider> providerFor(String toolName) {
 		String normalized = PlannerToolCatalog.normalizeName(toolName);
 		return providers.stream()
@@ -175,5 +191,28 @@ public final class PlannerToolRegistry {
 		}
 		Object description = functionMap.get("description");
 		return description instanceof String string ? string : "";
+	}
+
+	public enum BatchRejectionReason {
+		UNKNOWN_TOOL,
+		NOT_READ_ONLY
+	}
+
+	public record ReadOnlyBatchAuthorization(
+		boolean authorized,
+		BatchRejectionReason rejectionReason,
+		String toolName
+	) {
+		public ReadOnlyBatchAuthorization {
+			toolName = PlannerToolCatalog.normalizeName(toolName);
+		}
+
+		private static ReadOnlyBatchAuthorization allow() {
+			return new ReadOnlyBatchAuthorization(true, null, "");
+		}
+
+		private static ReadOnlyBatchAuthorization reject(BatchRejectionReason reason, String toolName) {
+			return new ReadOnlyBatchAuthorization(false, reason, toolName);
+		}
 	}
 }

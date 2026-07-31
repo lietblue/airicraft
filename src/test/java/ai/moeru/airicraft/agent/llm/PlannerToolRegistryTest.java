@@ -13,6 +13,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class PlannerToolRegistryTest {
@@ -109,6 +110,57 @@ class PlannerToolRegistryTest {
 			null,
 			null
 		)).join());
+	}
+
+	@Test
+	void authorizesRegisteredBuiltInAndProviderReadTools() {
+		PlannerToolRegistry registry = PlannerToolRegistry.of(new FlippingProvider());
+
+		PlannerToolRegistry.ReadOnlyBatchAuthorization authorization = registry.authorizeReadOnlyBatch(List.of(
+			call(PlannerToolCatalog.INSPECT_INVENTORY),
+			call("search_recipes")
+		));
+
+		assertTrue(authorization.authorized());
+		assertNull(authorization.rejectionReason());
+	}
+
+	@Test
+	void rejectsMixedReadWriteAndUnknownBatches() {
+		PlannerToolRegistry registry = PlannerToolRegistry.of(new FlippingProvider());
+
+		PlannerToolRegistry.ReadOnlyBatchAuthorization mixed = registry.authorizeReadOnlyBatch(List.of(
+			call(PlannerToolCatalog.INSPECT_INVENTORY),
+			call(PlannerToolCatalog.CRAFT_RECIPE)
+		));
+		PlannerToolRegistry.ReadOnlyBatchAuthorization unknown = registry.authorizeReadOnlyBatch(List.of(
+			call(PlannerToolCatalog.INSPECT_INVENTORY),
+			call("missing_tool")
+		));
+
+		assertFalse(mixed.authorized());
+		assertEquals(PlannerToolRegistry.BatchRejectionReason.NOT_READ_ONLY, mixed.rejectionReason());
+		assertEquals(PlannerToolCatalog.CRAFT_RECIPE, mixed.toolName());
+		assertFalse(unknown.authorized());
+		assertEquals(PlannerToolRegistry.BatchRejectionReason.UNKNOWN_TOOL, unknown.rejectionReason());
+		assertEquals("missing_tool", unknown.toolName());
+	}
+
+	@Test
+	void authorizationTracksRegisteredToolChanges() {
+		PlannerToolCall providerRead = call("search_recipes");
+		PlannerToolRegistry absent = PlannerToolRegistry.empty();
+		PlannerToolRegistry registered = PlannerToolRegistry.of(new FlippingProvider());
+
+		assertEquals(
+			PlannerToolRegistry.BatchRejectionReason.UNKNOWN_TOOL,
+			absent.authorizeReadOnlyBatch(List.of(providerRead)).rejectionReason()
+		);
+		assertTrue(registered.authorizeReadOnlyBatch(List.of(providerRead)).authorized());
+	}
+
+	private static PlannerToolCall call(String name) {
+		return new PlannerToolCall("call-" + name, name, new JsonObject(), null, null);
 	}
 
 	private static List<String> toolNames(List<Map<String, Object>> tools) {
