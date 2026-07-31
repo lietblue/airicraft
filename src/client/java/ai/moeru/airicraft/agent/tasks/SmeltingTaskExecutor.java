@@ -82,7 +82,7 @@ public final class SmeltingTaskExecutor implements WorldTaskExecutor {
 		MinecraftClient client = clientSupplier.get();
 		ClientPlayerEntity player = client == null ? null : client.player;
 		if (client == null || client.world == null || client.interactionManager == null || player == null) {
-			return fail(request, "world_unavailable");
+			return fail(request, TaskFailure.of(TaskFailureCode.UNKNOWN, "world_unavailable"));
 		}
 		return request.type() == WorldTaskType.SMELT_ITEMS
 			? tickSmeltItems(request, client, player, sessionSnapshot.tickCount())
@@ -92,7 +92,7 @@ public final class SmeltingTaskExecutor implements WorldTaskExecutor {
 	private Optional<TaskTerminalEvent> tickSmeltItems(WorldTaskRequest request, MinecraftClient client, ClientPlayerEntity player, long tick) {
 		SmeltingOption option = processManager.registeredOption(request.smeltItems().optionId());
 		if (option == null) {
-			return fail(request, "option_not_found");
+			return fail(request, TaskFailure.of(TaskFailureCode.MISSING_FACT, "option_not_found"));
 		}
 		if (option.stationCandidate().source() == SmeltingStationSource.OPEN_SCREEN
 			&& player.currentScreenHandler instanceof AbstractFurnaceScreenHandler handler) {
@@ -100,20 +100,24 @@ public final class SmeltingTaskExecutor implements WorldTaskExecutor {
 		}
 		BlockPos stationPos = stationPos(option.stationObservation().key());
 		if (stationPos == null) {
-			return fail(request, "station_unavailable");
+			return fail(request, TaskFailure.of(TaskFailureCode.UNKNOWN, "station_unavailable"));
 		}
-		if (!ensureStationReady(request, client, player, option, stationPos)) {
+		StationReadiness stationReadiness = ensureStationReady(request, client, player, option, stationPos);
+		if (stationReadiness.failure() != null) {
+			return fail(request, stationReadiness.failure());
+		}
+		if (!stationReadiness.ready()) {
 			return Optional.empty();
 		}
 		if (!(player.currentScreenHandler instanceof AbstractFurnaceScreenHandler handler)) {
-			return fail(request, "furnace_screen_not_open");
+			return fail(request, TaskFailure.of(TaskFailureCode.UNKNOWN, "furnace_screen_not_open"));
 		}
 		if (!handler.getCursorStack().isEmpty()) {
-			return fail(request, "cursor_not_empty");
+			return fail(request, TaskFailure.of(TaskFailureCode.UNKNOWN, "cursor_not_empty"));
 		}
 		option = processManager.registeredOption(request.smeltItems().optionId());
 		if (option == null) {
-			return fail(request, "option_not_found");
+			return fail(request, TaskFailure.of(TaskFailureCode.MISSING_FACT, "option_not_found"));
 		}
 		return insertSmeltingInputs(request, client, player, handler, option, tick);
 	}
@@ -129,13 +133,13 @@ public final class SmeltingTaskExecutor implements WorldTaskExecutor {
 		SmeltItemsStepArgs args = request.smeltItems();
 		FuelSelection fuel = fuelSelection(client, player, handler, option, args).orElse(null);
 		if (fuel == null) {
-			return fail(request, "insufficient_fuel");
+			return fail(request, TaskFailure.of(TaskFailureCode.UNKNOWN, "insufficient_fuel"));
 		}
 		if (fuel.quantity() > 0 && !moveItemsToSlot(client, player, handler, fuel.itemId(), 1, fuel.quantity())) {
-			return fail(request, "insufficient_fuel");
+			return fail(request, TaskFailure.of(TaskFailureCode.UNKNOWN, "insufficient_fuel"));
 		}
 		if (!moveItemsToSlot(client, player, handler, option.inputItemId(), 0, args.inputQuantity())) {
-			return fail(request, "insufficient_input");
+			return fail(request, TaskFailure.of(TaskFailureCode.UNKNOWN, "insufficient_input"));
 		}
 		processManager.updateProcessFingerprint(
 			option.optionId(),
@@ -154,13 +158,17 @@ public final class SmeltingTaskExecutor implements WorldTaskExecutor {
 			: processManager.processStationKey(processId);
 		BlockPos stationPos = stationPos(key);
 		if (stationPos == null) {
-			return fail(request, "station_unavailable");
+			return fail(request, TaskFailure.of(TaskFailureCode.UNKNOWN, "station_unavailable"));
 		}
-		if (!ensureExistingStationOpen(request, client, player, stationPos)) {
+		StationReadiness stationReadiness = ensureExistingStationOpen(request, client, player, stationPos);
+		if (stationReadiness.failure() != null) {
+			return fail(request, stationReadiness.failure());
+		}
+		if (!stationReadiness.ready()) {
 			return Optional.empty();
 		}
 		if (!(player.currentScreenHandler instanceof AbstractFurnaceScreenHandler handler)) {
-			return fail(request, "furnace_screen_not_open");
+			return fail(request, TaskFailure.of(TaskFailureCode.UNKNOWN, "furnace_screen_not_open"));
 		}
 		SmeltingSlotSnapshot slots = screenSlotSnapshot(handler);
 		if (handler.getSlot(2).getStack().isEmpty()
@@ -175,7 +183,7 @@ public final class SmeltingTaskExecutor implements WorldTaskExecutor {
 		return complete(request, "smelting_collected");
 	}
 
-	private boolean ensureStationReady(WorldTaskRequest request, MinecraftClient client, ClientPlayerEntity player, SmeltingOption option, BlockPos stationPos) {
+	private StationReadiness ensureStationReady(WorldTaskRequest request, MinecraftClient client, ClientPlayerEntity player, SmeltingOption option, BlockPos stationPos) {
 		if (option.stationCandidate().source() == SmeltingStationSource.PLACE_FROM_INVENTORY && !isFurnaceBlock(client, stationPos)) {
 			if (!canPlaceAt(client, stationPos)) {
 				Optional<BlockPos> fallback = chooseFurnacePlacement(client, player);
@@ -187,8 +195,7 @@ public final class SmeltingTaskExecutor implements WorldTaskExecutor {
 					stationPos = fallbackPos;
 				}
 				else {
-					snapshot = snapshot(TaskExecutionState.FAILED, request, "furnace_placement_blocked");
-					return false;
+					return StationReadiness.failed(TaskFailure.of(TaskFailureCode.UNKNOWN, "furnace_placement_blocked"));
 				}
 			}
 			if (!withinInteractionRange(player, stationPos)) {
@@ -197,28 +204,27 @@ public final class SmeltingTaskExecutor implements WorldTaskExecutor {
 			PlacementAttempt placement = placeFurnace(client, player, stationPos);
 			if (!placement.placed()) {
 				snapshot = snapshot(TaskExecutionState.RUNNING, request, "placing_furnace:" + placement.reason());
-				return false;
+				return StationReadiness.notReady();
 			}
 			snapshot = snapshot(TaskExecutionState.RUNNING, request, "waiting_for_furnace");
-			return false;
+			return StationReadiness.notReady();
 		}
 		return ensureExistingStationOpen(request, client, player, stationPos);
 	}
 
-	private boolean ensureExistingStationOpen(WorldTaskRequest request, MinecraftClient client, ClientPlayerEntity player, BlockPos stationPos) {
+	private StationReadiness ensureExistingStationOpen(WorldTaskRequest request, MinecraftClient client, ClientPlayerEntity player, BlockPos stationPos) {
 		if (player.currentScreenHandler instanceof AbstractFurnaceScreenHandler) {
 			if (!openedStationForTask) {
 				if (player.currentScreenHandler.getCursorStack().isEmpty()) {
 					ScreenCloseSafety.closeHandledScreen(player, "smelting_existing_station_close");
 				}
 				snapshot = snapshot(TaskExecutionState.RUNNING, request, "closing_existing_furnace_screen");
-				return false;
+				return StationReadiness.notReady();
 			}
-			return true;
+			return StationReadiness.readyState();
 		}
 		if (!isFurnaceBlock(client, stationPos)) {
-			snapshot = snapshot(TaskExecutionState.FAILED, request, "station_unavailable");
-			return false;
+			return StationReadiness.failed(TaskFailure.of(TaskFailureCode.UNKNOWN, "station_unavailable"));
 		}
 		if (!withinInteractionRange(player, stationPos)) {
 			return navigateOrFail(request, stationPos);
@@ -230,20 +236,19 @@ public final class SmeltingTaskExecutor implements WorldTaskExecutor {
 			openedStationForTask = true;
 		}
 		snapshot = snapshot(TaskExecutionState.RUNNING, request, "opening_furnace");
-		return false;
+		return StationReadiness.notReady();
 	}
 
-	private boolean navigateOrFail(WorldTaskRequest request, BlockPos stationPos) {
+	private StationReadiness navigateOrFail(WorldTaskRequest request, BlockPos stationPos) {
 		if (baritoneFacade == null || !baritoneFacade.isLoaded()) {
-			snapshot = snapshot(TaskExecutionState.FAILED, request, "station_out_of_range");
-			return false;
+			return StationReadiness.failed(TaskFailure.of(TaskFailureCode.UNKNOWN, "station_out_of_range"));
 		}
 		if (!navigationStarted) {
 			baritoneFacade.startNavigateNear(new GoalPosition(stationPos.getX(), stationPos.getY(), stationPos.getZ(), false), 3);
 			navigationStarted = true;
 		}
 		snapshot = snapshot(TaskExecutionState.RUNNING, request, "navigating_to_furnace");
-		return false;
+		return StationReadiness.notReady();
 	}
 
 	private Optional<FuelSelection> fuelSelection(
@@ -593,19 +598,19 @@ public final class SmeltingTaskExecutor implements WorldTaskExecutor {
 		return Optional.of(new TaskTerminalEvent(request.taskId(), null, TaskExecutionState.COMPLETED, message, TaskTerminationCause.GOAL_REACHED));
 	}
 
-	private Optional<TaskTerminalEvent> fail(WorldTaskRequest request, String reason) {
+	private Optional<TaskTerminalEvent> fail(WorldTaskRequest request, TaskFailure failure) {
 		placementSneakController.release(clientSupplier.get());
 		cancelNavigationIfStarted();
 		closeOpenedStationIfSafe();
 		if (request.type() == WorldTaskType.SMELT_ITEMS) {
 			processManager.cancelProcessesForOption(request.smeltItems().optionId());
 		}
-		snapshot = snapshot(TaskExecutionState.FAILED, request, reason);
+		snapshot = snapshot(TaskExecutionState.FAILED, request, failure.detail());
 		if (terminalEventEmitted) {
 			return Optional.empty();
 		}
 		terminalEventEmitted = true;
-		return Optional.of(new TaskTerminalEvent(request.taskId(), null, TaskExecutionState.FAILED, reason, null, TaskFailureCode.fromLegacyDetail(reason)));
+		return Optional.of(new TaskTerminalEvent(request.taskId(), null, TaskExecutionState.FAILED, failure.detail(), null, failure.code()));
 	}
 
 	private void closeOpenedStationIfSafe() {
@@ -696,5 +701,19 @@ public final class SmeltingTaskExecutor implements WorldTaskExecutor {
 	}
 
 	private record PlacementAttempt(boolean placed, String reason) {
+	}
+
+	private record StationReadiness(boolean ready, TaskFailure failure) {
+		private static StationReadiness readyState() {
+			return new StationReadiness(true, null);
+		}
+
+		private static StationReadiness notReady() {
+			return new StationReadiness(false, null);
+		}
+
+		private static StationReadiness failed(TaskFailure failure) {
+			return new StationReadiness(false, failure);
+		}
 	}
 }

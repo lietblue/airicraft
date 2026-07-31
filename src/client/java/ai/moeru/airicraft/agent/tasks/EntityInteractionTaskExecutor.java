@@ -97,7 +97,7 @@ public final class EntityInteractionTaskExecutor implements WorldTaskExecutor {
 		MinecraftClient client = clientSupplier.get();
 		ClientPlayerEntity player = client == null ? null : client.player;
 		if (client == null || client.interactionManager == null || client.world == null || player == null) {
-			return fail(request, "world_unavailable");
+			return fail(request, TaskFailure.of(TaskFailureCode.UNKNOWN, "world_unavailable"));
 		}
 		if (dismissCurrentScreenIfSafe(client, player)) {
 			busyStateTicks = 0;
@@ -110,29 +110,29 @@ public final class EntityInteractionTaskExecutor implements WorldTaskExecutor {
 				snapshot = snapshot(TaskExecutionState.RUNNING, request, "interaction_busy");
 				return Optional.empty();
 			}
-			return fail(request, "interaction_busy");
+			return fail(request, TaskFailure.of(TaskFailureCode.BUSY, "interaction_busy"));
 		}
 		busyStateTicks = 0;
 
 		Selection selection = resolveSelection(client, player, request.entityInteraction().selector());
-		if (selection.failureReason() != null) {
-			if (completedAfterLandedAttack(request, selection.failureReason())) {
+		if (selection.failure() != null) {
+			if (completedAfterLandedAttack(request, selection.failure().detail())) {
 				return complete(request, "target_died");
 			}
-			return fail(request, selection.failureReason());
+			return fail(request, selection.failure());
 		}
 		Entity target = selection.entity();
 		if (target == null) {
 			if (completedAfterLandedAttack(request, "target_not_found")) {
 				return complete(request, "target_died");
 			}
-			return fail(request, "target_not_found");
+			return fail(request, TaskFailure.of(TaskFailureCode.MISSING_FACT, "target_not_found"));
 		}
 		if (!target.isAlive()) {
 			if (completedAfterLandedAttack(request, "target_not_alive")) {
 				return complete(request, "target_died");
 			}
-			return fail(request, "target_not_alive");
+			return fail(request, TaskFailure.of(TaskFailureCode.MISSING_FACT, "target_not_alive"));
 		}
 		lookAtTarget(client, target);
 		double distance = player.distanceTo(target);
@@ -220,11 +220,11 @@ public final class EntityInteractionTaskExecutor implements WorldTaskExecutor {
 		cancelBaritoneChase();
 		Hand hand = resolveInteractionHand(client, player, request.entityInteraction().itemId());
 		if (hand == null) {
-			return fail(request, "required_item_missing");
+			return fail(request, TaskFailure.of(TaskFailureCode.MISSING_FACT, "required_item_missing"));
 		}
 		ActionResult result = client.interactionManager.interactEntity(player, target, hand);
 		if (!result.isAccepted()) {
-			return fail(request, "interaction_failed");
+			return fail(request, TaskFailure.of(TaskFailureCode.UNKNOWN, "interaction_failed"));
 		}
 		player.swingHand(hand);
 		return complete(request, "interaction_succeeded");
@@ -250,7 +250,7 @@ public final class EntityInteractionTaskExecutor implements WorldTaskExecutor {
 			movementController.stop(client);
 			Optional<String> pathEvent = navigationFacade.pollPathEvent();
 			if (!landedAttack && isUnreachablePathEvent(pathEvent)) {
-				return fail(request, "target_unreachable");
+				return fail(request, TaskFailure.of(TaskFailureCode.MISSING_FACT, "target_unreachable"));
 			}
 			GoalPosition nextChaseGoal = chaseGoalFor(target);
 			if (shouldRefreshChaseGoal(chaseGoal, nextChaseGoal, chaseGoalRefreshTicks)) {
@@ -269,7 +269,7 @@ public final class EntityInteractionTaskExecutor implements WorldTaskExecutor {
 			snapshot = snapshot(TaskExecutionState.RUNNING, request, "target_out_of_range");
 			return Optional.empty();
 		}
-		return fail(request, "target_out_of_range");
+		return fail(request, TaskFailure.of(TaskFailureCode.MISSING_FACT, "target_out_of_range"));
 	}
 
 	private static Hand resolveInteractionHand(MinecraftClient client, ClientPlayerEntity player, String itemId) {
@@ -330,17 +330,17 @@ public final class EntityInteractionTaskExecutor implements WorldTaskExecutor {
 			player.getZ()
 		);
 		if (result.status() != EntitySelectorResolver.SelectionStatus.SELECTED || result.selected() == null) {
-			return new Selection(null, selectionFailureReason(result.status()));
+			return new Selection(null, selectionFailure(result.status()));
 		}
 		return new Selection(entitiesById.get(result.selected().entityId()), null);
 	}
 
-	private static String selectionFailureReason(EntitySelectorResolver.SelectionStatus status) {
+	private static TaskFailure selectionFailure(EntitySelectorResolver.SelectionStatus status) {
 		return switch (status) {
-			case TARGET_NOT_FOUND -> "target_not_found";
-			case TARGET_NOT_NEARBY -> "target_not_nearby";
-			case TARGET_NOT_ALIVE -> "target_not_alive";
-			case TARGET_AMBIGUOUS -> "target_ambiguous";
+			case TARGET_NOT_FOUND -> TaskFailure.of(TaskFailureCode.MISSING_FACT, "target_not_found");
+			case TARGET_NOT_NEARBY -> TaskFailure.of(TaskFailureCode.MISSING_FACT, "target_not_nearby");
+			case TARGET_NOT_ALIVE -> TaskFailure.of(TaskFailureCode.MISSING_FACT, "target_not_alive");
+			case TARGET_AMBIGUOUS -> TaskFailure.of(TaskFailureCode.MISSING_FACT, "target_ambiguous");
 			case SELECTED -> null;
 		};
 	}
@@ -421,14 +421,14 @@ public final class EntityInteractionTaskExecutor implements WorldTaskExecutor {
 		return Optional.of(new TaskTerminalEvent(request.taskId(), null, TaskExecutionState.COMPLETED, message, null));
 	}
 
-	private Optional<TaskTerminalEvent> fail(WorldTaskRequest request, String reason) {
+	private Optional<TaskTerminalEvent> fail(WorldTaskRequest request, TaskFailure failure) {
 		cancelApproach();
-		snapshot = snapshot(TaskExecutionState.FAILED, request, reason);
+		snapshot = snapshot(TaskExecutionState.FAILED, request, failure.detail());
 		if (terminalEventEmitted) {
 			return Optional.empty();
 		}
 		terminalEventEmitted = true;
-		return Optional.of(new TaskTerminalEvent(request.taskId(), null, TaskExecutionState.FAILED, reason, null, TaskFailureCode.fromLegacyDetail(reason)));
+		return Optional.of(new TaskTerminalEvent(request.taskId(), null, TaskExecutionState.FAILED, failure.detail(), null, failure.code()));
 	}
 
 	private static TaskExecutionSnapshot snapshot(TaskExecutionState state, WorldTaskRequest request, String event) {
@@ -500,6 +500,6 @@ public final class EntityInteractionTaskExecutor implements WorldTaskExecutor {
 		chaseGoalRefreshTicks = 0;
 	}
 
-	private record Selection(Entity entity, String failureReason) {
+	private record Selection(Entity entity, TaskFailure failure) {
 	}
 }

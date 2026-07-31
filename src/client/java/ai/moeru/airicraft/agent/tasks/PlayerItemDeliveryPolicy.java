@@ -23,50 +23,51 @@ final class PlayerItemDeliveryPolicy {
 		Objects.requireNonNull(observation, "observation");
 		if (observation.target().isPresent() && state.targetIdentity() != null
 			&& !state.targetIdentity().equals(observation.target().get().identity())) {
-			return new Decision(state.withPhase(Phase.TERMINAL), Command.FAIL, "target_identity_changed");
+			return new Decision(state.withPhase(Phase.TERMINAL), Command.FAIL, "target_identity_changed", TaskFailureCode.UNKNOWN);
 		}
 		State advanced = state.advance(observation.target());
 		if (advanced.phase() == Phase.AWAIT_DELIVERY) {
 			advanced = advanced.recordDroppedItems(observation.droppedItems());
 			advanced = advanced.recordPickupEvidence(observation.pickups(), observation.target());
 			if (advanced.deliveredQuantity() >= advanced.requestedQuantity()) {
-				return new Decision(advanced.withPhase(Phase.TERMINAL), Command.SUCCEED, "target_picked_up_items");
+				return new Decision(advanced.withPhase(Phase.TERMINAL), Command.SUCCEED, "target_picked_up_items", TaskFailureCode.NONE);
 			}
 		}
 
 		if (observation.target().isEmpty()) {
 			if (advanced.phase() == Phase.AWAIT_DELIVERY && advanced.deliveredQuantity() > 0) {
 				return new Decision(advanced.withPhase(Phase.TERMINAL), Command.FAIL,
-					"partial_delivery delivered=" + advanced.deliveredQuantity() + " requested=" + advanced.requestedQuantity());
+					"partial_delivery delivered=" + advanced.deliveredQuantity() + " requested=" + advanced.requestedQuantity(), TaskFailureCode.UNKNOWN);
 			}
-			return new Decision(advanced.withPhase(Phase.TERMINAL), Command.FAIL, "target_not_found");
+			return new Decision(advanced.withPhase(Phase.TERMINAL), Command.FAIL, "target_not_found", TaskFailureCode.MISSING_FACT);
 		}
 
 		if (advanced.phase() == Phase.SEEK_TARGET || advanced.phase() == Phase.AIMING) {
 			if (observation.sourceItemCount() < advanced.requestedQuantity()) {
-				return new Decision(advanced.withPhase(Phase.TERMINAL), Command.FAIL, "insufficient_items");
+				return new Decision(advanced.withPhase(Phase.TERMINAL), Command.FAIL, "insufficient_items", TaskFailureCode.UNKNOWN);
 			}
 			if (distanceSquared(observation.agentX(), observation.agentY(), observation.agentZ(), observation.target().get())
 				> APPROACH_RANGE_BLOCKS * APPROACH_RANGE_BLOCKS) {
-				return new Decision(advanced.withPhase(Phase.SEEK_TARGET), Command.APPROACH, "approach_target");
+				return new Decision(advanced.withPhase(Phase.SEEK_TARGET), Command.APPROACH, "approach_target", TaskFailureCode.NONE);
 			}
 			if (advanced.phase() == Phase.SEEK_TARGET) {
-				return new Decision(advanced.withPhase(Phase.AIMING), Command.AIM, "aim_at_target");
+				return new Decision(advanced.withPhase(Phase.AIMING), Command.AIM, "aim_at_target", TaskFailureCode.NONE);
 			}
-			return new Decision(advanced.withPhase(Phase.AWAIT_DELIVERY), Command.DROP, "drop_for_target");
+			return new Decision(advanced.withPhase(Phase.AWAIT_DELIVERY), Command.DROP, "drop_for_target", TaskFailureCode.NONE);
 		}
 
 		if (advanced.elapsedTicks() >= DELIVERY_TIMEOUT_TICKS) {
 			String reason = advanced.deliveredQuantity() == 0
 				? "delivery_timeout"
 				: "partial_delivery delivered=" + advanced.deliveredQuantity() + " requested=" + advanced.requestedQuantity();
-			return new Decision(advanced.withPhase(Phase.TERMINAL), Command.FAIL, reason);
+			return new Decision(advanced.withPhase(Phase.TERMINAL), Command.FAIL, reason,
+				advanced.deliveredQuantity() == 0 ? TaskFailureCode.TRANSIENT : TaskFailureCode.UNKNOWN);
 		}
 		if (distanceSquared(observation.agentX(), observation.agentY(), observation.agentZ(), observation.target().get())
 			> APPROACH_RANGE_BLOCKS * APPROACH_RANGE_BLOCKS) {
-			return new Decision(advanced.withPhase(Phase.AWAIT_DELIVERY), Command.APPROACH, "approach_moving_target");
+			return new Decision(advanced.withPhase(Phase.AWAIT_DELIVERY), Command.APPROACH, "approach_moving_target", TaskFailureCode.NONE);
 		}
-		return new Decision(advanced, Command.WAIT, "waiting_for_delivery_evidence");
+		return new Decision(advanced, Command.WAIT, "waiting_for_delivery_evidence", TaskFailureCode.NONE);
 	}
 
 	private static double distanceSquared(double agentX, double agentY, double agentZ, TargetObservation target) {
@@ -220,11 +221,12 @@ final class PlayerItemDeliveryPolicy {
 	record PickupKey(int entityId, String itemId, int count, UUID collectorIdentity, long observedAtTick) {
 	}
 
-	record Decision(State nextState, Command command, String reason) {
+	record Decision(State nextState, Command command, String reason, TaskFailureCode failureCode) {
 		Decision {
 			nextState = Objects.requireNonNull(nextState, "nextState");
 			command = Objects.requireNonNull(command, "command");
 			reason = Objects.requireNonNull(reason, "reason");
+			failureCode = Objects.requireNonNull(failureCode, "failureCode");
 		}
 	}
 }

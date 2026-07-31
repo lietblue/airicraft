@@ -94,7 +94,7 @@ public final class DropItemsTaskExecutor implements WorldTaskExecutor {
 		MinecraftClient client = clientSupplier.get();
 		ClientPlayerEntity player = client == null ? null : client.player;
 		if (client == null || client.interactionManager == null || player == null || client.world == null) {
-			return fail(request, "world_unavailable");
+			return fail(request, TaskFailure.of(TaskFailureCode.UNKNOWN, "world_unavailable"));
 		}
 		if (dismissCurrentScreenIfSafe(client, player)) {
 			busyScreenTicks = 0;
@@ -108,7 +108,7 @@ public final class DropItemsTaskExecutor implements WorldTaskExecutor {
 				snapshot = snapshot(TaskExecutionState.RUNNING, request, INVENTORY_BUSY);
 				return Optional.empty();
 			}
-			return fail(request, INVENTORY_BUSY);
+			return fail(request, TaskFailure.of(TaskFailureCode.BUSY, INVENTORY_BUSY));
 		}
 		busyScreenTicks = 0;
 
@@ -120,7 +120,9 @@ public final class DropItemsTaskExecutor implements WorldTaskExecutor {
 			return tickDelivery(client, player, request, args, available, sessionSnapshot.tickCount());
 		}
 		if (available < args.quantity()) {
-			return fail(request, available == 0 ? "item_not_found" : "insufficient_items");
+			return fail(request, available == 0
+				? TaskFailure.of(TaskFailureCode.MISSING_FACT, "item_not_found")
+				: TaskFailure.of(TaskFailureCode.UNKNOWN, "insufficient_items"));
 		}
 
 		for (DropClick click : planDropClicks(matchingSlots, args.quantity())) {
@@ -154,7 +156,7 @@ public final class DropItemsTaskExecutor implements WorldTaskExecutor {
 		return switch (decision.command()) {
 			case APPROACH -> {
 				if (target.isEmpty()) {
-					yield fail(request, "target_not_found");
+					yield fail(request, TaskFailure.of(TaskFailureCode.MISSING_FACT, "target_not_found"));
 				}
 				yield approachTarget(client, target.get(), request, decision.reason(), tick);
 			}
@@ -181,7 +183,7 @@ public final class DropItemsTaskExecutor implements WorldTaskExecutor {
 				yield Optional.empty();
 			}
 			case SUCCEED -> complete(request, decision.reason());
-			case FAIL -> fail(request, decision.reason());
+			case FAIL -> fail(request, TaskFailure.of(decision.failureCode(), decision.reason()));
 		};
 	}
 
@@ -204,7 +206,7 @@ public final class DropItemsTaskExecutor implements WorldTaskExecutor {
 			movementController.stop(client);
 			Optional<String> pathEvent = navigationFacade.pollPathEvent();
 			if (pathEvent.map(event -> "CALC_FAILED".equalsIgnoreCase(event.trim())).orElse(false)) {
-				return fail(request, "target_unreachable");
+				return fail(request, TaskFailure.of(TaskFailureCode.MISSING_FACT, "target_unreachable"));
 			}
 			GoalPosition nextGoal = new GoalPosition(target.getBlockPos().getX(), target.getBlockPos().getY(), target.getBlockPos().getZ(), false);
 			if (chaseGoal == null || !chaseGoal.equals(nextGoal) || chaseGoalRefreshTicks >= 10) {
@@ -428,14 +430,14 @@ public final class DropItemsTaskExecutor implements WorldTaskExecutor {
 		return Optional.of(new TaskTerminalEvent(request.taskId(), null, TaskExecutionState.COMPLETED, message, null));
 	}
 
-	private Optional<TaskTerminalEvent> fail(WorldTaskRequest request, String reason) {
+	private Optional<TaskTerminalEvent> fail(WorldTaskRequest request, TaskFailure failure) {
 		cancelApproach();
-		snapshot = snapshot(TaskExecutionState.FAILED, request, reason);
+		snapshot = snapshot(TaskExecutionState.FAILED, request, failure.detail());
 		if (terminalEventEmitted) {
 			return Optional.empty();
 		}
 		terminalEventEmitted = true;
-		return Optional.of(new TaskTerminalEvent(request.taskId(), null, TaskExecutionState.FAILED, reason, null, TaskFailureCode.fromLegacyDetail(reason)));
+		return Optional.of(new TaskTerminalEvent(request.taskId(), null, TaskExecutionState.FAILED, failure.detail(), null, failure.code()));
 	}
 
 	private static String completionMessage(DropItemsStepArgs args) {

@@ -121,12 +121,12 @@ public final class CraftingTaskExecutor implements WorldTaskExecutor {
 		MinecraftClient client = clientSupplier.get();
 		ClientPlayerEntity player = client == null ? null : client.player;
 		if (client == null || client.interactionManager == null || player == null) {
-			return fail(request, "crafting_busy");
+			return fail(request, TaskFailure.of(TaskFailureCode.UNKNOWN, "crafting_busy"));
 		}
 		if (plan == null) {
 			plan = resolvePlan(player, request.craftRecipe());
-			if (plan.failureReason() != null) {
-				return fail(request, plan.failureReason());
+			if (plan.failure() != null) {
+				return fail(request, plan.failure());
 			}
 			progressTracker.reset();
 		}
@@ -142,7 +142,7 @@ public final class CraftingTaskExecutor implements WorldTaskExecutor {
 			return Optional.empty();
 		}
 		if (screenDisposition == CraftingScreenDisposition.FAIL) {
-			return fail(request, "crafting_busy");
+			return fail(request, TaskFailure.of(TaskFailureCode.BUSY, "crafting_busy"));
 		}
 
 		if (progressTracker.targetReached(plan.targetOutputCount())) {
@@ -151,8 +151,8 @@ public final class CraftingTaskExecutor implements WorldTaskExecutor {
 
 		if (plan.gridKind() == CraftingGridKind.WORKBENCH_3X3) {
 			WorkbenchReadiness readiness = ensureWorkbenchReady(request, sessionSnapshot, client, player);
-			if (readiness.failureReason().isPresent()) {
-				return fail(request, readiness.failureReason().get());
+			if (readiness.failure().isPresent()) {
+				return fail(request, readiness.failure().get());
 			}
 			if (!readiness.ready()) {
 				return Optional.empty();
@@ -171,7 +171,7 @@ public final class CraftingTaskExecutor implements WorldTaskExecutor {
 			CraftPhase.WAITING_FOR_TAKE
 		);
 		if (advanced.status() == CraftAdvanceStatus.FAILED) {
-			return fail(request, advanced.reason());
+			return fail(request, advanced.failure());
 		}
 		if (advanced.status() == CraftAdvanceStatus.COMPLETED) {
 			return complete(request);
@@ -188,7 +188,7 @@ public final class CraftingTaskExecutor implements WorldTaskExecutor {
 
 	private static CraftingPlan toCraftingPlan(CraftingOpportunityResolver.CraftingRecipeResolution resolved) {
 		if (resolved.failureReason() != null) {
-			return CraftingPlan.failure(resolved.failureReason());
+			return CraftingPlan.failure(resolved.failureReason(), TaskFailureCode.MISSING_FACT);
 		}
 		return new CraftingPlan(
 			resolved.networkRecipeId(),
@@ -223,7 +223,7 @@ public final class CraftingTaskExecutor implements WorldTaskExecutor {
 			return WorkbenchReadiness.readyState();
 		}
 		if (player.currentScreenHandler != player.playerScreenHandler) {
-			return WorkbenchReadiness.failed("crafting_busy");
+			return WorkbenchReadiness.failed(TaskFailure.of(TaskFailureCode.BUSY, "crafting_busy"));
 		}
 		if (phase == CraftPhase.IDLE) {
 			tableTarget = findNearbyCraftingTable(client, player).orElse(null);
@@ -241,7 +241,7 @@ public final class CraftingTaskExecutor implements WorldTaskExecutor {
 			if (craftingTablePlan == null) {
 				CraftingOpportunityResolver.CraftingRecipeResolution resolved = CraftingOpportunityResolver.resolveCraftingTable(player);
 				if (resolved.failureReason() != null) {
-					return WorkbenchReadiness.failed(resolved.failureReason());
+					return WorkbenchReadiness.failed(TaskFailure.of(TaskFailureCode.MISSING_FACT, resolved.failureReason()));
 				}
 				craftingTablePlan = new CraftingPlan(
 					resolved.networkRecipeId(),
@@ -267,7 +267,7 @@ public final class CraftingTaskExecutor implements WorldTaskExecutor {
 				CraftPhase.CRAFTING_TABLE_WAITING_FOR_TAKE
 			);
 			if (advanced.status() == CraftAdvanceStatus.FAILED) {
-				return WorkbenchReadiness.failed("crafting_table_missing_materials");
+				return WorkbenchReadiness.failed(TaskFailure.of(TaskFailureCode.MISSING_FACT, "crafting_table_missing_materials"));
 			}
 			if (advanced.status() == CraftAdvanceStatus.COMPLETED) {
 				phase = CraftPhase.PLACING_TABLE;
@@ -290,7 +290,7 @@ public final class CraftingTaskExecutor implements WorldTaskExecutor {
 				return WorkbenchReadiness.notReadyState();
 			}
 			if (tableTarget == null) {
-				return WorkbenchReadiness.failed("crafting_table_not_found");
+				return WorkbenchReadiness.failed(TaskFailure.of(TaskFailureCode.MISSING_FACT, "crafting_table_not_found"));
 			}
 			if (withinInteractionRange(player, tableTarget.tablePos())) {
 				phase = CraftPhase.OPENING_TABLE;
@@ -334,7 +334,7 @@ public final class CraftingTaskExecutor implements WorldTaskExecutor {
 				return WorkbenchReadiness.notReadyState();
 			}
 			if (tableTarget == null || tableTarget.tablePos() == null) {
-				return WorkbenchReadiness.failed("crafting_table_not_found");
+				return WorkbenchReadiness.failed(TaskFailure.of(TaskFailureCode.MISSING_FACT, "crafting_table_not_found"));
 			}
 			if (!openCraftingTable(client, player, tableTarget.tablePos())) {
 				return fallBackToPortableCraftingTable(request, player);
@@ -363,7 +363,7 @@ public final class CraftingTaskExecutor implements WorldTaskExecutor {
 			if ("crafting_table_open_failed".equals(reason)) {
 				return fallBackToPortableCraftingTable(request, player);
 			}
-			return WorkbenchReadiness.failed(reason);
+			return WorkbenchReadiness.failed(TaskFailure.of(TaskFailureCode.UNKNOWN, reason));
 		}
 		snapshot = snapshot(TaskExecutionState.RUNNING, request, "crafting_table_wait");
 		return WorkbenchReadiness.notReadyState();
@@ -418,7 +418,7 @@ public final class CraftingTaskExecutor implements WorldTaskExecutor {
 		CraftPhase waitingForTakePhase
 	) {
 		boolean requireEmptyGrid = phase == CraftPhase.IDLE || phase == placingPhase;
-		Optional<String> readinessFailure = readinessFailure(player, gridSpec, requireEmptyGrid);
+		Optional<TaskFailure> readinessFailure = readinessFailure(player, gridSpec, requireEmptyGrid);
 		if (readinessFailure.isPresent()) {
 			return CraftAdvanceResult.failed(readinessFailure.get());
 		}
@@ -426,7 +426,7 @@ public final class CraftingTaskExecutor implements WorldTaskExecutor {
 		ScreenHandler handler = player.currentScreenHandler;
 		if (phase == CraftPhase.IDLE || phase == placingPhase) {
 			if (!placeRecipeInputs(client, handler, gridSpec, plan)) {
-				return CraftAdvanceResult.failed("recipe_not_found");
+				return CraftAdvanceResult.failed(TaskFailure.of(TaskFailureCode.MISSING_FACT, "recipe_not_found"));
 			}
 			phase = waitingForResultPhase;
 			waitTicks = 0;
@@ -444,7 +444,7 @@ public final class CraftingTaskExecutor implements WorldTaskExecutor {
 				snapshot = snapshot(TaskExecutionState.RUNNING, request, "crafting_result_taken");
 				return CraftAdvanceResult.running();
 			}
-			return waitCraftAdvance(request, "crafting_busy");
+			return waitCraftAdvance(request, TaskFailure.of(TaskFailureCode.BUSY, "crafting_busy"));
 		}
 
 		if (phase == waitingForTakePhase) {
@@ -457,16 +457,16 @@ public final class CraftingTaskExecutor implements WorldTaskExecutor {
 				snapshot = snapshot(TaskExecutionState.RUNNING, request, "crafting_next_batch");
 				return CraftAdvanceResult.running();
 			}
-			return waitCraftAdvance(request, "crafting_busy");
+			return waitCraftAdvance(request, TaskFailure.of(TaskFailureCode.BUSY, "crafting_busy"));
 		}
 
 		return CraftAdvanceResult.running();
 	}
 
-	private CraftAdvanceResult waitCraftAdvance(WorldTaskRequest request, String reason) {
+	private CraftAdvanceResult waitCraftAdvance(WorldTaskRequest request, TaskFailure failure) {
 		waitTicks++;
 		if (waitTicks > WAIT_TIMEOUT_TICKS) {
-			return CraftAdvanceResult.failed(reason);
+			return CraftAdvanceResult.failed(failure);
 		}
 		snapshot = snapshot(TaskExecutionState.RUNNING, request, "crafting_wait");
 		return CraftAdvanceResult.running();
@@ -529,20 +529,20 @@ public final class CraftingTaskExecutor implements WorldTaskExecutor {
 		return -1;
 	}
 
-	private static Optional<String> readinessFailure(ClientPlayerEntity player, CraftingGridSpec gridSpec, boolean requireEmptyGrid) {
+	private static Optional<TaskFailure> readinessFailure(ClientPlayerEntity player, CraftingGridSpec gridSpec, boolean requireEmptyGrid) {
 		if (!gridSpec.matches(player.currentScreenHandler)) {
-			return Optional.of("crafting_busy");
+			return Optional.of(TaskFailure.of(TaskFailureCode.BUSY, "crafting_busy"));
 		}
 		ScreenHandler handler = player.currentScreenHandler;
 		if (!handler.getCursorStack().isEmpty()) {
-			return Optional.of("crafting_grid_occupied");
+			return Optional.of(TaskFailure.of(TaskFailureCode.UNKNOWN, "crafting_grid_occupied"));
 		}
 		if (!requireEmptyGrid) {
 			return Optional.empty();
 		}
 		for (int index = gridSpec.firstInputSlot(); index < gridSpec.firstInputSlot() + gridSpec.inputSlotCount(); index++) {
 			if (!handler.getSlot(index).getStack().isEmpty()) {
-				return Optional.of("crafting_grid_occupied");
+				return Optional.of(TaskFailure.of(TaskFailureCode.UNKNOWN, "crafting_grid_occupied"));
 			}
 		}
 		return Optional.empty();
@@ -672,7 +672,10 @@ public final class CraftingTaskExecutor implements WorldTaskExecutor {
 		if (client.world == null
 			|| player.currentScreenHandler != player.playerScreenHandler
 			|| !player.currentScreenHandler.getCursorStack().isEmpty()) {
-			return WorkbenchReadiness.failed(portableTableFailure("placement_unavailable", 0, null, "crafting_busy"));
+			return WorkbenchReadiness.failed(TaskFailure.of(
+				TaskFailureCode.BUSY,
+				portableTableFailure("placement_unavailable", 0, null, "crafting_busy")
+			));
 		}
 		if (portableTablePlacementState == null) {
 			GoalPosition origin = goalPosition(player.getBlockPos());
@@ -691,25 +694,34 @@ public final class CraftingTaskExecutor implements WorldTaskExecutor {
 				sessionSnapshot.tickCount()
 			);
 			if (candidates.isEmpty()) {
-				return WorkbenchReadiness.failed(portableTableFailure("site_not_found", 0, null, "no_static_feasible_site"));
+				return WorkbenchReadiness.failed(TaskFailure.of(
+					TaskFailureCode.MISSING_FACT,
+					portableTableFailure("site_not_found", 0, null, "no_static_feasible_site")
+				));
 			}
 		}
 
 		PortableTablePlacementPolicy.AttemptState placementState = portableTablePlacementState;
 		if (placementState.timedOut(sessionSnapshot.tickCount())) {
-			return WorkbenchReadiness.failed(portableTableFailure(
-				"placement_timeout",
-				placementState.attemptNumber(),
-				placementState.activeTarget(),
-				placementState.lastFailure()
+			return WorkbenchReadiness.failed(TaskFailure.of(
+				TaskFailureCode.TRANSIENT,
+				portableTableFailure(
+					"placement_timeout",
+					placementState.attemptNumber(),
+					placementState.activeTarget(),
+					placementState.lastFailure()
+				)
 			));
 		}
 		if (placementState.exhausted()) {
-			return WorkbenchReadiness.failed(portableTableFailure(
-				"placement_exhausted",
-				placementState.candidates().size(),
-				null,
-				placementState.lastFailure()
+			return WorkbenchReadiness.failed(TaskFailure.of(
+				TaskFailureCode.UNKNOWN,
+				portableTableFailure(
+					"placement_exhausted",
+					placementState.candidates().size(),
+					null,
+					placementState.lastFailure()
+				)
 			));
 		}
 
@@ -747,21 +759,29 @@ public final class CraftingTaskExecutor implements WorldTaskExecutor {
 			? "placed_block_not_crafting_table"
 			: childTerminal.message();
 		if (PortableTablePlacementPolicy.failureDisposition(failure) == PortableTablePlacementPolicy.FailureDisposition.TERMINATE) {
-			return WorkbenchReadiness.failed(portableTableFailure(
-				"placement_failed",
-				placementState.attemptNumber(),
-				target,
-				failure
+			return WorkbenchReadiness.failed(TaskFailure.of(
+				childTerminal.terminalState() == TaskExecutionState.FAILED
+					? childTerminal.failureCode()
+					: TaskFailureCode.UNKNOWN,
+				portableTableFailure(
+					"placement_failed",
+					placementState.attemptNumber(),
+					target,
+					failure
+				)
 			));
 		}
 		portableTablePlacementState = placementState.advance(failure);
 		portableTablePlacementTask = null;
 		if (portableTablePlacementState.exhausted()) {
-			return WorkbenchReadiness.failed(portableTableFailure(
-				"placement_exhausted",
-				portableTablePlacementState.candidates().size(),
-				target,
-				failure
+			return WorkbenchReadiness.failed(TaskFailure.of(
+				TaskFailureCode.UNKNOWN,
+				portableTableFailure(
+					"placement_exhausted",
+					portableTablePlacementState.candidates().size(),
+					target,
+					failure
+				)
 			));
 		}
 		snapshot = snapshot(TaskExecutionState.RUNNING, request,
@@ -922,16 +942,16 @@ public final class CraftingTaskExecutor implements WorldTaskExecutor {
 		openedWorkbenchForTask = false;
 	}
 
-	private Optional<TaskTerminalEvent> fail(WorldTaskRequest request, String reason) {
+	private Optional<TaskTerminalEvent> fail(WorldTaskRequest request, TaskFailure failure) {
 		cancelNavigationIfStarted();
 		cancelPortableTablePlacement();
 		closeOwnedWorkbenchIfSafe();
-		snapshot = snapshot(TaskExecutionState.FAILED, request, reason);
+		snapshot = snapshot(TaskExecutionState.FAILED, request, failure.detail());
 		if (terminalEventEmitted) {
 			return Optional.empty();
 		}
 		terminalEventEmitted = true;
-		return Optional.of(new TaskTerminalEvent(request.taskId(), null, TaskExecutionState.FAILED, reason, null, TaskFailureCode.fromLegacyDetail(reason)));
+		return Optional.of(new TaskTerminalEvent(request.taskId(), null, TaskExecutionState.FAILED, failure.detail(), null, failure.code()));
 	}
 
 	private static TaskExecutionSnapshot snapshot(TaskExecutionState state, WorldTaskRequest request, String event) {
@@ -1045,17 +1065,17 @@ public final class CraftingTaskExecutor implements WorldTaskExecutor {
 		int targetOutputCount,
 		CraftingGridKind gridKind,
 		java.util.List<CraftingOpportunityResolver.CraftingIngredientPlacement> placements,
-		String failureReason
+		TaskFailure failure
 	) {
-		private static CraftingPlan failure(String reason) {
-			return new CraftingPlan(null, null, 0, 0, 0, null, java.util.List.of(), reason);
+		private static CraftingPlan failure(String reason, TaskFailureCode code) {
+			return new CraftingPlan(null, null, 0, 0, 0, null, java.util.List.of(), TaskFailure.of(code, reason));
 		}
 	}
 
 	static record RecipeFillRequest(int syncId, NetworkRecipeId networkRecipeId, boolean craftAll) {
 	}
 
-	private record WorkbenchReadiness(boolean ready, Optional<String> failureReason) {
+	private record WorkbenchReadiness(boolean ready, Optional<TaskFailure> failure) {
 		private static WorkbenchReadiness readyState() {
 			return new WorkbenchReadiness(true, Optional.empty());
 		}
@@ -1064,8 +1084,8 @@ public final class CraftingTaskExecutor implements WorldTaskExecutor {
 			return new WorkbenchReadiness(false, Optional.empty());
 		}
 
-		private static WorkbenchReadiness failed(String reason) {
-			return new WorkbenchReadiness(false, Optional.of(reason));
+		private static WorkbenchReadiness failed(TaskFailure failure) {
+			return new WorkbenchReadiness(false, Optional.of(failure));
 		}
 	}
 
@@ -1075,7 +1095,7 @@ public final class CraftingTaskExecutor implements WorldTaskExecutor {
 		FAILED
 	}
 
-	private record CraftAdvanceResult(CraftAdvanceStatus status, String reason) {
+	private record CraftAdvanceResult(CraftAdvanceStatus status, TaskFailure failure) {
 		private static CraftAdvanceResult running() {
 			return new CraftAdvanceResult(CraftAdvanceStatus.RUNNING, null);
 		}
@@ -1084,8 +1104,8 @@ public final class CraftingTaskExecutor implements WorldTaskExecutor {
 			return new CraftAdvanceResult(CraftAdvanceStatus.COMPLETED, null);
 		}
 
-		private static CraftAdvanceResult failed(String reason) {
-			return new CraftAdvanceResult(CraftAdvanceStatus.FAILED, reason);
+		private static CraftAdvanceResult failed(TaskFailure failure) {
+			return new CraftAdvanceResult(CraftAdvanceStatus.FAILED, failure);
 		}
 	}
 
