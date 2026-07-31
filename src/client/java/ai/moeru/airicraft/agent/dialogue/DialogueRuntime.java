@@ -37,7 +37,7 @@ public final class DialogueRuntime {
 	private final int maxRecentTurns;
 	private final List<DialogueTurn> recentTurns = new ArrayList<>();
 	private final Deque<PendingInternalTaskUpdate> pendingInternalTaskUpdates = new ArrayDeque<>();
-	private final Deque<PendingVisibleReply> pendingVisibleReplies = new ArrayDeque<>();
+	private final Deque<PendingDialogueReply> pendingVisibleReplies = new ArrayDeque<>();
 
 	private DialogueState state = DialogueCore.initialState();
 	private int queuedTimeoutInjections;
@@ -47,6 +47,7 @@ public final class DialogueRuntime {
 	private String safetyHoldId;
 	private boolean reflexActive;
 	private boolean externalDriverActive;
+	private long nextPendingReplyId = 1L;
 
 	public DialogueRuntime(PlannerOrchestrator plannerOrchestrator, int maxRecentTurns) {
 		this(plannerOrchestrator, maxRecentTurns, Clock.systemDefaultZone());
@@ -70,22 +71,34 @@ public final class DialogueRuntime {
 		return pendingVisibleReplies.isEmpty() ? state.pendingReplyReason() : pendingVisibleReplies.peekFirst().reason();
 	}
 
-	public void markReplyObserved() {
-		if (!pendingVisibleReplies.isEmpty()) {
-			pendingVisibleReplies.removeFirst();
-		}
-		state = state.withPendingReply(!pendingVisibleReplies.isEmpty(), pendingReplyReason());
-	}
-
-	public Optional<DialogueResponse> pendingReplyReady(long tick) {
+	public Optional<PendingDialogueReply> pendingReplyReady(long tick) {
 		if (pendingVisibleReplies.isEmpty()) {
 			return Optional.empty();
 		}
-		PendingVisibleReply pendingReply = pendingVisibleReplies.peekFirst();
+		PendingDialogueReply pendingReply = pendingVisibleReplies.peekFirst();
 		if (tick < pendingReply.readyTick()) {
 			return Optional.empty();
 		}
-		return Optional.of(pendingReply.response());
+		return Optional.of(pendingReply);
+	}
+
+	public boolean recordSentReply(PendingDialogueReply sentReply, boolean sendSucceeded) {
+		if (!sendSucceeded || sentReply == null || pendingVisibleReplies.isEmpty()) {
+			return false;
+		}
+
+		PendingDialogueReply pendingReply = pendingVisibleReplies.peekFirst();
+		if (
+			pendingReply.id() != sentReply.id()
+				|| !Objects.equals(pendingReply.response().text(), sentReply.response().text())
+		) {
+			return false;
+		}
+
+		pendingVisibleReplies.removeFirst();
+		recordAgentTurn(pendingReply.response().text(), pendingReply.response().tick());
+		state = state.withPendingReply(!pendingVisibleReplies.isEmpty(), pendingReplyReason());
+		return true;
 	}
 
 	public boolean isDegraded() {
@@ -632,8 +645,7 @@ public final class DialogueRuntime {
 		for (DialogueResponse response : transition.visibleResponses()) {
 			if (response != null && response.text() != null && !response.text().isBlank()) {
 				nextReadyTick += response.delayTicks();
-				pendingVisibleReplies.addLast(new PendingVisibleReply(response, state.pendingReplyReason(), nextReadyTick));
-				recordAgentTurn(response.text(), tick);
+				pendingVisibleReplies.addLast(new PendingDialogueReply(nextPendingReplyId++, response, state.pendingReplyReason(), nextReadyTick));
 			}
 		}
 		state = state.withPendingReply(!pendingVisibleReplies.isEmpty(), pendingReplyReason());
@@ -688,13 +700,6 @@ public final class DialogueRuntime {
 				currentMissionExecution == null ? missionExecution : currentMissionExecution
 			);
 		}
-	}
-
-	private record PendingVisibleReply(
-		DialogueResponse response,
-		String reason,
-		long readyTick
-	) {
 	}
 
 }
