@@ -38,6 +38,7 @@ class BlockBreakTaskExecutorTest {
 		assertTrue(event.isPresent());
 		assertEquals(TaskExecutionState.FAILED, event.orElseThrow().terminalState());
 		assertEquals("world_unavailable", event.orElseThrow().message());
+		assertEquals(TaskFailureCode.UNKNOWN, event.orElseThrow().failureCode());
 	}
 
 	private static WorldTaskRequest request() {

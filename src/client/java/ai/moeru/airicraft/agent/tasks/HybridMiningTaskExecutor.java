@@ -320,7 +320,8 @@ public final class HybridMiningTaskExecutor implements WorldTaskExecutor {
 			request.goal(),
 			childEvent.terminalState(),
 			childEvent.message(),
-			childEvent.terminationCause()
+			childEvent.terminationCause(),
+			childEvent.failureCode()
 		));
 	}
 
@@ -343,7 +344,8 @@ public final class HybridMiningTaskExecutor implements WorldTaskExecutor {
 			request.goal(),
 			TaskExecutionState.FAILED,
 			message,
-			null
+			null,
+			TaskFailureCode.TRANSIENT
 		));
 	}
 

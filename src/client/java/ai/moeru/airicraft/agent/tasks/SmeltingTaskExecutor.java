@@ -605,7 +605,7 @@ public final class SmeltingTaskExecutor implements WorldTaskExecutor {
 			return Optional.empty();
 		}
 		terminalEventEmitted = true;
-		return Optional.of(new TaskTerminalEvent(request.taskId(), null, TaskExecutionState.FAILED, reason, null));
+		return Optional.of(new TaskTerminalEvent(request.taskId(), null, TaskExecutionState.FAILED, reason, null, TaskFailureCode.fromLegacyDetail(reason)));
 	}
 
 	private void closeOpenedStationIfSafe() {

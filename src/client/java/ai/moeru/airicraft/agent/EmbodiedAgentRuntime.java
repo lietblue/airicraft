@@ -125,6 +125,7 @@ import ai.moeru.airicraft.agent.social.PrimaryInteractionPlayer;
 import ai.moeru.airicraft.agent.social.PrimaryInteractionResolver;
 import ai.moeru.airicraft.agent.tasks.TaskExecutionSnapshot;
 import ai.moeru.airicraft.agent.tasks.TaskExecutionState;
+import ai.moeru.airicraft.agent.tasks.TaskFailureCode;
 import ai.moeru.airicraft.agent.tasks.WorldTaskRequest;
 import ai.moeru.airicraft.agent.tasks.InventoryItemCounter;
 import ai.moeru.airicraft.agent.tasks.InventoryResourceCounter;
@@ -1952,7 +1953,7 @@ public final class EmbodiedAgentRuntime {
 		ActionGraphPrimitivePreflight preflight = prepareActionGraphPrimitiveProposal(dispatch.proposal());
 		if (preflight == null) {
 			return ActionGraphPrimitiveDispatchResult.failed(
-				"primitive_preflight_failed",
+				TaskFailureCode.UNKNOWN,
 				"Action graph primitive preflight failed",
 				dispatch.payload()
 			);
@@ -4458,7 +4459,8 @@ public final class EmbodiedAgentRuntime {
 			null,
 			terminalState,
 			message,
-			terminationCause
+			terminationCause,
+			terminalState == TaskExecutionState.FAILED ? TaskFailureCode.UNKNOWN : TaskFailureCode.NONE
 		));
 	}
 

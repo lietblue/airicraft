@@ -4,6 +4,7 @@ import ai.moeru.airicraft.agent.tasks.CraftingOpportunity;
 import ai.moeru.airicraft.agent.tasks.SmeltingOption;
 import ai.moeru.airicraft.agent.tasks.SmeltingRecipeKnowledge;
 import ai.moeru.airicraft.agent.tasks.TaskExecutionState;
+import ai.moeru.airicraft.agent.tasks.TaskFailureCode;
 import ai.moeru.airicraft.agent.tasks.TaskTerminalEvent;
 
 import java.nio.file.Path;
@@ -506,7 +507,7 @@ public final class ActionGraphExecutionRuntime {
 		ActionGraphPrimitiveDispatchResult result = primitiveDispatcher.dispatch(dispatchStep);
 		if (!result.accepted()) {
 			stepAttempt++;
-			handleStepFailure(nonEmpty(result.failureCode(), "dispatch_failed"), result.message(), false);
+			handleStepFailure(result.failureCode(), result.message(), false);
 			return;
 		}
 		stepAttempt++;
@@ -537,11 +538,13 @@ public final class ActionGraphExecutionRuntime {
 		taskExecutionPayload = Map.of(
 			"taskId", nonEmpty(event.taskId(), activeTaskId),
 			"state", event.terminalState().name(),
+			"failureCode", event.failureCode().id(),
 			"message", nonEmpty(event.message(), "")
 		);
 		trace("primitive_terminal", actionId(currentStep), alternativeId(currentStep), stepId(currentStep), Map.of(
 			"taskId", nonEmpty(event.taskId(), activeTaskId),
 			"state", event.terminalState().name(),
+			"failureCode", event.failureCode().id(),
 			"message", nonEmpty(event.message(), "")
 		));
 		if (event.terminalState() == TaskExecutionState.COMPLETED) {
@@ -554,7 +557,7 @@ public final class ActionGraphExecutionRuntime {
 			state = ActionGraphExecutionState.OBSERVING;
 			return;
 		}
-		handleStepFailure(classifyFailure(nonEmpty(event.message(), event.terminalState().name())), event.message(), true);
+		handleStepFailure(event.failureCode(), event.message(), true);
 	}
 
 	private static boolean refreshAfterSuccessfulStep(ActionPlanStep step) {
@@ -567,20 +570,22 @@ public final class ActionGraphExecutionRuntime {
 		};
 	}
 
-	private void handleStepFailure(String rawFailureCode, String failureMessage, boolean fromTerminalEvent) {
-		String classified = normalizeFailureCode(rawFailureCode, failureMessage);
+	private void handleStepFailure(TaskFailureCode typedFailureCode, String failureMessage, boolean fromTerminalEvent) {
+		TaskFailureCode safeFailureCode = typedFailureCode == null ? TaskFailureCode.UNKNOWN : typedFailureCode;
+		String classified = normalizeFailureCode(safeFailureCode);
 		LinkedHashMap<String, Object> recovery = new LinkedHashMap<>();
 		recovery.put("stepId", stepId(currentStep));
 		recovery.put("targetId", currentStep == null ? "" : currentStep.targetId());
 		recovery.put("failureCode", classified);
-		recovery.put("message", nonEmpty(failureMessage, rawFailureCode));
+		recovery.put("typedFailureCode", safeFailureCode.id());
+		recovery.put("message", nonEmpty(failureMessage, safeFailureCode.id()));
 		recovery.put("attempt", stepAttempt);
 		recoveryHistory.add(recovery);
 		trace("step_failed", actionId(currentStep), alternativeId(currentStep), stepId(currentStep), recovery);
 
 		if (fromTerminalEvent
 			&& "transient".equals(classified)
-			&& isBusyFailure(rawFailureCode, failureMessage)
+			&& isBusyFailure(safeFailureCode)
 			&& stepAttempt <= MAX_STEP_RETRIES) {
 			activeTaskId = "";
 			observeNotBeforeTick = lastContext == null ? -1L : lastContext.currentTick() + 20L;
@@ -632,7 +637,7 @@ public final class ActionGraphExecutionRuntime {
 			fail("budget_exceeded", "Step retry budget exceeded for " + stepId(currentStep));
 			return;
 		}
-		fail(classified, nonEmpty(failureMessage, rawFailureCode));
+		fail(classified, nonEmpty(failureMessage, safeFailureCode.id()));
 	}
 
 	private void registerWatch(ActionGraphExecutionInput input) {
@@ -757,7 +762,7 @@ public final class ActionGraphExecutionRuntime {
 				"watchId", watch.watchId(),
 				"consumedEligibleTicks", watch.consumedEligibleTicks
 			));
-			handleStepFailure("missing_fact", "watch timed out", false);
+			handleStepFailure(TaskFailureCode.MISSING_FACT, "watch timed out", false);
 		}
 	}
 
@@ -1167,40 +1172,18 @@ public final class ActionGraphExecutionRuntime {
 		return minimumKey;
 	}
 
-	private static String normalizeFailureCode(String rawFailureCode, String failureMessage) {
-		String code = classifyFailure(nonEmpty(rawFailureCode, failureMessage));
-		if ("invalid_step_args".equals(rawFailureCode) || "unsupported_primitive".equals(rawFailureCode) || "unsupported_step_kind".equals(rawFailureCode)) {
-			return "invalid_action";
-		}
-		if ("recipe_not_found".equals(rawFailureCode) || "missing_fact".equals(rawFailureCode)) {
-			return "missing_fact";
-		}
-		return code;
+	private static String normalizeFailureCode(TaskFailureCode failureCode) {
+		return switch (ActionGraphFailurePolicy.category(failureCode)) {
+			case RETRY -> "transient";
+			case MISSING_FACT -> "missing_fact";
+			case BLOCKED -> "environment_changed";
+			case INVALID_REQUEST -> "invalid_action";
+			case TERMINAL -> failureCode == TaskFailureCode.DESTRUCTIVE_DENIED ? "destructive_denied" : "failed";
+		};
 	}
 
-	private static boolean isBusyFailure(String rawFailureCode, String failureMessage) {
-		String text = ((rawFailureCode == null ? "" : rawFailureCode) + " " + (failureMessage == null ? "" : failureMessage)).toLowerCase();
-		return text.contains("busy") || text.contains("occupied");
-	}
-
-	private static String classifyFailure(String raw) {
-		String text = raw == null ? "" : raw.toLowerCase();
-		if (text.contains("timeout") || text.contains("busy") || text.contains("occupied") || text.contains("temporary") || text.contains("path")) {
-			return "transient";
-		}
-		if (text.contains("missing") || text.contains("not_found") || text.contains("not found") || text.contains("target")) {
-			return "missing_fact";
-		}
-		if (text.contains("unloaded") || text.contains("changed") || text.contains("gone")) {
-			return "environment_changed";
-		}
-		if (text.contains("unsupported") || text.contains("invalid")) {
-			return "invalid_action";
-		}
-		if (text.contains("denied") || text.contains("destructive")) {
-			return "destructive_denied";
-		}
-		return text.isBlank() ? "failed" : text;
+	private static boolean isBusyFailure(TaskFailureCode failureCode) {
+		return failureCode == TaskFailureCode.BUSY;
 	}
 
 	private void trace(String eventType, String actionId, String alternativeId, String stepId, Map<String, Object> payload) {

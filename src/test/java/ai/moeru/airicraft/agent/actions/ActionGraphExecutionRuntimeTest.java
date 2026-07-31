@@ -3,6 +3,7 @@ package ai.moeru.airicraft.agent.actions;
 import ai.moeru.airicraft.agent.tasks.CraftingOpportunity;
 import ai.moeru.airicraft.agent.tasks.SmeltingRecipeKnowledge;
 import ai.moeru.airicraft.agent.tasks.TaskExecutionState;
+import ai.moeru.airicraft.agent.tasks.TaskFailureCode;
 import ai.moeru.airicraft.agent.tasks.TaskTerminalEvent;
 import org.junit.jupiter.api.Test;
 
@@ -681,6 +682,63 @@ class ActionGraphExecutionRuntimeTest {
 	}
 
 	@Test
+	void unknownFailureDetailDoesNotTriggerTextBasedRecovery() {
+		RecordingDispatcher dispatcher = new RecordingDispatcher();
+		ActionGraphExecutionRuntime runtime = new ActionGraphExecutionRuntime(defaultIndex(), dispatcher);
+		runtime.submit(ActionGoal.inventoryItem("minecraft:bread", 1), Map.of("minecraft:wheat", 3), CONTEXT, 100);
+
+		ActionGraphExecutionSnapshot dispatched = runtime.tick(input(Map.of("minecraft:wheat", 3), null, 101));
+		ActionGraphExecutionSnapshot failed = runtime.tick(input(
+			Map.of("minecraft:wheat", 3),
+			new TaskTerminalEvent(dispatched.activeTaskId(), null, TaskExecutionState.FAILED, "path target busy timeout detail", null),
+			102
+		));
+
+		assertEquals(ActionGraphExecutionState.FAILED, failed.state());
+		assertEquals("failed", failed.failureCode());
+		assertEquals(1, dispatcher.dispatchedSteps.size());
+		assertEquals("path target busy timeout detail", failed.message());
+		assertEquals("path target busy timeout detail", map(failed.recoveryHistory().getFirst()).get("message"));
+	}
+
+	@Test
+	void typedFailureCodeControlsRecoveryWhenDetailContainsPolicyWords() {
+		RecordingDispatcher dispatcher = new RecordingDispatcher();
+		ActionGraphExecutionRuntime runtime = new ActionGraphExecutionRuntime(defaultIndex(), dispatcher);
+		runtime.submit(ActionGoal.inventoryItem("minecraft:bread", 1), Map.of("minecraft:wheat", 3), CONTEXT, 100);
+
+		ActionGraphExecutionSnapshot dispatched = runtime.tick(input(Map.of("minecraft:wheat", 3), null, 101));
+		ActionGraphExecutionSnapshot recovered = runtime.tick(input(
+			Map.of("minecraft:wheat", 3),
+			failed(dispatched.activeTaskId(), TaskFailureCode.MISSING_FACT, "path timeout target detail"),
+			102
+		));
+
+		assertEquals(ActionGraphExecutionState.WAITING_PRIMITIVE, recovered.state());
+		assertEquals(2, dispatcher.dispatchedSteps.size());
+		assertEquals("missing_fact", map(recovered.recoveryHistory().getFirst()).get("failureCode"));
+		assertEquals("missing_fact", map(recovered.recoveryHistory().getFirst()).get("typedFailureCode"));
+	}
+
+	@Test
+	void typedDispatchFailureReachesGraphRecovery() {
+		RecordingDispatcher dispatcher = new RecordingDispatcher();
+		dispatcher.nextResult = ActionGraphPrimitiveDispatchResult.failed(
+			TaskFailureCode.MISSING_FACT,
+			"path target detail",
+			Map.of()
+		);
+		ActionGraphExecutionRuntime runtime = new ActionGraphExecutionRuntime(defaultIndex(), dispatcher);
+		runtime.submit(ActionGoal.inventoryItem("minecraft:bread", 1), Map.of("minecraft:wheat", 3), CONTEXT, 100);
+
+		ActionGraphExecutionSnapshot recovered = runtime.tick(input(Map.of("minecraft:wheat", 3), null, 101));
+
+		assertEquals(ActionGraphExecutionState.WAITING_PRIMITIVE, recovered.state());
+		assertEquals(2, dispatcher.dispatchedSteps.size());
+		assertEquals("missing_fact", map(recovered.recoveryHistory().getFirst()).get("failureCode"));
+	}
+
+	@Test
 	void missingCraftRecipeFailureReplansWithoutBlockingRecipeAlternative() {
 		RecordingDispatcher dispatcher = new RecordingDispatcher();
 		ActionGraphExecutionRuntime runtime = new ActionGraphExecutionRuntime(ActionsetIndex.empty(), dispatcher);
@@ -728,7 +786,7 @@ class ActionGraphExecutionRuntimeTest {
 
 		ActionGraphExecutionSnapshot failed = runtime.tick(inputWithKnownCrafts(
 			Map.of("minecraft:stick", 2),
-			new TaskTerminalEvent(pickaxeDispatched.activeTaskId(), null, TaskExecutionState.FAILED, "recipe_not_found", null),
+			new TaskTerminalEvent(pickaxeDispatched.activeTaskId(), null, TaskExecutionState.FAILED, "recipe_not_found", null, TaskFailureCode.MISSING_FACT),
 			102,
 			ActionGraphRecipeFixtures.survivalCrafts()
 		));
@@ -997,7 +1055,11 @@ class ActionGraphExecutionRuntimeTest {
 	}
 
 	private static TaskTerminalEvent failed(String taskId, String message) {
-		return new TaskTerminalEvent(taskId, null, TaskExecutionState.FAILED, message, null);
+		return failed(taskId, TaskFailureCode.fromLegacyDetail(message), message);
+	}
+
+	private static TaskTerminalEvent failed(String taskId, TaskFailureCode failureCode, String message) {
+		return new TaskTerminalEvent(taskId, null, TaskExecutionState.FAILED, message, null, failureCode);
 	}
 
 	private static ActionsetIndex defaultIndex() {
@@ -1052,10 +1114,16 @@ class ActionGraphExecutionRuntimeTest {
 
 	private static final class RecordingDispatcher implements ActionGraphPrimitiveDispatcher {
 		private final List<ActionPlanStep> dispatchedSteps = new ArrayList<>();
+		private ActionGraphPrimitiveDispatchResult nextResult;
 
 		@Override
 		public ActionGraphPrimitiveDispatchResult dispatch(ActionPlanStep step) {
 			dispatchedSteps.add(step);
+			if (nextResult != null) {
+				ActionGraphPrimitiveDispatchResult result = nextResult;
+				nextResult = null;
+				return result;
+			}
 			LinkedHashMap<String, Object> payload = new LinkedHashMap<>();
 			payload.put("targetId", step.targetId());
 			if ("smelt_item".equals(step.targetId())) {

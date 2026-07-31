@@ -7,6 +7,23 @@ public record TaskTerminalEvent(
 	GoalSnapshot goal,
 	TaskExecutionState terminalState,
 	String message,
-	TaskTerminationCause terminationCause
+	TaskTerminationCause terminationCause,
+	TaskFailureCode failureCode
 ) {
+	public TaskTerminalEvent(
+		String taskId,
+		GoalSnapshot goal,
+		TaskExecutionState terminalState,
+		String message,
+		TaskTerminationCause terminationCause
+	) {
+		this(taskId, goal, terminalState, message, terminationCause,
+			terminalState == TaskExecutionState.FAILED ? TaskFailureCode.UNKNOWN : TaskFailureCode.NONE);
+	}
+
+	public TaskTerminalEvent {
+		failureCode = failureCode == null
+			? terminalState == TaskExecutionState.FAILED ? TaskFailureCode.UNKNOWN : TaskFailureCode.NONE
+			: failureCode;
+	}
 }
