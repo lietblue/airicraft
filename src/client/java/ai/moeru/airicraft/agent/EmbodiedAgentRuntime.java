@@ -1420,6 +1420,7 @@ public final class EmbodiedAgentRuntime {
 
 			String plannerSender = DialogueSpeakerLabels.SAME_CLIENT_ADMIN;
 			if (dialogueRuntime.handleResetCommand(plannerSender, plainTextMessage, tickCount, eventBuffer)) {
+				completePendingCraftToolResult("Tool result for craft_recipe: cancelled reason=planner_reset");
 				cancelPendingBlockModificationToolResult(PendingBlockModificationStopReason.PLANNER_RESET);
 				eventPolicyState.clear();
 				drainEventPipeline();
@@ -1439,6 +1440,7 @@ public final class EmbodiedAgentRuntime {
 		);
 
 		if (dialogueRuntime.handleResetCommand(senderName, plainTextMessage, tickCount, eventBuffer)) {
+			completePendingCraftToolResult("Tool result for craft_recipe: cancelled reason=planner_reset");
 			cancelPendingBlockModificationToolResult(PendingBlockModificationStopReason.PLANNER_RESET);
 			eventPolicyState.clear();
 			drainEventPipeline();
@@ -4639,6 +4641,8 @@ public final class EmbodiedAgentRuntime {
 		if (
 			pending == null
 				|| snapshot == null
+				|| snapshot.taskId() == null
+				|| !Objects.equals(pending.taskId(), snapshot.taskId())
 				|| snapshot.activeStepKind() != ai.moeru.airicraft.agent.tasks.LedgerStepKind.CRAFT_RECIPE
 				|| !isTerminalTaskState(snapshot.state())
 		) {

@@ -2105,6 +2105,117 @@ class EmbodiedAgentRuntimeTest {
 	}
 
 	@Test
+	void craftSnapshotFallbackAcceptsMatchingTaskIdentity() throws Exception {
+		FakeWorldTaskExecutor executor = new FakeWorldTaskExecutor();
+		EmbodiedAgentRuntime runtime = EmbodiedAgentRuntime.createForTests(executor);
+		runtime.overrideSessionSnapshotForTests(loadedRemoteSession());
+
+		CompletableFuture<String> resultFuture = runtime.executePlannerToolCallFutureForTests(craftRecipeToolCall());
+		WorldTaskRequest request = runtimeTaskRequest(runtime, executor);
+
+		invokeCraftSnapshotFallback(runtime, terminalCraftSnapshot(request.taskId()));
+
+		assertTrue(resultFuture.join().contains("completed"));
+	}
+
+	@Test
+	void craftSnapshotFallbackRejectsWrongTaskWithTheSameStepKind() throws Exception {
+		FakeWorldTaskExecutor executor = new FakeWorldTaskExecutor();
+		EmbodiedAgentRuntime runtime = EmbodiedAgentRuntime.createForTests(executor);
+		runtime.overrideSessionSnapshotForTests(loadedRemoteSession());
+
+		CompletableFuture<String> resultFuture = runtime.executePlannerToolCallFutureForTests(craftRecipeToolCall());
+		WorldTaskRequest request = runtimeTaskRequest(runtime, executor);
+
+		invokeCraftSnapshotFallback(runtime, terminalCraftSnapshot("different-craft-task"));
+
+		assertFalse(resultFuture.isDone());
+		assertEquals(request.taskId(), executor.lastActiveTask.orElseThrow().taskId());
+	}
+
+	@Test
+	void craftSnapshotFallbackRejectsCompatibilitySnapshotWithoutTaskIdentity() throws Exception {
+		FakeWorldTaskExecutor executor = new FakeWorldTaskExecutor();
+		EmbodiedAgentRuntime runtime = EmbodiedAgentRuntime.createForTests(executor);
+		runtime.overrideSessionSnapshotForTests(loadedRemoteSession());
+
+		CompletableFuture<String> resultFuture = runtime.executePlannerToolCallFutureForTests(craftRecipeToolCall());
+		runtimeTaskRequest(runtime, executor);
+
+		invokeCraftSnapshotFallback(runtime, new TaskSnapshot(
+			TaskState.COMPLETED,
+			null,
+			null,
+			null,
+			null,
+			null,
+			null,
+			null,
+			null,
+			null,
+			LedgerStepKind.CRAFT_RECIPE,
+			null,
+			1L
+		));
+
+		assertFalse(resultFuture.isDone());
+	}
+
+	@Test
+	void craftSnapshotFallbackRejectsStalePriorTaskAfterReplacement() throws Exception {
+		FakeWorldTaskExecutor executor = new FakeWorldTaskExecutor();
+		EmbodiedAgentRuntime runtime = EmbodiedAgentRuntime.createForTests(executor);
+		runtime.overrideSessionSnapshotForTests(loadedRemoteSession());
+
+		CompletableFuture<String> firstResult = runtime.executePlannerToolCallFutureForTests(craftRecipeToolCall());
+		WorldTaskRequest firstRequest = runtimeTaskRequest(runtime, executor);
+		activeJobRuntime(runtime).clear();
+		setTaskSnapshot(runtime, TaskSnapshot.idle());
+		setTaskExecutionSnapshot(runtime, TaskExecutionSnapshot.idle());
+
+		CompletableFuture<String> secondResult = runtime.executePlannerToolCallFutureForTests(craftRecipeToolCall());
+		WorldTaskRequest secondRequest = runtimeTaskRequest(runtime, executor);
+
+		assertTrue(firstResult.join().contains("superseded"));
+		invokeCraftSnapshotFallback(runtime, terminalCraftSnapshot(firstRequest.taskId()));
+		assertFalse(secondResult.isDone());
+		invokeCraftSnapshotFallback(runtime, terminalCraftSnapshot(secondRequest.taskId()));
+		assertTrue(secondResult.join().contains("completed"));
+	}
+
+	@Test
+	void craftTerminalEventAndSnapshotCompleteOnlyOnce() throws Exception {
+		FakeWorldTaskExecutor executor = new FakeWorldTaskExecutor();
+		EmbodiedAgentRuntime runtime = EmbodiedAgentRuntime.createForTests(executor);
+		runtime.overrideSessionSnapshotForTests(loadedRemoteSession());
+
+		CompletableFuture<String> resultFuture = runtime.executePlannerToolCallFutureForTests(craftRecipeToolCall());
+		WorldTaskRequest request = runtimeTaskRequest(runtime, executor);
+		invokeCraftTerminalEvent(runtime, new TaskTerminalEvent(
+			request.taskId(),
+			null,
+			TaskExecutionState.COMPLETED,
+			"terminal event",
+			null
+		));
+		invokeCraftSnapshotFallback(runtime, terminalCraftSnapshot(request.taskId()));
+
+		assertTrue(resultFuture.join().contains("message=terminal event"));
+	}
+
+	@Test
+	void plannerResetCancelsPendingCraftToolResult() {
+		FakeWorldTaskExecutor executor = new FakeWorldTaskExecutor();
+		EmbodiedAgentRuntime runtime = EmbodiedAgentRuntime.createForTests(executor);
+		runtime.overrideSessionSnapshotForTests(loadedRemoteSession());
+
+		CompletableFuture<String> resultFuture = runtime.executePlannerToolCallFutureForTests(craftRecipeToolCall());
+		runtime.onChatReceived("Alice", "@agent reset");
+
+		assertTrue(resultFuture.join().contains("cancelled reason=planner_reset"));
+	}
+
+	@Test
 	void inventoryTaskUpdateSnapshotFormatsPlannerVisibleInventoryEvidence() {
 		String result = EmbodiedAgentRuntime.formatInventorySnapshotForTaskUpdate(new WorldEvidence(
 			Map.of(),
@@ -3028,6 +3139,42 @@ class EmbodiedAgentRuntimeTest {
 		public void shutdown() {
 			snapshot = TaskExecutionSnapshot.idle();
 		}
+	}
+
+	private static WorldTaskRequest runtimeTaskRequest(EmbodiedAgentRuntime runtime, FakeWorldTaskExecutor executor) {
+		runtime.onClientTick(null);
+		return executor.lastActiveTask.orElseThrow();
+	}
+
+	private static TaskSnapshot terminalCraftSnapshot(String taskId) {
+		return new TaskSnapshot(
+			TaskState.COMPLETED,
+			null,
+			null,
+			null,
+			null,
+			null,
+			null,
+			null,
+			null,
+			null,
+			LedgerStepKind.CRAFT_RECIPE,
+			null,
+			1L,
+			taskId
+		);
+	}
+
+	private static void invokeCraftSnapshotFallback(EmbodiedAgentRuntime runtime, TaskSnapshot snapshot) throws Exception {
+		var method = EmbodiedAgentRuntime.class.getDeclaredMethod("completePendingCraftToolResultFromTaskSnapshot", TaskSnapshot.class);
+		method.setAccessible(true);
+		method.invoke(runtime, snapshot);
+	}
+
+	private static void invokeCraftTerminalEvent(EmbodiedAgentRuntime runtime, TaskTerminalEvent event) throws Exception {
+		var method = EmbodiedAgentRuntime.class.getDeclaredMethod("completePendingCraftToolResult", TaskTerminalEvent.class);
+		method.setAccessible(true);
+		method.invoke(runtime, event);
 	}
 
 	private static PlannerToolCall craftRecipeToolCall() {
