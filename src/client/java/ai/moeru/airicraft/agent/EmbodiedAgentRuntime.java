@@ -189,6 +189,7 @@ import java.util.UUID;
 import java.time.Clock;
 import java.util.Locale;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.TreeMap;
 
 public final class EmbodiedAgentRuntime {
@@ -277,7 +278,7 @@ public final class EmbodiedAgentRuntime {
 	private Map<String, Integer> nearbyBlockSnapshot = Map.of();
 	private final Map<UUID, String> seenPlayerNames = new LinkedHashMap<>();
 	private volatile PendingCraftToolResult pendingCraftToolResult;
-	private volatile PendingBlockModificationToolResult pendingBlockModificationToolResult;
+	private final AtomicReference<PendingBlockModificationToolResult> pendingBlockModificationToolResult = new AtomicReference<>();
 	private TaskTerminalEvent pendingActionGraphTerminalEvent;
 
 	public EmbodiedAgentRuntime(
@@ -484,6 +485,7 @@ public final class EmbodiedAgentRuntime {
 		eventPolicyState.clear();
 		eventPipeline.clearPlannerFeed();
 		completePendingCraftToolResult("Tool result for craft_recipe: cancelled reason=world_left");
+		cancelPendingBlockModificationToolResult(PendingBlockModificationStopReason.WORLD_LEFT);
 		dialogueRuntime.clear();
 		worldTaskExecutor.onWorldLeave();
 		surfaceMemory.clear();
@@ -680,7 +682,7 @@ public final class EmbodiedAgentRuntime {
 		followCapability.clear();
 		followState = FollowState.idle();
 		completePendingCraftToolResult("Tool result for craft_recipe: cancelled reason=survival_reflex");
-		completePendingBlockModificationToolResult("Tool result: cancelled reason=survival_reflex");
+		cancelPendingBlockModificationToolResult(PendingBlockModificationStopReason.SURVIVAL_REFLEX);
 	}
 
 	private void pauseNormalWorkForReflex(MinecraftClient client) {
@@ -798,7 +800,7 @@ public final class EmbodiedAgentRuntime {
 		chatService.clear();
 		taskExecutionSnapshot = TaskExecutionSnapshot.idle();
 		completePendingCraftToolResult("Tool result for craft_recipe: cancelled reason=player_died");
-		completePendingBlockModificationToolResult("Tool result: cancelled reason=player_died");
+		cancelPendingBlockModificationToolResult(PendingBlockModificationStopReason.PLAYER_DIED);
 		idleIdeaScheduler.reset();
 
 		LinkedHashMap<String, Object> payload = new LinkedHashMap<>();
@@ -850,6 +852,7 @@ public final class EmbodiedAgentRuntime {
 		eventPipeline.clearForShutdown();
 		primaryInteractionResolver.clear();
 		completePendingCraftToolResult("Tool result for craft_recipe: cancelled reason=runtime_shutdown");
+		cancelPendingBlockModificationToolResult(PendingBlockModificationStopReason.RUNTIME_SHUTDOWN);
 		dialogueRuntime.shutdown();
 		observability.shutdown();
 		visionService.shutdown();
@@ -1291,6 +1294,7 @@ public final class EmbodiedAgentRuntime {
 		evaluationPlannerSuppressed = true;
 		eventPipeline.clearPlannerFeed();
 		completePendingCraftToolResult("Tool result for craft_recipe: cancelled reason=evaluation_finished");
+		cancelPendingBlockModificationToolResult(PendingBlockModificationStopReason.EVALUATION_FINISHED);
 		dialogueRuntime.clear();
 		actionGraphCoordinator.cancelAll("runtime_reset", tickCount);
 		actionGraphCoordinator.clear();
@@ -1415,6 +1419,7 @@ public final class EmbodiedAgentRuntime {
 
 			String plannerSender = DialogueSpeakerLabels.SAME_CLIENT_ADMIN;
 			if (dialogueRuntime.handleResetCommand(plannerSender, plainTextMessage, tickCount, eventBuffer)) {
+				cancelPendingBlockModificationToolResult(PendingBlockModificationStopReason.PLANNER_RESET);
 				eventPolicyState.clear();
 				drainEventPipeline();
 				return;
@@ -1433,6 +1438,7 @@ public final class EmbodiedAgentRuntime {
 		);
 
 		if (dialogueRuntime.handleResetCommand(senderName, plainTextMessage, tickCount, eventBuffer)) {
+			cancelPendingBlockModificationToolResult(PendingBlockModificationStopReason.PLANNER_RESET);
 			eventPolicyState.clear();
 			drainEventPipeline();
 			return;
@@ -2878,9 +2884,8 @@ public final class EmbodiedAgentRuntime {
 			return CompletableFuture.completedFuture("TOOL_ERROR: " + toolName + " task_not_started");
 		}
 
-		completePendingBlockModificationToolResult("Tool result for " + toolName + ": cancelled reason=superseded");
 		CompletableFuture<String> future = new CompletableFuture<>();
-		pendingBlockModificationToolResult = new PendingBlockModificationToolResult(
+		PendingBlockModificationToolResult replacement = pendingBlockModificationToolResult.getAndSet(new PendingBlockModificationToolResult(
 			activeTask.get().taskId(),
 			toolName,
 			expectedTaskType,
@@ -2888,7 +2893,10 @@ public final class EmbodiedAgentRuntime {
 			details,
 			tickCount,
 			future
-		);
+		));
+		if (replacement != null) {
+			replacement.future().complete(PendingBlockModificationStopReason.SUPERSEDED.result(replacement));
+		}
 		return future;
 	}
 
@@ -4618,18 +4626,18 @@ public final class EmbodiedAgentRuntime {
 	}
 
 	private void completePendingBlockModificationToolResult(TaskTerminalEvent event, Optional<WorldTaskRequest> activeTaskRequest) {
-		PendingBlockModificationToolResult pending = pendingBlockModificationToolResult;
+		PendingBlockModificationToolResult pending = pendingBlockModificationToolResult.get();
 		if (pending == null || event == null || !Objects.equals(pending.taskId(), event.taskId())) {
 			return;
 		}
-		completePendingBlockModificationToolResult(
+		completePendingBlockModificationToolResult(pending,
 			formatBlockModificationTerminalToolResult(pending, event)
 				+ inventorySnapshotForTaskUpdate(event, activeTaskRequest)
 		);
 	}
 
 	private void completePendingBlockModificationToolResultFromTaskSnapshot(TaskSnapshot snapshot) {
-		PendingBlockModificationToolResult pending = pendingBlockModificationToolResult;
+		PendingBlockModificationToolResult pending = pendingBlockModificationToolResult.get();
 		if (
 			pending == null
 				|| snapshot == null
@@ -4638,7 +4646,7 @@ public final class EmbodiedAgentRuntime {
 		) {
 			return;
 		}
-		completePendingBlockModificationToolResult(
+		completePendingBlockModificationToolResult(pending,
 			formatBlockModificationSnapshotToolResult(pending, snapshot)
 				+ inventorySnapshotForTaskUpdate(pending.taskType())
 		);
@@ -4738,16 +4746,19 @@ public final class EmbodiedAgentRuntime {
 	}
 
 	private void expirePendingBlockModificationToolResultIfTimedOut() {
-		PendingBlockModificationToolResult pending = pendingBlockModificationToolResult;
-		if (pending == null || pending.future().isDone()) {
-			pendingBlockModificationToolResult = null;
+		PendingBlockModificationToolResult pending = pendingBlockModificationToolResult.get();
+		if (pending == null) {
+			return;
+		}
+		if (pending.future().isDone()) {
+			pendingBlockModificationToolResult.compareAndSet(pending, null);
 			return;
 		}
 		long waitedTicks = tickCount - pending.startTick();
 		if (waitedTicks < BLOCK_MODIFICATION_TOOL_RESULT_TIMEOUT_TICKS) {
 			return;
 		}
-		completePendingBlockModificationToolResult(
+		completePendingBlockModificationToolResult(pending,
 			"Tool result for " + pending.toolName() + ": pending_timeout "
 				+ pending.details()
 				+ " waitedTicks=" + waitedTicks
@@ -4764,13 +4775,21 @@ public final class EmbodiedAgentRuntime {
 		pending.future().complete(result);
 	}
 
-	private void completePendingBlockModificationToolResult(String result) {
-		PendingBlockModificationToolResult pending = pendingBlockModificationToolResult;
-		if (pending == null) {
+	private void completePendingBlockModificationToolResult(
+		PendingBlockModificationToolResult pending,
+		String result
+	) {
+		if (pending == null || !pendingBlockModificationToolResult.compareAndSet(pending, null)) {
 			return;
 		}
-		pendingBlockModificationToolResult = null;
 		pending.future().complete(result);
+	}
+
+	private void cancelPendingBlockModificationToolResult(PendingBlockModificationStopReason reason) {
+		PendingBlockModificationToolResult pending = pendingBlockModificationToolResult.getAndSet(null);
+		if (pending != null) {
+			pending.future().complete(reason.result(pending));
+		}
 	}
 
 	private static String formatCraftTerminalToolResult(CraftRecipeStepArgs craftRecipe, TaskTerminalEvent event) {
@@ -5074,6 +5093,26 @@ public final class EmbodiedAgentRuntime {
 		long startTick,
 		CompletableFuture<String> future
 	) {
+	}
+
+	private enum PendingBlockModificationStopReason {
+		WORLD_LEFT("world_left"),
+		RUNTIME_SHUTDOWN("runtime_shutdown"),
+		EVALUATION_FINISHED("evaluation_finished"),
+		PLANNER_RESET("planner_reset"),
+		SURVIVAL_REFLEX("survival_reflex"),
+		PLAYER_DIED("player_died"),
+		SUPERSEDED("superseded");
+
+		private final String value;
+
+		PendingBlockModificationStopReason(String value) {
+			this.value = value;
+		}
+
+		private String result(PendingBlockModificationToolResult pending) {
+			return "Tool result for " + pending.toolName() + ": cancelled reason=" + value;
+		}
 	}
 
 	private static final class NoopWorldTaskExecutor implements WorldTaskExecutor {

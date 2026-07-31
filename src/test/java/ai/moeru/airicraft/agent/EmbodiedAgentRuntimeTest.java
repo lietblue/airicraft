@@ -71,6 +71,7 @@ import ai.moeru.airicraft.agent.tasks.TaskLedger;
 import ai.moeru.airicraft.agent.tasks.TaskExecutionSnapshot;
 import ai.moeru.airicraft.agent.tasks.TaskExecutionState;
 import ai.moeru.airicraft.agent.tasks.TaskResourceKind;
+import ai.moeru.airicraft.agent.tasks.TaskSnapshot;
 import ai.moeru.airicraft.agent.tasks.TaskSpec;
 import ai.moeru.airicraft.agent.tasks.TaskState;
 import ai.moeru.airicraft.agent.tasks.TaskTerminationCause;
@@ -92,12 +93,15 @@ import java.lang.reflect.Field;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.time.Duration;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
@@ -197,6 +201,18 @@ class EmbodiedAgentRuntimeTest {
 		Field snapshotField = SurvivalReflexRuntime.class.getDeclaredField("snapshot");
 		snapshotField.setAccessible(true);
 		snapshotField.set(reflexRuntime, snapshot);
+	}
+
+	private static void setTaskExecutionSnapshot(EmbodiedAgentRuntime runtime, TaskExecutionSnapshot snapshot) throws Exception {
+		Field field = EmbodiedAgentRuntime.class.getDeclaredField("taskExecutionSnapshot");
+		field.setAccessible(true);
+		field.set(runtime, snapshot);
+	}
+
+	private static void setTaskSnapshot(EmbodiedAgentRuntime runtime, TaskSnapshot snapshot) throws Exception {
+		Field field = EmbodiedAgentRuntime.class.getDeclaredField("taskSnapshot");
+		field.setAccessible(true);
+		field.set(runtime, snapshot);
 	}
 
 	private static SurvivalReflexSnapshot reflexSnapshot(
@@ -1617,6 +1633,102 @@ class EmbodiedAgentRuntimeTest {
 	}
 
 	@Test
+	void worldLeaveCompletesPendingBlockModificationToolResult() {
+		FakeWorldTaskExecutor executor = new FakeWorldTaskExecutor();
+		EmbodiedAgentRuntime runtime = EmbodiedAgentRuntime.createForTests(executor);
+		runtime.overrideSessionSnapshotForTests(loadedRemoteSession());
+
+		CompletableFuture<String> resultFuture = startPendingUseBlock(runtime, executor, 1);
+		runtime.onWorldLeave();
+		String result = resultFuture.join();
+
+		assertTrue(result.contains("cancelled reason=world_left"), result);
+		runtime.onWorldLeave();
+		assertEquals(result, resultFuture.join());
+	}
+
+	@Test
+	void shutdownCompletesPendingBlockModificationToolResult() {
+		FakeWorldTaskExecutor executor = new FakeWorldTaskExecutor();
+		EmbodiedAgentRuntime runtime = EmbodiedAgentRuntime.createForTests(executor);
+		runtime.overrideSessionSnapshotForTests(loadedRemoteSession());
+
+		CompletableFuture<String> resultFuture = startPendingUseBlock(runtime, executor, 1);
+		runtime.shutdown();
+
+		assertTrue(resultFuture.join().contains("cancelled reason=runtime_shutdown"));
+	}
+
+	@Test
+	void finishEvaluationCompletesPendingBlockModificationToolResult() {
+		FakeWorldTaskExecutor executor = new FakeWorldTaskExecutor();
+		EmbodiedAgentRuntime runtime = EmbodiedAgentRuntime.createForTests(executor);
+		runtime.overrideSessionSnapshotForTests(loadedRemoteSession());
+
+		CompletableFuture<String> resultFuture = startPendingUseBlock(runtime, executor, 1);
+		runtime.finishEvaluation();
+
+		assertTrue(resultFuture.join().contains("cancelled reason=evaluation_finished"));
+	}
+
+	@Test
+	void plannerResetCompletesPendingBlockModificationToolResult() {
+		FakeWorldTaskExecutor executor = new FakeWorldTaskExecutor();
+		EmbodiedAgentRuntime runtime = EmbodiedAgentRuntime.createForTests(executor);
+		runtime.overrideSessionSnapshotForTests(loadedRemoteSession());
+
+		CompletableFuture<String> resultFuture = startPendingUseBlock(runtime, executor, 1);
+		runtime.onChatReceived("Alice", "@agent reset");
+
+		assertTrue(resultFuture.join().contains("cancelled reason=planner_reset"));
+	}
+
+	@Test
+	void replacementCompletesOnlyTheOldBlockModificationToolResult() throws Exception {
+		FakeWorldTaskExecutor executor = new FakeWorldTaskExecutor();
+		EmbodiedAgentRuntime runtime = EmbodiedAgentRuntime.createForTests(executor);
+		runtime.overrideSessionSnapshotForTests(loadedRemoteSession());
+
+		CompletableFuture<String> firstResult = startPendingUseBlock(runtime, executor, 1);
+		WorldTaskRequest firstRequest = executor.lastActiveTask.orElseThrow();
+		activeJobRuntime(runtime).clear();
+		setTaskSnapshot(runtime, TaskSnapshot.idle());
+		setTaskExecutionSnapshot(runtime, TaskExecutionSnapshot.idle());
+		runtime.recordWorldReadForTests(new BlockPos(2, 65, 2));
+		CompletableFuture<String> secondResult = assertTimeoutPreemptively(
+			Duration.ofSeconds(1),
+			() -> runtime.executePlannerToolCallFutureForTests(useBlockToolCall("call_use_block_2", 2))
+		);
+
+		assertTrue(firstResult.isDone(), "secondResult=" + (secondResult.isDone() ? secondResult.getNow("<missing>") : "pending"));
+		String firstToolResult = firstResult.getNow("<missing>");
+		assertTrue(firstToolResult.contains("cancelled reason=superseded"), firstToolResult);
+		assertFalse(secondResult.isDone());
+		assertTimeoutPreemptively(Duration.ofSeconds(1), () -> runtime.onClientTick(null));
+
+		executor.nextTerminalEvent = Optional.of(new TaskTerminalEvent(
+			firstRequest.taskId(),
+			firstRequest.goal(),
+			TaskExecutionState.COMPLETED,
+			"stale first result",
+			null
+		));
+		assertTimeoutPreemptively(Duration.ofSeconds(1), () -> runtime.onClientTick(null));
+		assertFalse(secondResult.isDone());
+
+		WorldTaskRequest currentRequestAfterStaleEvent = executor.lastActiveTask.orElseThrow();
+		executor.nextTerminalEvent = Optional.of(new TaskTerminalEvent(
+			currentRequestAfterStaleEvent.taskId(),
+			currentRequestAfterStaleEvent.goal(),
+			TaskExecutionState.COMPLETED,
+			"second result",
+			null
+		));
+		assertTimeoutPreemptively(Duration.ofSeconds(1), () -> runtime.onClientTick(null));
+		assertTrue(secondResult.get(1, TimeUnit.SECONDS).contains("second result"));
+	}
+
+	@Test
 	void batchedBlockModificationToolInspectsInsteadOfQueuingUnreadTarget() {
 		FakeWorldTaskExecutor executor = new FakeWorldTaskExecutor();
 		EmbodiedAgentRuntime runtime = EmbodiedAgentRuntime.createForTests(executor);
@@ -2806,6 +2918,31 @@ class EmbodiedAgentRuntimeTest {
 			JsonParser.parseString("""
 				{"recipeId":"oak_planks_x2_to_stick","times":1}
 				""").getAsJsonObject(),
+			null,
+			null
+		);
+	}
+
+	private static CompletableFuture<String> startPendingUseBlock(
+		EmbodiedAgentRuntime runtime,
+		FakeWorldTaskExecutor executor,
+		int x
+	) {
+		runtime.recordWorldReadForTests(new BlockPos(x, 65, 2));
+		CompletableFuture<String> resultFuture = runtime.executePlannerToolCallFutureForTests(useBlockToolCall("call_use_block_" + x, x));
+		assertFalse(resultFuture.isDone());
+		runtime.onClientTick(null);
+		assertEquals(WorldTaskType.USE_BLOCK, executor.lastActiveTask.orElseThrow().type());
+		return resultFuture;
+	}
+
+	private static PlannerToolCall useBlockToolCall(String callId, int x) {
+		return new PlannerToolCall(
+			callId,
+			"use_block",
+			JsonParser.parseString("""
+				{"itemId":"minecraft:wheat_seeds","x":%d,"y":65,"z":2,"expectedSupportBlockIds":["minecraft:farmland"],"expectedTargetMaterial":"air"}
+				""".formatted(x)).getAsJsonObject(),
 			null,
 			null
 		);
