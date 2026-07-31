@@ -125,14 +125,26 @@ final class PlayerItemDeliveryPolicy {
 		}
 	}
 
-	record PickupEvidence(int entityId, String itemId, int count, int entityStackCount, UUID collectorIdentity, long observedAtTick, boolean trackedEntity) {
+	record PickupEvidence(
+		int entityId,
+		String itemId,
+		int packetPickupAmount,
+		int agentAttributedQuantity,
+		int observedEntityStackCount,
+		UUID collectorIdentity,
+		long observedAtTick,
+		boolean trackedEntity
+	) {
 		PickupEvidence {
 			itemId = Objects.requireNonNull(itemId, "itemId");
-			if (count <= 0) {
-				throw new IllegalArgumentException("count must be positive");
+			if (packetPickupAmount <= 0) {
+				throw new IllegalArgumentException("packetPickupAmount must be positive");
 			}
-			if (entityStackCount < 0) {
-				throw new IllegalArgumentException("entityStackCount must not be negative");
+			if (agentAttributedQuantity <= 0) {
+				throw new IllegalArgumentException("agentAttributedQuantity must be positive");
+			}
+			if (observedEntityStackCount < 0) {
+				throw new IllegalArgumentException("observedEntityStackCount must not be negative");
 			}
 			if (observedAtTick < 0) {
 				throw new IllegalArgumentException("observedAtTick must not be negative");
@@ -195,14 +207,21 @@ final class PlayerItemDeliveryPolicy {
 					|| (!pickup.trackedEntity() && !nextObserved.containsKey(pickup.entityId()))) {
 					continue;
 				}
-				PickupKey key = new PickupKey(pickup.entityId(), pickup.itemId(), pickup.count(), pickup.collectorIdentity(), pickup.observedAtTick());
+				PickupKey key = new PickupKey(
+					pickup.entityId(),
+					pickup.itemId(),
+					pickup.packetPickupAmount(),
+					pickup.agentAttributedQuantity(),
+					pickup.observedEntityStackCount(),
+					pickup.collectorIdentity()
+				);
 				if (!nextProcessed.add(key)) {
 					continue;
 				}
-				nextObserved.merge(pickup.entityId(), Math.max(pickup.count(), pickup.entityStackCount()), Math::max);
+				nextObserved.merge(pickup.entityId(), pickup.agentAttributedQuantity(), Math::max);
 				int credited = nextCredited.getOrDefault(pickup.entityId(), 0);
 				int available = Math.max(0, nextObserved.get(pickup.entityId()) - credited);
-				int credit = Math.min(pickup.count(), available);
+				int credit = Math.min(pickup.packetPickupAmount(), available);
 				if (credit > 0) {
 					nextCredited.put(pickup.entityId(), credited + credit);
 					nextDelivered = Math.min(requestedQuantity, nextDelivered + credit);
@@ -218,7 +237,18 @@ final class PlayerItemDeliveryPolicy {
 		}
 	}
 
-	record PickupKey(int entityId, String itemId, int count, UUID collectorIdentity, long observedAtTick) {
+	/*
+	 * The entity id and observed stack count identify the packet state.
+	 * The tick is diagnostic only because a repeated packet can arrive later.
+	 */
+	record PickupKey(
+		int entityId,
+		String itemId,
+		int packetPickupAmount,
+		int agentAttributedQuantity,
+		int observedEntityStackCount,
+		UUID collectorIdentity
+	) {
 	}
 
 	record Decision(State nextState, Command command, String reason, TaskFailureCode failureCode) {

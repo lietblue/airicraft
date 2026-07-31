@@ -13,7 +13,7 @@ public interface WorldTaskExecutor {
 		int entityId,
 		String itemId,
 		int pickedUpCount,
-		int entityStackCount,
+		int observedEntityStackCount,
 		UUID collectorIdentity,
 		long observedAtTick
 	) {

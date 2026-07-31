@@ -232,11 +232,11 @@ public final class DispatchingWorldTaskExecutor implements WorldTaskExecutor {
 		int entityId,
 		String itemId,
 		int pickedUpCount,
-		int entityStackCount,
+		int observedEntityStackCount,
 		UUID collectorIdentity,
 		long observedAtTick
 	) {
-		dropItemsExecutor.onPlayerItemPickupObserved(entityId, itemId, pickedUpCount, entityStackCount, collectorIdentity, observedAtTick);
+		dropItemsExecutor.onPlayerItemPickupObserved(entityId, itemId, pickedUpCount, observedEntityStackCount, collectorIdentity, observedAtTick);
 	}
 
 	private static boolean isEntityInteractionType(WorldTaskType type) {

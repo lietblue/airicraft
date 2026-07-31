@@ -42,9 +42,22 @@ class PlayerItemDeliveryPolicyTest {
 		PlayerItemDeliveryPolicy.State state = droppedState();
 
 		PlayerItemDeliveryPolicy.Decision delivered = decide(state, target(2.0D, 0.0D, 0.0D), List.of(), List.of(
-			new PlayerItemDeliveryPolicy.PickupEvidence(10, ITEM, 2, 2, ALICE, 5L, true)
+			pickup(10, 2, 2, 2, ALICE, 5L)
 		));
 		assertEquals(PlayerItemDeliveryPolicy.Command.SUCCEED, delivered.command());
+	}
+
+	@Test
+	void capsPickupFromMergedPreExistingStackToTheAgentAttributedQuantity() {
+		PlayerItemDeliveryPolicy.State state = droppedState();
+		PlayerItemDeliveryPolicy.Decision merged = decide(state, target(2.0D, 0.0D, 0.0D), List.of(
+			new PlayerItemDeliveryPolicy.DroppedItemEvidence(10, ITEM, 2, 2.0D, 0.0D, 0.0D)
+		), List.of(
+			pickup(10, 4, 2, 4, ALICE, 5L)
+		));
+
+		assertEquals(PlayerItemDeliveryPolicy.Command.SUCCEED, merged.command());
+		assertEquals(2, merged.nextState().deliveredQuantity());
 	}
 
 	@Test
@@ -52,7 +65,7 @@ class PlayerItemDeliveryPolicyTest {
 		PlayerItemDeliveryPolicy.State state = droppedState();
 
 		PlayerItemDeliveryPolicy.Decision decision = decide(state, target(2.0D, 0.0D, 0.0D), List.of(), List.of(
-			new PlayerItemDeliveryPolicy.PickupEvidence(10, ITEM, 2, 2, OTHER, 5L, true)
+			pickup(10, 2, 2, 2, OTHER, 5L)
 		));
 
 		assertEquals(PlayerItemDeliveryPolicy.Command.WAIT, decision.command());
@@ -63,13 +76,13 @@ class PlayerItemDeliveryPolicyTest {
 	void creditsPartialPickupsWithoutOvercountingTheEntity() {
 		PlayerItemDeliveryPolicy.State state = droppedState();
 		PlayerItemDeliveryPolicy.Decision partial = decide(state, target(2.0D, 0.0D, 0.0D), List.of(), List.of(
-			new PlayerItemDeliveryPolicy.PickupEvidence(10, ITEM, 1, 2, ALICE, 5L, true)
+			pickup(10, 1, 2, 2, ALICE, 5L)
 		));
 		assertEquals(PlayerItemDeliveryPolicy.Command.WAIT, partial.command());
 		assertEquals(1, partial.nextState().deliveredQuantity());
 
 		PlayerItemDeliveryPolicy.Decision complete = decide(partial.nextState(), target(2.0D, 0.0D, 0.0D), List.of(), List.of(
-			new PlayerItemDeliveryPolicy.PickupEvidence(10, ITEM, 1, 1, ALICE, 6L, true)
+			pickup(10, 1, 2, 1, ALICE, 6L)
 		));
 		assertEquals(PlayerItemDeliveryPolicy.Command.SUCCEED, complete.command());
 	}
@@ -77,12 +90,42 @@ class PlayerItemDeliveryPolicyTest {
 	@Test
 	void ignoresDuplicatePickupEvidence() {
 		PlayerItemDeliveryPolicy.State state = droppedState();
-		PlayerItemDeliveryPolicy.PickupEvidence pickup = new PlayerItemDeliveryPolicy.PickupEvidence(10, ITEM, 1, 2, ALICE, 5L, true);
+		PlayerItemDeliveryPolicy.PickupEvidence pickup = pickup(10, 1, 2, 2, ALICE, 5L);
 
 		PlayerItemDeliveryPolicy.Decision duplicate = decide(state, target(2.0D, 0.0D, 0.0D), List.of(), List.of(pickup, pickup));
 
 		assertEquals(PlayerItemDeliveryPolicy.Command.WAIT, duplicate.command());
 		assertEquals(1, duplicate.nextState().deliveredQuantity());
+	}
+
+	@Test
+	void ignoresTheSamePickupRepeatedInALaterTick() {
+		PlayerItemDeliveryPolicy.State state = droppedState();
+		PlayerItemDeliveryPolicy.Decision first = decide(state, target(2.0D, 0.0D, 0.0D), List.of(), List.of(
+			pickup(10, 1, 2, 2, ALICE, 5L)
+		));
+
+		PlayerItemDeliveryPolicy.Decision repeated = decide(first.nextState(), target(2.0D, 0.0D, 0.0D), List.of(), List.of(
+			pickup(10, 1, 2, 2, ALICE, 6L)
+		));
+
+		assertEquals(PlayerItemDeliveryPolicy.Command.WAIT, repeated.command());
+		assertEquals(1, repeated.nextState().deliveredQuantity());
+	}
+
+	@Test
+	void creditsMultipleTrackedEntitiesIndependently() {
+		PlayerItemDeliveryPolicy.State state = droppedState();
+		PlayerItemDeliveryPolicy.Decision delivered = decide(state, target(2.0D, 0.0D, 0.0D), List.of(
+			new PlayerItemDeliveryPolicy.DroppedItemEvidence(10, ITEM, 1, 2.0D, 0.0D, 0.0D),
+			new PlayerItemDeliveryPolicy.DroppedItemEvidence(11, ITEM, 1, 2.0D, 0.0D, 0.0D)
+		), List.of(
+			pickup(10, 1, 1, 1, ALICE, 5L),
+			pickup(11, 1, 1, 1, ALICE, 5L)
+		));
+
+		assertEquals(PlayerItemDeliveryPolicy.Command.SUCCEED, delivered.command());
+		assertEquals(2, delivered.nextState().deliveredQuantity());
 	}
 
 	@Test
@@ -114,12 +157,23 @@ class PlayerItemDeliveryPolicyTest {
 	void tracksPartialDeliveryAndFailsWhenTheTargetDisappears() {
 		PlayerItemDeliveryPolicy.State state = droppedState();
 		PlayerItemDeliveryPolicy.Decision partial = decide(state, target(2.0D, 0.0D, 0.0D), List.of(), List.of(
-			new PlayerItemDeliveryPolicy.PickupEvidence(10, ITEM, 1, 2, ALICE, 5L, true)
+			pickup(10, 1, 2, 2, ALICE, 5L)
 		));
 
 		PlayerItemDeliveryPolicy.Decision failed = decide(partial.nextState(), Optional.empty(), List.of());
 		assertEquals(PlayerItemDeliveryPolicy.Command.FAIL, failed.command());
 		assertEquals("partial_delivery delivered=1 requested=2", failed.reason());
+	}
+
+	@Test
+	void acceptsFastPickupBeforeTheNextDroppedItemObservation() {
+		PlayerItemDeliveryPolicy.State state = droppedState();
+
+		PlayerItemDeliveryPolicy.Decision delivered = decide(state, target(2.0D, 0.0D, 0.0D), List.of(), List.of(
+			pickup(10, 2, 2, 2, ALICE, 5L)
+		));
+
+		assertEquals(PlayerItemDeliveryPolicy.Command.SUCCEED, delivered.command());
 	}
 
 	@Test
@@ -212,5 +266,25 @@ class PlayerItemDeliveryPolicyTest {
 
 	private static PlayerItemDeliveryPolicy.TargetObservation target(double x, double y, double z) {
 		return new PlayerItemDeliveryPolicy.TargetObservation(ALICE, "Alice", x, y, z);
+	}
+
+	private static PlayerItemDeliveryPolicy.PickupEvidence pickup(
+		int entityId,
+		int packetPickupAmount,
+		int agentAttributedQuantity,
+		int observedEntityStackCount,
+		UUID collectorIdentity,
+		long observedAtTick
+	) {
+		return new PlayerItemDeliveryPolicy.PickupEvidence(
+			entityId,
+			ITEM,
+			packetPickupAmount,
+			agentAttributedQuantity,
+			observedEntityStackCount,
+			collectorIdentity,
+			observedAtTick,
+			true
+		);
 	}
 }

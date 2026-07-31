@@ -5,6 +5,7 @@ import ai.moeru.airicraft.agent.session.SessionSnapshot;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -54,6 +55,13 @@ class DropItemsTaskExecutorTest {
 
 		assertFalse(DropItemsTaskExecutor.itemDropActuationAllowed(snapshot(SessionMode.OUT_OF_WORLD, false)));
 		assertFalse(DropItemsTaskExecutor.itemDropActuationAllowed(snapshot(SessionMode.SINGLEPLAYER_LOCAL, false)));
+	}
+
+	@Test
+	void attributesOnlyTheIncreaseWhenADroppedEntityMergesWithAnExistingStack() {
+		assertEquals(2, DropItemsTaskExecutor.agentAttributedQuantity(10, 4, Map.of(10, 2)));
+		assertEquals(0, DropItemsTaskExecutor.agentAttributedQuantity(10, 2, Map.of(10, 2)));
+		assertEquals(3, DropItemsTaskExecutor.agentAttributedQuantity(11, 3, Map.of()));
 	}
 
 	private static SessionSnapshot snapshot(SessionMode mode, boolean worldLoaded) {

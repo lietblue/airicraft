@@ -1489,7 +1489,7 @@ public final class EmbodiedAgentRuntime {
 		int entityId,
 		String itemId,
 		int pickedUpCount,
-		int entityStackCount,
+		int observedEntityStackCount,
 		UUID collectorIdentity,
 		long observedAtTick
 	) {
@@ -1497,7 +1497,7 @@ public final class EmbodiedAgentRuntime {
 			entityId,
 			itemId,
 			pickedUpCount,
-			entityStackCount,
+			observedEntityStackCount,
 			collectorIdentity,
 			observedAtTick
 		);

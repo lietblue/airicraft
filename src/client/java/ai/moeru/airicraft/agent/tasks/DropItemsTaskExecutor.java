@@ -263,8 +263,7 @@ public final class DropItemsTaskExecutor implements WorldTaskExecutor {
 			if (!args.itemId().equals(itemId)) {
 				continue;
 			}
-			int baselineCount = baselineItemEntityCounts.getOrDefault(itemEntity.getId(), 0);
-			int droppedCount = stack.getCount() - baselineCount;
+			int droppedCount = agentAttributedQuantity(itemEntity.getId(), stack.getCount(), baselineItemEntityCounts);
 			if (droppedCount > 0) {
 				evidence.add(new PlayerItemDeliveryPolicy.DroppedItemEvidence(
 					itemEntity.getId(),
@@ -284,26 +283,39 @@ public final class DropItemsTaskExecutor implements WorldTaskExecutor {
 		int entityId,
 		String itemId,
 		int pickedUpCount,
-		int entityStackCount,
+		int observedEntityStackCount,
 		UUID collectorIdentity,
 		long observedAtTick
 	) {
 		if (deliveryState == null || deliveryState.phase() != PlayerItemDeliveryPolicy.Phase.AWAIT_DELIVERY
-			|| itemId == null || itemId.isBlank() || pickedUpCount <= 0 || entityStackCount < 0 || observedAtTick < 0) {
+			|| itemId == null || itemId.isBlank() || pickedUpCount <= 0 || observedEntityStackCount < 0 || observedAtTick < 0) {
 			return;
 		}
-		int baselineCount = baselineItemEntityCounts.getOrDefault(entityId, 0);
-		boolean trackedEntity = deliveryState.observedEntityCounts().containsKey(entityId)
-			|| entityStackCount > baselineCount;
+		int baselineAttributedQuantity = agentAttributedQuantity(entityId, observedEntityStackCount, baselineItemEntityCounts);
+		int observedAttributedQuantity = deliveryState.observedEntityCounts().getOrDefault(entityId, 0);
+		int agentAttributedQuantity = Math.max(baselineAttributedQuantity, observedAttributedQuantity);
+		boolean trackedEntity = agentAttributedQuantity > 0;
+		if (!trackedEntity) {
+			return;
+		}
 		pendingPickupEvidence.add(new PlayerItemDeliveryPolicy.PickupEvidence(
 			entityId,
 			itemId,
 			pickedUpCount,
-			entityStackCount,
+			agentAttributedQuantity,
+			observedEntityStackCount,
 			collectorIdentity,
 			observedAtTick,
 			trackedEntity
 		));
+	}
+
+	static int agentAttributedQuantity(int entityId, int observedEntityStackCount, Map<Integer, Integer> baselineCounts) {
+		if (observedEntityStackCount < 0) {
+			throw new IllegalArgumentException("observedEntityStackCount must not be negative");
+		}
+		int baselineCount = baselineCounts == null ? 0 : baselineCounts.getOrDefault(entityId, 0);
+		return Math.max(0, observedEntityStackCount - baselineCount);
 	}
 
 	private static Map<Integer, Integer> itemEntityCounts(MinecraftClient client, String itemId) {

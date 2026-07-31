@@ -93,20 +93,21 @@ public class ClientPlayNetworkHandlerMixin {
 		}
 
 		String itemId = Registries.ITEM.getId(stack.getItem()).toString();
-		int count = Math.max(1, packet.getStackAmount());
+		int packetPickupAmount = Math.max(1, packet.getStackAmount());
+		int observedEntityStackCount = stack.getCount();
 		PlayerEntity collector = client.world.getEntityById(packet.getCollectorEntityId()) instanceof PlayerEntity playerEntity
 			? playerEntity
 			: null;
 		AiricraftClient.runtimeController().onPlayerItemPickupObserved(
 			packet.getEntityId(),
 			itemId,
-			count,
-			stack.getCount(),
+			packetPickupAmount,
+			observedEntityStackCount,
 			collector == null ? null : collector.getUuid(),
 			AiricraftClient.runtimeController().agentRuntime().tickCount()
 		);
 		if (packet.getCollectorEntityId() == client.player.getId()) {
-			AiricraftClient.runtimeController().onPlayerPickedUpItem(itemId, count);
+			AiricraftClient.runtimeController().onPlayerPickedUpItem(itemId, packetPickupAmount);
 		}
 	}
 

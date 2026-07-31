@@ -117,7 +117,7 @@ public final class ClientRuntimeController {
 		int entityId,
 		String itemId,
 		int pickedUpCount,
-		int entityStackCount,
+		int observedEntityStackCount,
 		UUID collectorIdentity,
 		long observedAtTick
 	) {
@@ -125,7 +125,7 @@ public final class ClientRuntimeController {
 			entityId,
 			itemId,
 			pickedUpCount,
-			entityStackCount,
+			observedEntityStackCount,
 			collectorIdentity,
 			observedAtTick
 		);
