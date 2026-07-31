@@ -229,7 +229,7 @@ public final class ClientRuntimeController {
 		WorldTaskExecutor worldTaskExecutor = new DispatchingWorldTaskExecutor(
 			miningCoordinator,
 			new CraftingTaskExecutor(baritoneFacade, cameraController),
-			new DropItemsTaskExecutor(),
+			new DropItemsTaskExecutor(baritoneFacade),
 			new EntityInteractionTaskExecutor(baritoneFacade, cameraController),
 			new SmeltingTaskExecutor(smeltingProcessManager, baritoneFacade),
 			new ReturnToSurfaceTaskExecutor(baritoneFacade),
