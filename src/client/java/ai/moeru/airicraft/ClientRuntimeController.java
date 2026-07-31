@@ -113,6 +113,24 @@ public final class ClientRuntimeController {
 		currentAgentRuntime().onPlayerPickedUpItem(itemId, count);
 	}
 
+	public void onPlayerItemPickupObserved(
+		int entityId,
+		String itemId,
+		int pickedUpCount,
+		int entityStackCount,
+		UUID collectorIdentity,
+		long observedAtTick
+	) {
+		currentAgentRuntime().onPlayerItemPickupObserved(
+			entityId,
+			itemId,
+			pickedUpCount,
+			entityStackCount,
+			collectorIdentity,
+			observedAtTick
+		);
+	}
+
 	public void onPlayerMinedBlock(String blockId, int x, int y, int z) {
 		currentAgentRuntime().onPlayerMinedBlock(blockId, x, y, z);
 	}

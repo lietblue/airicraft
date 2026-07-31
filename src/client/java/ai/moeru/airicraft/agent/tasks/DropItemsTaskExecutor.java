@@ -43,6 +43,7 @@ public final class DropItemsTaskExecutor implements WorldTaskExecutor {
 	private boolean terminalEventEmitted;
 	private UUID targetUuid;
 	private Map<Integer, Integer> baselineItemEntityCounts = Map.of();
+	private final List<PlayerItemDeliveryPolicy.PickupEvidence> pendingPickupEvidence = new ArrayList<>();
 	private PlayerItemDeliveryPolicy.State deliveryState;
 	private GoalPosition chaseGoal;
 	private int chaseGoalRefreshTicks;
@@ -144,9 +145,11 @@ public final class DropItemsTaskExecutor implements WorldTaskExecutor {
 			player.getZ(),
 			available,
 			targetObservation,
-			observeDroppedItems(client, args, targetObservation)
+			observeDroppedItems(client, args),
+			List.copyOf(pendingPickupEvidence)
 		);
 		PlayerItemDeliveryPolicy.Decision decision = PlayerItemDeliveryPolicy.decide(deliveryState, observation);
+		pendingPickupEvidence.clear();
 		deliveryState = decision.nextState();
 		return switch (decision.command()) {
 			case APPROACH -> {
@@ -245,10 +248,9 @@ public final class DropItemsTaskExecutor implements WorldTaskExecutor {
 
 	private List<PlayerItemDeliveryPolicy.DroppedItemEvidence> observeDroppedItems(
 		MinecraftClient client,
-		DropItemsStepArgs args,
-		Optional<PlayerItemDeliveryPolicy.TargetObservation> target
+		DropItemsStepArgs args
 	) {
-		if (deliveryState == null || deliveryState.phase() != PlayerItemDeliveryPolicy.Phase.AWAIT_DELIVERY || target.isEmpty()) {
+		if (deliveryState == null || deliveryState.phase() != PlayerItemDeliveryPolicy.Phase.AWAIT_DELIVERY) {
 			return List.of();
 		}
 		Box area = client.player.getBoundingBox().expand(64.0D);
@@ -273,6 +275,33 @@ public final class DropItemsTaskExecutor implements WorldTaskExecutor {
 			}
 		}
 		return List.copyOf(evidence);
+	}
+
+	@Override
+	public void onPlayerItemPickupObserved(
+		int entityId,
+		String itemId,
+		int pickedUpCount,
+		int entityStackCount,
+		UUID collectorIdentity,
+		long observedAtTick
+	) {
+		if (deliveryState == null || deliveryState.phase() != PlayerItemDeliveryPolicy.Phase.AWAIT_DELIVERY
+			|| itemId == null || itemId.isBlank() || pickedUpCount <= 0 || entityStackCount < 0 || observedAtTick < 0) {
+			return;
+		}
+		int baselineCount = baselineItemEntityCounts.getOrDefault(entityId, 0);
+		boolean trackedEntity = deliveryState.observedEntityCounts().containsKey(entityId)
+			|| entityStackCount > baselineCount;
+		pendingPickupEvidence.add(new PlayerItemDeliveryPolicy.PickupEvidence(
+			entityId,
+			itemId,
+			pickedUpCount,
+			entityStackCount,
+			collectorIdentity,
+			observedAtTick,
+			trackedEntity
+		));
 	}
 
 	private static Map<Integer, Integer> itemEntityCounts(MinecraftClient client, String itemId) {
@@ -453,6 +482,7 @@ public final class DropItemsTaskExecutor implements WorldTaskExecutor {
 		terminalEventEmitted = false;
 		targetUuid = null;
 		baselineItemEntityCounts = Map.of();
+		pendingPickupEvidence.clear();
 		deliveryState = null;
 		chaseGoal = null;
 		chaseGoalRefreshTicks = 0;

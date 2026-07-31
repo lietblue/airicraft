@@ -1485,6 +1485,24 @@ public final class EmbodiedAgentRuntime {
 		drainEventPipeline();
 	}
 
+	public void onPlayerItemPickupObserved(
+		int entityId,
+		String itemId,
+		int pickedUpCount,
+		int entityStackCount,
+		UUID collectorIdentity,
+		long observedAtTick
+	) {
+		worldTaskExecutor.onPlayerItemPickupObserved(
+			entityId,
+			itemId,
+			pickedUpCount,
+			entityStackCount,
+			collectorIdentity,
+			observedAtTick
+		);
+	}
+
 	public void onPlayerMinedBlock(String blockId, int x, int y, int z) {
 		activeJobRuntime.recordMinedBlock(blockId, new GoalPosition(x, y, z, true), tickCount).ifPresent(event -> handleTerminalTaskEvent(event, false, Optional.empty()));
 	}

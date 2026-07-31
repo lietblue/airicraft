@@ -5,6 +5,7 @@ import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.network.ClientPlayerEntity;
 import net.minecraft.client.network.ClientPlayNetworkHandler;
 import net.minecraft.entity.ItemEntity;
+import net.minecraft.entity.player.PlayerEntity;
 import net.minecraft.item.ItemStack;
 import net.minecraft.network.packet.s2c.play.EntityDamageS2CPacket;
 import net.minecraft.network.packet.s2c.play.HealthUpdateS2CPacket;
@@ -82,9 +83,6 @@ public class ClientPlayNetworkHandlerMixin {
 		if (client == null || !client.isOnThread() || client.player == null || client.world == null) {
 			return;
 		}
-		if (packet.getCollectorEntityId() != client.player.getId()) {
-			return;
-		}
 		if (!(client.world.getEntityById(packet.getEntityId()) instanceof ItemEntity itemEntity)) {
 			return;
 		}
@@ -96,7 +94,20 @@ public class ClientPlayNetworkHandlerMixin {
 
 		String itemId = Registries.ITEM.getId(stack.getItem()).toString();
 		int count = Math.max(1, packet.getStackAmount());
-		AiricraftClient.runtimeController().onPlayerPickedUpItem(itemId, count);
+		PlayerEntity collector = client.world.getEntityById(packet.getCollectorEntityId()) instanceof PlayerEntity playerEntity
+			? playerEntity
+			: null;
+		AiricraftClient.runtimeController().onPlayerItemPickupObserved(
+			packet.getEntityId(),
+			itemId,
+			count,
+			stack.getCount(),
+			collector == null ? null : collector.getUuid(),
+			AiricraftClient.runtimeController().agentRuntime().tickCount()
+		);
+		if (packet.getCollectorEntityId() == client.player.getId()) {
+			AiricraftClient.runtimeController().onPlayerPickedUpItem(itemId, count);
+		}
 	}
 
 	@Inject(method = "onPlayerList", at = @At("TAIL"))

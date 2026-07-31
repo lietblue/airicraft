@@ -4,9 +4,20 @@ import ai.moeru.airicraft.agent.goals.GoalSnapshot;
 import ai.moeru.airicraft.agent.session.SessionSnapshot;
 
 import java.util.Optional;
+import java.util.UUID;
 
 public interface WorldTaskExecutor {
 	Optional<TaskTerminalEvent> tick(SessionSnapshot sessionSnapshot, Optional<WorldTaskRequest> activeTask);
+
+	default void onPlayerItemPickupObserved(
+		int entityId,
+		String itemId,
+		int pickedUpCount,
+		int entityStackCount,
+		UUID collectorIdentity,
+		long observedAtTick
+	) {
+	}
 
 	TaskExecutionSnapshot snapshot();
 

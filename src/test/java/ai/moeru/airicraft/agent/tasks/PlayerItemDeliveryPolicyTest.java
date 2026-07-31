@@ -28,16 +28,74 @@ class PlayerItemDeliveryPolicyTest {
 	}
 
 	@Test
-	void succeedsOnlyAfterMatchingDroppedItemsReachTheTarget() {
+	void doesNotTreatAVisibleItemNearTheTargetAsDelivery() {
 		PlayerItemDeliveryPolicy.State state = droppedState();
 
-		PlayerItemDeliveryPolicy.Decision waiting = decide(state, target(2.0D, 0.0D, 0.0D));
-		assertEquals(PlayerItemDeliveryPolicy.Command.WAIT, waiting.command());
-
-		PlayerItemDeliveryPolicy.Decision delivered = decide(waiting.nextState(), target(2.0D, 0.0D, 0.0D), List.of(
+		PlayerItemDeliveryPolicy.Decision waiting = decide(state, target(2.0D, 0.0D, 0.0D), List.of(
 			new PlayerItemDeliveryPolicy.DroppedItemEvidence(10, ITEM, 2, 2.0D, 0.0D, 0.0D)
 		));
+		assertEquals(PlayerItemDeliveryPolicy.Command.WAIT, waiting.command());
+	}
+
+	@Test
+	void succeedsWhenTheTargetPicksUpTheTrackedItemEntity() {
+		PlayerItemDeliveryPolicy.State state = droppedState();
+
+		PlayerItemDeliveryPolicy.Decision delivered = decide(state, target(2.0D, 0.0D, 0.0D), List.of(), List.of(
+			new PlayerItemDeliveryPolicy.PickupEvidence(10, ITEM, 2, 2, ALICE, 5L, true)
+		));
 		assertEquals(PlayerItemDeliveryPolicy.Command.SUCCEED, delivered.command());
+	}
+
+	@Test
+	void ignoresPickupByTheAgentOrAnotherPlayer() {
+		PlayerItemDeliveryPolicy.State state = droppedState();
+
+		PlayerItemDeliveryPolicy.Decision decision = decide(state, target(2.0D, 0.0D, 0.0D), List.of(), List.of(
+			new PlayerItemDeliveryPolicy.PickupEvidence(10, ITEM, 2, 2, OTHER, 5L, true)
+		));
+
+		assertEquals(PlayerItemDeliveryPolicy.Command.WAIT, decision.command());
+		assertEquals(0, decision.nextState().deliveredQuantity());
+	}
+
+	@Test
+	void creditsPartialPickupsWithoutOvercountingTheEntity() {
+		PlayerItemDeliveryPolicy.State state = droppedState();
+		PlayerItemDeliveryPolicy.Decision partial = decide(state, target(2.0D, 0.0D, 0.0D), List.of(), List.of(
+			new PlayerItemDeliveryPolicy.PickupEvidence(10, ITEM, 1, 2, ALICE, 5L, true)
+		));
+		assertEquals(PlayerItemDeliveryPolicy.Command.WAIT, partial.command());
+		assertEquals(1, partial.nextState().deliveredQuantity());
+
+		PlayerItemDeliveryPolicy.Decision complete = decide(partial.nextState(), target(2.0D, 0.0D, 0.0D), List.of(), List.of(
+			new PlayerItemDeliveryPolicy.PickupEvidence(10, ITEM, 1, 1, ALICE, 6L, true)
+		));
+		assertEquals(PlayerItemDeliveryPolicy.Command.SUCCEED, complete.command());
+	}
+
+	@Test
+	void ignoresDuplicatePickupEvidence() {
+		PlayerItemDeliveryPolicy.State state = droppedState();
+		PlayerItemDeliveryPolicy.PickupEvidence pickup = new PlayerItemDeliveryPolicy.PickupEvidence(10, ITEM, 1, 2, ALICE, 5L, true);
+
+		PlayerItemDeliveryPolicy.Decision duplicate = decide(state, target(2.0D, 0.0D, 0.0D), List.of(), List.of(pickup, pickup));
+
+		assertEquals(PlayerItemDeliveryPolicy.Command.WAIT, duplicate.command());
+		assertEquals(1, duplicate.nextState().deliveredQuantity());
+	}
+
+	@Test
+	void doesNotSucceedWhenTheTrackedEntityDisappearsWithoutPickupEvidence() {
+		PlayerItemDeliveryPolicy.State state = droppedState();
+		PlayerItemDeliveryPolicy.Decision seen = decide(state, target(2.0D, 0.0D, 0.0D), List.of(
+			new PlayerItemDeliveryPolicy.DroppedItemEvidence(10, ITEM, 2, 2.0D, 0.0D, 0.0D)
+		));
+
+		PlayerItemDeliveryPolicy.Decision disappeared = decide(seen.nextState(), target(2.0D, 0.0D, 0.0D));
+
+		assertEquals(PlayerItemDeliveryPolicy.Command.WAIT, disappeared.command());
+		assertEquals(0, disappeared.nextState().deliveredQuantity());
 	}
 
 	@Test
@@ -55,8 +113,8 @@ class PlayerItemDeliveryPolicyTest {
 	@Test
 	void tracksPartialDeliveryAndFailsWhenTheTargetDisappears() {
 		PlayerItemDeliveryPolicy.State state = droppedState();
-		PlayerItemDeliveryPolicy.Decision partial = decide(state, target(2.0D, 0.0D, 0.0D), List.of(
-			new PlayerItemDeliveryPolicy.DroppedItemEvidence(10, ITEM, 1, 2.0D, 0.0D, 0.0D)
+		PlayerItemDeliveryPolicy.Decision partial = decide(state, target(2.0D, 0.0D, 0.0D), List.of(), List.of(
+			new PlayerItemDeliveryPolicy.PickupEvidence(10, ITEM, 1, 2, ALICE, 5L, true)
 		));
 
 		PlayerItemDeliveryPolicy.Decision failed = decide(partial.nextState(), Optional.empty(), List.of());
@@ -115,7 +173,16 @@ class PlayerItemDeliveryPolicyTest {
 		PlayerItemDeliveryPolicy.TargetObservation target,
 		List<PlayerItemDeliveryPolicy.DroppedItemEvidence> evidence
 	) {
-		return decide(state, Optional.of(target), evidence);
+		return decide(state, Optional.of(target), evidence, List.of());
+	}
+
+	private static PlayerItemDeliveryPolicy.Decision decide(
+		PlayerItemDeliveryPolicy.State state,
+		PlayerItemDeliveryPolicy.TargetObservation target,
+		List<PlayerItemDeliveryPolicy.DroppedItemEvidence> evidence,
+		List<PlayerItemDeliveryPolicy.PickupEvidence> pickups
+	) {
+		return decide(state, Optional.of(target), evidence, pickups);
 	}
 
 	private static PlayerItemDeliveryPolicy.Decision decide(
@@ -123,13 +190,23 @@ class PlayerItemDeliveryPolicyTest {
 		Optional<PlayerItemDeliveryPolicy.TargetObservation> target,
 		List<PlayerItemDeliveryPolicy.DroppedItemEvidence> evidence
 	) {
+		return decide(state, target, evidence, List.of());
+	}
+
+	private static PlayerItemDeliveryPolicy.Decision decide(
+		PlayerItemDeliveryPolicy.State state,
+		Optional<PlayerItemDeliveryPolicy.TargetObservation> target,
+		List<PlayerItemDeliveryPolicy.DroppedItemEvidence> evidence,
+		List<PlayerItemDeliveryPolicy.PickupEvidence> pickups
+	) {
 		return PlayerItemDeliveryPolicy.decide(state, new PlayerItemDeliveryPolicy.Observation(
 			0.0D,
 			0.0D,
 			0.0D,
 			2,
 			target,
-			evidence
+			evidence,
+			pickups
 		));
 	}
 

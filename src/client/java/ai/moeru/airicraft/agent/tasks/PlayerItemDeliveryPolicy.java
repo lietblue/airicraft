@@ -4,18 +4,18 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 
 final class PlayerItemDeliveryPolicy {
 	static final double APPROACH_RANGE_BLOCKS = 3.0D;
-	static final double DELIVERY_EVIDENCE_RANGE_BLOCKS = 2.5D;
 	static final int DELIVERY_TIMEOUT_TICKS = 200;
 
 	private PlayerItemDeliveryPolicy() {
 	}
 
 	static State initial(String itemId, int quantity) {
-		return new State(Phase.SEEK_TARGET, null, itemId, quantity, 0, 0, Map.of());
+		return new State(Phase.SEEK_TARGET, null, itemId, quantity, 0, 0, Map.of(), Map.of(), Set.of());
 	}
 
 	static Decision decide(State state, Observation observation) {
@@ -27,9 +27,10 @@ final class PlayerItemDeliveryPolicy {
 		}
 		State advanced = state.advance(observation.target());
 		if (advanced.phase() == Phase.AWAIT_DELIVERY) {
-			advanced = advanced.recordDeliveryEvidence(observation.droppedItems(), observation.target());
+			advanced = advanced.recordDroppedItems(observation.droppedItems());
+			advanced = advanced.recordPickupEvidence(observation.pickups(), observation.target());
 			if (advanced.deliveredQuantity() >= advanced.requestedQuantity()) {
-				return new Decision(advanced.withPhase(Phase.TERMINAL), Command.SUCCEED, "delivered_items");
+				return new Decision(advanced.withPhase(Phase.TERMINAL), Command.SUCCEED, "target_picked_up_items");
 			}
 		}
 
@@ -97,11 +98,13 @@ final class PlayerItemDeliveryPolicy {
 		double agentZ,
 		int sourceItemCount,
 		Optional<TargetObservation> target,
-		List<DroppedItemEvidence> droppedItems
+		List<DroppedItemEvidence> droppedItems,
+		List<PickupEvidence> pickups
 	) {
 		Observation {
 			target = target == null ? Optional.empty() : target;
 			droppedItems = List.copyOf(droppedItems == null ? List.of() : droppedItems);
+			pickups = List.copyOf(pickups == null ? List.of() : pickups);
 		}
 	}
 
@@ -121,6 +124,21 @@ final class PlayerItemDeliveryPolicy {
 		}
 	}
 
+	record PickupEvidence(int entityId, String itemId, int count, int entityStackCount, UUID collectorIdentity, long observedAtTick, boolean trackedEntity) {
+		PickupEvidence {
+			itemId = Objects.requireNonNull(itemId, "itemId");
+			if (count <= 0) {
+				throw new IllegalArgumentException("count must be positive");
+			}
+			if (entityStackCount < 0) {
+				throw new IllegalArgumentException("entityStackCount must not be negative");
+			}
+			if (observedAtTick < 0) {
+				throw new IllegalArgumentException("observedAtTick must not be negative");
+			}
+		}
+	}
+
 	record State(
 		Phase phase,
 		UUID targetIdentity,
@@ -128,7 +146,9 @@ final class PlayerItemDeliveryPolicy {
 		int requestedQuantity,
 		int elapsedTicks,
 		int deliveredQuantity,
-		Map<Integer, Integer> observedEntityCounts
+		Map<Integer, Integer> observedEntityCounts,
+		Map<Integer, Integer> creditedEntityCounts,
+		Set<PickupKey> processedPickups
 	) {
 		State {
 			phase = Objects.requireNonNull(phase, "phase");
@@ -137,6 +157,8 @@ final class PlayerItemDeliveryPolicy {
 			}
 			itemId = Objects.requireNonNull(itemId, "itemId");
 			observedEntityCounts = Map.copyOf(observedEntityCounts == null ? Map.of() : observedEntityCounts);
+			creditedEntityCounts = Map.copyOf(creditedEntityCounts == null ? Map.of() : creditedEntityCounts);
+			processedPickups = Set.copyOf(processedPickups == null ? Set.of() : processedPickups);
 		}
 
 		State advance(Optional<TargetObservation> target) {
@@ -144,28 +166,58 @@ final class PlayerItemDeliveryPolicy {
 				return withPhase(Phase.TERMINAL);
 			}
 			return new State(phase, targetIdentity == null ? target.map(TargetObservation::identity).orElse(null) : targetIdentity,
-				itemId, requestedQuantity, elapsedTicks + 1, deliveredQuantity, observedEntityCounts);
+				itemId, requestedQuantity, elapsedTicks + 1, deliveredQuantity, observedEntityCounts, creditedEntityCounts, processedPickups);
 		}
 
-		State recordDeliveryEvidence(List<DroppedItemEvidence> evidence, Optional<TargetObservation> target) {
-			if (target.isEmpty()) {
-				return this;
-			}
+		State recordDroppedItems(List<DroppedItemEvidence> evidence) {
 			Map<Integer, Integer> nextCounts = new java.util.HashMap<>(observedEntityCounts);
 			for (DroppedItemEvidence item : evidence) {
-				if (!itemId.equals(item.itemId()) || distanceSquared(item.x(), item.y(), item.z(), target.get())
-					> DELIVERY_EVIDENCE_RANGE_BLOCKS * DELIVERY_EVIDENCE_RANGE_BLOCKS) {
+				if (!itemId.equals(item.itemId())) {
 					continue;
 				}
 				nextCounts.merge(item.entityId(), item.count(), Math::max);
 			}
-			int delivered = Math.min(requestedQuantity, nextCounts.values().stream().mapToInt(Integer::intValue).sum());
-			return new State(phase, targetIdentity, itemId, requestedQuantity, elapsedTicks, delivered, nextCounts);
+			return new State(phase, targetIdentity, itemId, requestedQuantity, elapsedTicks, deliveredQuantity,
+				nextCounts, creditedEntityCounts, processedPickups);
+		}
+
+		State recordPickupEvidence(List<PickupEvidence> evidence, Optional<TargetObservation> target) {
+			if (target.isEmpty()) {
+				return this;
+			}
+			Map<Integer, Integer> nextObserved = new java.util.HashMap<>(observedEntityCounts);
+			Map<Integer, Integer> nextCredited = new java.util.HashMap<>(creditedEntityCounts);
+			Set<PickupKey> nextProcessed = new java.util.HashSet<>(processedPickups);
+			int nextDelivered = deliveredQuantity;
+			for (PickupEvidence pickup : evidence) {
+				if (!itemId.equals(pickup.itemId()) || !target.get().identity().equals(pickup.collectorIdentity())
+					|| (!pickup.trackedEntity() && !nextObserved.containsKey(pickup.entityId()))) {
+					continue;
+				}
+				PickupKey key = new PickupKey(pickup.entityId(), pickup.itemId(), pickup.count(), pickup.collectorIdentity(), pickup.observedAtTick());
+				if (!nextProcessed.add(key)) {
+					continue;
+				}
+				nextObserved.merge(pickup.entityId(), Math.max(pickup.count(), pickup.entityStackCount()), Math::max);
+				int credited = nextCredited.getOrDefault(pickup.entityId(), 0);
+				int available = Math.max(0, nextObserved.get(pickup.entityId()) - credited);
+				int credit = Math.min(pickup.count(), available);
+				if (credit > 0) {
+					nextCredited.put(pickup.entityId(), credited + credit);
+					nextDelivered = Math.min(requestedQuantity, nextDelivered + credit);
+				}
+			}
+			return new State(phase, targetIdentity, itemId, requestedQuantity, elapsedTicks, nextDelivered,
+				nextObserved, nextCredited, nextProcessed);
 		}
 
 		State withPhase(Phase nextPhase) {
-			return new State(nextPhase, targetIdentity, itemId, requestedQuantity, elapsedTicks, deliveredQuantity, observedEntityCounts);
+			return new State(nextPhase, targetIdentity, itemId, requestedQuantity, elapsedTicks, deliveredQuantity,
+				observedEntityCounts, creditedEntityCounts, processedPickups);
 		}
+	}
+
+	record PickupKey(int entityId, String itemId, int count, UUID collectorIdentity, long observedAtTick) {
 	}
 
 	record Decision(State nextState, Command command, String reason) {
