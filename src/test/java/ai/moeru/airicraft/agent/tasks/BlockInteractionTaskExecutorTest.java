@@ -43,6 +43,48 @@ class BlockInteractionTaskExecutorTest {
 	}
 
 	@Test
+	void waterPlacementUsesOnlyClientInteractionInputsAndNeedsNoIntegratedServer() {
+		assertTrue(BlockInteractionTaskExecutor.waterPlacementUsesNormalInteraction(
+			"minecraft:water_bucket",
+			"minecraft:air",
+			true
+		));
+		assertFalse(BlockInteractionTaskExecutor.waterPlacementUsesNormalInteraction(
+			"minecraft:bucket",
+			"minecraft:air",
+			true
+		));
+	}
+
+	@Test
+	void waterPlacementConfirmationRequiresWorldAndInventoryChanges() {
+		assertEquals(
+			BlockInteractionTaskExecutor.InteractionConfirmationOutcome.CONFIRMED,
+			BlockInteractionTaskExecutor.waterPlacementConfirmationOutcome(true, 1, 0, 0, 1, 0)
+		);
+		assertEquals(
+			BlockInteractionTaskExecutor.InteractionConfirmationOutcome.WAIT,
+			BlockInteractionTaskExecutor.waterPlacementConfirmationOutcome(true, 1, 1, 0, 0, 20)
+		);
+		assertEquals(
+			BlockInteractionTaskExecutor.InteractionConfirmationOutcome.WAIT,
+			BlockInteractionTaskExecutor.waterPlacementConfirmationOutcome(false, 1, 0, 0, 1, 20)
+		);
+	}
+
+	@Test
+	void waterPlacementConfirmationFailsAfterTimeoutWithoutServerConfirmation() {
+		assertEquals(
+			BlockInteractionTaskExecutor.InteractionConfirmationOutcome.FAILED,
+			BlockInteractionTaskExecutor.waterPlacementConfirmationOutcome(true, 1, 1, 0, 0, 21)
+		);
+		assertEquals(
+			BlockInteractionTaskExecutor.InteractionConfirmationOutcome.FAILED,
+			BlockInteractionTaskExecutor.waterPlacementConfirmationOutcome(false, 1, 0, 0, 1, 21)
+		);
+	}
+
+	@Test
 	void useBlockInteractionModeChoosesFluidItemUseForFluidTargets() {
 		assertEquals(
 			BlockInteractionTaskExecutor.UseBlockInteractionMode.FLUID_ITEM_USE,

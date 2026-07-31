@@ -15,8 +15,6 @@ import net.minecraft.item.ItemStack;
 import net.minecraft.item.Items;
 import net.minecraft.network.packet.c2s.play.UpdateSelectedSlotC2SPacket;
 import net.minecraft.registry.Registries;
-import net.minecraft.server.network.ServerPlayerEntity;
-import net.minecraft.server.world.ServerWorld;
 import net.minecraft.screen.PlayerScreenHandler;
 import net.minecraft.screen.ScreenHandler;
 import net.minecraft.screen.slot.SlotActionType;
@@ -84,6 +82,7 @@ public final class BlockInteractionTaskExecutor implements WorldTaskExecutor {
 	private final Set<BlockPos> attemptedPlacementStandPositions = new HashSet<>();
 	private final PlacementSneakController placementSneakController = new PlacementSneakController();
 	private PendingPlacementConfirmation pendingPlacementConfirmation;
+	private PendingWaterPlacementConfirmation pendingWaterPlacementConfirmation;
 
 	public BlockInteractionTaskExecutor() {
 		this(0);
@@ -166,6 +165,9 @@ public final class BlockInteractionTaskExecutor implements WorldTaskExecutor {
 			);
 			return Optional.empty();
 		}
+		if (pendingWaterPlacementConfirmation != null) {
+			return confirmPendingWaterPlacement(tick, client, player, request);
+		}
 		if (pendingPlacementConfirmation != null) {
 			return confirmPendingPlacement(tick, client, request);
 		}
@@ -220,13 +222,20 @@ public final class BlockInteractionTaskExecutor implements WorldTaskExecutor {
 		if (hand == null) {
 			return fail(request, targetFailure(target, "required_item_missing itemId=" + request.blockUse().itemId()));
 		}
+		boolean waterPlacement = waterPlacementUsesNormalInteraction(
+			itemId(heldStack(player, hand)),
+			blockId(before),
+			before.isAir() || before.isReplaceable()
+		);
+		int horizontalSolidNeighbors = horizontalSolidNeighborCount(client.world, target);
+		if (waterPlacement && !isSafeDirectWaterTarget(horizontalSolidNeighbors)) {
+			return fail(request, targetFailure(target, "unsafe_fluid_target"
+				+ " horizontalSolidNeighbors=" + horizontalSolidNeighbors
+				+ " beforeBlockId=" + blockId(before)));
+		}
 		UseBlockInteractionMode mode = useBlockInteractionMode(!before.getFluidState().isEmpty(), before.isAir() || before.isReplaceable());
 		if (mode == UseBlockInteractionMode.FLUID_ITEM_USE) {
 			return useItemOnFluidTarget(tick, client, player, request, hand, target, before);
-		}
-		if (isHeldItem(player, hand, Items.WATER_BUCKET)
-			&& isDirectWaterPlacementTarget(blockId(before), before.isAir() || before.isReplaceable())) {
-			return useWaterBucketDirectly(tick, client, player, request, hand, target, before);
 		}
 		Optional<HitTarget> hitTarget = mode == UseBlockInteractionMode.SUPPORT_INTERACTION
 			? resolvePlacementHit(client, player, target, args.facePreference())
@@ -272,6 +281,13 @@ public final class BlockInteractionTaskExecutor implements WorldTaskExecutor {
 			return navigateTowardInteractionRange(tick, client, player, request, target, hitTarget, "target_not_visible supportPos=" + compactPos(hitTarget.supportPos()));
 		}
 		clearNavigation();
+		boolean waterPlacement = waterPlacementUsesNormalInteraction(
+			itemId(heldStack(player, hand)),
+			blockId(before),
+			before.isAir() || before.isReplaceable()
+		);
+		int waterBucketCountBefore = waterPlacement ? inventoryCount(player, Items.WATER_BUCKET) : 0;
+		int bucketCountBefore = waterPlacement ? inventoryCount(player, Items.BUCKET) : 0;
 		if (request.type() == WorldTaskType.PLACE_BLOCK) {
 			PlacementSneakController.Preparation sneakPreparation = placementSneakController.prepare(client, player);
 			if (sneakPreparation != PlacementSneakController.Preparation.READY) {
@@ -331,6 +347,23 @@ public final class BlockInteractionTaskExecutor implements WorldTaskExecutor {
 			+ " itemInteractionResult=" + (itemResult == null ? "not_attempted" : itemResult)
 			+ " beforeBlockId=" + blockId(before)
 			+ " afterBlockId=" + blockId(after);
+		if (waterPlacement) {
+			pendingWaterPlacementConfirmation = new PendingWaterPlacementConfirmation(
+				target,
+				tick,
+				message,
+				waterBucketCountBefore,
+				bucketCountBefore
+			);
+			snapshot = snapshot(TaskExecutionState.RUNNING, request, "waiting_for_water_placement_confirmation"
+				+ " targetIndex=" + targetIndex
+				+ " targetPos=" + compactPos(target)
+				+ " beforeBlockId=" + blockId(before)
+				+ " afterBlockId=" + blockId(after)
+				+ " waterBucketCountBefore=" + waterBucketCountBefore
+				+ " bucketCountBefore=" + bucketCountBefore);
+			return Optional.empty();
+		}
 		if (request.type() == WorldTaskType.PLACE_BLOCK && !placementConfirmed(after)) {
 			pendingPlacementConfirmation = new PendingPlacementConfirmation(target, tick, message);
 			snapshot = snapshot(TaskExecutionState.RUNNING, request, "waiting_for_place_block_confirmation"
@@ -372,6 +405,56 @@ public final class BlockInteractionTaskExecutor implements WorldTaskExecutor {
 			+ " targetIndex=" + targetIndex
 			+ " targetPos=" + compactPos(pending.target())
 			+ " afterBlockId=" + blockId(current)
+			+ " elapsedTicks=" + (tick - pending.startedTick()));
+		return Optional.empty();
+	}
+
+	private Optional<TaskTerminalEvent> confirmPendingWaterPlacement(
+		long tick,
+		MinecraftClient client,
+		ClientPlayerEntity player,
+		WorldTaskRequest request
+	) {
+		PendingWaterPlacementConfirmation pending = pendingWaterPlacementConfirmation;
+		if (pending == null) {
+			return Optional.empty();
+		}
+		if (!client.world.isChunkLoaded(pending.target())) {
+			return fail(request, targetFailure(pending.target(), "target_unloaded_during_confirmation"));
+		}
+		BlockState current = client.world.getBlockState(pending.target());
+		int waterBucketCount = inventoryCount(player, Items.WATER_BUCKET);
+		int bucketCount = inventoryCount(player, Items.BUCKET);
+		InteractionConfirmationOutcome outcome = waterPlacementConfirmationOutcome(
+			current.isOf(Blocks.WATER),
+			pending.waterBucketCountBefore(),
+			waterBucketCount,
+			pending.bucketCountBefore(),
+			bucketCount,
+			tick - pending.startedTick()
+		);
+		if (outcome == InteractionConfirmationOutcome.CONFIRMED) {
+			pendingWaterPlacementConfirmation = null;
+			return completeTarget(tick, request, pending.successMessage()
+				+ " confirmedBlockId=" + blockId(current)
+				+ " confirmedWaterBucketCount=" + waterBucketCount
+				+ " confirmedBucketCount=" + bucketCount
+				+ " confirmationTicks=" + (tick - pending.startedTick()));
+		}
+		if (outcome == InteractionConfirmationOutcome.FAILED) {
+			pendingWaterPlacementConfirmation = null;
+			return fail(request, targetFailure(pending.target(), "water_placement_not_confirmed"
+				+ " afterBlockId=" + blockId(current)
+				+ " waterBucketCount=" + waterBucketCount
+				+ " bucketCount=" + bucketCount
+				+ " confirmationTimeoutTicks=" + (tick - pending.startedTick())));
+		}
+		snapshot = snapshot(TaskExecutionState.RUNNING, request, "waiting_for_water_placement_confirmation"
+			+ " targetIndex=" + targetIndex
+			+ " targetPos=" + compactPos(pending.target())
+			+ " afterBlockId=" + blockId(current)
+			+ " waterBucketCount=" + waterBucketCount
+			+ " bucketCount=" + bucketCount
 			+ " elapsedTicks=" + (tick - pending.startedTick()));
 		return Optional.empty();
 	}
@@ -427,51 +510,6 @@ public final class BlockInteractionTaskExecutor implements WorldTaskExecutor {
 			+ " itemInteractionResult=" + itemResult
 			+ " beforeBlockId=" + blockId(before)
 			+ " afterBlockId=" + blockId(after));
-	}
-
-	private Optional<TaskTerminalEvent> useWaterBucketDirectly(
-		long tick,
-		MinecraftClient client,
-		ClientPlayerEntity player,
-		WorldTaskRequest request,
-		Hand hand,
-		BlockPos target,
-		BlockState before
-	) {
-		if (!withinInteractionRange(player, Vec3d.ofCenter(target))) {
-			return navigateTowardTargetRange(tick, client, player, request, target, "target_out_of_range");
-		}
-		movementController.stop(client);
-		clearNavigation();
-		String beforeBlockId = blockId(before);
-		if (!isDirectWaterPlacementTarget(beforeBlockId, before.isAir() || before.isReplaceable())) {
-			return fail(request, targetFailure(target, "fluid_target_not_replaceable beforeBlockId=" + blockId(before)));
-		}
-		int horizontalSolidNeighbors = horizontalSolidNeighborCount(client.world, target);
-		if (!isSafeDirectWaterTarget(horizontalSolidNeighbors)) {
-			return fail(request, targetFailure(target, "unsafe_fluid_target"
-				+ " horizontalSolidNeighbors=" + horizontalSolidNeighbors
-				+ " beforeBlockId=" + blockId(before)));
-		}
-		cameraController.lookAtNow(client, Vec3d.ofCenter(target));
-		Optional<String> directPlacement = placeWaterDirectly(client, player, hand, target);
-		if (directPlacement.isPresent()) {
-			BlockState after = client.world.isChunkLoaded(target) ? client.world.getBlockState(target) : before;
-			player.swingHand(hand);
-			return completeTarget(tick, request, "block_interaction_succeeded"
-				+ " type=" + request.type().name()
-				+ " targetIndex=" + targetIndex
-				+ " targetCount=" + targetCount(request)
-				+ " targetPos=" + compactPos(target)
-				+ " itemId=minecraft:water_bucket"
-				+ " directFluidPlacement=true"
-				+ " supportPos=direct"
-				+ " face=direct"
-				+ " beforeBlockId=" + beforeBlockId
-				+ " afterBlockId=" + blockId(after)
-				+ " message=" + directPlacement.get());
-		}
-		return fail(request, targetFailure(target, "direct_fluid_placement_unavailable"));
 	}
 
 	private Optional<TaskTerminalEvent> navigateTowardInteractionRange(
@@ -1110,66 +1148,7 @@ public final class BlockInteractionTaskExecutor implements WorldTaskExecutor {
 		return targetSolid;
 	}
 
-	private static Optional<String> placeWaterDirectly(MinecraftClient client, ClientPlayerEntity player, Hand hand, BlockPos target) {
-		if (client.getServer() == null || client.world == null) {
-			return Optional.empty();
-		}
-		ServerWorld serverWorld = client.getServer().getWorld(client.world.getRegistryKey());
-		if (serverWorld == null) {
-			return Optional.empty();
-		}
-		ServerPlayerEntity serverPlayer = serverWorld.getServer().getPlayerManager().getPlayer(player.getUuid());
-		if (serverPlayer == null) {
-			return Optional.empty();
-		}
-		int serverBucketSlot = findServerInventoryItemSlot(serverPlayer, hand, Items.WATER_BUCKET);
-		if (serverBucketSlot < 0) {
-			return Optional.empty();
-		}
-		BlockState serverBefore = serverWorld.getBlockState(target);
-		if (!isDirectWaterPlacementTarget(blockId(serverBefore), serverBefore.isAir() || serverBefore.isReplaceable())) {
-			return Optional.empty();
-		}
-		boolean placed = serverWorld.setBlockState(target, Blocks.WATER.getDefaultState());
-		if (!placed) {
-			return Optional.empty();
-		}
-		ItemStack emptyBucket = new ItemStack(Items.BUCKET);
-		replaceServerInventoryStack(serverPlayer, hand, serverBucketSlot, emptyBucket.copy());
-		player.setStackInHand(hand, emptyBucket.copy());
-		return Optional.of("server_world_set_block");
-	}
-
-	private static int findServerInventoryItemSlot(ServerPlayerEntity player, Hand hand, Item item) {
-		if (hand == Hand.OFF_HAND && player.getOffHandStack().isOf(item)) {
-			return PlayerInventory.OFF_HAND_SLOT;
-		}
-		PlayerInventory inventory = player.getInventory();
-		int selectedSlot = inventory.getSelectedSlot();
-		if (inventory.getSelectedStack().isOf(item)) {
-			return selectedSlot;
-		}
-		for (int slot = 0; slot < PlayerInventory.MAIN_SIZE; slot++) {
-			if (inventory.getStack(slot).isOf(item)) {
-				return slot;
-			}
-		}
-		return -1;
-	}
-
-	private static void replaceServerInventoryStack(ServerPlayerEntity player, Hand hand, int slot, ItemStack replacement) {
-		if (hand == Hand.OFF_HAND && slot == PlayerInventory.OFF_HAND_SLOT) {
-			player.setStackInHand(hand, replacement);
-			return;
-		}
-		player.getInventory().setStack(slot, replacement);
-	}
-
 	private static boolean isHeldItem(ClientPlayerEntity player, Hand hand, Item item) {
-		return heldStack(player, hand).isOf(item);
-	}
-
-	private static boolean isHeldItem(ServerPlayerEntity player, Hand hand, Item item) {
 		return heldStack(player, hand).isOf(item);
 	}
 
@@ -1177,8 +1156,54 @@ public final class BlockInteractionTaskExecutor implements WorldTaskExecutor {
 		return hand == Hand.OFF_HAND ? player.getOffHandStack() : player.getMainHandStack();
 	}
 
-	private static ItemStack heldStack(ServerPlayerEntity player, Hand hand) {
-		return hand == Hand.OFF_HAND ? player.getOffHandStack() : player.getMainHandStack();
+	static boolean waterPlacementUsesNormalInteraction(String heldItemId, String targetBlockId, boolean targetAirOrReplaceable) {
+		return "minecraft:water_bucket".equals(heldItemId)
+			&& isDirectWaterPlacementTarget(targetBlockId, targetAirOrReplaceable);
+	}
+
+	static boolean waterPlacementInventoryConfirmed(
+		int waterBucketCountBefore,
+		int waterBucketCountAfter,
+		int bucketCountBefore,
+		int bucketCountAfter
+	) {
+		return waterBucketCountAfter < waterBucketCountBefore && bucketCountAfter > bucketCountBefore;
+	}
+
+	static InteractionConfirmationOutcome waterPlacementConfirmationOutcome(
+		boolean worldConfirmed,
+		int waterBucketCountBefore,
+		int waterBucketCountAfter,
+		int bucketCountBefore,
+		int bucketCountAfter,
+		long elapsedTicks
+	) {
+		if (worldConfirmed && waterPlacementInventoryConfirmed(
+			waterBucketCountBefore,
+			waterBucketCountAfter,
+			bucketCountBefore,
+			bucketCountAfter
+		)) {
+			return InteractionConfirmationOutcome.CONFIRMED;
+		}
+		return elapsedTicks > PLACEMENT_CONFIRMATION_TIMEOUT_TICKS
+			? InteractionConfirmationOutcome.FAILED
+			: InteractionConfirmationOutcome.WAIT;
+	}
+
+	private static int inventoryCount(ClientPlayerEntity player, Item item) {
+		if (player == null || item == null) {
+			return 0;
+		}
+		int count = 0;
+		PlayerInventory inventory = player.getInventory();
+		for (int slot = 0; slot < inventory.size(); slot++) {
+			ItemStack stack = inventory.getStack(slot);
+			if (!stack.isEmpty() && stack.isOf(item)) {
+				count += stack.getCount();
+			}
+		}
+		return count;
 	}
 
 	private static Hand resolveInteractionHand(MinecraftClient client, ClientPlayerEntity player, String itemId) {
@@ -1395,6 +1420,7 @@ public final class BlockInteractionTaskExecutor implements WorldTaskExecutor {
 		nextInteractionTick = 0L;
 		attemptedPlacementStandPositions.clear();
 		pendingPlacementConfirmation = null;
+		pendingWaterPlacementConfirmation = null;
 	}
 
 	private void clearNavigation() {
@@ -1447,6 +1473,12 @@ public final class BlockInteractionTaskExecutor implements WorldTaskExecutor {
 		FAIL
 	}
 
+	enum InteractionConfirmationOutcome {
+		WAIT,
+		CONFIRMED,
+		FAILED
+	}
+
 	private record HitTarget(
 		BlockPos supportPos,
 		BlockState supportState,
@@ -1460,6 +1492,15 @@ public final class BlockInteractionTaskExecutor implements WorldTaskExecutor {
 		BlockPos target,
 		long startedTick,
 		String successMessage
+	) {
+	}
+
+	private record PendingWaterPlacementConfirmation(
+		BlockPos target,
+		long startedTick,
+		String successMessage,
+		int waterBucketCountBefore,
+		int bucketCountBefore
 	) {
 	}
 }
