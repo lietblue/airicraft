@@ -11,11 +11,12 @@ public interface WorldTaskExecutor {
 
 	default void onPlayerItemPickupObserved(
 		int entityId,
+		UUID entityUuid,
 		String itemId,
-		int pickedUpCount,
-		int observedEntityStackCount,
+		int pickupDelta,
+		int agentAttributedQuantity,
 		UUID collectorIdentity,
-		long observedAtTick
+		UUID observationId
 	) {
 	}
 

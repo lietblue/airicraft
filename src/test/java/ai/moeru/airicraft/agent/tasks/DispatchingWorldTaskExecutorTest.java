@@ -46,7 +46,7 @@ class DispatchingWorldTaskExecutorTest {
 		RecordingExecutor entityInteraction = new RecordingExecutor();
 		DispatchingWorldTaskExecutor executor = new DispatchingWorldTaskExecutor(baritone, crafting, dropItems, entityInteraction);
 
-		executor.onPlayerItemPickupObserved(42, "minecraft:oak_log", 1, 2, UUID.randomUUID(), 7L);
+		executor.onPlayerItemPickupObserved(42, UUID.randomUUID(), "minecraft:oak_log", 1, 2, UUID.randomUUID(), UUID.randomUUID());
 
 		assertEquals(42, dropItems.pickupEntityId);
 		assertEquals("minecraft:oak_log", dropItems.pickupItemId);
@@ -359,17 +359,18 @@ class DispatchingWorldTaskExecutorTest {
 		@Override
 		public void onPlayerItemPickupObserved(
 			int entityId,
+			UUID entityUuid,
 			String itemId,
-			int pickedUpCount,
-			int entityStackCount,
+			int pickupDelta,
+			int agentAttributedQuantity,
 			UUID collectorIdentity,
-			long observedAtTick
+			UUID observationId
 		) {
 			pickupEntityId = entityId;
 			pickupItemId = itemId;
-			pickupCount = pickedUpCount;
-			pickupEntityStackCount = entityStackCount;
-			pickupTick = observedAtTick;
+			pickupCount = pickupDelta;
+			pickupEntityStackCount = agentAttributedQuantity;
+			pickupTick = 7L;
 		}
 
 		@Override

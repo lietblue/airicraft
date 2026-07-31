@@ -42,7 +42,7 @@ public final class DropItemsTaskExecutor implements WorldTaskExecutor {
 	private int busyScreenTicks;
 	private boolean terminalEventEmitted;
 	private UUID targetUuid;
-	private Map<Integer, Integer> baselineItemEntityCounts = Map.of();
+	private Map<PlayerItemDeliveryPolicy.EntityGeneration, Integer> baselineItemEntityCounts = Map.of();
 	private final List<PlayerItemDeliveryPolicy.PickupEvidence> pendingPickupEvidence = new ArrayList<>();
 	private PlayerItemDeliveryPolicy.State deliveryState;
 	private GoalPosition chaseGoal;
@@ -263,10 +263,14 @@ public final class DropItemsTaskExecutor implements WorldTaskExecutor {
 			if (!args.itemId().equals(itemId)) {
 				continue;
 			}
-			int droppedCount = agentAttributedQuantity(itemEntity.getId(), stack.getCount(), baselineItemEntityCounts);
+			int droppedCount = agentAttributedQuantity(
+				new PlayerItemDeliveryPolicy.EntityGeneration(itemEntity.getId(), itemEntity.getUuid()),
+				stack.getCount(),
+				baselineItemEntityCounts
+			);
 			if (droppedCount > 0) {
 				evidence.add(new PlayerItemDeliveryPolicy.DroppedItemEvidence(
-					itemEntity.getId(),
+					new PlayerItemDeliveryPolicy.EntityGeneration(itemEntity.getId(), itemEntity.getUuid()),
 					itemId,
 					droppedCount,
 					itemEntity.getX(),
@@ -281,33 +285,42 @@ public final class DropItemsTaskExecutor implements WorldTaskExecutor {
 	@Override
 	public void onPlayerItemPickupObserved(
 		int entityId,
+		UUID entityUuid,
 		String itemId,
-		int pickedUpCount,
-		int observedEntityStackCount,
+		int pickupDelta,
+		int agentAttributedQuantity,
 		UUID collectorIdentity,
-		long observedAtTick
+		UUID observationId
 	) {
 		if (deliveryState == null || deliveryState.phase() != PlayerItemDeliveryPolicy.Phase.AWAIT_DELIVERY
-			|| itemId == null || itemId.isBlank() || pickedUpCount <= 0 || observedEntityStackCount < 0 || observedAtTick < 0) {
+			|| entityUuid == null || itemId == null || itemId.isBlank() || pickupDelta <= 0
+			|| agentAttributedQuantity <= 0 || collectorIdentity == null || observationId == null) {
 			return;
 		}
-		int baselineAttributedQuantity = agentAttributedQuantity(entityId, observedEntityStackCount, baselineItemEntityCounts);
-		int observedAttributedQuantity = deliveryState.observedEntityCounts().getOrDefault(entityId, 0);
-		int agentAttributedQuantity = Math.max(baselineAttributedQuantity, observedAttributedQuantity);
-		boolean trackedEntity = agentAttributedQuantity > 0;
-		if (!trackedEntity) {
+		PlayerItemDeliveryPolicy.EntityGeneration generation = new PlayerItemDeliveryPolicy.EntityGeneration(entityId, entityUuid);
+		int baselineAttributedQuantity = agentAttributedQuantity(generation, agentAttributedQuantity, baselineItemEntityCounts);
+		int observedAttributedQuantity = deliveryState.observedEntityCounts().getOrDefault(generation, 0);
+		int attributedQuantity = Math.max(baselineAttributedQuantity, observedAttributedQuantity);
+		if (attributedQuantity <= 0) {
 			return;
 		}
 		pendingPickupEvidence.add(new PlayerItemDeliveryPolicy.PickupEvidence(
-			entityId,
+			generation,
 			itemId,
-			pickedUpCount,
-			agentAttributedQuantity,
-			observedEntityStackCount,
+			pickupDelta,
+			attributedQuantity,
 			collectorIdentity,
-			observedAtTick,
-			trackedEntity
+			observationId
 		));
+	}
+
+	static int agentAttributedQuantity(PlayerItemDeliveryPolicy.EntityGeneration generation, int observedEntityStackCount,
+		Map<PlayerItemDeliveryPolicy.EntityGeneration, Integer> baselineCounts) {
+		if (observedEntityStackCount < 0) {
+			throw new IllegalArgumentException("observedEntityStackCount must not be negative");
+		}
+		int baselineCount = baselineCounts == null ? 0 : baselineCounts.getOrDefault(generation, 0);
+		return Math.max(0, observedEntityStackCount - baselineCount);
 	}
 
 	static int agentAttributedQuantity(int entityId, int observedEntityStackCount, Map<Integer, Integer> baselineCounts) {
@@ -318,12 +331,12 @@ public final class DropItemsTaskExecutor implements WorldTaskExecutor {
 		return Math.max(0, observedEntityStackCount - baselineCount);
 	}
 
-	private static Map<Integer, Integer> itemEntityCounts(MinecraftClient client, String itemId) {
-		Map<Integer, Integer> counts = new HashMap<>();
+	private static Map<PlayerItemDeliveryPolicy.EntityGeneration, Integer> itemEntityCounts(MinecraftClient client, String itemId) {
+		Map<PlayerItemDeliveryPolicy.EntityGeneration, Integer> counts = new HashMap<>();
 		Box area = client.player.getBoundingBox().expand(64.0D);
 		for (ItemEntity itemEntity : client.world.getEntitiesByClass(ItemEntity.class, area, value -> true)) {
 			if (itemId.equals(Registries.ITEM.getId(itemEntity.getStack().getItem()).toString())) {
-				counts.put(itemEntity.getId(), itemEntity.getStack().getCount());
+				counts.put(new PlayerItemDeliveryPolicy.EntityGeneration(itemEntity.getId(), itemEntity.getUuid()), itemEntity.getStack().getCount());
 			}
 		}
 		return Map.copyOf(counts);

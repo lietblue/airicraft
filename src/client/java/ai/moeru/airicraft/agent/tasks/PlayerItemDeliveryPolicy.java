@@ -116,7 +116,10 @@ final class PlayerItemDeliveryPolicy {
 		}
 	}
 
-	record DroppedItemEvidence(int entityId, String itemId, int count, double x, double y, double z) {
+	record DroppedItemEvidence(EntityGeneration generation, String itemId, int count, double x, double y, double z) {
+		DroppedItemEvidence(int entityId, String itemId, int count, double x, double y, double z) {
+			this(new EntityGeneration(entityId, UUID.nameUUIDFromBytes(("entity:" + entityId).getBytes(java.nio.charset.StandardCharsets.UTF_8))), itemId, count, x, y, z);
+		}
 		DroppedItemEvidence {
 			itemId = Objects.requireNonNull(itemId, "itemId");
 			if (count <= 0) {
@@ -126,29 +129,30 @@ final class PlayerItemDeliveryPolicy {
 	}
 
 	record PickupEvidence(
-		int entityId,
+		EntityGeneration generation,
 		String itemId,
-		int packetPickupAmount,
+		int pickupDelta,
 		int agentAttributedQuantity,
-		int observedEntityStackCount,
 		UUID collectorIdentity,
-		long observedAtTick,
-		boolean trackedEntity
+		UUID observationId
 	) {
+		PickupEvidence(int entityId, String itemId, int pickupDelta, int agentAttributedQuantity,
+			int ignoredObservedEntityStackCount, UUID collectorIdentity, long ignoredObservedAtTick, boolean ignoredTrackedEntity) {
+			this(new EntityGeneration(entityId, UUID.nameUUIDFromBytes(("entity:" + entityId).getBytes(java.nio.charset.StandardCharsets.UTF_8))),
+				itemId, pickupDelta, agentAttributedQuantity, collectorIdentity,
+				UUID.nameUUIDFromBytes((entityId + ":" + ignoredObservedAtTick + ":" + pickupDelta + ":" + agentAttributedQuantity)
+					.getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+		}
 		PickupEvidence {
+			generation = Objects.requireNonNull(generation, "generation");
 			itemId = Objects.requireNonNull(itemId, "itemId");
-			if (packetPickupAmount <= 0) {
-				throw new IllegalArgumentException("packetPickupAmount must be positive");
+			if (pickupDelta <= 0) {
+				throw new IllegalArgumentException("pickupDelta must be positive");
 			}
 			if (agentAttributedQuantity <= 0) {
 				throw new IllegalArgumentException("agentAttributedQuantity must be positive");
 			}
-			if (observedEntityStackCount < 0) {
-				throw new IllegalArgumentException("observedEntityStackCount must not be negative");
-			}
-			if (observedAtTick < 0) {
-				throw new IllegalArgumentException("observedAtTick must not be negative");
-			}
+			observationId = Objects.requireNonNull(observationId, "observationId");
 		}
 	}
 
@@ -159,9 +163,9 @@ final class PlayerItemDeliveryPolicy {
 		int requestedQuantity,
 		int elapsedTicks,
 		int deliveredQuantity,
-		Map<Integer, Integer> observedEntityCounts,
-		Map<Integer, Integer> creditedEntityCounts,
-		Set<PickupKey> processedPickups
+		Map<EntityGeneration, Integer> observedEntityCounts,
+		Map<EntityGeneration, Integer> creditedEntityCounts,
+		Set<UUID> processedPickups
 	) {
 		State {
 			phase = Objects.requireNonNull(phase, "phase");
@@ -183,12 +187,12 @@ final class PlayerItemDeliveryPolicy {
 		}
 
 		State recordDroppedItems(List<DroppedItemEvidence> evidence) {
-			Map<Integer, Integer> nextCounts = new java.util.HashMap<>(observedEntityCounts);
+			Map<EntityGeneration, Integer> nextCounts = new java.util.HashMap<>(observedEntityCounts);
 			for (DroppedItemEvidence item : evidence) {
 				if (!itemId.equals(item.itemId())) {
 					continue;
 				}
-				nextCounts.merge(item.entityId(), item.count(), Math::max);
+				nextCounts.merge(item.generation(), item.count(), Math::max);
 			}
 			return new State(phase, targetIdentity, itemId, requestedQuantity, elapsedTicks, deliveredQuantity,
 				nextCounts, creditedEntityCounts, processedPickups);
@@ -198,32 +202,24 @@ final class PlayerItemDeliveryPolicy {
 			if (target.isEmpty()) {
 				return this;
 			}
-			Map<Integer, Integer> nextObserved = new java.util.HashMap<>(observedEntityCounts);
-			Map<Integer, Integer> nextCredited = new java.util.HashMap<>(creditedEntityCounts);
-			Set<PickupKey> nextProcessed = new java.util.HashSet<>(processedPickups);
+			Map<EntityGeneration, Integer> nextObserved = new java.util.HashMap<>(observedEntityCounts);
+			Map<EntityGeneration, Integer> nextCredited = new java.util.HashMap<>(creditedEntityCounts);
+			Set<UUID> nextProcessed = new java.util.HashSet<>(processedPickups);
 			int nextDelivered = deliveredQuantity;
 			for (PickupEvidence pickup : evidence) {
 				if (!itemId.equals(pickup.itemId()) || !target.get().identity().equals(pickup.collectorIdentity())
-					|| (!pickup.trackedEntity() && !nextObserved.containsKey(pickup.entityId()))) {
+					|| (!nextObserved.containsKey(pickup.generation()) && pickup.agentAttributedQuantity() <= 0)) {
 					continue;
 				}
-				PickupKey key = new PickupKey(
-					pickup.entityId(),
-					pickup.itemId(),
-					pickup.packetPickupAmount(),
-					pickup.agentAttributedQuantity(),
-					pickup.observedEntityStackCount(),
-					pickup.collectorIdentity()
-				);
-				if (!nextProcessed.add(key)) {
+				if (!nextProcessed.add(pickup.observationId())) {
 					continue;
 				}
-				nextObserved.merge(pickup.entityId(), pickup.agentAttributedQuantity(), Math::max);
-				int credited = nextCredited.getOrDefault(pickup.entityId(), 0);
-				int available = Math.max(0, nextObserved.get(pickup.entityId()) - credited);
-				int credit = Math.min(pickup.packetPickupAmount(), available);
+				nextObserved.merge(pickup.generation(), pickup.agentAttributedQuantity(), Math::max);
+				int credited = nextCredited.getOrDefault(pickup.generation(), 0);
+				int available = Math.max(0, nextObserved.get(pickup.generation()) - credited);
+				int credit = Math.min(pickup.pickupDelta(), available);
 				if (credit > 0) {
-					nextCredited.put(pickup.entityId(), credited + credit);
+				nextCredited.put(pickup.generation(), credited + credit);
 					nextDelivered = Math.min(requestedQuantity, nextDelivered + credit);
 				}
 			}
@@ -237,18 +233,13 @@ final class PlayerItemDeliveryPolicy {
 		}
 	}
 
-	/*
-	 * The entity id and observed stack count identify the packet state.
-	 * The tick is diagnostic only because a repeated packet can arrive later.
-	 */
-	record PickupKey(
+	record EntityGeneration(
 		int entityId,
-		String itemId,
-		int packetPickupAmount,
-		int agentAttributedQuantity,
-		int observedEntityStackCount,
-		UUID collectorIdentity
+		UUID entityUuid
 	) {
+		EntityGeneration {
+			entityUuid = Objects.requireNonNull(entityUuid, "entityUuid");
+		}
 	}
 
 	record Decision(State nextState, Command command, String reason, TaskFailureCode failureCode) {

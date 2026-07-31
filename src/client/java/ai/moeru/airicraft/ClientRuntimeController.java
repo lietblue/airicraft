@@ -115,19 +115,21 @@ public final class ClientRuntimeController {
 
 	public void onPlayerItemPickupObserved(
 		int entityId,
+		UUID entityUuid,
 		String itemId,
-		int pickedUpCount,
-		int observedEntityStackCount,
+		int pickupDelta,
+		int agentAttributedQuantity,
 		UUID collectorIdentity,
-		long observedAtTick
+		UUID observationId
 	) {
 		currentAgentRuntime().onPlayerItemPickupObserved(
 			entityId,
+			entityUuid,
 			itemId,
-			pickedUpCount,
-			observedEntityStackCount,
+			pickupDelta,
+			agentAttributedQuantity,
 			collectorIdentity,
-			observedAtTick
+			observationId
 		);
 	}
 

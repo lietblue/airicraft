@@ -99,7 +99,7 @@ class PlayerItemDeliveryPolicyTest {
 	}
 
 	@Test
-	void ignoresTheSamePickupRepeatedInALaterTick() {
+	void acceptsAnIdenticalLegitimatePartialPickupLater() {
 		PlayerItemDeliveryPolicy.State state = droppedState();
 		PlayerItemDeliveryPolicy.Decision first = decide(state, target(2.0D, 0.0D, 0.0D), List.of(), List.of(
 			pickup(10, 1, 2, 2, ALICE, 5L)
@@ -109,8 +109,30 @@ class PlayerItemDeliveryPolicyTest {
 			pickup(10, 1, 2, 2, ALICE, 6L)
 		));
 
-		assertEquals(PlayerItemDeliveryPolicy.Command.WAIT, repeated.command());
-		assertEquals(1, repeated.nextState().deliveredQuantity());
+		assertEquals(PlayerItemDeliveryPolicy.Command.SUCCEED, repeated.command());
+		assertEquals(2, repeated.nextState().deliveredQuantity());
+	}
+
+	@Test
+	void ignoresTheSameObservationAcrossDispatcherLayers() {
+		PlayerItemDeliveryPolicy.State state = droppedState();
+		PlayerItemDeliveryPolicy.PickupEvidence pickup = pickup(10, 1, 2, 2, ALICE, 5L);
+
+		PlayerItemDeliveryPolicy.Decision duplicate = decide(state, target(2.0D, 0.0D, 0.0D), List.of(), List.of(pickup, pickup));
+
+		assertEquals(1, duplicate.nextState().deliveredQuantity());
+	}
+
+	@Test
+	void ignoresAnObservationReplayAfterTheFirstStateTransition() {
+		PlayerItemDeliveryPolicy.State state = droppedState();
+		PlayerItemDeliveryPolicy.PickupEvidence pickup = pickup(10, 1, 2, 2, ALICE, 5L);
+
+		PlayerItemDeliveryPolicy.Decision first = decide(state, target(2.0D, 0.0D, 0.0D), List.of(), List.of(pickup));
+		PlayerItemDeliveryPolicy.Decision replay = decide(first.nextState(), target(2.0D, 0.0D, 0.0D), List.of(), List.of(pickup));
+
+		assertEquals(PlayerItemDeliveryPolicy.Command.WAIT, replay.command());
+		assertEquals(1, replay.nextState().deliveredQuantity());
 	}
 
 	@Test
@@ -267,6 +289,7 @@ class PlayerItemDeliveryPolicyTest {
 	private static PlayerItemDeliveryPolicy.TargetObservation target(double x, double y, double z) {
 		return new PlayerItemDeliveryPolicy.TargetObservation(ALICE, "Alice", x, y, z);
 	}
+
 
 	private static PlayerItemDeliveryPolicy.PickupEvidence pickup(
 		int entityId,

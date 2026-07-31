@@ -230,13 +230,14 @@ public final class DispatchingWorldTaskExecutor implements WorldTaskExecutor {
 	@Override
 	public void onPlayerItemPickupObserved(
 		int entityId,
+		UUID entityUuid,
 		String itemId,
-		int pickedUpCount,
-		int observedEntityStackCount,
+		int pickupDelta,
+		int agentAttributedQuantity,
 		UUID collectorIdentity,
-		long observedAtTick
+		UUID observationId
 	) {
-		dropItemsExecutor.onPlayerItemPickupObserved(entityId, itemId, pickedUpCount, observedEntityStackCount, collectorIdentity, observedAtTick);
+		dropItemsExecutor.onPlayerItemPickupObserved(entityId, entityUuid, itemId, pickupDelta, agentAttributedQuantity, collectorIdentity, observationId);
 	}
 
 	private static boolean isEntityInteractionType(WorldTaskType type) {
