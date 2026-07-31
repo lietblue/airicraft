@@ -1845,6 +1845,125 @@ class EmbodiedAgentRuntimeTest {
 		runtime.onClientTick(null);
 
 		assertTrue(resultFuture.join().contains("completed"));
+		assertEquals(request.taskId(), runtime.taskSnapshot().taskId());
+	}
+
+	@Test
+	void blockModificationFallbackAcceptsMatchingTerminalSnapshotWhenEventIsMissing() {
+		FakeWorldTaskExecutor executor = new FakeWorldTaskExecutor();
+		EmbodiedAgentRuntime runtime = EmbodiedAgentRuntime.createForTests(executor);
+		runtime.overrideSessionSnapshotForTests(loadedRemoteSession());
+
+		CompletableFuture<String> resultFuture = startPendingUseBlock(runtime, executor, 1);
+		WorldTaskRequest request = executor.lastActiveTask.orElseThrow();
+		executor.forcedSnapshot = new TaskExecutionSnapshot(
+			TaskExecutionState.COMPLETED,
+			request.taskId(),
+			null,
+			"BlockInteraction",
+			"placed without event",
+			null,
+			null
+		);
+
+		runtime.onClientTick(null);
+		assertFalse(resultFuture.isDone());
+		runtime.onClientTick(null);
+
+		assertTrue(resultFuture.join().contains("completed"));
+	}
+
+	@Test
+	void blockModificationFallbackRejectsWrongTaskWithTheSameStepKind() {
+		FakeWorldTaskExecutor executor = new FakeWorldTaskExecutor();
+		EmbodiedAgentRuntime runtime = EmbodiedAgentRuntime.createForTests(executor);
+		runtime.overrideSessionSnapshotForTests(loadedRemoteSession());
+
+		CompletableFuture<String> resultFuture = startPendingUseBlock(runtime, executor, 1);
+		WorldTaskRequest request = executor.lastActiveTask.orElseThrow();
+		executor.forcedSnapshot = new TaskExecutionSnapshot(
+			TaskExecutionState.COMPLETED,
+			"different-use-block-task",
+			null,
+			"BlockInteraction",
+			"stale completion",
+			null,
+			null
+		);
+
+		runtime.onClientTick(null);
+		runtime.onClientTick(null);
+
+		assertFalse(resultFuture.isDone());
+		assertEquals(request.taskId(), executor.lastActiveTask.orElseThrow().taskId());
+	}
+
+	@Test
+	void blockModificationFallbackRejectsAStalePriorTaskSnapshotAfterReplacement() throws Exception {
+		FakeWorldTaskExecutor executor = new FakeWorldTaskExecutor();
+		EmbodiedAgentRuntime runtime = EmbodiedAgentRuntime.createForTests(executor);
+		runtime.overrideSessionSnapshotForTests(loadedRemoteSession());
+
+		CompletableFuture<String> firstResult = startPendingUseBlock(runtime, executor, 1);
+		activeJobRuntime(runtime).clear();
+		setTaskSnapshot(runtime, TaskSnapshot.idle());
+		setTaskExecutionSnapshot(runtime, TaskExecutionSnapshot.idle());
+		runtime.recordWorldReadForTests(new BlockPos(2, 65, 2));
+		CompletableFuture<String> secondResult = runtime.executePlannerToolCallFutureForTests(useBlockToolCall("call_use_block_2", 2));
+		runtime.onClientTick(null);
+		WorldTaskRequest secondRequest = executor.lastActiveTask.orElseThrow();
+
+		executor.forcedSnapshot = new TaskExecutionSnapshot(
+			TaskExecutionState.COMPLETED,
+			"stale-first-task",
+			null,
+			"BlockInteraction",
+			"stale completion",
+			null,
+			null
+		);
+		assertTrue(firstResult.isDone());
+		runtime.onClientTick(null);
+		runtime.onClientTick(null);
+
+		assertFalse(secondResult.isDone());
+	}
+
+	@Test
+	void blockModificationTerminalEventAndSnapshotCompleteOnlyOnce() {
+		FakeWorldTaskExecutor executor = new FakeWorldTaskExecutor();
+		EmbodiedAgentRuntime runtime = EmbodiedAgentRuntime.createForTests(executor);
+		runtime.overrideSessionSnapshotForTests(loadedRemoteSession());
+
+		CompletableFuture<String> resultFuture = startPendingUseBlock(runtime, executor, 1);
+		WorldTaskRequest request = executor.lastActiveTask.orElseThrow();
+		executor.nextTerminalEvent = Optional.of(new TaskTerminalEvent(
+			request.taskId(),
+			null,
+			TaskExecutionState.COMPLETED,
+			"event completion",
+			null
+		));
+		runtime.onClientTick(null);
+		String result = resultFuture.join();
+		runtime.onClientTick(null);
+
+		assertTrue(result.contains("event completion"));
+		assertEquals(result, resultFuture.join());
+	}
+
+	@Test
+	void blockModificationToolTimesOutWithoutTerminalEvidence() {
+		FakeWorldTaskExecutor executor = new FakeWorldTaskExecutor();
+		EmbodiedAgentRuntime runtime = EmbodiedAgentRuntime.createForTests(executor);
+		runtime.overrideSessionSnapshotForTests(loadedRemoteSession());
+
+		CompletableFuture<String> resultFuture = startPendingUseBlock(runtime, executor, 1);
+		for (int tick = 0; tick < EmbodiedAgentRuntime.BLOCK_MODIFICATION_TOOL_RESULT_TIMEOUT_TICKS; tick++) {
+			runtime.onClientTick(null);
+		}
+
+		assertTrue(resultFuture.join().contains("pending_timeout"));
 	}
 
 	@Test

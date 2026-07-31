@@ -620,7 +620,8 @@ public final class ActiveJobRuntime {
 			compatibilityLedger == null ? activeStepId() : compatibilityLedger.activeStepId(),
 			compatibilityActiveStepKind(),
 			lastStepResult(),
-			activeJob.updatedTick()
+			activeJob.updatedTick(),
+			activeJob.jobId()
 		);
 	}
 

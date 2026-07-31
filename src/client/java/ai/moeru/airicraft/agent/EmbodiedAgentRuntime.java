@@ -4663,6 +4663,8 @@ public final class EmbodiedAgentRuntime {
 		if (
 			pending == null
 				|| snapshot == null
+				|| snapshot.taskId() == null
+				|| !Objects.equals(pending.taskId(), snapshot.taskId())
 				|| snapshot.activeStepKind() != pending.stepKind()
 				|| !isTerminalTaskState(snapshot.state())
 		) {
