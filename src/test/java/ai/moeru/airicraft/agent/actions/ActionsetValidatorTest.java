@@ -84,6 +84,40 @@ class ActionsetValidatorTest {
 	}
 
 	@Test
+	void rejectsReservedPrimitivesBeforeExecution() {
+		ActionsetValidationResult result = validate("""
+			version: 1
+			actions:
+			  make_bread:
+			    alternatives:
+			      - id: reserved_route
+			        steps:
+			          - id: place_block
+			            primitive: place_block
+			""");
+
+		assertError(result, "unsupported_primitive", "$.actions.make_bread.alternatives[0].steps[0].primitive");
+	}
+
+	@Test
+	void rejectsMissingRequiredPrimitiveArguments() {
+		ActionsetValidationResult result = validate("""
+			version: 1
+			actions:
+			  make_bread:
+			    alternatives:
+			      - id: incomplete_route
+			        steps:
+			          - id: craft_bread
+			            primitive: craft_item
+			            args:
+			              itemId: minecraft:bread
+			""");
+
+		assertError(result, "missing_primitive_arg", "$.actions.make_bread.alternatives[0].steps[0].args.quantity");
+	}
+
+	@Test
 	void rejectsAmbiguousLegacyRequiresAndActionStepKeys() {
 		ActionsetValidationResult result = validate("""
 			version: 1

@@ -181,8 +181,17 @@ public final class ActionsetValidator {
 				if (primitive == null || primitive.isBlank()) {
 					errors.add(new ActionsetValidationError("missing_field", stepPath + ".primitive", "primitive id is required"));
 				}
-				else if (!primitiveRegistry.contains(primitive)) {
-					errors.add(new ActionsetValidationError("unknown_primitive", stepPath + ".primitive", "unknown primitive \"" + primitive + "\""));
+				else {
+					PrimitiveActionMetadata metadata = primitiveRegistry.find(primitive);
+					if (metadata == null) {
+						errors.add(new ActionsetValidationError("unknown_primitive", stepPath + ".primitive", "unknown primitive \"" + primitive + "\""));
+					}
+					else if (!metadata.executable()) {
+						errors.add(new ActionsetValidationError("unsupported_primitive", stepPath + ".primitive", "primitive \"" + primitive + "\" is not an executable foreground primitive"));
+					}
+					else {
+						validatePrimitiveArguments(metadata, step.get("args"), stepPath + ".args", errors);
+					}
 				}
 			}
 			if (step.containsKey("goal")) {
@@ -196,6 +205,44 @@ public final class ActionsetValidator {
 				validateNestedExpressions(step.get("args"), stepPath + ".args", params, errors);
 			}
 		}
+	}
+
+	private void validatePrimitiveArguments(
+		PrimitiveActionMetadata metadata,
+		Object value,
+		String path,
+		List<ActionsetValidationError> errors
+	) {
+		Map<String, Object> args = objectMap(value);
+		for (Map.Entry<String, PrimitiveParameter> entry : metadata.parameterSchema().entrySet()) {
+			PrimitiveParameter parameter = entry.getValue();
+			if (!parameter.required()) {
+				continue;
+			}
+			String argumentPath = path + "." + entry.getKey();
+			if (!args.containsKey(entry.getKey()) || missingPrimitiveArgument(args.get(entry.getKey()))) {
+				errors.add(new ActionsetValidationError(
+					"missing_primitive_arg",
+					argumentPath,
+					"required argument \"" + entry.getKey() + "\" is missing for primitive \"" + metadata.id() + "\"",
+					parameter.type(),
+					"missing"
+				));
+			}
+		}
+	}
+
+	private static boolean missingPrimitiveArgument(Object value) {
+		if (value == null) {
+			return true;
+		}
+		if (value instanceof String string) {
+			return string.isBlank();
+		}
+		if (value instanceof List<?> list) {
+			return list.isEmpty();
+		}
+		return value instanceof Map<?, ?> map && map.isEmpty();
 	}
 
 	private void validateWatchProgress(

@@ -21,7 +21,7 @@ public final class PrimitiveActionRegistry {
 			List.of(),
 			List.of("inventory.item", "inventory.tool"),
 			List.of("inspection"),
-			false,
+			PrimitiveActionRole.OBSERVATION_ONLY,
 			false,
 			"CurrentInventoryTool"
 		));
@@ -32,7 +32,7 @@ public final class PrimitiveActionRegistry {
 			List.of(),
 			List.of("world.block", "world.site", "world.entity"),
 			List.of("inspection"),
-			false,
+			PrimitiveActionRole.OBSERVATION_ONLY,
 			false,
 			"WorldEvidence"
 		));
@@ -46,7 +46,7 @@ public final class PrimitiveActionRegistry {
 			List.of(),
 			List.of("world.block", "world.site"),
 			List.of("inspection", "world_scan"),
-			false,
+			PrimitiveActionRole.OBSERVATION_ONLY,
 			false,
 			"WorldEvidence"
 		));
@@ -62,7 +62,7 @@ public final class PrimitiveActionRegistry {
 			List.of(),
 			List.of(),
 			List.of("movement"),
-			true,
+			PrimitiveActionRole.FOREGROUND_EXECUTABLE,
 			true,
 			"WorldTaskRequest.NAVIGATE"
 		));
@@ -76,7 +76,7 @@ public final class PrimitiveActionRegistry {
 			List.of(),
 			List.of("inventory.resource"),
 			List.of("collection"),
-			true,
+			PrimitiveActionRole.FOREGROUND_EXECUTABLE,
 			true,
 			"WorldTaskRequest.COLLECT_RESOURCE"
 		));
@@ -90,7 +90,7 @@ public final class PrimitiveActionRegistry {
 			List.of(),
 			List.of("inventory.item"),
 			List.of("mining", "destructive"),
-			true,
+			PrimitiveActionRole.FOREGROUND_EXECUTABLE,
 			true,
 			"WorldTaskRequest.MINE"
 		));
@@ -106,7 +106,7 @@ public final class PrimitiveActionRegistry {
 			List.of("world.block"),
 			List.of("world.block"),
 			List.of("block_interaction"),
-			true,
+			PrimitiveActionRole.RESERVED,
 			true,
 			"pending"
 		));
@@ -122,7 +122,7 @@ public final class PrimitiveActionRegistry {
 			List.of("world.block", "inventory.tool"),
 			List.of("world.block", "world.farm_plot"),
 			List.of("block_interaction", "farming"),
-			true,
+			PrimitiveActionRole.FOREGROUND_EXECUTABLE,
 			true,
 			"WorldTaskRequest.USE_BLOCK"
 		));
@@ -138,7 +138,7 @@ public final class PrimitiveActionRegistry {
 			List.of("world.block", "inventory.item"),
 			List.of("world.crop", "world.crop_group"),
 			List.of("block_interaction", "farming"),
-			true,
+			PrimitiveActionRole.FOREGROUND_EXECUTABLE,
 			true,
 			"WorldTaskRequest.USE_BLOCK"
 		));
@@ -154,7 +154,7 @@ public final class PrimitiveActionRegistry {
 			List.of("world.block", "inventory.item"),
 			List.of("world.block", "world.hydration_source"),
 			List.of("block_interaction", "farming"),
-			true,
+			PrimitiveActionRole.FOREGROUND_EXECUTABLE,
 			true,
 			"WorldTaskRequest.USE_BLOCK"
 		));
@@ -170,7 +170,7 @@ public final class PrimitiveActionRegistry {
 			List.of("world.block"),
 			List.of("world.block", "world.farm_plot"),
 			List.of("block_interaction", "farming", "destructive"),
-			true,
+			PrimitiveActionRole.FOREGROUND_EXECUTABLE,
 			true,
 			"WorldTaskRequest.BREAK_BLOCKS"
 		));
@@ -186,7 +186,7 @@ public final class PrimitiveActionRegistry {
 			List.of("inventory.item"),
 			List.of("world.block"),
 			List.of("block_interaction", "destructive"),
-			true,
+			PrimitiveActionRole.RESERVED,
 			true,
 			"pending"
 		));
@@ -197,7 +197,7 @@ public final class PrimitiveActionRegistry {
 			List.of("inventory.item"),
 			List.of("world.block", "world.entity"),
 			List.of("item_use"),
-			true,
+			PrimitiveActionRole.RESERVED,
 			true,
 			"pending"
 		));
@@ -211,7 +211,7 @@ public final class PrimitiveActionRegistry {
 			List.of("craft.recipe"),
 			List.of("inventory.item"),
 			List.of("crafting"),
-			true,
+			PrimitiveActionRole.FOREGROUND_EXECUTABLE,
 			true,
 			"WorldTaskRequest.CRAFT_RECIPE"
 		));
@@ -226,7 +226,7 @@ public final class PrimitiveActionRegistry {
 			List.of("smelt.recipe", "inventory.item"),
 			List.of("inventory.item"),
 			List.of("smelting"),
-			true,
+			PrimitiveActionRole.FOREGROUND_EXECUTABLE,
 			true,
 			"WorldTaskRequest.SMELT_ITEMS"
 		));
@@ -237,7 +237,7 @@ public final class PrimitiveActionRegistry {
 			List.of("watch.fulfilled"),
 			List.of("inventory.item"),
 			List.of("smelting"),
-			true,
+			PrimitiveActionRole.FOREGROUND_EXECUTABLE,
 			true,
 			"WorldTaskRequest.COLLECT_SMELTED_ITEMS"
 		));
@@ -248,7 +248,7 @@ public final class PrimitiveActionRegistry {
 			List.of("world.entity"),
 			List.of("world.entity", "inventory.item"),
 			List.of("combat", "destructive"),
-			true,
+			PrimitiveActionRole.RESERVED,
 			true,
 			"WorldTaskRequest.ATTACK_ENTITY"
 		));
@@ -259,7 +259,7 @@ public final class PrimitiveActionRegistry {
 			List.of(),
 			List.of("watch.pending", "watch.fulfilled"),
 			List.of("watch"),
-			false,
+			PrimitiveActionRole.RESERVED,
 			true,
 			"ActionGraphWatch"
 		));
@@ -278,8 +278,18 @@ public final class PrimitiveActionRegistry {
 		return metadata;
 	}
 
+	public PrimitiveActionMetadata find(String id) {
+		return actions.get(id);
+	}
+
 	public Collection<PrimitiveActionMetadata> all() {
 		return actions.values();
+	}
+
+	public Collection<PrimitiveActionMetadata> executable() {
+		return actions.values().stream()
+			.filter(PrimitiveActionMetadata::executable)
+			.toList();
 	}
 
 	private static PrimitiveActionMetadata metadata(
@@ -289,7 +299,7 @@ public final class PrimitiveActionRegistry {
 		List<String> guardFacts,
 		List<String> producedFacts,
 		List<String> tags,
-		boolean foregroundActuation,
+		PrimitiveActionRole role,
 		boolean cancellable,
 		String executorBinding
 	) {
@@ -304,7 +314,7 @@ public final class PrimitiveActionRegistry {
 			List.of(),
 			10,
 			List.of("session_gate", "timeout", "cancelled", "executor_failed"),
-			foregroundActuation,
+			role,
 			cancellable,
 			20 * 60,
 			tags,

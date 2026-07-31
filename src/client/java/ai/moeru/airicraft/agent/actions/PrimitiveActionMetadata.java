@@ -14,7 +14,7 @@ public record PrimitiveActionMetadata(
 	List<String> consumedFactTypes,
 	int cost,
 	List<String> failureCodes,
-	boolean foregroundActuation,
+	PrimitiveActionRole role,
 	boolean cancellable,
 	int defaultTimeoutTicks,
 	List<String> capabilityTags,
@@ -27,6 +27,9 @@ public record PrimitiveActionMetadata(
 		if (version < 1) {
 			throw new IllegalArgumentException("version must be positive");
 		}
+		if (role == null) {
+			throw new IllegalArgumentException("role is required");
+		}
 		summary = summary == null ? "" : summary;
 		parameterSchema = parameterSchema == null ? Map.of() : Map.copyOf(parameterSchema);
 		guardFactTypes = guardFactTypes == null ? List.of() : List.copyOf(guardFactTypes);
@@ -36,5 +39,13 @@ public record PrimitiveActionMetadata(
 		failureCodes = failureCodes == null ? List.of() : List.copyOf(failureCodes);
 		capabilityTags = capabilityTags == null ? List.of() : List.copyOf(capabilityTags);
 		executorBinding = executorBinding == null ? "" : executorBinding;
+	}
+
+	public boolean foregroundActuation() {
+		return role == PrimitiveActionRole.FOREGROUND_EXECUTABLE;
+	}
+
+	public boolean executable() {
+		return role == PrimitiveActionRole.FOREGROUND_EXECUTABLE;
 	}
 }
