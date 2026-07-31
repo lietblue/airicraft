@@ -15,6 +15,7 @@ class ActionGraphFailurePolicyTest {
 			Map.entry(TaskFailureCode.TRANSIENT, ActionGraphFailurePolicy.RecoveryCategory.RETRY),
 			Map.entry(TaskFailureCode.BUSY, ActionGraphFailurePolicy.RecoveryCategory.RETRY),
 			Map.entry(TaskFailureCode.MISSING_FACT, ActionGraphFailurePolicy.RecoveryCategory.MISSING_FACT),
+			Map.entry(TaskFailureCode.MISSING_ITEM, ActionGraphFailurePolicy.RecoveryCategory.MISSING_FACT),
 			Map.entry(TaskFailureCode.ENVIRONMENT_CHANGED, ActionGraphFailurePolicy.RecoveryCategory.BLOCKED),
 			Map.entry(TaskFailureCode.INVALID_ACTION, ActionGraphFailurePolicy.RecoveryCategory.INVALID_REQUEST),
 			Map.entry(TaskFailureCode.DESTRUCTIVE_DENIED, ActionGraphFailurePolicy.RecoveryCategory.TERMINAL),

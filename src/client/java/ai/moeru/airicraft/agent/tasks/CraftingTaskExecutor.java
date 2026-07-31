@@ -758,7 +758,14 @@ public final class CraftingTaskExecutor implements WorldTaskExecutor {
 		String failure = childTerminal.terminalState() == TaskExecutionState.COMPLETED
 			? "placed_block_not_crafting_table"
 			: childTerminal.message();
-		if (PortableTablePlacementPolicy.failureDisposition(failure) == PortableTablePlacementPolicy.FailureDisposition.TERMINATE) {
+		PortableTablePlacementPolicy.FailureDecision failureDecision = PortableTablePlacementPolicy.decideFailure(
+			placementState,
+			childTerminal.terminalState(),
+			childTerminal.failureCode(),
+			childTerminal.terminationCause(),
+			failure
+		);
+		if (failureDecision.disposition() == PortableTablePlacementPolicy.FailureDisposition.TERMINATE) {
 			return WorkbenchReadiness.failed(TaskFailure.of(
 				childTerminal.terminalState() == TaskExecutionState.FAILED
 					? childTerminal.failureCode()
@@ -771,7 +778,7 @@ public final class CraftingTaskExecutor implements WorldTaskExecutor {
 				)
 			));
 		}
-		portableTablePlacementState = placementState.advance(failure);
+		portableTablePlacementState = failureDecision.nextState();
 		portableTablePlacementTask = null;
 		if (portableTablePlacementState.exhausted()) {
 			return WorkbenchReadiness.failed(TaskFailure.of(

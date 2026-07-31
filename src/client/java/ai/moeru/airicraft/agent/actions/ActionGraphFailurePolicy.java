@@ -9,7 +9,7 @@ public final class ActionGraphFailurePolicy {
 	public static RecoveryCategory category(TaskFailureCode failureCode) {
 		return switch (failureCode == null ? TaskFailureCode.UNKNOWN : failureCode) {
 			case TRANSIENT, BUSY -> RecoveryCategory.RETRY;
-			case MISSING_FACT -> RecoveryCategory.MISSING_FACT;
+			case MISSING_FACT, MISSING_ITEM -> RecoveryCategory.MISSING_FACT;
 			case ENVIRONMENT_CHANGED -> RecoveryCategory.BLOCKED;
 			case INVALID_ACTION -> RecoveryCategory.INVALID_REQUEST;
 			case DESTRUCTIVE_DENIED, UNKNOWN, NONE -> RecoveryCategory.TERMINAL;

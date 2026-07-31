@@ -193,7 +193,7 @@ public final class BlockInteractionTaskExecutor implements WorldTaskExecutor {
 		}
 		Hand hand = resolveInteractionHand(client, player, request.blockPlacement().itemId());
 		if (hand == null) {
-			return fail(request, targetFailure(TaskFailureCode.MISSING_FACT, target, "required_item_missing itemId=" + request.blockPlacement().itemId()));
+			return fail(request, targetFailure(TaskFailureCode.MISSING_ITEM, target, "required_item_missing itemId=" + request.blockPlacement().itemId()));
 		}
 		Optional<HitTarget> hitTarget = resolvePlacementHit(client, player, target, args.facePreference());
 		if (hitTarget.isEmpty()) {
@@ -220,7 +220,7 @@ public final class BlockInteractionTaskExecutor implements WorldTaskExecutor {
 		}
 		Hand hand = resolveInteractionHand(client, player, request.blockUse().itemId());
 		if (hand == null) {
-			return fail(request, targetFailure(TaskFailureCode.MISSING_FACT, target, "required_item_missing itemId=" + request.blockUse().itemId()));
+			return fail(request, targetFailure(TaskFailureCode.MISSING_ITEM, target, "required_item_missing itemId=" + request.blockUse().itemId()));
 		}
 		boolean waterPlacement = waterPlacementUsesNormalInteraction(
 			itemId(heldStack(player, hand)),

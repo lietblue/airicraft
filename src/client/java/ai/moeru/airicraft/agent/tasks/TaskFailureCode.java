@@ -7,6 +7,7 @@ public enum TaskFailureCode {
 	TRANSIENT("transient"),
 	BUSY("busy"),
 	MISSING_FACT("missing_fact"),
+	MISSING_ITEM("missing_item"),
 	ENVIRONMENT_CHANGED("environment_changed"),
 	INVALID_ACTION("invalid_action"),
 	DESTRUCTIVE_DENIED("destructive_denied"),
@@ -24,6 +25,9 @@ public enum TaskFailureCode {
 
 	public static TaskFailureCode fromLegacyDetail(String detail) {
 		String text = detail == null ? "" : detail.toLowerCase(Locale.ROOT);
+		if (text.contains("required_item_missing")) {
+			return MISSING_ITEM;
+		}
 		if (text.contains("busy") || text.contains("occupied")) {
 			return BUSY;
 		}
@@ -53,6 +57,7 @@ public enum TaskFailureCode {
 			case "transient", "timeout", "temporary" -> TRANSIENT;
 			case "busy", "occupied" -> BUSY;
 			case "missing_fact", "recipe_not_found", "smelting_option_not_found" -> MISSING_FACT;
+			case "missing_item" -> MISSING_ITEM;
 			case "environment_changed" -> ENVIRONMENT_CHANGED;
 			case "invalid_action", "invalid_step_args", "unsupported_primitive", "unsupported_step_kind", "missing_step" -> INVALID_ACTION;
 			case "destructive_denied" -> DESTRUCTIVE_DENIED;

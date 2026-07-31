@@ -63,13 +63,40 @@ final class PortableTablePlacementPolicy {
 		return selected.stream().map(SiteObservation::target).toList();
 	}
 
-	static FailureDisposition failureDisposition(String failure) {
-		String normalized = failure == null ? "" : failure;
-		return normalized.contains("required_item_missing")
-			|| normalized.contains("interaction_busy")
-			|| normalized.contains("world_unavailable")
-			? FailureDisposition.TERMINATE
-			: FailureDisposition.RETRY_NEXT_SITE;
+	static FailureDecision decideFailure(
+		AttemptState attemptState,
+		TaskExecutionState terminalState,
+		TaskFailureCode failureCode,
+		TaskTerminationCause terminationCause,
+		String detail
+	) {
+		Objects.requireNonNull(attemptState, "attemptState");
+		FailureDisposition disposition = failureDisposition(terminalState, failureCode, terminationCause);
+		AttemptState nextState = disposition == FailureDisposition.RETRY_NEXT_SITE
+			? attemptState.advance(detail)
+			: attemptState;
+		return new FailureDecision(disposition, nextState);
+	}
+
+	static FailureDisposition failureDisposition(TaskFailureCode failureCode) {
+		return failureDisposition(TaskExecutionState.FAILED, failureCode, null);
+	}
+
+	static FailureDisposition failureDisposition(
+		TaskExecutionState terminalState,
+		TaskFailureCode failureCode,
+		TaskTerminationCause terminationCause
+	) {
+		if (terminalState == TaskExecutionState.COMPLETED && terminationCause == TaskTerminationCause.GOAL_REACHED) {
+			return FailureDisposition.RETRY_NEXT_SITE;
+		}
+		if (terminalState != TaskExecutionState.FAILED) {
+			return FailureDisposition.TERMINATE;
+		}
+		return switch (failureCode == null ? TaskFailureCode.UNKNOWN : failureCode) {
+			case TRANSIENT, MISSING_FACT, ENVIRONMENT_CHANGED, INVALID_ACTION, DESTRUCTIVE_DENIED -> FailureDisposition.RETRY_NEXT_SITE;
+			case MISSING_ITEM, BUSY, UNKNOWN, NONE -> FailureDisposition.TERMINATE;
+		};
 	}
 
 	private static long squaredDistance(GoalPosition left, GoalPosition right) {
@@ -133,6 +160,16 @@ final class PortableTablePlacementPolicy {
 				return this;
 			}
 			return new AttemptState(candidates, candidateIndex + 1, startedTick, failure);
+		}
+	}
+
+	record FailureDecision(
+		FailureDisposition disposition,
+		AttemptState nextState
+	) {
+		FailureDecision {
+			Objects.requireNonNull(disposition, "disposition");
+			Objects.requireNonNull(nextState, "nextState");
 		}
 	}
 
