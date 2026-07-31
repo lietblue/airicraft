@@ -115,21 +115,18 @@ public final class EntityInteractionTaskExecutor implements WorldTaskExecutor {
 		busyStateTicks = 0;
 
 		Selection selection = resolveSelection(client, player, request.entityInteraction().selector());
-		if (selection.failure() != null) {
-			if (completedAfterLandedAttack(request, selection.failure().detail())) {
+		if (selection.status() != EntitySelectorResolver.SelectionStatus.SELECTED) {
+			if (completedAfterLandedAttack(request, selection.status())) {
 				return complete(request, "target_died");
 			}
 			return fail(request, selection.failure());
 		}
 		Entity target = selection.entity();
 		if (target == null) {
-			if (completedAfterLandedAttack(request, "target_not_found")) {
-				return complete(request, "target_died");
-			}
-			return fail(request, TaskFailure.of(TaskFailureCode.MISSING_FACT, "target_not_found"));
+			return fail(request, selectionFailure(EntitySelectorResolver.SelectionStatus.TARGET_NOT_FOUND));
 		}
 		if (!target.isAlive()) {
-			if (completedAfterLandedAttack(request, "target_not_alive")) {
+			if (completedAfterLandedAttack(request, EntitySelectorResolver.SelectionStatus.TARGET_NOT_ALIVE)) {
 				return complete(request, "target_died");
 			}
 			return fail(request, TaskFailure.of(TaskFailureCode.MISSING_FACT, "target_not_alive"));
@@ -330,9 +327,14 @@ public final class EntityInteractionTaskExecutor implements WorldTaskExecutor {
 			player.getZ()
 		);
 		if (result.status() != EntitySelectorResolver.SelectionStatus.SELECTED || result.selected() == null) {
-			return new Selection(null, selectionFailure(result.status()));
+			return new Selection(null, result.status(), selectionFailure(result.status()));
 		}
-		return new Selection(entitiesById.get(result.selected().entityId()), null);
+		Entity selectedEntity = entitiesById.get(result.selected().entityId());
+		if (selectedEntity == null) {
+			EntitySelectorResolver.SelectionStatus status = EntitySelectorResolver.SelectionStatus.TARGET_NOT_FOUND;
+			return new Selection(null, status, selectionFailure(status));
+		}
+		return new Selection(selectedEntity, result.status(), null);
 	}
 
 	private static TaskFailure selectionFailure(EntitySelectorResolver.SelectionStatus status) {
@@ -451,12 +453,22 @@ public final class EntityInteractionTaskExecutor implements WorldTaskExecutor {
 		return type == WorldTaskType.ATTACK_ENTITY || type == WorldTaskType.USE_ENTITY;
 	}
 
-	private boolean completedAfterLandedAttack(WorldTaskRequest request, String reason) {
+	private boolean completedAfterLandedAttack(WorldTaskRequest request, EntitySelectorResolver.SelectionStatus status) {
 		return request != null
-			&& request.type() == WorldTaskType.ATTACK_ENTITY
-			&& request.entityInteraction().attackMode() == EntityAttackMode.KILL
+			&& completedAfterLandedAttack(request.type(), request.entityInteraction().attackMode(), landedAttack, status);
+	}
+
+	static boolean completedAfterLandedAttack(
+		WorldTaskType type,
+		EntityAttackMode attackMode,
+		boolean landedAttack,
+		EntitySelectorResolver.SelectionStatus status
+	) {
+		return type == WorldTaskType.ATTACK_ENTITY
+			&& attackMode == EntityAttackMode.KILL
 			&& landedAttack
-			&& ("target_not_found".equals(reason) || "target_not_alive".equals(reason));
+			&& (status == EntitySelectorResolver.SelectionStatus.TARGET_NOT_FOUND
+				|| status == EntitySelectorResolver.SelectionStatus.TARGET_NOT_ALIVE);
 	}
 
 	@Override
@@ -500,6 +512,6 @@ public final class EntityInteractionTaskExecutor implements WorldTaskExecutor {
 		chaseGoalRefreshTicks = 0;
 	}
 
-	private record Selection(Entity entity, TaskFailure failure) {
+	private record Selection(Entity entity, EntitySelectorResolver.SelectionStatus status, TaskFailure failure) {
 	}
 }

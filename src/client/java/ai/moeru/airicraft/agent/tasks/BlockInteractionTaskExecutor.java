@@ -267,18 +267,43 @@ public final class BlockInteractionTaskExecutor implements WorldTaskExecutor {
 				request,
 				target,
 				hitTarget,
-				"player_hitbox_overlaps_target supportPos=" + compactPos(hitTarget.supportPos())
+				new InteractionApproachReason(
+					InteractionApproachReason.Kind.PLAYER_HITBOX_OVERLAPS_TARGET,
+					"player_hitbox_overlaps_target supportPos=" + compactPos(hitTarget.supportPos())
+				)
 			);
 		}
 		if (!withinInteractionRange(player, hitTarget.hitVec())) {
-			return navigateTowardInteractionRange(tick, client, player, request, target, hitTarget, "target_out_of_range supportPos=" + compactPos(hitTarget.supportPos()));
+			return navigateTowardInteractionRange(
+				tick,
+				client,
+				player,
+				request,
+				target,
+				hitTarget,
+				new InteractionApproachReason(
+					InteractionApproachReason.Kind.OUT_OF_RANGE,
+					"target_out_of_range supportPos=" + compactPos(hitTarget.supportPos())
+				)
+			);
 		}
 		movementController.stop(client);
 		cameraController.lookAtNow(client, hitTarget.hitVec());
 		boolean raycastMatchesHitTarget = raycastMatchesHitTarget(client, player, hitTarget);
 		boolean shouldNavigateForMissingRaycast = shouldNavigateForMissingRaycast(request, player, hand, before, target, hitTarget, raycastMatchesHitTarget);
 		if (shouldNavigateForMissingRaycast) {
-			return navigateTowardInteractionRange(tick, client, player, request, target, hitTarget, "target_not_visible supportPos=" + compactPos(hitTarget.supportPos()));
+			return navigateTowardInteractionRange(
+				tick,
+				client,
+				player,
+				request,
+				target,
+				hitTarget,
+				new InteractionApproachReason(
+					InteractionApproachReason.Kind.TARGET_NOT_VISIBLE,
+					"target_not_visible supportPos=" + compactPos(hitTarget.supportPos())
+				)
+			);
 		}
 		clearNavigation();
 		boolean waterPlacement = waterPlacementUsesNormalInteraction(
@@ -323,7 +348,18 @@ public final class BlockInteractionTaskExecutor implements WorldTaskExecutor {
 		}
 		if (!blockResult.isAccepted() && (itemResult == null || !itemResult.isAccepted())) {
 			if (shouldNavigateForMissingRaycast) {
-				return navigateTowardInteractionRange(tick, client, player, request, target, hitTarget, "target_not_visible supportPos=" + compactPos(hitTarget.supportPos()));
+				return navigateTowardInteractionRange(
+					tick,
+					client,
+					player,
+					request,
+					target,
+					hitTarget,
+					new InteractionApproachReason(
+						InteractionApproachReason.Kind.TARGET_NOT_VISIBLE,
+						"target_not_visible supportPos=" + compactPos(hitTarget.supportPos())
+					)
+				);
 			}
 			return fail(request, targetFailure(TaskFailureCode.MISSING_FACT, target, "interaction_failed blockInteractionResult=" + blockResult
 				+ " itemInteractionResult=" + (itemResult == null ? "not_attempted" : itemResult)
@@ -469,7 +505,14 @@ public final class BlockInteractionTaskExecutor implements WorldTaskExecutor {
 		BlockState before
 	) {
 		if (!withinInteractionRange(player, Vec3d.ofCenter(target))) {
-			return navigateTowardTargetRange(tick, client, player, request, target, "target_out_of_range");
+			return navigateTowardTargetRange(
+				tick,
+				client,
+				player,
+				request,
+				target,
+				new InteractionApproachReason(InteractionApproachReason.Kind.OUT_OF_RANGE, "target_out_of_range")
+			);
 		}
 		movementController.stop(client);
 		Vec3d hitVec = Vec3d.ofCenter(target);
@@ -482,7 +525,14 @@ public final class BlockInteractionTaskExecutor implements WorldTaskExecutor {
 			RaycastContext.FluidHandling.SOURCE_ONLY
 		);
 		if (!itemFluidRaycastMatches) {
-			return navigateTowardTargetRange(tick, client, player, request, target, "fluid_target_out_of_view_reach");
+			return navigateTowardTargetRange(
+				tick,
+				client,
+				player,
+				request,
+				target,
+				new InteractionApproachReason(InteractionApproachReason.Kind.OUT_OF_RANGE, "fluid_target_out_of_view_reach")
+			);
 		}
 		clearNavigation();
 		ActionResult itemResult = client.interactionManager.interactItem(player, hand);
@@ -519,13 +569,13 @@ public final class BlockInteractionTaskExecutor implements WorldTaskExecutor {
 		WorldTaskRequest request,
 		BlockPos target,
 		HitTarget hitTarget,
-		String outOfRangeReason
+		InteractionApproachReason approachReason
 	) {
-		if (startOrContinueDirectApproach(tick, client, player, request, target, hitTarget.hitVec(), outOfRangeReason)) {
+		if (startOrContinueDirectApproach(tick, client, player, request, target, hitTarget.hitVec(), approachReason)) {
 			return Optional.empty();
 		}
 		if (baritoneFacade == null || !baritoneFacade.isLoaded()) {
-			return fail(request, targetFailure(TaskFailureCode.MISSING_FACT, target, outOfRangeReason));
+			return fail(request, targetFailure(TaskFailureCode.MISSING_FACT, target, approachReason.detail()));
 		}
 		if (!navigationStarted || navigationTargetIndex != targetIndex || !target.equals(navigationTarget)) {
 			Optional<GoalPosition> standGoal = interactionStandPosition(
@@ -544,7 +594,7 @@ public final class BlockInteractionTaskExecutor implements WorldTaskExecutor {
 				baritoneFacade.startNavigate(navigationGoal);
 			}
 			else if (request.type() == WorldTaskType.PLACE_BLOCK) {
-				return fail(request, targetFailure(TaskFailureCode.MISSING_FACT, target, outOfRangeReason
+				return fail(request, targetFailure(TaskFailureCode.MISSING_FACT, target, approachReason.detail()
 					+ " safe_stand_position_not_found attemptedStandPositions=" + attemptedPlacementStandPositions.size()));
 			}
 			else {
@@ -577,7 +627,7 @@ public final class BlockInteractionTaskExecutor implements WorldTaskExecutor {
 			return Optional.empty();
 		}
 		if (shouldFallbackToDirectApproachAfterNavigationFailure(pathEvent, player.squaredDistanceTo(hitTarget.hitVec()), movementController.snapshot().stuck())
-			&& startOrContinueDirectApproach(tick, client, player, request, target, hitTarget.hitVec(), outOfRangeReason + " navigationEvent=" + pathEvent.orElse(""))) {
+			&& startOrContinueDirectApproach(tick, client, player, request, target, hitTarget.hitVec(), approachReason.withDetail(approachReason.detail() + " navigationEvent=" + pathEvent.orElse("")))) {
 			return Optional.empty();
 		}
 		if (request.type() == WorldTaskType.PLACE_BLOCK
@@ -596,10 +646,10 @@ public final class BlockInteractionTaskExecutor implements WorldTaskExecutor {
 		}
 		if (outcome == BlockInteractionNavigationOutcome.FAILED) {
 			String suffix = pathEvent.map(event -> " navigationEvent=" + event).orElse(" navigationTimeoutTicks=" + (tick - navigationStartTick));
-			return fail(request, targetFailure(TaskFailureCode.MISSING_FACT, target, outOfRangeReason + suffix + " navigationGoal=" + compactGoal(navigationGoal)));
+			return fail(request, targetFailure(TaskFailureCode.MISSING_FACT, target, approachReason.detail() + suffix + " navigationGoal=" + compactGoal(navigationGoal)));
 		}
 		if (outcome == BlockInteractionNavigationOutcome.AT_GOAL_BUT_STILL_OUT_OF_RANGE) {
-			return fail(request, targetFailure(TaskFailureCode.MISSING_FACT, target, outOfRangeReason + " navigationEvent=" + pathEvent.orElse("AT_GOAL") + " navigationGoal=" + compactGoal(navigationGoal)));
+			return fail(request, targetFailure(TaskFailureCode.MISSING_FACT, target, approachReason.detail() + " navigationEvent=" + pathEvent.orElse("AT_GOAL") + " navigationGoal=" + compactGoal(navigationGoal)));
 		}
 		snapshot = snapshot(TaskExecutionState.RUNNING, request, "interaction_navigating targetIndex=" + targetIndex
 			+ " targetPos=" + compactPos(target)
@@ -613,13 +663,13 @@ public final class BlockInteractionTaskExecutor implements WorldTaskExecutor {
 		ClientPlayerEntity player,
 		WorldTaskRequest request,
 		BlockPos target,
-		String outOfRangeReason
+		InteractionApproachReason approachReason
 	) {
-		if (startOrContinueDirectApproach(tick, client, player, request, target, Vec3d.ofCenter(target), outOfRangeReason)) {
+		if (startOrContinueDirectApproach(tick, client, player, request, target, Vec3d.ofCenter(target), approachReason)) {
 			return Optional.empty();
 		}
 		if (baritoneFacade == null || !baritoneFacade.isLoaded()) {
-			return fail(request, targetFailure(TaskFailureCode.MISSING_FACT, target, outOfRangeReason));
+			return fail(request, targetFailure(TaskFailureCode.MISSING_FACT, target, approachReason.detail()));
 		}
 		if (!navigationStarted || navigationTargetIndex != targetIndex || !target.equals(navigationTarget)) {
 			navigationGoal = new GoalPosition(target.getX(), target.getY(), target.getZ(), false);
@@ -651,15 +701,15 @@ public final class BlockInteractionTaskExecutor implements WorldTaskExecutor {
 			return Optional.empty();
 		}
 		if (shouldFallbackToDirectApproachAfterNavigationFailure(pathEvent, player.squaredDistanceTo(Vec3d.ofCenter(target)), movementController.snapshot().stuck())
-			&& startOrContinueDirectApproach(tick, client, player, request, target, Vec3d.ofCenter(target), outOfRangeReason + " navigationEvent=" + pathEvent.orElse(""))) {
+			&& startOrContinueDirectApproach(tick, client, player, request, target, Vec3d.ofCenter(target), approachReason.withDetail(approachReason.detail() + " navigationEvent=" + pathEvent.orElse("")))) {
 			return Optional.empty();
 		}
 		if (outcome == BlockInteractionNavigationOutcome.FAILED) {
 			String suffix = pathEvent.map(event -> " navigationEvent=" + event).orElse(" navigationTimeoutTicks=" + (tick - navigationStartTick));
-			return fail(request, targetFailure(TaskFailureCode.MISSING_FACT, target, outOfRangeReason + suffix + " navigationGoal=" + compactGoal(navigationGoal)));
+			return fail(request, targetFailure(TaskFailureCode.MISSING_FACT, target, approachReason.detail() + suffix + " navigationGoal=" + compactGoal(navigationGoal)));
 		}
 		if (outcome == BlockInteractionNavigationOutcome.AT_GOAL_BUT_STILL_OUT_OF_RANGE) {
-			return fail(request, targetFailure(TaskFailureCode.MISSING_FACT, target, outOfRangeReason + " navigationEvent=" + pathEvent.orElse("AT_GOAL") + " navigationGoal=" + compactGoal(navigationGoal)));
+			return fail(request, targetFailure(TaskFailureCode.MISSING_FACT, target, approachReason.detail() + " navigationEvent=" + pathEvent.orElse("AT_GOAL") + " navigationGoal=" + compactGoal(navigationGoal)));
 		}
 		snapshot = snapshot(TaskExecutionState.RUNNING, request, "interaction_navigating targetIndex=" + targetIndex
 			+ " targetPos=" + compactPos(target)
@@ -674,7 +724,7 @@ public final class BlockInteractionTaskExecutor implements WorldTaskExecutor {
 		WorldTaskRequest request,
 		BlockPos target,
 		Vec3d aimPoint,
-		String outOfRangeReason
+		InteractionApproachReason approachReason
 	) {
 		double squaredDistance = player == null || aimPoint == null ? Double.MAX_VALUE : player.squaredDistanceTo(aimPoint);
 		boolean continuing = directApproachTargetIndex == targetIndex && target.equals(directApproachTarget);
@@ -682,7 +732,7 @@ public final class BlockInteractionTaskExecutor implements WorldTaskExecutor {
 		boolean sameTargetColumn = player != null
 			&& player.getBlockPos().getX() == target.getX()
 			&& player.getBlockPos().getZ() == target.getZ();
-		if (!allowsDirectInteractionApproach(outOfRangeReason)
+		if (!allowsDirectInteractionApproach(approachReason)
 			|| !shouldUseDirectInteractionApproach(squaredDistance, movementController.snapshot().stuck(), sameTargetColumn, elapsedTicks)) {
 			if (continuing || movementController.snapshot().stuck()) {
 				movementController.stop(client);
@@ -706,7 +756,7 @@ public final class BlockInteractionTaskExecutor implements WorldTaskExecutor {
 		movementController.moveForward(client, true, false, tick);
 		snapshot = snapshot(TaskExecutionState.RUNNING, request, "interaction_direct_approach targetIndex=" + targetIndex
 			+ " targetPos=" + compactPos(target)
-			+ " reason=" + outOfRangeReason);
+			+ " reason=" + approachReason.detail());
 		return true;
 	}
 
@@ -726,8 +776,8 @@ public final class BlockInteractionTaskExecutor implements WorldTaskExecutor {
 			&& squaredDistance <= DIRECT_INTERACTION_APPROACH_RANGE_SQUARED;
 	}
 
-	static boolean allowsDirectInteractionApproach(String reason) {
-		return reason == null || (!reason.contains("target_not_visible") && !reason.contains("player_hitbox_overlaps_target"));
+	static boolean allowsDirectInteractionApproach(InteractionApproachReason reason) {
+		return reason == null || reason.kind().allowsDirectApproach();
 	}
 
 	static boolean playerIntersectsPlacementTarget(Box playerBox, BlockPos target) {
@@ -1438,6 +1488,33 @@ public final class BlockInteractionTaskExecutor implements WorldTaskExecutor {
 		directApproachTargetIndex = -1;
 		directApproachTarget = null;
 		directApproachStartTick = 0L;
+	}
+
+	record InteractionApproachReason(Kind kind, String detail) {
+		InteractionApproachReason {
+			kind = Objects.requireNonNull(kind, "kind");
+			detail = detail == null ? "" : detail;
+		}
+
+		InteractionApproachReason withDetail(String nextDetail) {
+			return new InteractionApproachReason(kind, nextDetail);
+		}
+
+		enum Kind {
+			OUT_OF_RANGE(true),
+			TARGET_NOT_VISIBLE(false),
+			PLAYER_HITBOX_OVERLAPS_TARGET(false);
+
+			private final boolean allowsDirectApproach;
+
+			Kind(boolean allowsDirectApproach) {
+				this.allowsDirectApproach = allowsDirectApproach;
+			}
+
+			boolean allowsDirectApproach() {
+				return allowsDirectApproach;
+			}
+		}
 	}
 
 	private enum TargetMaterial {
