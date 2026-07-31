@@ -129,15 +129,19 @@ public final class PlannerToolRegistry {
 	}
 
 	public boolean isKnownTool(String toolName) {
-		return PlannerToolCatalog.isKnownTool(toolName) || providerFor(toolName).isPresent();
+		return executionMetadata(toolName).isPresent();
 	}
 
 	public boolean isReadTool(String toolName) {
-		String normalized = PlannerToolCatalog.normalizeName(toolName);
-		return PlannerToolCatalog.isReadTool(normalized)
-			|| providerFor(normalized)
-				.map(provider -> provider.isReadTool(normalized))
-				.orElse(false);
+		return executionMetadata(toolName)
+			.map(ToolExecutionMetadata::readOnly)
+			.orElse(false);
+	}
+
+	public boolean isBatchSafeReadTool(String toolName) {
+		return executionMetadata(toolName)
+			.map(ToolExecutionMetadata::batchSafeRead)
+			.orElse(false);
 	}
 
 	public ReadOnlyBatchAuthorization authorizeReadOnlyBatch(List<PlannerToolCall> toolCalls) {
@@ -146,14 +150,34 @@ public final class PlannerToolRegistry {
 		}
 		for (PlannerToolCall toolCall : toolCalls) {
 			String toolName = PlannerToolCatalog.normalizeName(toolCall == null ? null : toolCall.name());
-			if (!isKnownTool(toolName)) {
+			Optional<ToolExecutionMetadata> metadata = executionMetadata(toolName);
+			if (metadata.isEmpty()) {
 				return ReadOnlyBatchAuthorization.reject(BatchRejectionReason.UNKNOWN_TOOL, toolName);
 			}
-			if (!isReadTool(toolName)) {
-				return ReadOnlyBatchAuthorization.reject(BatchRejectionReason.NOT_READ_ONLY, toolName);
+			if (!metadata.get().readOnly() || !metadata.get().batchSafeRead()) {
+				return ReadOnlyBatchAuthorization.reject(BatchRejectionReason.NOT_BATCH_SAFE, toolName);
 			}
 		}
 		return ReadOnlyBatchAuthorization.allow();
+	}
+
+	public Optional<ToolExecutionMetadata> executionMetadata(String toolName) {
+		String normalized = PlannerToolCatalog.normalizeName(toolName);
+		if (PlannerToolCatalog.isKnownTool(normalized)) {
+			return Optional.of(new ToolExecutionMetadata(
+				normalized,
+				true,
+				PlannerToolCatalog.isReadTool(normalized),
+				PlannerToolCatalog.isBatchSafeReadTool(normalized)
+			));
+		}
+		return providerFor(normalized)
+			.map(provider -> new ToolExecutionMetadata(
+				normalized,
+				true,
+				provider.isReadTool(normalized),
+				provider.isBatchSafeReadTool(normalized)
+			));
 	}
 
 	public Optional<PlannerToolProvider> providerFor(String toolName) {
@@ -195,7 +219,18 @@ public final class PlannerToolRegistry {
 
 	public enum BatchRejectionReason {
 		UNKNOWN_TOOL,
-		NOT_READ_ONLY
+		NOT_BATCH_SAFE
+	}
+
+	public record ToolExecutionMetadata(
+		String name,
+		boolean registered,
+		boolean readOnly,
+		boolean batchSafeRead
+	) {
+		public ToolExecutionMetadata {
+			name = PlannerToolCatalog.normalizeName(name);
+		}
 	}
 
 	public record ReadOnlyBatchAuthorization(

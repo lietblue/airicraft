@@ -126,6 +126,36 @@ class PlannerToolRegistryTest {
 	}
 
 	@Test
+	void discoveryRemainsAReadToolButIsNotSafeForParallelBatching() {
+		PlannerToolRegistry registry = PlannerToolRegistry.empty();
+
+		assertTrue(registry.isReadTool(PlannerToolCatalog.DISCOVER_TOOLS));
+		assertFalse(registry.isBatchSafeReadTool(PlannerToolCatalog.DISCOVER_TOOLS));
+
+		PlannerToolRegistry.ReadOnlyBatchAuthorization authorization = registry.authorizeReadOnlyBatch(List.of(
+			call(PlannerToolCatalog.DISCOVER_TOOLS)
+		));
+
+		assertFalse(authorization.authorized());
+		assertEquals(PlannerToolRegistry.BatchRejectionReason.NOT_BATCH_SAFE, authorization.rejectionReason());
+		assertEquals(PlannerToolCatalog.DISCOVER_TOOLS, authorization.toolName());
+	}
+
+	@Test
+	void rejectsDiscoveryMixedWithAReadTool() {
+		PlannerToolRegistry registry = PlannerToolRegistry.empty();
+
+		PlannerToolRegistry.ReadOnlyBatchAuthorization authorization = registry.authorizeReadOnlyBatch(List.of(
+			call(PlannerToolCatalog.DISCOVER_TOOLS),
+			call(PlannerToolCatalog.INSPECT_INVENTORY)
+		));
+
+		assertFalse(authorization.authorized());
+		assertEquals(PlannerToolRegistry.BatchRejectionReason.NOT_BATCH_SAFE, authorization.rejectionReason());
+		assertEquals(PlannerToolCatalog.DISCOVER_TOOLS, authorization.toolName());
+	}
+
+	@Test
 	void rejectsMixedReadWriteAndUnknownBatches() {
 		PlannerToolRegistry registry = PlannerToolRegistry.of(new FlippingProvider());
 
@@ -139,7 +169,7 @@ class PlannerToolRegistryTest {
 		));
 
 		assertFalse(mixed.authorized());
-		assertEquals(PlannerToolRegistry.BatchRejectionReason.NOT_READ_ONLY, mixed.rejectionReason());
+		assertEquals(PlannerToolRegistry.BatchRejectionReason.NOT_BATCH_SAFE, mixed.rejectionReason());
 		assertEquals(PlannerToolCatalog.CRAFT_RECIPE, mixed.toolName());
 		assertFalse(unknown.authorized());
 		assertEquals(PlannerToolRegistry.BatchRejectionReason.UNKNOWN_TOOL, unknown.rejectionReason());
@@ -157,6 +187,23 @@ class PlannerToolRegistryTest {
 			absent.authorizeReadOnlyBatch(List.of(providerRead)).rejectionReason()
 		);
 		assertTrue(registered.authorizeReadOnlyBatch(List.of(providerRead)).authorized());
+	}
+
+	@Test
+	void authorizationTracksProviderBatchMetadataChanges() {
+		FlippingProvider provider = new FlippingProvider();
+		PlannerToolRegistry registry = PlannerToolRegistry.of(provider);
+		PlannerToolCall providerRead = call("search_recipes");
+
+		assertTrue(registry.executionMetadata("search_recipes").orElseThrow().batchSafeRead());
+		assertTrue(registry.authorizeReadOnlyBatch(List.of(providerRead)).authorized());
+
+		provider.batchSafe.set(false);
+
+		assertFalse(registry.executionMetadata("search_recipes").orElseThrow().batchSafeRead());
+		PlannerToolRegistry.ReadOnlyBatchAuthorization authorization = registry.authorizeReadOnlyBatch(List.of(providerRead));
+		assertFalse(authorization.authorized());
+		assertEquals(PlannerToolRegistry.BatchRejectionReason.NOT_BATCH_SAFE, authorization.rejectionReason());
 	}
 
 	private static PlannerToolCall call(String name) {
@@ -177,6 +224,7 @@ class PlannerToolRegistryTest {
 
 	private static final class FlippingProvider implements PlannerToolProvider {
 		private final AtomicBoolean available = new AtomicBoolean(true);
+		private final AtomicBoolean batchSafe = new AtomicBoolean(true);
 
 		@Override
 		public String id() {
@@ -186,6 +234,11 @@ class PlannerToolRegistryTest {
 		@Override
 		public boolean available() {
 			return available.get();
+		}
+
+		@Override
+		public boolean isBatchSafeReadTool(String toolName) {
+			return batchSafe.get() && isReadTool(toolName);
 		}
 
 		@Override

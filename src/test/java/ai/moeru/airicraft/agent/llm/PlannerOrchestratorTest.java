@@ -2284,6 +2284,34 @@ class PlannerOrchestratorTest {
 	}
 
 	@Test
+	void discoveryCannotBatchWithAReadTool() {
+		RecordingBackend backend = new RecordingBackend();
+		PlannerToolRegistry registry = PlannerToolRegistry.empty();
+		PlannerOrchestrator orchestrator = newOrchestrator(
+			backend,
+			CurrentViewVisionTool.disabled(),
+			CurrentInventoryTool.disabled(),
+			PlannerVisionMode.EXTERNAL_SUMMARY,
+			registry
+		);
+
+		JsonObject discoverArguments = new JsonObject();
+		discoverArguments.addProperty("query", "navigation");
+		orchestrator.submit(requestAt(10L, 1_000L, "Alice", "@agent inspect and discover"));
+		backend.awaitCalls(1, Duration.ofSeconds(1));
+		backend.succeed(0, PlannerResponse.toolCalls(List.of(
+			new PlannerToolCall("call_discover", PlannerToolCatalog.DISCOVER_TOOLS, discoverArguments, null, null),
+			new PlannerToolCall("call_inventory", PlannerToolCatalog.INSPECT_INVENTORY, new JsonObject(), null, null)
+		), null));
+
+		awaitBackendCallCount(orchestrator, backend, 2, Duration.ofSeconds(1));
+		assertTrue(conversationText(backend.conversation(1)).contains("only read-only tools can be batched"));
+
+		backend.succeed(1, replyOnly("I will use one tool at a time."));
+		assertTrue(awaitResult(orchestrator).succeeded());
+	}
+
+	@Test
 	void activeSafetyHoldTemporarilyExposesTheResumeControlOnTheCoreSurface() {
 		PlannerToolRegistry registry = PlannerToolRegistry.empty();
 		PlannerOrchestrator orchestrator = newOrchestrator(
