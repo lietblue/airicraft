@@ -128,10 +128,125 @@ class DialogueRuntimeTest {
 		DialogueResponse response = awaitResponse(runtime, eventBuffer, Duration.ofSeconds(1));
 
 		assertEquals("I will head back now.", response.text());
-		assertEquals("I found the cave.", runtime.pendingReplyReady(Long.MAX_VALUE).orElseThrow().text());
-		runtime.markReplyObserved();
+		assertEquals("I found the cave.", runtime.pendingReplyReady(Long.MAX_VALUE).orElseThrow().response().text());
+		PendingDialogueReply firstReply = runtime.pendingReplyReady(Long.MAX_VALUE).orElseThrow();
+		assertTrue(runtime.recordSentReply(firstReply, true));
 		assertTrue(runtime.pendingReplyReady(0L).isEmpty());
-		assertEquals("I will head back now.", runtime.pendingReplyReady(Long.MAX_VALUE).orElseThrow().text());
+		assertEquals("I will head back now.", runtime.pendingReplyReady(Long.MAX_VALUE).orElseThrow().response().text());
+		runtime.shutdown();
+	}
+
+	@Test
+	void successfulSendCommitsPlannerHistoryOnce() {
+		OpenAiCompatibleLlmBackend backend = new OpenAiCompatibleLlmBackend(AgentConfig.LlmConfig.defaults());
+		DialogueRuntime runtime = newDialogueRuntime(backend);
+		SemanticEventBuffer eventBuffer = new SemanticEventBuffer(32);
+		backend.injectMockResponse(new PlannerResponse("Visible reply.", new PlannerIntent("reply_only", null, null)));
+
+		runtime.onPlayerChat("Alice", "@agent reply", 10L, SessionSnapshot.initial(), "Alice", Optional.empty(), eventBuffer);
+		awaitResponse(runtime, eventBuffer, Duration.ofSeconds(1));
+		PendingDialogueReply pendingReply = runtime.pendingReplyReady(Long.MAX_VALUE).orElseThrow();
+
+		assertFalse(hasAgentTurn(runtime, "Visible reply."));
+		assertTrue(runtime.recordSentReply(pendingReply, true));
+		assertTrue(hasAgentTurn(runtime, "Visible reply."));
+		assertFalse(runtime.hasPendingReply());
+		runtime.shutdown();
+	}
+
+	@Test
+	void successfulSendCommitsReplyToTheNextPlannerConversation() {
+		BlockingLlmBackend backend = new BlockingLlmBackend();
+		DialogueRuntime runtime = newDialogueRuntime(backend);
+		SemanticEventBuffer eventBuffer = new SemanticEventBuffer(32);
+		backend.injectMockResponse(new PlannerResponse("Visible reply.", new PlannerIntent("reply_only", null, null)));
+
+		runtime.onPlayerChat("Alice", "@agent reply", 10L, SessionSnapshot.initial(), "Alice", Optional.empty(), eventBuffer);
+		awaitResponse(runtime, eventBuffer, Duration.ofSeconds(1));
+		recordPendingReply(runtime);
+
+		backend.injectMockResponse(new PlannerResponse("Follow-up reply.", new PlannerIntent("reply_only", null, null)));
+		runtime.onPlayerChat("Alice", "@agent follow up", 11L, SessionSnapshot.initial(), "Alice", Optional.empty(), eventBuffer);
+		backend.awaitConversationCount(2);
+
+		assertTrue(backend.conversation(1).messages().stream().anyMatch(message ->
+			"assistant".equals(message.role()) && message.content().contains("Visible reply.")
+		));
+		runtime.shutdown();
+	}
+
+	@Test
+	void failedSendDoesNotCommitPlannerHistoryOrRemoveReply() {
+		OpenAiCompatibleLlmBackend backend = new OpenAiCompatibleLlmBackend(AgentConfig.LlmConfig.defaults());
+		DialogueRuntime runtime = newDialogueRuntime(backend);
+		SemanticEventBuffer eventBuffer = new SemanticEventBuffer(32);
+		backend.injectMockResponse(new PlannerResponse("Unsent reply.", new PlannerIntent("reply_only", null, null)));
+
+		runtime.onPlayerChat("Alice", "@agent reply", 10L, SessionSnapshot.initial(), "Alice", Optional.empty(), eventBuffer);
+		awaitResponse(runtime, eventBuffer, Duration.ofSeconds(1));
+		PendingDialogueReply pendingReply = runtime.pendingReplyReady(Long.MAX_VALUE).orElseThrow();
+
+		assertFalse(runtime.recordSentReply(pendingReply, false));
+		assertFalse(hasAgentTurn(runtime, "Unsent reply."));
+		assertTrue(runtime.hasPendingReply());
+		runtime.shutdown();
+	}
+
+	@Test
+	void replacedReplyCannotCommitAfterQueueReplacement() {
+		OpenAiCompatibleLlmBackend backend = new OpenAiCompatibleLlmBackend(AgentConfig.LlmConfig.defaults());
+		DialogueRuntime runtime = newDialogueRuntime(backend);
+		SemanticEventBuffer eventBuffer = new SemanticEventBuffer(32);
+		backend.injectMockResponse(new PlannerResponse("Replaced reply.", new PlannerIntent("reply_only", null, null)));
+		backend.injectMockResponse(new PlannerResponse("Current reply.", new PlannerIntent("reply_only", null, null)));
+
+		runtime.onPlayerChat("Alice", "@agent first", 10L, SessionSnapshot.initial(), "Alice", Optional.empty(), eventBuffer);
+		awaitResponse(runtime, eventBuffer, Duration.ofSeconds(1));
+		PendingDialogueReply replacedReply = runtime.pendingReplyReady(Long.MAX_VALUE).orElseThrow();
+
+		runtime.onPlayerChat("Alice", "@agent second", 11L, SessionSnapshot.initial(), "Alice", Optional.empty(), eventBuffer);
+		awaitResponse(runtime, eventBuffer, Duration.ofSeconds(1));
+		PendingDialogueReply currentReply = runtime.pendingReplyReady(Long.MAX_VALUE).orElseThrow();
+
+		assertFalse(runtime.recordSentReply(replacedReply, true));
+		assertFalse(hasAgentTurn(runtime, "Replaced reply."));
+		assertTrue(runtime.recordSentReply(currentReply, true));
+		assertTrue(hasAgentTurn(runtime, "Current reply."));
+		runtime.shutdown();
+	}
+
+	@Test
+	void resetDropsUnsentReplyWithoutCommittingPlannerHistory() {
+		OpenAiCompatibleLlmBackend backend = new OpenAiCompatibleLlmBackend(AgentConfig.LlmConfig.defaults());
+		DialogueRuntime runtime = newDialogueRuntime(backend);
+		SemanticEventBuffer eventBuffer = new SemanticEventBuffer(32);
+		backend.injectMockResponse(new PlannerResponse("Cleared reply.", new PlannerIntent("reply_only", null, null)));
+
+		runtime.onPlayerChat("Alice", "@agent reply", 10L, SessionSnapshot.initial(), "Alice", Optional.empty(), eventBuffer);
+		awaitResponse(runtime, eventBuffer, Duration.ofSeconds(1));
+		PendingDialogueReply unsentReply = runtime.pendingReplyReady(Long.MAX_VALUE).orElseThrow();
+
+		assertTrue(runtime.handleResetCommand("Alice", "@agent reset", 11L, eventBuffer));
+		assertFalse(runtime.pendingReplyReady(Long.MAX_VALUE).stream().anyMatch(reply -> "Cleared reply.".equals(reply.response().text())));
+		assertFalse(runtime.recordSentReply(unsentReply, true));
+		assertFalse(hasAgentTurn(runtime, "Cleared reply."));
+		runtime.shutdown();
+	}
+
+	@Test
+	void duplicateSendCallbackCommitsReplyExactlyOnce() {
+		OpenAiCompatibleLlmBackend backend = new OpenAiCompatibleLlmBackend(AgentConfig.LlmConfig.defaults());
+		DialogueRuntime runtime = newDialogueRuntime(backend);
+		SemanticEventBuffer eventBuffer = new SemanticEventBuffer(32);
+		backend.injectMockResponse(new PlannerResponse("One visible reply.", new PlannerIntent("reply_only", null, null)));
+
+		runtime.onPlayerChat("Alice", "@agent reply", 10L, SessionSnapshot.initial(), "Alice", Optional.empty(), eventBuffer);
+		awaitResponse(runtime, eventBuffer, Duration.ofSeconds(1));
+		PendingDialogueReply pendingReply = runtime.pendingReplyReady(Long.MAX_VALUE).orElseThrow();
+
+		assertTrue(runtime.recordSentReply(pendingReply, true));
+		assertFalse(runtime.recordSentReply(pendingReply, true));
+		assertEquals(1, agentTurnCount(runtime, "One visible reply."));
 		runtime.shutdown();
 	}
 
@@ -353,7 +468,7 @@ class DialogueRuntimeTest {
 		}
 
 		long sinceSeqNo = eventBuffer.latestSeqNo();
-		runtime.markReplyObserved();
+		recordPendingReply(runtime);
 		runtime.onPlayerChat("Alice", "@agent are you alive?", 50L, SessionSnapshot.initial(), "Alice", Optional.empty(), eventBuffer);
 
 		assertTrue(eventBuffer.containsTypeSince(sinceSeqNo, "planner.degraded_blocked"));
@@ -375,7 +490,7 @@ class DialogueRuntimeTest {
 		runtime.onPlayerChat("Alice", "@agent status", 10L, SessionSnapshot.initial(), "Alice", Optional.empty(), eventBuffer);
 		DialogueResponse response = awaitResponse(runtime, eventBuffer, Duration.ofSeconds(1));
 		assertEquals("Still working on it.", response.text());
-		runtime.markReplyObserved();
+		recordPendingReply(runtime);
 
 		backend.injectTimeout();
 		runtime.onPlayerChat("Alice", "@agent status?", 11L, SessionSnapshot.initial(), "Alice", Optional.empty(), eventBuffer);
@@ -777,6 +892,21 @@ class DialogueRuntimeTest {
 			message.text().contains("[From {1*jungle_log} to 4*jungle_planks]: jungle_log_to_jungle_planks")
 		));
 		runtime.shutdown();
+	}
+
+	private static void recordPendingReply(DialogueRuntime runtime) {
+		assertTrue(runtime.recordSentReply(runtime.pendingReplyReady(Long.MAX_VALUE).orElseThrow(), true));
+	}
+
+	private static boolean hasAgentTurn(DialogueRuntime runtime, String text) {
+		return agentTurnCount(runtime, text) > 0;
+	}
+
+	private static int agentTurnCount(DialogueRuntime runtime, String text) {
+		return (int) runtime.snapshot().recentTurns().stream()
+			.filter(turn -> DialogueSpeakerLabels.AGENT.equals(turn.speaker()))
+			.filter(turn -> text.equals(turn.text()))
+			.count();
 	}
 
 	private static DialogueResponse awaitResponse(DialogueRuntime runtime, SemanticEventBuffer eventBuffer, Duration timeout) {

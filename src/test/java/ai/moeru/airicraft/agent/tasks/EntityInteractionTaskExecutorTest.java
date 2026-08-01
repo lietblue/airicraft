@@ -41,4 +41,26 @@ class EntityInteractionTaskExecutorTest {
 		assertEquals(EntityAttackMode.KILL, EntityAttackMode.fromWireValue("kill"));
 		assertEquals(EntityAttackMode.HIT_ONCE, EntityAttackMode.fromWireValue("hit_once"));
 	}
+
+	@Test
+	void killCompletionUsesTypedSelectionStatus() {
+		assertTrue(EntityInteractionTaskExecutor.completedAfterLandedAttack(
+			WorldTaskType.ATTACK_ENTITY,
+			EntityAttackMode.KILL,
+			true,
+			EntitySelectorResolver.SelectionStatus.TARGET_NOT_FOUND
+		));
+		assertTrue(EntityInteractionTaskExecutor.completedAfterLandedAttack(
+			WorldTaskType.ATTACK_ENTITY,
+			EntityAttackMode.KILL,
+			true,
+			EntitySelectorResolver.SelectionStatus.TARGET_NOT_ALIVE
+		));
+		assertFalse(EntityInteractionTaskExecutor.completedAfterLandedAttack(
+			WorldTaskType.ATTACK_ENTITY,
+			EntityAttackMode.KILL,
+			true,
+			EntitySelectorResolver.SelectionStatus.TARGET_NOT_NEARBY
+		));
+	}
 }

@@ -129,6 +129,7 @@ class ActionsetLibraryLoaderTest {
 
 		assertTrue(result.valid(), () -> result.diagnostics().toString());
 		assertTrue(result.index().contains("make_bread"));
+		assertTrue(result.index().contains("obtain_wheat"));
 	}
 
 	private static void writeActionset(Path path, String yaml) throws IOException {

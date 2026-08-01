@@ -144,6 +144,7 @@ public final class ActionGraphDebugService {
 		payload.put("version", metadata.version());
 		payload.put("summary", metadata.summary());
 		payload.put("cost", metadata.cost());
+		payload.put("role", metadata.role().name());
 		payload.put("foregroundActuation", metadata.foregroundActuation());
 		payload.put("cancellable", metadata.cancellable());
 		payload.put("defaultTimeoutTicks", metadata.defaultTimeoutTicks());

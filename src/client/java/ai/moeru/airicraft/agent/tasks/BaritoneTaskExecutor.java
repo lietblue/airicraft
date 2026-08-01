@@ -264,7 +264,8 @@ public final class BaritoneTaskExecutor implements WorldTaskExecutor {
 			appliedTask.goal(),
 			terminalOutcome.get().state(),
 			messageFor(terminalOutcome.get().state()),
-			terminalOutcome.get().cause()
+			terminalOutcome.get().cause(),
+			terminalOutcome.get().failureCode()
 		));
 	}
 
@@ -591,7 +592,8 @@ public final class BaritoneTaskExecutor implements WorldTaskExecutor {
 			request.goal(),
 			TaskExecutionState.FAILED,
 			message,
-			null
+			null,
+			TaskFailureCode.UNKNOWN
 		));
 	}
 
@@ -619,7 +621,8 @@ public final class BaritoneTaskExecutor implements WorldTaskExecutor {
 			request.goal(),
 			TaskExecutionState.FAILED,
 			message,
-			null
+			null,
+			TaskFailureCode.UNKNOWN
 		));
 	}
 
@@ -631,10 +634,10 @@ public final class BaritoneTaskExecutor implements WorldTaskExecutor {
 		return switch (normalized) {
 			case "AT_GOAL" -> mineProcessOwnsPathEvent(pathEvent, activeTask)
 				? Optional.empty()
-				: Optional.of(new TerminalOutcome(TaskExecutionState.COMPLETED, TaskTerminationCause.GOAL_REACHED));
+				: Optional.of(new TerminalOutcome(TaskExecutionState.COMPLETED, TaskTerminationCause.GOAL_REACHED, TaskFailureCode.NONE));
 			case "CALC_FAILED" -> mineProcessOwnsPathEvent(pathEvent, activeTask)
 				? Optional.empty()
-				: Optional.of(new TerminalOutcome(TaskExecutionState.FAILED, TaskTerminationCause.CALCULATION_FAILED));
+				: Optional.of(new TerminalOutcome(TaskExecutionState.FAILED, TaskTerminationCause.CALCULATION_FAILED, TaskFailureCode.TRANSIENT));
 			case "CANCELLED", "CANCELED" -> mineProcessOwnsPathEvent(pathEvent, activeTask)
 				? Optional.empty()
 				: Optional.of(cancelledOutcomeFor(activeTask));
@@ -792,7 +795,8 @@ public final class BaritoneTaskExecutor implements WorldTaskExecutor {
 			activeTask.goal(),
 			outcome.state(),
 			messageFor(outcome.state()),
-			outcome.cause()
+			outcome.cause(),
+			outcome.failureCode()
 		));
 	}
 
@@ -803,11 +807,12 @@ public final class BaritoneTaskExecutor implements WorldTaskExecutor {
 				&& activeTask.goal() != null
 				&& activeTask.goal().type() == GoalType.MINE_BLOCKS
 		) {
-			return new TerminalOutcome(TaskExecutionState.COMPLETED, TaskTerminationCause.GOAL_REACHED);
+			return new TerminalOutcome(TaskExecutionState.COMPLETED, TaskTerminationCause.GOAL_REACHED, TaskFailureCode.NONE);
 		}
 		return new TerminalOutcome(
 			cancelledStateFor(activeTask == null ? null : activeTask.goal()),
-			TaskTerminationCause.BARITONE_CANCELLED
+			TaskTerminationCause.BARITONE_CANCELLED,
+			TaskFailureCode.NONE
 		);
 	}
 
@@ -826,7 +831,7 @@ public final class BaritoneTaskExecutor implements WorldTaskExecutor {
 		terminalEventTaskId = activeTask.taskId();
 		terminalEventState = TaskExecutionState.FAILED;
 		terminalEventCause = null;
-		return MineDropPickupResult.withEvent(new TaskTerminalEvent(activeTask.taskId(), activeTask.goal(), TaskExecutionState.FAILED, message, null));
+		return MineDropPickupResult.withEvent(new TaskTerminalEvent(activeTask.taskId(), activeTask.goal(), TaskExecutionState.FAILED, message, null, TaskFailureCode.UNKNOWN));
 	}
 
 	private static List<MineDropTarget> matchingMineDropsNearby(MinecraftClient client, WorldTaskRequest request) {
@@ -1040,6 +1045,6 @@ public final class BaritoneTaskExecutor implements WorldTaskExecutor {
 		}
 	}
 
-	private record TerminalOutcome(TaskExecutionState state, TaskTerminationCause cause) {
+	private record TerminalOutcome(TaskExecutionState state, TaskTerminationCause cause, TaskFailureCode failureCode) {
 	}
 }

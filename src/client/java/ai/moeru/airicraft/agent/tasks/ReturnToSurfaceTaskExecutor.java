@@ -83,7 +83,7 @@ public final class ReturnToSurfaceTaskExecutor implements WorldTaskExecutor {
 		MinecraftClient client = clientSupplier.get();
 		ClientPlayerEntity player = client == null ? null : client.player;
 		if (client == null || client.world == null || client.interactionManager == null || player == null) {
-			return fail(request, "world_unavailable");
+			return fail(request, TaskFailure.of(TaskFailureCode.UNKNOWN, "world_unavailable"));
 		}
 		ReturnToSurfaceStepArgs args = request.returnToSurface();
 		if (isSurfaceReached(client, player)) {
@@ -115,12 +115,12 @@ public final class ReturnToSurfaceTaskExecutor implements WorldTaskExecutor {
 		if (args.targetPosition() == null) {
 			return args.useTowering()
 				? tickTowering(request, client, player, args)
-				: fail(request, "surface_target_unavailable");
+				: fail(request, TaskFailure.of(TaskFailureCode.MISSING_FACT, "surface_target_unavailable"));
 		}
 		if (baritoneFacade == null || !baritoneFacade.isLoaded()) {
 			return args.useTowering()
 				? tickTowering(request, client, player, args)
-				: fail(request, "baritone_unavailable");
+					: fail(request, TaskFailure.of(TaskFailureCode.UNKNOWN, "baritone_unavailable"));
 		}
 		if (!navigationStarted) {
 			baritoneFacade.startNavigateNear(args.targetPosition(), NAVIGATION_RADIUS_BLOCKS);
@@ -141,7 +141,7 @@ public final class ReturnToSurfaceTaskExecutor implements WorldTaskExecutor {
 			if ("CALC_FAILED".equalsIgnoreCase(event) || "CANCELLED".equalsIgnoreCase(event) || "CANCELED".equalsIgnoreCase(event)) {
 				return args.useTowering()
 					? tickTowering(request, client, player, args)
-					: fail(request, "surface_path_" + event.toLowerCase(java.util.Locale.ROOT));
+					: fail(request, TaskFailure.of(TaskFailureCode.TRANSIENT, "surface_path_" + event.toLowerCase(java.util.Locale.ROOT)));
 			}
 		}
 		snapshot = snapshot(
@@ -228,7 +228,7 @@ public final class ReturnToSurfaceTaskExecutor implements WorldTaskExecutor {
 			case COMPLETE -> complete(request, "surface_target_reached");
 			case NAVIGATE_EXACT -> startExactSurfaceNavigation(request, args.targetPosition());
 			case TOWER -> tickTowering(request, client, player, args);
-			case FAIL -> fail(request, "surface_target_not_surface");
+			case FAIL -> fail(request, TaskFailure.of(TaskFailureCode.MISSING_FACT, "surface_target_not_surface"));
 		};
 	}
 
@@ -265,23 +265,23 @@ public final class ReturnToSurfaceTaskExecutor implements WorldTaskExecutor {
 			return complete(request, "surface_reached_by_towering");
 		}
 		if (shouldStopToweringAtSurfaceTargetElevation(args, player.getBlockY())) {
-			return fail(request, "surface_target_elevation_reached_not_surface");
+			return fail(request, TaskFailure.of(TaskFailureCode.MISSING_FACT, "surface_target_elevation_reached_not_surface"));
 		}
 		if (player.getBlockY() - towerStartY > MAX_TOWER_BLOCKS) {
-			return fail(request, "tower_limit_reached");
+			return fail(request, TaskFailure.of(TaskFailureCode.UNKNOWN, "tower_limit_reached"));
 		}
 		Optional<HeadroomClearance> headroomClearance = clearTowerHeadroom(client, player);
 		if (headroomClearance.isPresent()) {
 			HeadroomClearance clearance = headroomClearance.get();
 			if (clearance.failed()) {
-				return fail(request, clearance.event());
+				return fail(request, clearance.failure());
 			}
 			snapshot = snapshot(TaskExecutionState.RUNNING, request, clearance.event());
 			return Optional.empty();
 		}
 		Hand hand = selectFillerHand(client, player, args.fillerBlockIds());
 		if (hand == null) {
-			return fail(request, "missing_filler_block fillerBlockIds=" + args.fillerBlockIds());
+			return fail(request, TaskFailure.of(TaskFailureCode.MISSING_FACT, "missing_filler_block fillerBlockIds=" + args.fillerBlockIds()));
 		}
 		client.options.jumpKey.setPressed(true);
 		PlacementAttempt placement = placeUnderFoot(client, player, hand);
@@ -303,12 +303,15 @@ public final class ReturnToSurfaceTaskExecutor implements WorldTaskExecutor {
 		}
 		if (!client.world.isChunkLoaded(target)) {
 			clearHeadroomBreakState(client);
-			return Optional.of(new HeadroomClearance("towering:headroom_unloaded", true));
+			return Optional.of(new HeadroomClearance(
+				"towering:headroom_unloaded", true,
+				TaskFailure.of(TaskFailureCode.ENVIRONMENT_CHANGED, "towering:headroom_unloaded")
+			));
 		}
 		BlockState state = client.world.getBlockState(target);
 		if (!shouldClearTowerHeadroom(!state.isAir(), state.isReplaceable(), !state.getFluidState().isEmpty())) {
 			clearHeadroomBreakState(client);
-			return Optional.of(new HeadroomClearance("towering:headroom_cleared", false));
+			return Optional.of(new HeadroomClearance("towering:headroom_cleared", false, null));
 		}
 		long tick = client.world.getTime();
 		if (headroomBreakTarget == null || !headroomBreakTarget.equals(target)) {
@@ -316,14 +319,20 @@ public final class ReturnToSurfaceTaskExecutor implements WorldTaskExecutor {
 			selectHotbarHeadroomTool(client, player);
 			boolean accepted = client.interactionManager.attackBlock(target, Direction.DOWN);
 			if (!accepted) {
-				return Optional.of(new HeadroomClearance("towering:headroom_break_start_failed", true));
+				return Optional.of(new HeadroomClearance(
+					"towering:headroom_break_start_failed", true,
+					TaskFailure.of(TaskFailureCode.UNKNOWN, "towering:headroom_break_start_failed")
+				));
 			}
 			headroomBreakTarget = target;
 			headroomBreakStartTick = tick;
 		}
 		if (tick - headroomBreakStartTick > HEADROOM_BREAK_TIMEOUT_TICKS) {
 			clearHeadroomBreakState(client);
-			return Optional.of(new HeadroomClearance("towering:headroom_break_timeout", true));
+			return Optional.of(new HeadroomClearance(
+				"towering:headroom_break_timeout", true,
+				TaskFailure.of(TaskFailureCode.TRANSIENT, "towering:headroom_break_timeout")
+			));
 		}
 		client.options.jumpKey.setPressed(false);
 		selectHotbarHeadroomTool(client, player);
@@ -332,9 +341,9 @@ public final class ReturnToSurfaceTaskExecutor implements WorldTaskExecutor {
 		BlockState after = client.world.isChunkLoaded(target) ? client.world.getBlockState(target) : state;
 		if (!shouldClearTowerHeadroom(!after.isAir(), after.isReplaceable(), !after.getFluidState().isEmpty())) {
 			clearHeadroomBreakState(client);
-			return Optional.of(new HeadroomClearance("towering:headroom_cleared", false));
+			return Optional.of(new HeadroomClearance("towering:headroom_cleared", false, null));
 		}
-		return Optional.of(new HeadroomClearance("towering:clearing_headroom", false));
+		return Optional.of(new HeadroomClearance("towering:clearing_headroom", false, null));
 	}
 
 	private static boolean selectHotbarHeadroomTool(MinecraftClient client, ClientPlayerEntity player) {
@@ -628,15 +637,15 @@ public final class ReturnToSurfaceTaskExecutor implements WorldTaskExecutor {
 		return Optional.of(new TaskTerminalEvent(request.taskId(), null, TaskExecutionState.COMPLETED, message, TaskTerminationCause.GOAL_REACHED));
 	}
 
-	private Optional<TaskTerminalEvent> fail(WorldTaskRequest request, String reason) {
+	private Optional<TaskTerminalEvent> fail(WorldTaskRequest request, TaskFailure failure) {
 		cancelNavigationIfStarted();
 		releaseMovementControls();
-		snapshot = snapshot(TaskExecutionState.FAILED, request, reason);
+		snapshot = snapshot(TaskExecutionState.FAILED, request, failure.detail());
 		if (terminalEventEmitted) {
 			return Optional.empty();
 		}
 		terminalEventEmitted = true;
-		return Optional.of(new TaskTerminalEvent(request.taskId(), null, TaskExecutionState.FAILED, reason, null));
+		return Optional.of(new TaskTerminalEvent(request.taskId(), null, TaskExecutionState.FAILED, failure.detail(), null, failure.code()));
 	}
 
 	private void cancelNavigationIfStarted() {
@@ -702,7 +711,7 @@ public final class ReturnToSurfaceTaskExecutor implements WorldTaskExecutor {
 	private record PlacementAttempt(boolean accepted, String reason) {
 	}
 
-	private record HeadroomClearance(String event, boolean failed) {
+	private record HeadroomClearance(String event, boolean failed, TaskFailure failure) {
 	}
 
 	public record UnderwaterRecoveryKeys(boolean forward, boolean sprint, boolean left, boolean right, boolean back) {

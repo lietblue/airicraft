@@ -15,6 +15,7 @@ class PrimitiveActionRegistryTest {
 
 		assertEquals("craft_item", craftItem.id());
 		assertEquals(1, craftItem.version());
+		assertEquals(PrimitiveActionRole.FOREGROUND_EXECUTABLE, craftItem.role());
 		assertTrue(craftItem.foregroundActuation());
 		assertTrue(craftItem.cancellable());
 		assertTrue(craftItem.capabilityTags().contains("crafting"));
@@ -39,5 +40,7 @@ class PrimitiveActionRegistryTest {
 		assertTrue(registry.contains("clear_farm_site"));
 		assertTrue(registry.contains("craft_item"));
 		assertTrue(registry.contains("wait_for_fact"));
+		assertEquals(10, registry.executable().size());
+		assertEquals(PrimitiveActionRole.RESERVED, registry.require("place_block").role());
 	}
 }

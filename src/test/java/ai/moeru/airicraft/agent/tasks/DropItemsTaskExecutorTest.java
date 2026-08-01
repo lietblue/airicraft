@@ -5,6 +5,8 @@ import ai.moeru.airicraft.agent.session.SessionSnapshot;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.Map;
+import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -54,6 +56,22 @@ class DropItemsTaskExecutorTest {
 
 		assertFalse(DropItemsTaskExecutor.itemDropActuationAllowed(snapshot(SessionMode.OUT_OF_WORLD, false)));
 		assertFalse(DropItemsTaskExecutor.itemDropActuationAllowed(snapshot(SessionMode.SINGLEPLAYER_LOCAL, false)));
+	}
+
+	@Test
+	void attributesOnlyTheIncreaseWhenADroppedEntityMergesWithAnExistingStack() {
+		assertEquals(2, DropItemsTaskExecutor.agentAttributedQuantity(10, 4, Map.of(10, 2)));
+		assertEquals(0, DropItemsTaskExecutor.agentAttributedQuantity(10, 2, Map.of(10, 2)));
+		assertEquals(3, DropItemsTaskExecutor.agentAttributedQuantity(11, 3, Map.of()));
+	}
+
+	@Test
+	void doesNotReuseABaselineWhenTheIntegerIdGetsANewUuid() {
+		PlayerItemDeliveryPolicy.EntityGeneration oldGeneration = new PlayerItemDeliveryPolicy.EntityGeneration(10, UUID.fromString("00000000-0000-0000-0000-000000000001"));
+		PlayerItemDeliveryPolicy.EntityGeneration newGeneration = new PlayerItemDeliveryPolicy.EntityGeneration(10, UUID.fromString("00000000-0000-0000-0000-000000000002"));
+
+		assertEquals(0, DropItemsTaskExecutor.agentAttributedQuantity(oldGeneration, 2, Map.of(oldGeneration, 2)));
+		assertEquals(3, DropItemsTaskExecutor.agentAttributedQuantity(newGeneration, 3, Map.of(oldGeneration, 2)));
 	}
 
 	private static SessionSnapshot snapshot(SessionMode mode, boolean worldLoaded) {

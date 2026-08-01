@@ -5,6 +5,7 @@ import ai.moeru.airicraft.agent.session.SessionSnapshot;
 
 import java.util.Objects;
 import java.util.Optional;
+import java.util.UUID;
 
 public final class DispatchingWorldTaskExecutor implements WorldTaskExecutor {
 	private final WorldTaskExecutor baritoneExecutor;
@@ -224,6 +225,19 @@ public final class DispatchingWorldTaskExecutor implements WorldTaskExecutor {
 		blockInteractionExecutor.tick(sessionSnapshot, Optional.empty());
 		blockBreakExecutor.tick(sessionSnapshot, Optional.empty());
 		return baritoneExecutor.tick(sessionSnapshot, activeTask);
+	}
+
+	@Override
+	public void onPlayerItemPickupObserved(
+		int entityId,
+		UUID entityUuid,
+		String itemId,
+		int pickupDelta,
+		int agentAttributedQuantity,
+		UUID collectorIdentity,
+		UUID observationId
+	) {
+		dropItemsExecutor.onPlayerItemPickupObserved(entityId, entityUuid, itemId, pickupDelta, agentAttributedQuantity, collectorIdentity, observationId);
 	}
 
 	private static boolean isEntityInteractionType(WorldTaskType type) {

@@ -71,6 +71,7 @@ import ai.moeru.airicraft.agent.tasks.TaskLedger;
 import ai.moeru.airicraft.agent.tasks.TaskExecutionSnapshot;
 import ai.moeru.airicraft.agent.tasks.TaskExecutionState;
 import ai.moeru.airicraft.agent.tasks.TaskResourceKind;
+import ai.moeru.airicraft.agent.tasks.TaskSnapshot;
 import ai.moeru.airicraft.agent.tasks.TaskSpec;
 import ai.moeru.airicraft.agent.tasks.TaskState;
 import ai.moeru.airicraft.agent.tasks.TaskTerminationCause;
@@ -92,12 +93,15 @@ import java.lang.reflect.Field;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.time.Duration;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
@@ -197,6 +201,18 @@ class EmbodiedAgentRuntimeTest {
 		Field snapshotField = SurvivalReflexRuntime.class.getDeclaredField("snapshot");
 		snapshotField.setAccessible(true);
 		snapshotField.set(reflexRuntime, snapshot);
+	}
+
+	private static void setTaskExecutionSnapshot(EmbodiedAgentRuntime runtime, TaskExecutionSnapshot snapshot) throws Exception {
+		Field field = EmbodiedAgentRuntime.class.getDeclaredField("taskExecutionSnapshot");
+		field.setAccessible(true);
+		field.set(runtime, snapshot);
+	}
+
+	private static void setTaskSnapshot(EmbodiedAgentRuntime runtime, TaskSnapshot snapshot) throws Exception {
+		Field field = EmbodiedAgentRuntime.class.getDeclaredField("taskSnapshot");
+		field.setAccessible(true);
+		field.set(runtime, snapshot);
 	}
 
 	private static SurvivalReflexSnapshot reflexSnapshot(
@@ -1617,6 +1633,102 @@ class EmbodiedAgentRuntimeTest {
 	}
 
 	@Test
+	void worldLeaveCompletesPendingBlockModificationToolResult() {
+		FakeWorldTaskExecutor executor = new FakeWorldTaskExecutor();
+		EmbodiedAgentRuntime runtime = EmbodiedAgentRuntime.createForTests(executor);
+		runtime.overrideSessionSnapshotForTests(loadedRemoteSession());
+
+		CompletableFuture<String> resultFuture = startPendingUseBlock(runtime, executor, 1);
+		runtime.onWorldLeave();
+		String result = resultFuture.join();
+
+		assertTrue(result.contains("cancelled reason=world_left"), result);
+		runtime.onWorldLeave();
+		assertEquals(result, resultFuture.join());
+	}
+
+	@Test
+	void shutdownCompletesPendingBlockModificationToolResult() {
+		FakeWorldTaskExecutor executor = new FakeWorldTaskExecutor();
+		EmbodiedAgentRuntime runtime = EmbodiedAgentRuntime.createForTests(executor);
+		runtime.overrideSessionSnapshotForTests(loadedRemoteSession());
+
+		CompletableFuture<String> resultFuture = startPendingUseBlock(runtime, executor, 1);
+		runtime.shutdown();
+
+		assertTrue(resultFuture.join().contains("cancelled reason=runtime_shutdown"));
+	}
+
+	@Test
+	void finishEvaluationCompletesPendingBlockModificationToolResult() {
+		FakeWorldTaskExecutor executor = new FakeWorldTaskExecutor();
+		EmbodiedAgentRuntime runtime = EmbodiedAgentRuntime.createForTests(executor);
+		runtime.overrideSessionSnapshotForTests(loadedRemoteSession());
+
+		CompletableFuture<String> resultFuture = startPendingUseBlock(runtime, executor, 1);
+		runtime.finishEvaluation();
+
+		assertTrue(resultFuture.join().contains("cancelled reason=evaluation_finished"));
+	}
+
+	@Test
+	void plannerResetCompletesPendingBlockModificationToolResult() {
+		FakeWorldTaskExecutor executor = new FakeWorldTaskExecutor();
+		EmbodiedAgentRuntime runtime = EmbodiedAgentRuntime.createForTests(executor);
+		runtime.overrideSessionSnapshotForTests(loadedRemoteSession());
+
+		CompletableFuture<String> resultFuture = startPendingUseBlock(runtime, executor, 1);
+		runtime.onChatReceived("Alice", "@agent reset");
+
+		assertTrue(resultFuture.join().contains("cancelled reason=planner_reset"));
+	}
+
+	@Test
+	void replacementCompletesOnlyTheOldBlockModificationToolResult() throws Exception {
+		FakeWorldTaskExecutor executor = new FakeWorldTaskExecutor();
+		EmbodiedAgentRuntime runtime = EmbodiedAgentRuntime.createForTests(executor);
+		runtime.overrideSessionSnapshotForTests(loadedRemoteSession());
+
+		CompletableFuture<String> firstResult = startPendingUseBlock(runtime, executor, 1);
+		WorldTaskRequest firstRequest = executor.lastActiveTask.orElseThrow();
+		activeJobRuntime(runtime).clear();
+		setTaskSnapshot(runtime, TaskSnapshot.idle());
+		setTaskExecutionSnapshot(runtime, TaskExecutionSnapshot.idle());
+		runtime.recordWorldReadForTests(new BlockPos(2, 65, 2));
+		CompletableFuture<String> secondResult = assertTimeoutPreemptively(
+			Duration.ofSeconds(1),
+			() -> runtime.executePlannerToolCallFutureForTests(useBlockToolCall("call_use_block_2", 2))
+		);
+
+		assertTrue(firstResult.isDone(), "secondResult=" + (secondResult.isDone() ? secondResult.getNow("<missing>") : "pending"));
+		String firstToolResult = firstResult.getNow("<missing>");
+		assertTrue(firstToolResult.contains("cancelled reason=superseded"), firstToolResult);
+		assertFalse(secondResult.isDone());
+		assertTimeoutPreemptively(Duration.ofSeconds(1), () -> runtime.onClientTick(null));
+
+		executor.nextTerminalEvent = Optional.of(new TaskTerminalEvent(
+			firstRequest.taskId(),
+			firstRequest.goal(),
+			TaskExecutionState.COMPLETED,
+			"stale first result",
+			null
+		));
+		assertTimeoutPreemptively(Duration.ofSeconds(1), () -> runtime.onClientTick(null));
+		assertFalse(secondResult.isDone());
+
+		WorldTaskRequest currentRequestAfterStaleEvent = executor.lastActiveTask.orElseThrow();
+		executor.nextTerminalEvent = Optional.of(new TaskTerminalEvent(
+			currentRequestAfterStaleEvent.taskId(),
+			currentRequestAfterStaleEvent.goal(),
+			TaskExecutionState.COMPLETED,
+			"second result",
+			null
+		));
+		assertTimeoutPreemptively(Duration.ofSeconds(1), () -> runtime.onClientTick(null));
+		assertTrue(secondResult.get(1, TimeUnit.SECONDS).contains("second result"));
+	}
+
+	@Test
 	void batchedBlockModificationToolInspectsInsteadOfQueuingUnreadTarget() {
 		FakeWorldTaskExecutor executor = new FakeWorldTaskExecutor();
 		EmbodiedAgentRuntime runtime = EmbodiedAgentRuntime.createForTests(executor);
@@ -1733,6 +1845,125 @@ class EmbodiedAgentRuntimeTest {
 		runtime.onClientTick(null);
 
 		assertTrue(resultFuture.join().contains("completed"));
+		assertEquals(request.taskId(), runtime.taskSnapshot().taskId());
+	}
+
+	@Test
+	void blockModificationFallbackAcceptsMatchingTerminalSnapshotWhenEventIsMissing() {
+		FakeWorldTaskExecutor executor = new FakeWorldTaskExecutor();
+		EmbodiedAgentRuntime runtime = EmbodiedAgentRuntime.createForTests(executor);
+		runtime.overrideSessionSnapshotForTests(loadedRemoteSession());
+
+		CompletableFuture<String> resultFuture = startPendingUseBlock(runtime, executor, 1);
+		WorldTaskRequest request = executor.lastActiveTask.orElseThrow();
+		executor.forcedSnapshot = new TaskExecutionSnapshot(
+			TaskExecutionState.COMPLETED,
+			request.taskId(),
+			null,
+			"BlockInteraction",
+			"placed without event",
+			null,
+			null
+		);
+
+		runtime.onClientTick(null);
+		assertFalse(resultFuture.isDone());
+		runtime.onClientTick(null);
+
+		assertTrue(resultFuture.join().contains("completed"));
+	}
+
+	@Test
+	void blockModificationFallbackRejectsWrongTaskWithTheSameStepKind() {
+		FakeWorldTaskExecutor executor = new FakeWorldTaskExecutor();
+		EmbodiedAgentRuntime runtime = EmbodiedAgentRuntime.createForTests(executor);
+		runtime.overrideSessionSnapshotForTests(loadedRemoteSession());
+
+		CompletableFuture<String> resultFuture = startPendingUseBlock(runtime, executor, 1);
+		WorldTaskRequest request = executor.lastActiveTask.orElseThrow();
+		executor.forcedSnapshot = new TaskExecutionSnapshot(
+			TaskExecutionState.COMPLETED,
+			"different-use-block-task",
+			null,
+			"BlockInteraction",
+			"stale completion",
+			null,
+			null
+		);
+
+		runtime.onClientTick(null);
+		runtime.onClientTick(null);
+
+		assertFalse(resultFuture.isDone());
+		assertEquals(request.taskId(), executor.lastActiveTask.orElseThrow().taskId());
+	}
+
+	@Test
+	void blockModificationFallbackRejectsAStalePriorTaskSnapshotAfterReplacement() throws Exception {
+		FakeWorldTaskExecutor executor = new FakeWorldTaskExecutor();
+		EmbodiedAgentRuntime runtime = EmbodiedAgentRuntime.createForTests(executor);
+		runtime.overrideSessionSnapshotForTests(loadedRemoteSession());
+
+		CompletableFuture<String> firstResult = startPendingUseBlock(runtime, executor, 1);
+		activeJobRuntime(runtime).clear();
+		setTaskSnapshot(runtime, TaskSnapshot.idle());
+		setTaskExecutionSnapshot(runtime, TaskExecutionSnapshot.idle());
+		runtime.recordWorldReadForTests(new BlockPos(2, 65, 2));
+		CompletableFuture<String> secondResult = runtime.executePlannerToolCallFutureForTests(useBlockToolCall("call_use_block_2", 2));
+		runtime.onClientTick(null);
+		WorldTaskRequest secondRequest = executor.lastActiveTask.orElseThrow();
+
+		executor.forcedSnapshot = new TaskExecutionSnapshot(
+			TaskExecutionState.COMPLETED,
+			"stale-first-task",
+			null,
+			"BlockInteraction",
+			"stale completion",
+			null,
+			null
+		);
+		assertTrue(firstResult.isDone());
+		runtime.onClientTick(null);
+		runtime.onClientTick(null);
+
+		assertFalse(secondResult.isDone());
+	}
+
+	@Test
+	void blockModificationTerminalEventAndSnapshotCompleteOnlyOnce() {
+		FakeWorldTaskExecutor executor = new FakeWorldTaskExecutor();
+		EmbodiedAgentRuntime runtime = EmbodiedAgentRuntime.createForTests(executor);
+		runtime.overrideSessionSnapshotForTests(loadedRemoteSession());
+
+		CompletableFuture<String> resultFuture = startPendingUseBlock(runtime, executor, 1);
+		WorldTaskRequest request = executor.lastActiveTask.orElseThrow();
+		executor.nextTerminalEvent = Optional.of(new TaskTerminalEvent(
+			request.taskId(),
+			null,
+			TaskExecutionState.COMPLETED,
+			"event completion",
+			null
+		));
+		runtime.onClientTick(null);
+		String result = resultFuture.join();
+		runtime.onClientTick(null);
+
+		assertTrue(result.contains("event completion"));
+		assertEquals(result, resultFuture.join());
+	}
+
+	@Test
+	void blockModificationToolTimesOutWithoutTerminalEvidence() {
+		FakeWorldTaskExecutor executor = new FakeWorldTaskExecutor();
+		EmbodiedAgentRuntime runtime = EmbodiedAgentRuntime.createForTests(executor);
+		runtime.overrideSessionSnapshotForTests(loadedRemoteSession());
+
+		CompletableFuture<String> resultFuture = startPendingUseBlock(runtime, executor, 1);
+		for (int tick = 0; tick < EmbodiedAgentRuntime.BLOCK_MODIFICATION_TOOL_RESULT_TIMEOUT_TICKS; tick++) {
+			runtime.onClientTick(null);
+		}
+
+		assertTrue(resultFuture.join().contains("pending_timeout"));
 	}
 
 	@Test
@@ -1871,6 +2102,117 @@ class EmbodiedAgentRuntimeTest {
 		assertTrue(result.contains("completed"));
 		assertTrue(result.contains("state=COMPLETED"));
 		assertFalse(result.contains("accepted queued"));
+	}
+
+	@Test
+	void craftSnapshotFallbackAcceptsMatchingTaskIdentity() throws Exception {
+		FakeWorldTaskExecutor executor = new FakeWorldTaskExecutor();
+		EmbodiedAgentRuntime runtime = EmbodiedAgentRuntime.createForTests(executor);
+		runtime.overrideSessionSnapshotForTests(loadedRemoteSession());
+
+		CompletableFuture<String> resultFuture = runtime.executePlannerToolCallFutureForTests(craftRecipeToolCall());
+		WorldTaskRequest request = runtimeTaskRequest(runtime, executor);
+
+		invokeCraftSnapshotFallback(runtime, terminalCraftSnapshot(request.taskId()));
+
+		assertTrue(resultFuture.join().contains("completed"));
+	}
+
+	@Test
+	void craftSnapshotFallbackRejectsWrongTaskWithTheSameStepKind() throws Exception {
+		FakeWorldTaskExecutor executor = new FakeWorldTaskExecutor();
+		EmbodiedAgentRuntime runtime = EmbodiedAgentRuntime.createForTests(executor);
+		runtime.overrideSessionSnapshotForTests(loadedRemoteSession());
+
+		CompletableFuture<String> resultFuture = runtime.executePlannerToolCallFutureForTests(craftRecipeToolCall());
+		WorldTaskRequest request = runtimeTaskRequest(runtime, executor);
+
+		invokeCraftSnapshotFallback(runtime, terminalCraftSnapshot("different-craft-task"));
+
+		assertFalse(resultFuture.isDone());
+		assertEquals(request.taskId(), executor.lastActiveTask.orElseThrow().taskId());
+	}
+
+	@Test
+	void craftSnapshotFallbackRejectsCompatibilitySnapshotWithoutTaskIdentity() throws Exception {
+		FakeWorldTaskExecutor executor = new FakeWorldTaskExecutor();
+		EmbodiedAgentRuntime runtime = EmbodiedAgentRuntime.createForTests(executor);
+		runtime.overrideSessionSnapshotForTests(loadedRemoteSession());
+
+		CompletableFuture<String> resultFuture = runtime.executePlannerToolCallFutureForTests(craftRecipeToolCall());
+		runtimeTaskRequest(runtime, executor);
+
+		invokeCraftSnapshotFallback(runtime, new TaskSnapshot(
+			TaskState.COMPLETED,
+			null,
+			null,
+			null,
+			null,
+			null,
+			null,
+			null,
+			null,
+			null,
+			LedgerStepKind.CRAFT_RECIPE,
+			null,
+			1L
+		));
+
+		assertFalse(resultFuture.isDone());
+	}
+
+	@Test
+	void craftSnapshotFallbackRejectsStalePriorTaskAfterReplacement() throws Exception {
+		FakeWorldTaskExecutor executor = new FakeWorldTaskExecutor();
+		EmbodiedAgentRuntime runtime = EmbodiedAgentRuntime.createForTests(executor);
+		runtime.overrideSessionSnapshotForTests(loadedRemoteSession());
+
+		CompletableFuture<String> firstResult = runtime.executePlannerToolCallFutureForTests(craftRecipeToolCall());
+		WorldTaskRequest firstRequest = runtimeTaskRequest(runtime, executor);
+		activeJobRuntime(runtime).clear();
+		setTaskSnapshot(runtime, TaskSnapshot.idle());
+		setTaskExecutionSnapshot(runtime, TaskExecutionSnapshot.idle());
+
+		CompletableFuture<String> secondResult = runtime.executePlannerToolCallFutureForTests(craftRecipeToolCall());
+		WorldTaskRequest secondRequest = runtimeTaskRequest(runtime, executor);
+
+		assertTrue(firstResult.join().contains("superseded"));
+		invokeCraftSnapshotFallback(runtime, terminalCraftSnapshot(firstRequest.taskId()));
+		assertFalse(secondResult.isDone());
+		invokeCraftSnapshotFallback(runtime, terminalCraftSnapshot(secondRequest.taskId()));
+		assertTrue(secondResult.join().contains("completed"));
+	}
+
+	@Test
+	void craftTerminalEventAndSnapshotCompleteOnlyOnce() throws Exception {
+		FakeWorldTaskExecutor executor = new FakeWorldTaskExecutor();
+		EmbodiedAgentRuntime runtime = EmbodiedAgentRuntime.createForTests(executor);
+		runtime.overrideSessionSnapshotForTests(loadedRemoteSession());
+
+		CompletableFuture<String> resultFuture = runtime.executePlannerToolCallFutureForTests(craftRecipeToolCall());
+		WorldTaskRequest request = runtimeTaskRequest(runtime, executor);
+		invokeCraftTerminalEvent(runtime, new TaskTerminalEvent(
+			request.taskId(),
+			null,
+			TaskExecutionState.COMPLETED,
+			"terminal event",
+			null
+		));
+		invokeCraftSnapshotFallback(runtime, terminalCraftSnapshot(request.taskId()));
+
+		assertTrue(resultFuture.join().contains("message=terminal event"));
+	}
+
+	@Test
+	void plannerResetCancelsPendingCraftToolResult() {
+		FakeWorldTaskExecutor executor = new FakeWorldTaskExecutor();
+		EmbodiedAgentRuntime runtime = EmbodiedAgentRuntime.createForTests(executor);
+		runtime.overrideSessionSnapshotForTests(loadedRemoteSession());
+
+		CompletableFuture<String> resultFuture = runtime.executePlannerToolCallFutureForTests(craftRecipeToolCall());
+		runtime.onChatReceived("Alice", "@agent reset");
+
+		assertTrue(resultFuture.join().contains("cancelled reason=planner_reset"));
 	}
 
 	@Test
@@ -2799,6 +3141,42 @@ class EmbodiedAgentRuntimeTest {
 		}
 	}
 
+	private static WorldTaskRequest runtimeTaskRequest(EmbodiedAgentRuntime runtime, FakeWorldTaskExecutor executor) {
+		runtime.onClientTick(null);
+		return executor.lastActiveTask.orElseThrow();
+	}
+
+	private static TaskSnapshot terminalCraftSnapshot(String taskId) {
+		return new TaskSnapshot(
+			TaskState.COMPLETED,
+			null,
+			null,
+			null,
+			null,
+			null,
+			null,
+			null,
+			null,
+			null,
+			LedgerStepKind.CRAFT_RECIPE,
+			null,
+			1L,
+			taskId
+		);
+	}
+
+	private static void invokeCraftSnapshotFallback(EmbodiedAgentRuntime runtime, TaskSnapshot snapshot) throws Exception {
+		var method = EmbodiedAgentRuntime.class.getDeclaredMethod("completePendingCraftToolResultFromTaskSnapshot", TaskSnapshot.class);
+		method.setAccessible(true);
+		method.invoke(runtime, snapshot);
+	}
+
+	private static void invokeCraftTerminalEvent(EmbodiedAgentRuntime runtime, TaskTerminalEvent event) throws Exception {
+		var method = EmbodiedAgentRuntime.class.getDeclaredMethod("completePendingCraftToolResult", TaskTerminalEvent.class);
+		method.setAccessible(true);
+		method.invoke(runtime, event);
+	}
+
 	private static PlannerToolCall craftRecipeToolCall() {
 		return new PlannerToolCall(
 			"call_craft",
@@ -2806,6 +3184,31 @@ class EmbodiedAgentRuntimeTest {
 			JsonParser.parseString("""
 				{"recipeId":"oak_planks_x2_to_stick","times":1}
 				""").getAsJsonObject(),
+			null,
+			null
+		);
+	}
+
+	private static CompletableFuture<String> startPendingUseBlock(
+		EmbodiedAgentRuntime runtime,
+		FakeWorldTaskExecutor executor,
+		int x
+	) {
+		runtime.recordWorldReadForTests(new BlockPos(x, 65, 2));
+		CompletableFuture<String> resultFuture = runtime.executePlannerToolCallFutureForTests(useBlockToolCall("call_use_block_" + x, x));
+		assertFalse(resultFuture.isDone());
+		runtime.onClientTick(null);
+		assertEquals(WorldTaskType.USE_BLOCK, executor.lastActiveTask.orElseThrow().type());
+		return resultFuture;
+	}
+
+	private static PlannerToolCall useBlockToolCall(String callId, int x) {
+		return new PlannerToolCall(
+			callId,
+			"use_block",
+			JsonParser.parseString("""
+				{"itemId":"minecraft:wheat_seeds","x":%d,"y":65,"z":2,"expectedSupportBlockIds":["minecraft:farmland"],"expectedTargetMaterial":"air"}
+				""".formatted(x)).getAsJsonObject(),
 			null,
 			null
 		);

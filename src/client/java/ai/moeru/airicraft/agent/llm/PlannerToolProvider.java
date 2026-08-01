@@ -25,6 +25,10 @@ public interface PlannerToolProvider {
 		return true;
 	}
 
+	default boolean isBatchSafeReadTool(String toolName) {
+		return isReadTool(toolName);
+	}
+
 	default void validateArguments(String toolName, JsonObject arguments) {
 	}
 

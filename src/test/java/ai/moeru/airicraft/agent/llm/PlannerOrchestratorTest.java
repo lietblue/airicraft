@@ -1861,6 +1861,41 @@ class PlannerOrchestratorTest {
 	}
 
 	@Test
+	void multipleRegisteredProviderReadsExecuteInOrderWithoutRepair() {
+		RecordingBackend backend = new RecordingBackend();
+		BatchReadProvider provider = new BatchReadProvider();
+		PlannerOrchestrator orchestrator = newOrchestrator(
+			backend,
+			CurrentViewVisionTool.disabled(),
+			CurrentInventoryTool.disabled(),
+			PlannerVisionMode.EXTERNAL_SUMMARY,
+			PlannerToolRegistry.of(provider)
+		);
+
+		orchestrator.submit(requestAt(10L, 1_000L, "Alice", "@agent inspect recipes"));
+		backend.awaitCalls(1, Duration.ofSeconds(1));
+		backend.succeed(0, PlannerResponse.toolCalls(List.of(
+			new PlannerToolCall("call_search", "search_recipes", new JsonObject(), null, null),
+			new PlannerToolCall("call_uses", "find_recipe_uses", new JsonObject(), null, null)
+		), null));
+
+		awaitBackendCallCount(orchestrator, backend, 2, Duration.ofSeconds(1));
+		assertEquals(List.of("search_recipes", "find_recipe_uses"), provider.executedTools());
+		LlmConversation followUp = backend.conversation(1);
+		assertTrue(followUp.messages().stream()
+			.anyMatch(message -> "tool".equals(message.role())
+				&& "call_search".equals(message.toolCallId())
+				&& message.content().contains("recipes")));
+		assertTrue(followUp.messages().stream()
+			.anyMatch(message -> "tool".equals(message.role())
+				&& "call_uses".equals(message.toolCallId())
+				&& message.content().contains("uses")));
+
+		backend.succeed(1, replyOnly("Recipe data is ready."));
+		assertTrue(awaitResult(orchestrator).succeeded());
+	}
+
+	@Test
 	void inspectWorldCanBatchWithTextReadTools() {
 		RecordingBackend backend = new RecordingBackend();
 		StubInventoryTool inventoryTool = new StubInventoryTool(
@@ -1963,7 +1998,7 @@ class PlannerOrchestratorTest {
 		PlannerExecutionResult result = awaitResult(orchestrator);
 		assertFalse(result.succeeded());
 		assertEquals(LlmFailureType.PARSE_ERROR, result.failureType());
-		assertTrue(result.failureMessage().contains("only read-only text tools can be batched"));
+		assertTrue(result.failureMessage().contains("only read-only tools can be batched"));
 		assertEquals(3, result.attempt());
 		assertTrue(invokedTools.isEmpty());
 	}
@@ -2101,7 +2136,7 @@ class PlannerOrchestratorTest {
 	}
 
 	@Test
-	void multipleToolCallBatchRejectsVisualToolBeforeExecution() {
+	void multipleToolCallBatchAllowsRegisteredVisualReadBeforeExecution() {
 		RecordingBackend backend = new RecordingBackend();
 		StubInventoryTool inventoryTool = new StubInventoryTool(
 			"Tool result for inspect_inventory: itemCounts={minecraft:oak_log=2}",
@@ -2125,31 +2160,13 @@ class PlannerOrchestratorTest {
 			new PlannerToolCall("call_look", "take_a_look", lookArgs, null, null)
 		), null));
 		awaitBackendCallCount(orchestrator, backend, 2, Duration.ofSeconds(1));
-		assertTrue(
-			conversationText(backend.conversation(1)).contains("TOOL CALL FORMAT REMINDER"),
-			conversationText(backend.conversation(1))
-		);
-		backend.succeed(1, new PlannerResponse("", List.of(
-			new PlannerToolCall("call_inventory_retry", "inspect_inventory", inventoryArgs, null, null),
-			new PlannerToolCall("call_look_retry", "take_a_look", lookArgs, null, null)
-		), null));
-		awaitBackendCallCount(orchestrator, backend, 3, Duration.ofSeconds(1));
-		assertTrue(
-			conversationText(backend.conversation(2)).contains("TOOL CALL FORMAT REMINDER"),
-			conversationText(backend.conversation(2))
-		);
-		backend.succeed(2, new PlannerResponse("", List.of(
-			new PlannerToolCall("call_inventory_second_retry", "inspect_inventory", inventoryArgs, null, null),
-			new PlannerToolCall("call_look_second_retry", "take_a_look", lookArgs, null, null)
-		), null));
+		assertEquals(1, inventoryTool.inventoryRequestCount());
+		assertTrue(conversationText(backend.conversation(1)).contains("VISION_UNAVAILABLE"));
+		backend.succeed(1, replyOnly("I inspected the available state."));
 
 		PlannerExecutionResult result = awaitResult(orchestrator);
 
-		assertFalse(result.succeeded());
-		assertEquals(LlmFailureType.PARSE_ERROR, result.failureType());
-		assertTrue(result.failureMessage().contains("multiple tools"));
-		assertEquals(3, result.attempt());
-		assertEquals(0, inventoryTool.inventoryRequestCount());
+		assertTrue(result.succeeded());
 	}
 
 	@Test
@@ -2264,6 +2281,34 @@ class PlannerOrchestratorTest {
 
 		assertTrue(result.succeeded());
 		assertEquals(List.of(PlannerToolCatalog.NAVIGATE_TO), invokedTools);
+	}
+
+	@Test
+	void discoveryCannotBatchWithAReadTool() {
+		RecordingBackend backend = new RecordingBackend();
+		PlannerToolRegistry registry = PlannerToolRegistry.empty();
+		PlannerOrchestrator orchestrator = newOrchestrator(
+			backend,
+			CurrentViewVisionTool.disabled(),
+			CurrentInventoryTool.disabled(),
+			PlannerVisionMode.EXTERNAL_SUMMARY,
+			registry
+		);
+
+		JsonObject discoverArguments = new JsonObject();
+		discoverArguments.addProperty("query", "navigation");
+		orchestrator.submit(requestAt(10L, 1_000L, "Alice", "@agent inspect and discover"));
+		backend.awaitCalls(1, Duration.ofSeconds(1));
+		backend.succeed(0, PlannerResponse.toolCalls(List.of(
+			new PlannerToolCall("call_discover", PlannerToolCatalog.DISCOVER_TOOLS, discoverArguments, null, null),
+			new PlannerToolCall("call_inventory", PlannerToolCatalog.INSPECT_INVENTORY, new JsonObject(), null, null)
+		), null));
+
+		awaitBackendCallCount(orchestrator, backend, 2, Duration.ofSeconds(1));
+		assertTrue(conversationText(backend.conversation(1)).contains("only read-only tools can be batched"));
+
+		backend.succeed(1, replyOnly("I will use one tool at a time."));
+		assertTrue(awaitResult(orchestrator).succeeded());
 	}
 
 	@Test
@@ -3141,6 +3186,44 @@ class PlannerOrchestratorTest {
 
 	private static FirstPersonScreenshotService.CapturedScreenshot capturedScreenshot() {
 		return new FirstPersonScreenshotService.CapturedScreenshot("png", 854, 480, 1920, 1080, 1L, new byte[]{1, 2, 3});
+	}
+
+	private static final class BatchReadProvider implements PlannerToolProvider {
+		private final List<String> executedTools = new ArrayList<>();
+
+		@Override
+		public String id() {
+			return "batch_reads";
+		}
+
+		@Override
+		public List<Map<String, Object>> openAiTools() {
+			return List.of(
+				PlannerToolCatalog.toolForProvider("search_recipes", "Search recipes.", Map.of(), List.of()),
+				PlannerToolCatalog.toolForProvider("find_recipe_uses", "Find recipe uses.", Map.of(), List.of())
+			);
+		}
+
+		@Override
+		public boolean handles(String toolName) {
+			String normalized = PlannerToolCatalog.normalizeName(toolName);
+			return "search_recipes".equals(normalized) || "find_recipe_uses".equals(normalized);
+		}
+
+		@Override
+		public boolean isReadTool(String toolName) {
+			return handles(toolName);
+		}
+
+		@Override
+		public CompletableFuture<String> execute(PlannerToolCall toolCall) {
+			executedTools.add(toolCall.name());
+			return CompletableFuture.completedFuture("Tool result for " + toolCall.name() + ": ok");
+		}
+
+		private List<String> executedTools() {
+			return List.copyOf(executedTools);
+		}
 	}
 
 	private static final class RecordingPlannerToolProvider implements PlannerToolProvider {

@@ -22,6 +22,8 @@ import java.util.Map;
 import java.util.Objects;
 
 public final class ActionGraphPrimitiveMapper {
+	private static final PrimitiveActionRegistry PRIMITIVES = PrimitiveActionRegistry.defaults();
+
 	private ActionGraphPrimitiveMapper() {
 	}
 
@@ -40,6 +42,14 @@ public final class ActionGraphPrimitiveMapper {
 		if (step.kind() != ActionStepKind.PRIMITIVE) {
 			return ActionGraphPrimitiveDispatch.failed("unsupported_step_kind", "Only primitive steps can be dispatched", step);
 		}
+		PrimitiveActionMetadata metadata = PRIMITIVES.find(step.targetId());
+		if (metadata == null || !metadata.executable()) {
+			return ActionGraphPrimitiveDispatch.failed(
+				"unsupported_primitive",
+				"Primitive \"" + step.targetId() + "\" is not executable by the action graph debug dispatcher",
+				step
+			);
+		}
 		return switch (step.targetId()) {
 			case "collect_resource" -> collectResource(step);
 			case "craft_item" -> craftItem(step, craftingOpportunities);
@@ -51,11 +61,7 @@ public final class ActionGraphPrimitiveMapper {
 			case "plant_crop" -> plantCrop(step);
 			case "hydrate_farmland" -> hydrateFarmland(step);
 			case "clear_farm_site" -> clearFarmSite(step);
-			default -> ActionGraphPrimitiveDispatch.failed(
-				"unsupported_primitive",
-				"Primitive \"" + step.targetId() + "\" is not executable by the action graph debug dispatcher",
-				step
-			);
+			default -> ActionGraphPrimitiveDispatch.failed("unsupported_primitive", "Primitive \"" + step.targetId() + "\" has no mapper handler", step);
 		};
 	}
 

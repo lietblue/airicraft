@@ -620,7 +620,8 @@ public final class ActiveJobRuntime {
 			compatibilityLedger == null ? activeStepId() : compatibilityLedger.activeStepId(),
 			compatibilityActiveStepKind(),
 			lastStepResult(),
-			activeJob.updatedTick()
+			activeJob.updatedTick(),
+			activeJob.jobId()
 		);
 	}
 
@@ -829,7 +830,8 @@ public final class ActiveJobRuntime {
 			event.goal(),
 			event.terminalState(),
 			message,
-			event.terminationCause()
+			event.terminationCause(),
+			event.failureCode()
 		);
 	}
 
@@ -842,7 +844,8 @@ public final class ActiveJobRuntime {
 			event.goal(),
 			TaskExecutionState.COMPLETED,
 			"Goal reached",
-			TaskTerminationCause.GOAL_REACHED
+			TaskTerminationCause.GOAL_REACHED,
+			ai.moeru.airicraft.agent.tasks.TaskFailureCode.NONE
 		);
 	}
 

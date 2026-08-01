@@ -908,12 +908,18 @@ public final class PlannerOrchestrator {
 				);
 			}
 		}
-		if (toolCalls.size() > 1 && !canBatchToolCalls(toolCalls)) {
+		PlannerToolRegistry.ReadOnlyBatchAuthorization batchAuthorization = toolRegistry.authorizeReadOnlyBatch(toolCalls);
+		if (toolCalls.size() > 1 && !batchAuthorization.authorized()) {
 			Airicraft.LOGGER.warn(
-				"Planner returned unsupported multi-tool batch names={}",
-				toolCallNames(toolCalls)
+				"Planner returned unsupported multi-tool batch names={} reason={} rejectedTool={}",
+				toolCallNames(toolCalls),
+				batchAuthorization.rejectionReason(),
+				batchAuthorization.toolName()
 			);
-			return rejectToolRequest(plannerResult, "Planner requested multiple tools; only read-only text tools can be batched");
+			String message = batchAuthorization.rejectionReason() == PlannerToolRegistry.BatchRejectionReason.UNKNOWN_TOOL
+				? "Planner requested an invalid tool: " + batchAuthorization.toolName()
+				: "Planner requested multiple tools; only read-only tools can be batched";
+			return rejectToolRequest(plannerResult, message);
 		}
 
 		String toolIntentType = toolIntentType(plannerResult.response());
@@ -1864,25 +1870,6 @@ public final class PlannerOrchestrator {
 			case VISUAL_TOOL_NAME -> visionMode == PlannerVisionMode.NATIVE_TOOL_IMAGE || !toolPrompt(toolCall).isBlank();
 			default -> true;
 			};
-	}
-
-	private boolean isBatchSafeTextToolCalls(List<PlannerToolCall> toolCalls) {
-		return toolCalls.stream().allMatch(toolCall -> {
-			String name = normalizedToolName(toolCall);
-			return !VISUAL_TOOL_NAME.equals(name) && !"take_map_look".equals(name) && toolRegistry.isReadTool(name);
-		});
-	}
-
-	private static boolean canBatchToolCalls(List<PlannerToolCall> toolCalls) {
-		return toolCalls != null && toolCalls.stream().allMatch(PlannerOrchestrator::isBatchableTextReadTool);
-	}
-
-	private static boolean isBatchableTextReadTool(PlannerToolCall toolCall) {
-		String name = normalizedToolName(toolCall);
-		return switch (name) {
-			case WORLD_TOOL_NAME, INVENTORY_TOOL_NAME, CRAFTABLES_TOOL_NAME, NEARBY_ENTITIES_TOOL_NAME -> true;
-			default -> false;
-		};
 	}
 
 	private String discoverToolsResult(PlannerToolCall toolCall) {

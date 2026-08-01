@@ -43,6 +43,48 @@ class BlockInteractionTaskExecutorTest {
 	}
 
 	@Test
+	void waterPlacementUsesOnlyClientInteractionInputsAndNeedsNoIntegratedServer() {
+		assertTrue(BlockInteractionTaskExecutor.waterPlacementUsesNormalInteraction(
+			"minecraft:water_bucket",
+			"minecraft:air",
+			true
+		));
+		assertFalse(BlockInteractionTaskExecutor.waterPlacementUsesNormalInteraction(
+			"minecraft:bucket",
+			"minecraft:air",
+			true
+		));
+	}
+
+	@Test
+	void waterPlacementConfirmationRequiresWorldAndInventoryChanges() {
+		assertEquals(
+			BlockInteractionTaskExecutor.InteractionConfirmationOutcome.CONFIRMED,
+			BlockInteractionTaskExecutor.waterPlacementConfirmationOutcome(true, 1, 0, 0, 1, 0)
+		);
+		assertEquals(
+			BlockInteractionTaskExecutor.InteractionConfirmationOutcome.WAIT,
+			BlockInteractionTaskExecutor.waterPlacementConfirmationOutcome(true, 1, 1, 0, 0, 20)
+		);
+		assertEquals(
+			BlockInteractionTaskExecutor.InteractionConfirmationOutcome.WAIT,
+			BlockInteractionTaskExecutor.waterPlacementConfirmationOutcome(false, 1, 0, 0, 1, 20)
+		);
+	}
+
+	@Test
+	void waterPlacementConfirmationFailsAfterTimeoutWithoutServerConfirmation() {
+		assertEquals(
+			BlockInteractionTaskExecutor.InteractionConfirmationOutcome.FAILED,
+			BlockInteractionTaskExecutor.waterPlacementConfirmationOutcome(true, 1, 1, 0, 0, 21)
+		);
+		assertEquals(
+			BlockInteractionTaskExecutor.InteractionConfirmationOutcome.FAILED,
+			BlockInteractionTaskExecutor.waterPlacementConfirmationOutcome(false, 1, 0, 0, 1, 21)
+		);
+	}
+
+	@Test
 	void useBlockInteractionModeChoosesFluidItemUseForFluidTargets() {
 		assertEquals(
 			BlockInteractionTaskExecutor.UseBlockInteractionMode.FLUID_ITEM_USE,
@@ -128,7 +170,18 @@ class BlockInteractionTaskExecutorTest {
 	void directInteractionApproachHandlesNearbyOutOfReachTargets() {
 		assertTrue(BlockInteractionTaskExecutor.shouldUseDirectInteractionApproach(81.0D, false));
 		assertTrue(BlockInteractionTaskExecutor.shouldUseDirectInteractionApproach(100.0D, false));
-		assertTrue(BlockInteractionTaskExecutor.allowsDirectInteractionApproach("target_out_of_range supportPos=1,64,1"));
+		assertTrue(BlockInteractionTaskExecutor.allowsDirectInteractionApproach(
+			new BlockInteractionTaskExecutor.InteractionApproachReason(
+				BlockInteractionTaskExecutor.InteractionApproachReason.Kind.OUT_OF_RANGE,
+				"target_out_of_range supportPos=1,64,1"
+			)
+		));
+		assertTrue(BlockInteractionTaskExecutor.allowsDirectInteractionApproach(
+			new BlockInteractionTaskExecutor.InteractionApproachReason(
+				BlockInteractionTaskExecutor.InteractionApproachReason.Kind.OUT_OF_RANGE,
+				"fluid_target_out_of_view_reach"
+			)
+		));
 	}
 
 	@Test
@@ -146,13 +199,46 @@ class BlockInteractionTaskExecutorTest {
 
 	@Test
 	void directInteractionApproachDefersWhenTargetIsNotVisible() {
-		assertFalse(BlockInteractionTaskExecutor.allowsDirectInteractionApproach("target_not_visible supportPos=1,64,1"));
-		assertFalse(BlockInteractionTaskExecutor.allowsDirectInteractionApproach("target_not_visible supportPos=1,64,1 navigationEvent=CANCELED"));
+		assertFalse(BlockInteractionTaskExecutor.allowsDirectInteractionApproach(
+			new BlockInteractionTaskExecutor.InteractionApproachReason(
+				BlockInteractionTaskExecutor.InteractionApproachReason.Kind.TARGET_NOT_VISIBLE,
+				"target_not_visible supportPos=1,64,1"
+			)
+		));
 	}
 
 	@Test
 	void directInteractionApproachDefersWhenPlayerOverlapsPlacementTarget() {
-		assertFalse(BlockInteractionTaskExecutor.allowsDirectInteractionApproach("player_hitbox_overlaps_target supportPos=1,64,1"));
+		assertFalse(BlockInteractionTaskExecutor.allowsDirectInteractionApproach(
+			new BlockInteractionTaskExecutor.InteractionApproachReason(
+				BlockInteractionTaskExecutor.InteractionApproachReason.Kind.PLAYER_HITBOX_OVERLAPS_TARGET,
+				"player_hitbox_overlaps_target supportPos=1,64,1"
+			)
+		));
+	}
+
+	@Test
+	void directInteractionDecisionDoesNotDependOnHumanReadableReasonDetail() {
+		assertEquals(
+			BlockInteractionTaskExecutor.allowsDirectInteractionApproach(new BlockInteractionTaskExecutor.InteractionApproachReason(
+				BlockInteractionTaskExecutor.InteractionApproachReason.Kind.TARGET_NOT_VISIBLE,
+				"target_not_visible supportPos=1,64,1"
+			)),
+			BlockInteractionTaskExecutor.allowsDirectInteractionApproach(new BlockInteractionTaskExecutor.InteractionApproachReason(
+				BlockInteractionTaskExecutor.InteractionApproachReason.Kind.TARGET_NOT_VISIBLE,
+				"visibility changed after the camera moved"
+			))
+		);
+		assertEquals(
+			BlockInteractionTaskExecutor.allowsDirectInteractionApproach(new BlockInteractionTaskExecutor.InteractionApproachReason(
+				BlockInteractionTaskExecutor.InteractionApproachReason.Kind.PLAYER_HITBOX_OVERLAPS_TARGET,
+				"player_hitbox_overlaps_target supportPos=1,64,1"
+			)),
+			BlockInteractionTaskExecutor.allowsDirectInteractionApproach(new BlockInteractionTaskExecutor.InteractionApproachReason(
+				BlockInteractionTaskExecutor.InteractionApproachReason.Kind.PLAYER_HITBOX_OVERLAPS_TARGET,
+				"placement target overlaps the player body"
+			))
+		);
 	}
 
 	@Test

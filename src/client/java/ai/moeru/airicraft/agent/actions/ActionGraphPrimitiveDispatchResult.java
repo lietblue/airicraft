@@ -1,5 +1,7 @@
 package ai.moeru.airicraft.agent.actions;
 
+import ai.moeru.airicraft.agent.tasks.TaskFailureCode;
+
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -7,7 +9,7 @@ import java.util.Map;
 public record ActionGraphPrimitiveDispatchResult(
 	boolean accepted,
 	String taskId,
-	String failureCode,
+	TaskFailureCode failureCode,
 	String message,
 	Map<String, Object> payload,
 	Map<String, Object> task,
@@ -15,7 +17,7 @@ public record ActionGraphPrimitiveDispatchResult(
 ) {
 	public ActionGraphPrimitiveDispatchResult {
 		taskId = taskId == null ? "" : taskId.trim();
-		failureCode = failureCode == null ? "" : failureCode.trim();
+		failureCode = failureCode == null ? TaskFailureCode.UNKNOWN : failureCode;
 		message = message == null ? "" : message.trim();
 		payload = payload == null || payload.isEmpty()
 			? Map.of()
@@ -38,10 +40,14 @@ public record ActionGraphPrimitiveDispatchResult(
 		Map<String, Object> task,
 		Map<String, Object> taskExecution
 	) {
-		return new ActionGraphPrimitiveDispatchResult(true, taskId, "", "", payload, task, taskExecution);
+		return new ActionGraphPrimitiveDispatchResult(true, taskId, TaskFailureCode.NONE, "", payload, task, taskExecution);
 	}
 
 	public static ActionGraphPrimitiveDispatchResult failed(String failureCode, String message, Map<String, Object> payload) {
+		return failed(TaskFailureCode.fromLegacyCode(failureCode), message, payload);
+	}
+
+	public static ActionGraphPrimitiveDispatchResult failed(TaskFailureCode failureCode, String message, Map<String, Object> payload) {
 		return new ActionGraphPrimitiveDispatchResult(false, "", failureCode, message, payload, Map.of(), Map.of());
 	}
 }

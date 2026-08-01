@@ -18,9 +18,21 @@ import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class ActionGraphPrimitiveMapperTest {
+	@Test
+	void mapsOrRejectsEveryRegisteredForegroundPrimitiveWithoutUnsupportedPrimitiveDrift() {
+		PrimitiveActionRegistry registry = PrimitiveActionRegistry.defaults();
+
+		for (PrimitiveActionMetadata metadata : registry.executable()) {
+			ActionGraphPrimitiveDispatch dispatch = ActionGraphPrimitiveMapper.map(primitive(metadata.id(), Map.of()), List.of(), List.of());
+
+			assertNotEquals("unsupported_primitive", dispatch.failureCode(), () -> metadata.id() + " is registered as executable but has no mapper support");
+		}
+	}
+
 	@Test
 	void mapsCraftItemOutputToAvailableRecipe() {
 		ActionPlanStep step = primitive("craft_item", Map.of(

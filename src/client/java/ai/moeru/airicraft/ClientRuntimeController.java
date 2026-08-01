@@ -113,6 +113,26 @@ public final class ClientRuntimeController {
 		currentAgentRuntime().onPlayerPickedUpItem(itemId, count);
 	}
 
+	public void onPlayerItemPickupObserved(
+		int entityId,
+		UUID entityUuid,
+		String itemId,
+		int pickupDelta,
+		int agentAttributedQuantity,
+		UUID collectorIdentity,
+		UUID observationId
+	) {
+		currentAgentRuntime().onPlayerItemPickupObserved(
+			entityId,
+			entityUuid,
+			itemId,
+			pickupDelta,
+			agentAttributedQuantity,
+			collectorIdentity,
+			observationId
+		);
+	}
+
 	public void onPlayerMinedBlock(String blockId, int x, int y, int z) {
 		currentAgentRuntime().onPlayerMinedBlock(blockId, x, y, z);
 	}
@@ -229,7 +249,7 @@ public final class ClientRuntimeController {
 		WorldTaskExecutor worldTaskExecutor = new DispatchingWorldTaskExecutor(
 			miningCoordinator,
 			new CraftingTaskExecutor(baritoneFacade, cameraController),
-			new DropItemsTaskExecutor(),
+			new DropItemsTaskExecutor(baritoneFacade),
 			new EntityInteractionTaskExecutor(baritoneFacade, cameraController),
 			new SmeltingTaskExecutor(smeltingProcessManager, baritoneFacade),
 			new ReturnToSurfaceTaskExecutor(baritoneFacade),

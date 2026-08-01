@@ -4,7 +4,6 @@ import ai.moeru.airicraft.agent.control.CameraController;
 import ai.moeru.airicraft.agent.control.MovementController;
 import ai.moeru.airicraft.agent.chat.ChatService;
 import ai.moeru.airicraft.agent.debug.AgentDebugRecorder;
-import ai.moeru.airicraft.agent.dialogue.DialogueResponse;
 import ai.moeru.airicraft.agent.follow.FollowState;
 import ai.moeru.airicraft.agent.goals.GoalSnapshot;
 import ai.moeru.airicraft.agent.goals.GoalType;
@@ -66,8 +65,8 @@ public final class BehaviorTreeRuntime {
 			String source = dialogueRuntime.pendingReplyReason();
 			boolean reusedPriorResponse = "failure_reused_last_response".equals(source);
 			dialogueRuntime.pendingReplyReady(tick)
-				.map(DialogueResponse::text)
-				.ifPresent(text -> {
+				.ifPresent(pendingReply -> {
+					String text = pendingReply.response().text();
 					String sanitizedText = ChatService.sanitizeForChat(text);
 					debugRecorder.recordChatAttempt(tick, sanitizedText, source, reusedPriorResponse);
 					boolean sent = chatService.send(client, text, tick);
@@ -78,8 +77,7 @@ public final class BehaviorTreeRuntime {
 						reusedPriorResponse,
 						sent
 					);
-					if (sent) {
-						dialogueRuntime.markReplyObserved();
+					if (dialogueRuntime.recordSentReply(pendingReply, sent)) {
 						debugRecorder.recordDialogueState(dialogueRuntime.snapshot());
 					}
 				});

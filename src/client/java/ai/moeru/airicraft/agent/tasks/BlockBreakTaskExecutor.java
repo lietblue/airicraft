@@ -57,10 +57,10 @@ public final class BlockBreakTaskExecutor implements WorldTaskExecutor {
 		MinecraftClient client = clientSupplier.get();
 		ClientPlayerEntity player = client == null ? null : client.player;
 		if (client == null || client.interactionManager == null || client.world == null || player == null) {
-			return fail(request, "world_unavailable");
+			return fail(request, TaskFailure.of(TaskFailureCode.UNKNOWN, "world_unavailable"));
 		}
 		if (player.currentScreenHandler != player.playerScreenHandler || !player.currentScreenHandler.getCursorStack().isEmpty()) {
-			return fail(request, "interaction_busy");
+			return fail(request, TaskFailure.of(TaskFailureCode.BUSY, "interaction_busy"));
 		}
 
 		BlockBreakStepArgs args = request.blockBreak();
@@ -82,7 +82,7 @@ public final class BlockBreakTaskExecutor implements WorldTaskExecutor {
 	) {
 		BlockPos pos = blockPos(target.position());
 		if (!client.world.isChunkLoaded(pos)) {
-			return fail(request, "target_unloaded targetPos=" + compactPos(pos));
+			return fail(request, TaskFailure.of(TaskFailureCode.ENVIRONMENT_CHANGED, "target_unloaded targetPos=" + compactPos(pos)));
 		}
 		BlockState state = client.world.getBlockState(pos);
 		if (satisfied(state)) {
@@ -95,16 +95,16 @@ public final class BlockBreakTaskExecutor implements WorldTaskExecutor {
 		}
 		String currentBlockId = blockId(state);
 		if (!target.expectedBlockIds().contains(currentBlockId)) {
-			return fail(request, "target_block_mismatch targetPos=" + compactPos(pos) + " beforeBlockId=" + currentBlockId);
+			return fail(request, TaskFailure.of(TaskFailureCode.MISSING_FACT, "target_block_mismatch targetPos=" + compactPos(pos) + " beforeBlockId=" + currentBlockId));
 		}
 		if (!withinInteractionRange(player, Vec3d.ofCenter(pos))) {
-			return fail(request, "target_out_of_range targetPos=" + compactPos(pos));
+			return fail(request, TaskFailure.of(TaskFailureCode.MISSING_FACT, "target_out_of_range targetPos=" + compactPos(pos)));
 		}
 		long tick = sessionSnapshot == null ? 0L : sessionSnapshot.tickCount();
 		if (!breakingActive) {
 			boolean accepted = client.interactionManager.attackBlock(pos, BREAK_FACE);
 			if (!accepted) {
-				return fail(request, "break_start_failed targetPos=" + compactPos(pos) + " beforeBlockId=" + currentBlockId);
+				return fail(request, TaskFailure.of(TaskFailureCode.MISSING_FACT, "break_start_failed targetPos=" + compactPos(pos) + " beforeBlockId=" + currentBlockId));
 			}
 			player.swingHand(Hand.MAIN_HAND);
 			breakingActive = true;
@@ -112,7 +112,7 @@ public final class BlockBreakTaskExecutor implements WorldTaskExecutor {
 		}
 		if (tick - targetStartTick > TARGET_TIMEOUT_TICKS) {
 			client.interactionManager.cancelBlockBreaking();
-			return fail(request, "break_timeout targetPos=" + compactPos(pos) + " beforeBlockId=" + currentBlockId);
+			return fail(request, TaskFailure.of(TaskFailureCode.TRANSIENT, "break_timeout targetPos=" + compactPos(pos) + " beforeBlockId=" + currentBlockId));
 		}
 		client.interactionManager.updateBlockBreakingProgress(pos, BREAK_FACE);
 		player.swingHand(Hand.MAIN_HAND);
@@ -127,7 +127,7 @@ public final class BlockBreakTaskExecutor implements WorldTaskExecutor {
 		}
 		String afterBlockId = blockId(after);
 		if (!target.expectedBlockIds().contains(afterBlockId)) {
-			return fail(request, "target_block_mismatch targetPos=" + compactPos(pos) + " beforeBlockId=" + currentBlockId + " afterBlockId=" + afterBlockId);
+			return fail(request, TaskFailure.of(TaskFailureCode.MISSING_FACT, "target_block_mismatch targetPos=" + compactPos(pos) + " beforeBlockId=" + currentBlockId + " afterBlockId=" + afterBlockId));
 		}
 		snapshot = snapshot(TaskExecutionState.RUNNING, request, "breaking targetPos=" + compactPos(pos) + " beforeBlockId=" + currentBlockId);
 		return Optional.empty();
@@ -142,13 +142,13 @@ public final class BlockBreakTaskExecutor implements WorldTaskExecutor {
 		return Optional.of(new TaskTerminalEvent(request.taskId(), null, TaskExecutionState.COMPLETED, message, TaskTerminationCause.GOAL_REACHED));
 	}
 
-	private Optional<TaskTerminalEvent> fail(WorldTaskRequest request, String reason) {
-		snapshot = snapshot(TaskExecutionState.FAILED, request, reason);
+	private Optional<TaskTerminalEvent> fail(WorldTaskRequest request, TaskFailure failure) {
+		snapshot = snapshot(TaskExecutionState.FAILED, request, failure.detail());
 		if (terminalEventEmitted) {
 			return Optional.empty();
 		}
 		terminalEventEmitted = true;
-		return Optional.of(new TaskTerminalEvent(request.taskId(), null, TaskExecutionState.FAILED, reason, null));
+		return Optional.of(new TaskTerminalEvent(request.taskId(), null, TaskExecutionState.FAILED, failure.detail(), null, failure.code()));
 	}
 
 	private static boolean satisfied(BlockState state) {

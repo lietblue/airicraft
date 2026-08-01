@@ -12,6 +12,7 @@ import org.junit.jupiter.api.Test;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -35,6 +36,23 @@ class DispatchingWorldTaskExecutorTest {
 		assertEquals(Optional.empty(), baritone.lastTask);
 		assertEquals(Optional.empty(), crafting.lastTask);
 		assertEquals(Optional.empty(), dropItems.lastTask);
+	}
+
+	@Test
+	void pickupEvidenceRoutesToTheDropItemsExecutor() {
+		RecordingExecutor baritone = new RecordingExecutor();
+		RecordingExecutor crafting = new RecordingExecutor();
+		RecordingExecutor dropItems = new RecordingExecutor();
+		RecordingExecutor entityInteraction = new RecordingExecutor();
+		DispatchingWorldTaskExecutor executor = new DispatchingWorldTaskExecutor(baritone, crafting, dropItems, entityInteraction);
+
+		executor.onPlayerItemPickupObserved(42, UUID.randomUUID(), "minecraft:oak_log", 1, 2, UUID.randomUUID(), UUID.randomUUID());
+
+		assertEquals(42, dropItems.pickupEntityId);
+		assertEquals("minecraft:oak_log", dropItems.pickupItemId);
+		assertEquals(1, dropItems.pickupCount);
+		assertEquals(2, dropItems.pickupEntityStackCount);
+		assertEquals(7L, dropItems.pickupTick);
 	}
 
 	@Test
@@ -332,6 +350,28 @@ class DispatchingWorldTaskExecutorTest {
 	private static final class RecordingExecutor implements WorldTaskExecutor {
 		private Optional<WorldTaskRequest> lastTask = Optional.empty();
 		private final List<Optional<WorldTaskRequest>> calls = new ArrayList<>();
+		private int pickupEntityId;
+		private String pickupItemId;
+		private int pickupCount;
+		private int pickupEntityStackCount;
+		private long pickupTick;
+
+		@Override
+		public void onPlayerItemPickupObserved(
+			int entityId,
+			UUID entityUuid,
+			String itemId,
+			int pickupDelta,
+			int agentAttributedQuantity,
+			UUID collectorIdentity,
+			UUID observationId
+		) {
+			pickupEntityId = entityId;
+			pickupItemId = itemId;
+			pickupCount = pickupDelta;
+			pickupEntityStackCount = agentAttributedQuantity;
+			pickupTick = 7L;
+		}
 
 		@Override
 		public Optional<TaskTerminalEvent> tick(ai.moeru.airicraft.agent.session.SessionSnapshot sessionSnapshot, Optional<WorldTaskRequest> activeTask) {

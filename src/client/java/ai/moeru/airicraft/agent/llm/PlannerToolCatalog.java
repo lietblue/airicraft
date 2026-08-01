@@ -61,7 +61,7 @@ public final class PlannerToolCatalog {
 	private static final Consumer<JsonObject> NO_ARGUMENT_VALIDATION = arguments -> {
 	};
 	private static final List<BuiltInTool> BUILT_IN_TOOLS = List.of(
-		builtInTool(DISCOVER_TOOLS, true, tool(DISCOVER_TOOLS, "Discover a small set of specialist tools by capability. The result activates matching full schemas for the next planner request.", properties(
+		builtInTool(DISCOVER_TOOLS, true, false, tool(DISCOVER_TOOLS, "Discover a small set of specialist tools by capability. The result activates matching full schemas for the next planner request.", properties(
 				prop("query", string("Short capability or tool search, for example smelting, navigation, exact world blocks, or map waypoints.")),
 				prop("maxResults", integer("Maximum concise tool cards to return, from 1 to 5. Defaults to 4."))
 			), List.of("query")), PlannerToolCatalog::validateDiscoverToolsArguments),
@@ -386,6 +386,11 @@ public final class PlannerToolCatalog {
 		return tool != null && tool.readTool();
 	}
 
+	public static boolean isBatchSafeReadTool(String name) {
+		BuiltInTool tool = builtInTool(name);
+		return tool != null && tool.batchSafeReadTool();
+	}
+
 	public static boolean isKnownTool(String name) {
 		return builtInTool(name) != null;
 	}
@@ -464,7 +469,17 @@ public final class PlannerToolCatalog {
 	}
 
 	private static BuiltInTool builtInTool(String name, boolean readTool, Map<String, Object> openAiTool, Consumer<JsonObject> validator) {
-		return new BuiltInTool(normalizeName(name), readTool, openAiTool, validator);
+		return builtInTool(name, readTool, readTool, openAiTool, validator);
+	}
+
+	private static BuiltInTool builtInTool(
+		String name,
+		boolean readTool,
+		boolean batchSafeReadTool,
+		Map<String, Object> openAiTool,
+		Consumer<JsonObject> validator
+	) {
+		return new BuiltInTool(normalizeName(name), readTool, batchSafeReadTool, openAiTool, validator);
 	}
 
 	private static Map<String, BuiltInTool> builtInToolsByName() {
@@ -1138,6 +1153,7 @@ public final class PlannerToolCatalog {
 	private record BuiltInTool(
 		String name,
 		boolean readTool,
+		boolean batchSafeReadTool,
 		Map<String, Object> openAiTool,
 		Consumer<JsonObject> validator
 	) {

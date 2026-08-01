@@ -103,16 +103,16 @@ public final class UnderwaterHarvestTaskExecutor implements WorldTaskExecutor {
 		MinecraftClient client = clientSupplier.get();
 		ClientPlayerEntity player = client == null ? null : client.player;
 		if (client == null || client.world == null || client.interactionManager == null || player == null) {
-			return fail(request, "world_unavailable");
+			return fail(request, TaskFailure.of(TaskFailureCode.UNKNOWN, "world_unavailable"));
 		}
 		if (request.goal() == null || request.goal().mineSpec() == null) {
-			return fail(request, "unsupported_acquisition_method missing_mine_spec");
+			return fail(request, TaskFailure.of(TaskFailureCode.INVALID_ACTION, "unsupported_acquisition_method missing_mine_spec"));
 		}
 		if (run == null) {
-			return fail(request, "missing_underwater_harvest_origin");
+			return fail(request, TaskFailure.of(TaskFailureCode.MISSING_FACT, "missing_underwater_harvest_origin"));
 		}
 		if (player.currentScreenHandler != player.playerScreenHandler || !player.currentScreenHandler.getCursorStack().isEmpty()) {
-			return fail(request, "interaction_busy");
+			return fail(request, TaskFailure.of(TaskFailureCode.BUSY, "interaction_busy"));
 		}
 
 		GoalMineSpec spec = request.goal().mineSpec();
@@ -168,9 +168,14 @@ public final class UnderwaterHarvestTaskExecutor implements WorldTaskExecutor {
 				String reason = exhaustion == UnderwaterHarvestPolicy.SourceExhaustion.RESOURCE_UNREACHABLE_NEARBY
 					? "resource_unreachable_nearby"
 					: "resource_not_found_nearby";
-				return fail(request, reason + " radius=" + UnderwaterHarvestPolicy.HORIZONTAL_RADIUS
-					+ " verticalRadius=" + UnderwaterHarvestPolicy.VERTICAL_RADIUS + " blockIds=" + spec.blockIds()
-					+ " itemCount=" + inventoryCount + " targetCount=" + spec.quantity());
+				return fail(request, TaskFailure.of(
+					exhaustion == UnderwaterHarvestPolicy.SourceExhaustion.RESOURCE_NOT_FOUND_NEARBY
+						? TaskFailureCode.MISSING_FACT
+						: TaskFailureCode.UNKNOWN,
+					reason + " radius=" + UnderwaterHarvestPolicy.HORIZONTAL_RADIUS
+						+ " verticalRadius=" + UnderwaterHarvestPolicy.VERTICAL_RADIUS + " blockIds=" + spec.blockIds()
+						+ " itemCount=" + inventoryCount + " targetCount=" + spec.quantity()
+				));
 			}
 		}
 
@@ -211,7 +216,7 @@ public final class UnderwaterHarvestTaskExecutor implements WorldTaskExecutor {
 		// A successful break can consume the last required tool. Air recovery and
 		// pickup must still finish before another source action needs that tool.
 		if (!selectRequiredTool(client, player, spec.requiredToolItemIds())) {
-			return fail(request, "unsupported_acquisition_method missing_required_tool requiredToolItemIds=" + spec.requiredToolItemIds());
+			return fail(request, TaskFailure.of(TaskFailureCode.INVALID_ACTION, "unsupported_acquisition_method missing_required_tool requiredToolItemIds=" + spec.requiredToolItemIds()));
 		}
 
 		Vec3d targetCenter = Vec3d.ofCenter(target.pos());
@@ -232,14 +237,14 @@ public final class UnderwaterHarvestTaskExecutor implements WorldTaskExecutor {
 		camera.lookAtNow(client, targetCenter);
 		if (breakingTarget == null) {
 			if (!client.interactionManager.attackBlock(target.pos(), Direction.UP)) {
-				return fail(request, "break_start_failed targetPos=" + compactPos(target.pos()));
+				return fail(request, TaskFailure.of(TaskFailureCode.MISSING_FACT, "break_start_failed targetPos=" + compactPos(target.pos())));
 			}
 			breakingTarget = target.pos();
 			breakStartedTick = tick;
 			inventoryBeforeBreak = inventoryCount;
 		}
 		if (tick - breakStartedTick > BREAK_TIMEOUT_TICKS) {
-			return fail(request, "break_timeout targetPos=" + compactPos(target.pos()));
+			return fail(request, TaskFailure.of(TaskFailureCode.TRANSIENT, "break_timeout targetPos=" + compactPos(target.pos())));
 		}
 		client.interactionManager.updateBlockBreakingProgress(target.pos(), Direction.UP);
 		player.swingHand(Hand.MAIN_HAND);
@@ -760,14 +765,14 @@ public final class UnderwaterHarvestTaskExecutor implements WorldTaskExecutor {
 		return Optional.of(new TaskTerminalEvent(request.taskId(), null, TaskExecutionState.COMPLETED, message, TaskTerminationCause.GOAL_REACHED));
 	}
 
-	private Optional<TaskTerminalEvent> fail(WorldTaskRequest request, String reason) {
+	private Optional<TaskTerminalEvent> fail(WorldTaskRequest request, TaskFailure failure) {
 		releaseControls();
-		snapshot = snapshot(TaskExecutionState.FAILED, request, reason);
+		snapshot = snapshot(TaskExecutionState.FAILED, request, failure.detail());
 		if (terminalEventEmitted) {
 			return Optional.empty();
 		}
 		terminalEventEmitted = true;
-		return Optional.of(new TaskTerminalEvent(request.taskId(), null, TaskExecutionState.FAILED, reason, null));
+		return Optional.of(new TaskTerminalEvent(request.taskId(), null, TaskExecutionState.FAILED, failure.detail(), null, failure.code()));
 	}
 
 	private void clearBreak(MinecraftClient client) {

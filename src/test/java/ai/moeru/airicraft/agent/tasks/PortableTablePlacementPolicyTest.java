@@ -2,9 +2,13 @@ package ai.moeru.airicraft.agent.tasks;
 
 import ai.moeru.airicraft.agent.goals.GoalPosition;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -75,16 +79,99 @@ class PortableTablePlacementPolicyTest {
 		assertTrue(state.timedOut(101L + PortableTablePlacementPolicy.TIMEOUT_TICKS));
 	}
 
+	@ParameterizedTest
+	@MethodSource("typedFailureDispositionCases")
+	void typedChildFailureCodesKeepCurrentRetryAndTerminalBehavior(
+		TaskFailureCode failureCode,
+		PortableTablePlacementPolicy.FailureDisposition expected
+	) {
+		PortableTablePlacementPolicy.FailureDecision decision = PortableTablePlacementPolicy.decideFailure(
+			attemptState(),
+			TaskExecutionState.FAILED,
+			failureCode,
+			null,
+			"safe_stand_position_not_found"
+		);
+
+		assertEquals(expected, decision.disposition());
+		assertEquals(expected == PortableTablePlacementPolicy.FailureDisposition.RETRY_NEXT_SITE ? 1 : 0, decision.nextState().candidateIndex());
+	}
+
 	@Test
-	void invariantFailuresTerminateInsteadOfBurningEveryCandidate() {
-		assertEquals(
-			PortableTablePlacementPolicy.FailureDisposition.TERMINATE,
-			PortableTablePlacementPolicy.failureDisposition("required_item_missing itemId=minecraft:crafting_table")
+	void completedChildRetriesWhenItDidNotPlaceTheExpectedTable() {
+		PortableTablePlacementPolicy.FailureDecision decision = PortableTablePlacementPolicy.decideFailure(
+			attemptState(),
+			TaskExecutionState.COMPLETED,
+			TaskFailureCode.NONE,
+			TaskTerminationCause.GOAL_REACHED,
+			"required_item_missing"
 		);
-		assertEquals(
-			PortableTablePlacementPolicy.FailureDisposition.RETRY_NEXT_SITE,
-			PortableTablePlacementPolicy.failureDisposition("safe_stand_position_not_found")
+
+		assertEquals(PortableTablePlacementPolicy.FailureDisposition.RETRY_NEXT_SITE, decision.disposition());
+	}
+
+	@ParameterizedTest
+	@MethodSource("detailWordCases")
+	void detailWordsCannotChangeTypedRetryBehavior(TaskFailureCode failureCode, String detail) {
+		PortableTablePlacementPolicy.FailureDecision decision = PortableTablePlacementPolicy.decideFailure(
+			attemptState(),
+			TaskExecutionState.FAILED,
+			failureCode,
+			null,
+			detail
 		);
+
+		assertEquals(expectedDisposition(failureCode), decision.disposition());
+		if (expectedDisposition(failureCode) == PortableTablePlacementPolicy.FailureDisposition.RETRY_NEXT_SITE) {
+			assertEquals(detail, decision.nextState().lastFailure());
+		}
+	}
+
+	@Test
+	void unknownChildCodeUsesTerminalFallback() {
+		PortableTablePlacementPolicy.FailureDecision decision = PortableTablePlacementPolicy.decideFailure(
+			attemptState(),
+			TaskExecutionState.FAILED,
+			null,
+			null,
+			"safe_stand_position_not_found"
+		);
+
+		assertEquals(PortableTablePlacementPolicy.FailureDisposition.TERMINATE, decision.disposition());
+	}
+
+	private static Stream<Arguments> typedFailureDispositionCases() {
+		return Stream.of(
+			Arguments.of(TaskFailureCode.TRANSIENT, PortableTablePlacementPolicy.FailureDisposition.RETRY_NEXT_SITE),
+			Arguments.of(TaskFailureCode.MISSING_FACT, PortableTablePlacementPolicy.FailureDisposition.RETRY_NEXT_SITE),
+			Arguments.of(TaskFailureCode.ENVIRONMENT_CHANGED, PortableTablePlacementPolicy.FailureDisposition.RETRY_NEXT_SITE),
+			Arguments.of(TaskFailureCode.INVALID_ACTION, PortableTablePlacementPolicy.FailureDisposition.RETRY_NEXT_SITE),
+			Arguments.of(TaskFailureCode.DESTRUCTIVE_DENIED, PortableTablePlacementPolicy.FailureDisposition.RETRY_NEXT_SITE),
+			Arguments.of(TaskFailureCode.MISSING_ITEM, PortableTablePlacementPolicy.FailureDisposition.TERMINATE),
+			Arguments.of(TaskFailureCode.BUSY, PortableTablePlacementPolicy.FailureDisposition.TERMINATE),
+			Arguments.of(TaskFailureCode.UNKNOWN, PortableTablePlacementPolicy.FailureDisposition.TERMINATE),
+			Arguments.of(TaskFailureCode.NONE, PortableTablePlacementPolicy.FailureDisposition.TERMINATE)
+		);
+	}
+
+	private static Stream<Arguments> detailWordCases() {
+		return Stream.of(
+			Arguments.of(TaskFailureCode.MISSING_FACT, "required_item_missing world_unavailable interaction_busy"),
+			Arguments.of(TaskFailureCode.MISSING_ITEM, "safe_stand_position_not_found"),
+			Arguments.of(TaskFailureCode.TRANSIENT, "world_unavailable"),
+			Arguments.of(TaskFailureCode.BUSY, "safe_stand_position_not_found")
+		);
+	}
+
+	private static PortableTablePlacementPolicy.FailureDisposition expectedDisposition(TaskFailureCode code) {
+		return switch (code) {
+			case TRANSIENT, MISSING_FACT, ENVIRONMENT_CHANGED, INVALID_ACTION, DESTRUCTIVE_DENIED -> PortableTablePlacementPolicy.FailureDisposition.RETRY_NEXT_SITE;
+			case MISSING_ITEM, BUSY, UNKNOWN, NONE -> PortableTablePlacementPolicy.FailureDisposition.TERMINATE;
+		};
+	}
+
+	private static PortableTablePlacementPolicy.AttemptState attemptState() {
+		return new PortableTablePlacementPolicy.AttemptState(List.of(position(1, 64, 0), position(0, 64, 1)), 100L);
 	}
 
 	private static PortableTablePlacementPolicy.SiteObservation observation(
