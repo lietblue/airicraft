@@ -107,6 +107,44 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 
 class EmbodiedAgentRuntimeTest {
 	@Test
+	void plannerResponseReplacesIdleAfloatSafetyHold() throws Exception {
+		EmbodiedAgentRuntime runtime = EmbodiedAgentRuntime.createForTests(new FakeWorldTaskExecutor());
+		setReflexSnapshot(runtime, new SurvivalReflexSnapshot(
+			SurvivalReflexState.AWAITING_PLANNER,
+			SurvivalReflexCause.DROWNING,
+			SurvivalReflexAction.STAY_AFLOAT,
+			1L,
+			null,
+			null,
+			null,
+			List.of(),
+			20.0F,
+			20.0F,
+			300,
+			300,
+			1L,
+			2L,
+			12,
+			null
+		));
+
+		runtime.injectDialogueResponseForTests(new DialogueResponse(
+			"I will collect dirt.",
+			new DialogueIntent(
+				DialogueIntentType.JOB_UPDATE,
+				ActiveJobProposal.mineBlocks(new GoalMineSpec(List.of("minecraft:dirt"), 1))
+			),
+			3L
+		));
+
+		assertEquals(SurvivalReflexState.IDLE, runtime.survivalReflexSnapshot().state());
+		assertEquals(ActiveJobType.MINE_BLOCKS, runtime.activeJob().type());
+		assertTrue(runtime.recentEvents(null).events().stream().anyMatch(event ->
+			"reflex.hold_released".equals(event.type())
+		));
+	}
+
+	@Test
 	void matchingSafetyHoldResumesSamePausedJob() throws Exception {
 		EmbodiedAgentRuntime runtime = EmbodiedAgentRuntime.createForTests(new FakeWorldTaskExecutor());
 		runtime.injectDialogueResponseForTests(new DialogueResponse(

@@ -1,6 +1,7 @@
 package ai.moeru.airicraft.agent.reflex;
 
 import ai.moeru.airicraft.agent.tasks.UnderwaterEscapeSearch;
+import ai.moeru.airicraft.agent.tasks.UnderwaterEscapeNavigator;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -30,19 +31,40 @@ class SurvivalReflexRuntimeTest {
 	}
 
 	@Test
-	void idleDrowningNavigatesToSafeLandButInterruptedWorkOnlyRequiresAir() {
+	void stableBreathingEndsActiveDrowningBeforeSafeLandWork() {
 		assertEquals(SurvivalReflexAction.REACH_SAFE_LAND, SurvivalReflexRuntime.drowningAction(false));
 		assertEquals(SurvivalReflexAction.SWIM_TO_AIR, SurvivalReflexRuntime.drowningAction(true));
-		assertFalse(SurvivalReflexRuntime.stableDrowningRecovery(false, true, false));
-		assertTrue(SurvivalReflexRuntime.stableDrowningRecovery(false, true, true));
-		assertTrue(SurvivalReflexRuntime.stableDrowningRecovery(true, true, false));
-		assertFalse(SurvivalReflexRuntime.stableDrowningRecovery(true, false, true));
+		assertTrue(SurvivalReflexRuntime.stableDrowningRecovery(true));
+		assertFalse(SurvivalReflexRuntime.stableDrowningRecovery(false));
+		assertTrue(SurvivalReflexRuntime.shouldKeepDrowningSafetyHold(false, false));
+		assertFalse(SurvivalReflexRuntime.shouldKeepDrowningSafetyHold(false, true));
+		assertTrue(SurvivalReflexRuntime.shouldKeepDrowningSafetyHold(true, true));
 		assertEquals(UnderwaterEscapeSearch.SearchMode.BREATHABLE,
 			SurvivalReflexRuntime.drowningSearchMode(false, true, 80, 300));
 		assertEquals(UnderwaterEscapeSearch.SearchMode.BREATHABLE,
 			SurvivalReflexRuntime.drowningSearchMode(true, false, 300, 300));
 		assertEquals(UnderwaterEscapeSearch.SearchMode.SAFE_STANDING,
 			SurvivalReflexRuntime.drowningSearchMode(false, false, 280, 300));
+	}
+
+	@Test
+	void terminalSafeLandSearchFallsBackToAfloatHold() {
+		assertFalse(SurvivalReflexRuntime.safeLandSearchExhausted(
+			UnderwaterEscapeSearch.SearchStatus.SEARCHING,
+			UnderwaterEscapeNavigator.Phase.EXHAUSTED
+		));
+		assertFalse(SurvivalReflexRuntime.safeLandSearchExhausted(
+			UnderwaterEscapeSearch.SearchStatus.CELL_BUDGET_EXHAUSTED,
+			UnderwaterEscapeNavigator.Phase.WAYPOINT_FALLBACK
+		));
+		assertTrue(SurvivalReflexRuntime.safeLandSearchExhausted(
+			UnderwaterEscapeSearch.SearchStatus.CELL_BUDGET_EXHAUSTED,
+			UnderwaterEscapeNavigator.Phase.EXHAUSTED
+		));
+		assertTrue(SurvivalReflexRuntime.safeLandSearchExhausted(
+			UnderwaterEscapeSearch.SearchStatus.COMPLETE,
+			UnderwaterEscapeNavigator.Phase.EXHAUSTED
+		));
 	}
 
 	@Test
