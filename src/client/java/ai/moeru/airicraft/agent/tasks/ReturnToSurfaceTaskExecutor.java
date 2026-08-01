@@ -41,6 +41,7 @@ public final class ReturnToSurfaceTaskExecutor implements WorldTaskExecutor {
 	private final BaritoneFacade baritoneFacade;
 	private final MovementController movementController = new MovementController();
 	private final CameraController cameraController = new CameraController();
+	private final OwnedKeyPress jumpKeyControl = new OwnedKeyPress();
 
 	private WorldTaskRequest appliedTask;
 	private boolean terminalEventEmitted;
@@ -67,7 +68,9 @@ public final class ReturnToSurfaceTaskExecutor implements WorldTaskExecutor {
 	@Override
 	public Optional<TaskTerminalEvent> tick(SessionSnapshot sessionSnapshot, Optional<WorldTaskRequest> activeTask) {
 		if (activeTask.isEmpty() || activeTask.get().type() != WorldTaskType.RETURN_TO_SURFACE) {
-			reset();
+			if (appliedTask != null) {
+				reset();
+			}
 			return Optional.empty();
 		}
 		WorldTaskRequest request = activeTask.get();
@@ -283,7 +286,7 @@ public final class ReturnToSurfaceTaskExecutor implements WorldTaskExecutor {
 		if (hand == null) {
 			return fail(request, TaskFailure.of(TaskFailureCode.MISSING_FACT, "missing_filler_block fillerBlockIds=" + args.fillerBlockIds()));
 		}
-		client.options.jumpKey.setPressed(true);
+		jumpKeyControl.press(client.options.jumpKey);
 		PlacementAttempt placement = placeUnderFoot(client, player, hand);
 		if (placement.accepted()) {
 			player.swingHand(hand);
@@ -334,7 +337,7 @@ public final class ReturnToSurfaceTaskExecutor implements WorldTaskExecutor {
 				TaskFailure.of(TaskFailureCode.TRANSIENT, "towering:headroom_break_timeout")
 			));
 		}
-		client.options.jumpKey.setPressed(false);
+		jumpKeyControl.release(client.options.jumpKey);
 		selectHotbarHeadroomTool(client, player);
 		client.interactionManager.updateBlockBreakingProgress(target, Direction.DOWN);
 		player.swingHand(Hand.MAIN_HAND);
@@ -660,8 +663,8 @@ public final class ReturnToSurfaceTaskExecutor implements WorldTaskExecutor {
 		MinecraftClient client = clientSupplier.get();
 		if (client != null) {
 			movementController.stop(client);
-			client.options.jumpKey.setPressed(false);
 		}
+		jumpKeyControl.release(client == null ? null : client.options.jumpKey);
 		clearHeadroomBreakState(client);
 	}
 
